@@ -1,9 +1,11 @@
 """codestrata 命令行。
 
     codestrata scan  <repo>                      静态扫描 → .codestrata/index.json
-    codestrata graph <repo> [--hot CASE]         出图 → .codestrata/overview.html
+    codestrata serve <repo> [--hot CASE]         本地部署前端：图 + 源码 + 解读 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用
-    codestrata serve <repo> [--port 8900]        本地服务：图 + 源码 + 跳编辑器
+    codestrata tasks <repo> [--write]            待解读的模块（自底向上）+ 给 agent 的输入包
+    codestrata note  <repo> <target> <file.md>   写回一份解读
+    codestrata graph <repo> [--hot CASE]         导出单文件 HTML（只读、离线、可分享）
 """
 from __future__ import annotations
 
@@ -12,7 +14,8 @@ import json
 import sys
 from pathlib import Path
 
-from . import layout as _layout
+from . import notes as _notes
+from . import payload as _payload
 from . import render as _render
 from . import scan as _scan
 from . import trace as _trace
@@ -25,18 +28,7 @@ def _outdir(repo: Path) -> Path:
 
 
 def _load_index(repo: Path) -> dict:
-    """读回 index.json，并把拆出去的 symbols.json 合回来。"""
-    d = _outdir(repo)
-    p = d / "index.json"
-    if not p.exists():
-        raise SystemExit(f"没有 {p}；先跑 codestrata scan {repo}")
-    idx = json.loads(p.read_text(encoding="utf-8"))
-    sp = d / "symbols.json"
-    if sp.exists():
-        extra = json.loads(sp.read_text(encoding="utf-8"))
-        idx["symbols"] = extra.get("symbols", {})
-        idx["files"] = extra.get("files", {})
-    return idx
+    return _payload.load_index(repo)
 
 
 def _resolve_depth(repo: Path, depth: str, roots: list[str] | None) -> tuple[dict, int]:
@@ -76,24 +68,55 @@ def cmd_scan(a) -> int:
 
 
 def cmd_graph(a) -> int:
+    """导出单文件 HTML（只读、离线、可分享）。要写解读或跳编辑器，用 serve。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
-    g = _layout.build(idx, lanes=a.lanes, min_files=a.min_files, top=a.top)
-    hot = hot_meta = None
-    if a.hot:
-        tp = _outdir(repo) / f"trace-{a.hot}.json"
-        if not tp.exists():
-            raise SystemExit(f"没有 {tp}；先跑 codestrata trace {repo} --case {a.hot} -- <命令>")
-        tr = json.loads(tp.read_text(encoding="utf-8"))
-        hot = _trace.to_package_graph(tr, idx)
-        hot_meta = {"case": tr.get("case"), "cmd": tr.get("cmd"),
-                    "n_procs": tr.get("n_procs"), "unmapped": hot.get("unmapped")}
-    html = _render.render(idx, g, repo, hot=hot, hot_meta=hot_meta, per_pkg=a.per_pkg)
+    hot, meta = _payload.load_hot(repo, idx, a.hot)
+    pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg)
+    html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
+                          fragment=a.fragment)
     name = f"overview{'-' + a.hot if a.hot else ''}.html"
     out = Path(a.out) if a.out else (_outdir(repo) / name)
     out.write_text(html, encoding="utf-8")
-    print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边"
+    g = pl["graph"]
+    noted = sum(1 for n in pl["notes"].values() if n["present"] and not n["stale"])
+    print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边，"
+          f"泳道 {g['lanes']}，解读 {noted}/{len(pl['notes'])}"
           + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "") + ")")
+    return 0
+
+
+def cmd_tasks(a) -> int:
+    """列出还需要解读的模块（自底向上），可选把输入包写到文件里交给 agent。"""
+    repo = Path(a.repo).resolve()
+    idx = _load_index(repo)
+    hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
+    todo = _notes.tasks(repo, idx)
+    total = len(idx["packages"])
+    print(f"待解读 {len(todo)} / {total}（按架构高度自底向上：先读叶子，再读依赖它们的）")
+    for t in todo:
+        print(f"  {t['alt']:+.2f}  {t['reason']:<7}  {t['target']:<36} "
+              f"{t['files']}f {t['classes']}c {t['funcs']}fn")
+    if a.write:
+        d = _outdir(repo) / "tasks"
+        d.mkdir(parents=True, exist_ok=True)
+        for i, t in enumerate(todo, 1):
+            p = d / f"{i:02d}-{t['target']}.md"
+            p.write_text(_notes.prompt_pack(repo, idx, t["target"], hot=hot), encoding="utf-8")
+        print(f"→ 输入包写到 {d}/（{len(todo)} 个，文件名前缀即建议顺序）")
+        print(f"  agent 产出的 Markdown 用这个写回：codestrata note {repo} <target> <file.md>")
+    return 0
+
+
+def cmd_note(a) -> int:
+    """把一份 Markdown 写成某个模块的解读（自动补 frontmatter 和 code_sha）。"""
+    repo = Path(a.repo).resolve()
+    idx = _load_index(repo)
+    if a.target not in idx["packages"]:
+        raise SystemExit(f"没有这个模块：{a.target}")
+    body = Path(a.file).read_text(encoding="utf-8") if a.file != "-" else sys.stdin.read()
+    nt = _notes.save(repo, idx, a.target, body, meta={"written_by": a.by})
+    print(f"→ {nt['path']}  code_sha={nt['code_sha_now']}")
     return 0
 
 
@@ -142,15 +165,26 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--depth", default="auto", help="包聚合粒度，auto 会自动加深（默认 auto）")
     s.set_defaults(fn=cmd_scan)
 
-    g = sub.add_parser("graph", help="出 HTML 图")
+    g = sub.add_parser("graph", help="导出单文件 HTML（只读、可分享）")
     common(g)
     g.add_argument("--hot", default=None, metavar="CASE", help="叠加某个 case 的 runtime 结果")
-    g.add_argument("--lanes", type=int, default=9)
-    g.add_argument("--min-files", type=int, default=1)
-    g.add_argument("--top", type=int, default=None, help="只画最大的 N 个包")
-    g.add_argument("--per-pkg", type=int, default=14, help="每个包嵌入多少个符号的源码")
+    g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
+    g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
     g.add_argument("--out", default=None)
     g.set_defaults(fn=cmd_graph)
+
+    k = sub.add_parser("tasks", help="列出待解读的模块，可把输入包写出来交给 agent")
+    common(k)
+    k.add_argument("--hot", default=None, metavar="CASE")
+    k.add_argument("--write", action="store_true", help="把输入包写到 .codestrata/tasks/")
+    k.set_defaults(fn=cmd_tasks)
+
+    nn = sub.add_parser("note", help="把一份 Markdown 写成某个模块的解读")
+    nn.add_argument("repo")
+    nn.add_argument("target")
+    nn.add_argument("file", help="Markdown 文件；- 表示从 stdin 读")
+    nn.add_argument("--by", default="human", help="记在 frontmatter 的 written_by")
+    nn.set_defaults(fn=cmd_note)
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")
     common(t)

@@ -18,6 +18,7 @@ class Node:
     label: str
     lane: int
     x: float = 0.0          # 0..1，框中心
+    cy: float = 0.0         # 像素，纵向中心（由泳道几何算出）
     w: float = 0.0          # 像素
     h: float = 0.0
     alt: float = 0.0
@@ -38,7 +39,7 @@ def _label(pkg: str, root_prefix: str) -> str:
     return pkg
 
 
-def build(index: dict, *, lanes: int = 9, min_files: int = 1,
+def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
           top: int | None = None, width: float = 1180.0) -> dict:
     """返回 {"nodes": [...], "edges": [...], "lanes": n, "width": w, "height": h}"""
     pkgs = index["packages"]
@@ -57,9 +58,22 @@ def build(index: dict, *, lanes: int = 9, min_files: int = 1,
     root_prefix = roots[0].split("/")[-1] if len(roots) == 1 else ""
 
     # 高度 → 泳道。+1 在 lane 0（最上），-1 在最后一条。
-    def lane_of(alt: float) -> int:
+    def lane_at(alt: float, k: int) -> int:
         t = (1.0 - alt) / 2.0                     # +1→0, -1→1
-        return max(0, min(lanes - 1, int(t * lanes)))
+        return max(0, min(k - 1, int(t * k)))
+
+    if lanes == "auto":
+        # 挑最小的那个「占用率 ≥ 60%」的泳道数：泳道太多会出现大片空带
+        # （6 个模块摊到 9 条泳道时有 6 条是空的），太少又把不同高度压在一起。
+        alts = [v["alt"] for _, v in items]
+        # 取「占用率最高」的泳道数，占用率相同时偏向更多泳道（保留更多高度分辨率）。
+        # 早先取的是「满足 ≥60% 的最大 k」，于是 6 个模块也会摊到 6 条、空 2 条。
+        lanes = max(range(3, 10),
+                    key=lambda k: (len({lane_at(a, k) for a in alts}) / k, k))
+    lanes = int(lanes)
+
+    def lane_of(alt: float) -> int:
+        return lane_at(alt, lanes)
 
     nodes: dict[str, Node] = {}
     for p, v in items:
@@ -132,32 +146,44 @@ def build(index: dict, *, lanes: int = 9, min_files: int = 1,
                 n.x = (x + n.w / 2.0) / width
                 x += n.w + gap
 
-    LANE_H = 118.0
-    TOP = 30.0
-    height = TOP + lanes * LANE_H + 26.0
+    # 泳道几何。空泳道压成细条并标出它跳过的高度区间——既不占画布，
+    # 又保留「这里有一段高度差」这个信息（把空泳道直接删掉会让纵轴说谎）。
+    FULL_H, EMPTY_H, TOP = 118.0, 34.0, 30.0
+    occupied = {n.lane for n in nodes.values()}
+    rows = []
+    y = TOP
+    for i in range(lanes):
+        hi = 1.0 - 2.0 * i / lanes
+        lo = 1.0 - 2.0 * (i + 1) / lanes
+        h = FULL_H if i in occupied else EMPTY_H
+        rows.append({"i": i, "y": y, "h": h, "empty": i not in occupied,
+                     "hi": round(hi, 2), "lo": round(lo, 2), "name": ""})
+        y += h
+    # 标签：入口 / 叶子给最上、最下**有内容**的泳道；中间只给最接近 0 的那一条。
+    # （早先用 abs(mid) < 0.18 判断，lanes=6 时会有两条同时命中，图上出现两个「中间」。）
+    occ = sorted(occupied)
+    if occ:
+        rows[occ[0]]["name"] = "入口"
+        if len(occ) > 1:
+            rows[occ[-1]]["name"] = "叶子"
+        if len(occ) > 2:
+            mid = min(occ[1:-1], key=lambda i: abs((rows[i]["hi"] + rows[i]["lo"]) / 2))
+            rows[mid]["name"] = "中间"
+    height = y + 26.0
+
+    for n in nodes.values():
+        r = rows[n.lane]
+        n.cy = r["y"] + r["h"] / 2.0
 
     return {
         "width": width, "height": height, "lanes": lanes,
-        "lane_h": LANE_H, "top": TOP,
+        "lane_rows": rows, "top": TOP,
         "nodes": [vars(n) for n in sorted(nodes.values(), key=lambda n: (n.lane, n.order))],
         "edges": [[a, b, w] for a, b, w in edges],
         "root_prefix": root_prefix,
     }
 
 
-def lane_legend(lanes: int) -> list[dict]:
-    """每条泳道对应的高度区间，给图上左侧标注用。"""
-    out = []
-    for i in range(lanes):
-        hi = 1.0 - 2.0 * i / lanes
-        lo = 1.0 - 2.0 * (i + 1) / lanes
-        if i == 0:
-            name = "入口"
-        elif i == lanes - 1:
-            name = "叶子"
-        elif abs((hi + lo) / 2) < 0.18:
-            name = "中间"
-        else:
-            name = ""
-        out.append({"i": i, "hi": round(hi, 2), "lo": round(lo, 2), "name": name})
-    return out
+def lane_legend(graph: dict) -> list[dict]:
+    """兼容旧调用：泳道信息现在由 build() 直接给出。"""
+    return graph.get("lane_rows", [])

@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>codestrata</title>
+<link rel="stylesheet" href="app.css">
+<div class="wrap">
+  <header>
+    <div class="kick">codestrata</div>
+    <h1 id="h1">…</h1>
+    <p class="lede" id="lede"></p>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <div id="hotbanner"></div>
+
+  <div class="bar">
+    <span class="lbl">边</span>
+    <button class="chip" data-t="imports" aria-pressed="true">import</button>
+    <button class="chip" data-t="hot" aria-pressed="true">runtime</button>
+    <span class="lbl">视图</span>
+    <button class="chip" data-t="onlyhot" aria-pressed="false">只看跑到的</button>
+    <button class="chip" data-t="noted" aria-pressed="false">只看已解读</button>
+    <span class="sp"></span>
+    <span class="prog" id="prog"></span>
+    <input id="q" type="search" placeholder="高亮包 / 符号…">
+    <button class="chip" id="reset">重置</button>
+  </div>
+
+  <div class="gbox"><svg class="g" id="g"></svg></div>
+
+  <div class="cols">
+    <section class="det" id="det"></section>
+    <aside class="side" id="side"></aside>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="ds.js"></script>
+<script src="graph.js"></script>
+<script src="panel.js"></script>
+<script src="app.js"></script>
