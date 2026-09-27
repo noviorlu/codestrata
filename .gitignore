@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.codestrata/
+dist/
+build/
+*.egg-info/

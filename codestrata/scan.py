@@ -1,0 +1,278 @@
+"""静态扫描：用 ast 遍历一个 Python 仓库，产出总图需要的一切。
+
+只用标准库。产出 index.json：
+
+    packages   聚合单位（默认二级包，如 vllm_omni.engine），含「架构高度」
+    edges      包之间的 import 边，权重 = import 语句条数
+    symbols    每个类/函数的 file:line、基类、所属包
+    files      文件 → 包的映射，给 runtime tracer 反查用
+
+「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
+
+    +1  谁都不依赖它，它依赖一切  → 入口层（CLI、API server）
+     0  双向都多                  → 中间层（引擎、调度）
+    -1  只被依赖，自己不依赖别人  → 叶子工具（协议定义、metrics）
+
+为什么不用拓扑排序或 SCC 缩点：Python 仓库普遍存在循环 import。在 vllm-omni 上
+30 个二级包有 20 个塌进同一个强连通分量，缩点之后分层信息全部丢失；而最长路径
+分层会退化成一条 19 层、每层一个包的链。出入度比值反而稳定且符合架构直觉。
+"""
+from __future__ import annotations
+
+import ast
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable
+
+SKIP_DIRS = {
+    "__pycache__", ".git", ".hg", ".svn", ".tox", ".venv", "venv", "env",
+    "node_modules", "build", "dist", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".eggs", "site-packages",
+}
+
+# 这些顶层目录默认不进总图。它们 import 一切、却几乎无人 import，
+# 算进去会把「架构高度」彻底冲掉：在 vllm-omni 上，把 tests/ 算进来会让
+# entrypoints 从 +0.85 掉到 -0.33（因为测试大量 import 它，入度暴涨）。
+# 注意 examples/ 仍然是 hot 图的 case 来源，只是不参与静态图与高度计算。
+NON_LIB_DIRS = {
+    "tests", "test", "testing", "examples", "example", "samples",
+    "benchmarks", "benchmark", "bench", "docs", "doc", "scripts",
+    "tools", "ci", "buildkite",
+}
+
+
+# 带语句体的节点：只有这些内部才可能出现 def / class。
+# 用 getattr 兜住不同 Python 版本的差异（TryStar 是 3.11+，Match 是 3.10+）。
+_STMT_CONTAINERS = tuple(t for t in (
+    ast.Module, ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith,
+    ast.Try, getattr(ast, "TryStar", None), getattr(ast, "Match", None),
+    getattr(ast, "match_case", None), ast.ExceptHandler,
+) if t is not None)
+
+
+@dataclass
+class Symbol:
+    """一个类或函数的定义点。"""
+    name: str            # 限定名，如 DuplexOmni 或 OmniBase._create_engine
+    kind: str            # "class" | "func"
+    file: str            # 相对仓库根
+    line: int            # def/class 所在行
+    dline: int           # 第一个装饰器所在行（无装饰器时等于 line）
+    module: str          # 点分模块名
+    pkg: str             # 聚合用的包名
+    bases: list[str] = field(default_factory=list)
+
+    def key(self) -> str:
+        return f"{self.module}:{self.name}"
+
+    def as_json(self) -> dict:
+        d = {"n": self.name, "k": self.kind, "f": self.file, "l": self.line,
+             "m": self.module, "p": self.pkg}
+        if self.dline != self.line:
+            d["dl"] = self.dline
+        if self.bases:
+            d["b"] = self.bases
+        return d
+
+
+def iter_py_files(root: Path) -> Iterable[Path]:
+    for dp, dn, fn in os.walk(root):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        for f in fn:
+            if f.endswith(".py"):
+                yield Path(dp) / f
+
+
+def detect_roots(root: Path) -> list[str]:
+    """猜仓库里哪些顶层目录是 Python 包。
+
+    优先取带 __init__.py 的顶层目录；没有就退化为「含 .py 最多的顶层目录」，
+    这样 src-layout 和扁平 layout 都能覆盖。
+    """
+    pkgs = [p.name for p in root.iterdir()
+            if p.is_dir() and p.name not in SKIP_DIRS and not p.name.startswith(".")
+            and (p / "__init__.py").exists()]
+    lib = [n for n in pkgs if n not in NON_LIB_DIRS]
+    if lib:
+        return sorted(lib)          # 只要有真正的库包，就忽略 tests/examples
+    if pkgs:
+        return sorted(pkgs)
+    # src-layout: root/src/<pkg>/__init__.py
+    src = root / "src"
+    if src.is_dir():
+        inner = [p.name for p in src.iterdir()
+                 if p.is_dir() and (p / "__init__.py").exists()]
+        if inner:
+            return sorted(f"src/{n}" for n in inner)
+    counts: dict[str, int] = {}
+    for f in iter_py_files(root):
+        rel = f.relative_to(root).parts
+        if len(rel) > 1:
+            counts[rel[0]] = counts.get(rel[0], 0) + 1
+    return [max(counts, key=counts.get)] if counts else []
+
+
+def module_of(rel: Path) -> str:
+    parts = list(rel.parts)
+    if parts and parts[-1] == "__init__.py":
+        parts.pop()
+    elif parts:
+        parts[-1] = parts[-1][:-3]
+    return ".".join(parts)
+
+
+def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
+         include_non_lib: bool = False) -> dict:
+    """扫描仓库，返回 index 字典。
+
+    depth 是聚合粒度：2 表示把 a.b.c.d 归到 a.b。包太多时调大，太笼统时调小。
+    """
+    root = root.resolve()
+    roots = roots or detect_roots(root)
+    if not include_non_lib:
+        roots = [r for r in roots if r.split("/")[-1] not in NON_LIB_DIRS] or roots
+    if not roots:
+        raise SystemExit(f"在 {root} 下没找到 Python 包；用 --roots 手动指定")
+    # 顶层包名集合，用来判断一条 import 是不是「内部依赖」
+    top = {r.split("/")[-1] for r in roots}
+
+    symbols: dict[str, Symbol] = {}
+    files: dict[str, str] = {}
+    pkg_files: dict[str, int] = {}
+    pkg_loc: dict[str, int] = {}
+    pkg_cls: dict[str, int] = {}
+    pkg_fn: dict[str, int] = {}
+    edges: dict[tuple[str, str], int] = {}
+    n_files = n_err = 0
+
+    def pkg_of(module: str) -> str:
+        return ".".join(module.split(".")[:depth])
+
+    for r in roots:
+        base = root / r
+        if not base.exists():
+            continue
+        for path in iter_py_files(base):
+            rel = path.relative_to(root)
+            n_files += 1
+            try:
+                src = path.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(src)
+            except (SyntaxError, ValueError, OSError):
+                n_err += 1
+                continue
+            module = module_of(rel)
+            pkg = pkg_of(module)
+            files[str(rel)] = pkg
+            pkg_files[pkg] = pkg_files.get(pkg, 0) + 1
+            pkg_loc[pkg] = pkg_loc.get(pkg, 0) + src.count("\n") + 1
+
+            # 符号：类与顶层/类内函数，带限定名
+            def walk(node: ast.AST, prefix: str = "") -> None:
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, ast.ClassDef):
+                        qn = f"{prefix}{child.name}"
+                        bases = []
+                        for b in child.bases:
+                            try:
+                                bases.append(ast.unparse(b))
+                            except Exception:
+                                pass
+                        dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
+                        s = Symbol(qn, "class", str(rel), child.lineno, dl, module, pkg, bases)
+                        symbols[s.key()] = s
+                        pkg_cls[pkg] = pkg_cls.get(pkg, 0) + 1
+                        walk(child, qn + ".")
+                    elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        qn = f"{prefix}{child.name}"
+                        dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
+                        s = Symbol(qn, "func", str(rel), child.lineno, dl, module, pkg)
+                        symbols[s.key()] = s
+                        pkg_fn[pkg] = pkg_fn.get(pkg, 0) + 1
+                        walk(child, qn + ".")
+                    elif isinstance(child, _STMT_CONTAINERS):
+                        # def/class 只能出现在语句位置，所以只需下潜进「带语句体的节点」。
+                        # 早先只白名单了 If/Try/With，for 循环体里的嵌套函数全漏了
+                        # （codestrata 自扫描时这一个漏洞吃掉 86 次调用）；
+                        # 但换成无条件递归又会退化成遍历整棵 AST（含表达式子树），
+                        # 在 vllm-omni 上慢一个量级。白名单语句容器兼顾两者。
+                        walk(child, prefix)
+
+            walk(tree)
+
+            # 包级 import 边（只算内部依赖）
+            for node in ast.walk(tree):
+                targets: list[str] = []
+                if isinstance(node, ast.ImportFrom):
+                    if node.level:
+                        # 相对 import。先算出“点号指向的那个包”
+                        up = module.split(".")
+                        up = up[: max(0, len(up) - node.level)]
+                        base = ".".join(up)
+                        if node.module:
+                            # from .layout import x  →  <base>.layout
+                            targets.append(f"{base}.{node.module}" if base else node.module)
+                        else:
+                            # from . import layout, render  →  <base>.layout, <base>.render
+                            # 这里必须看 names：早先版本只取 base，于是所有
+                            # `from . import X` 都塌成指向包自己的边，模块间依赖全丢。
+                            for a in node.names:
+                                targets.append(f"{base}.{a.name}" if base else a.name)
+                    elif node.module and node.module.split(".")[0] in top:
+                        targets.append(node.module)
+                        # from pkg.mod import Thing —— Thing 也可能是子模块，
+                        # 但无法静态区分，按模块算即可（粒度聚合后无差别）
+                elif isinstance(node, ast.Import):
+                    for a in node.names:
+                        if a.name.split(".")[0] in top:
+                            targets.append(a.name)
+                for target in targets:
+                    if not target:
+                        continue
+                    dst = pkg_of(target)
+                    if dst and dst != pkg and dst.split(".")[0] in top:
+                        edges[(pkg, dst)] = edges.get((pkg, dst), 0) + 1
+
+    # 架构高度
+    out: dict[str, int] = {}
+    inn: dict[str, int] = {}
+    for (a, b), w in edges.items():
+        out[a] = out.get(a, 0) + w
+        inn[b] = inn.get(b, 0) + w
+    packages = {}
+    for p in sorted(pkg_files):
+        o, i = out.get(p, 0), inn.get(p, 0)
+        packages[p] = {
+            "files": pkg_files[p], "loc": pkg_loc.get(p, 0),
+            "classes": pkg_cls.get(p, 0), "funcs": pkg_fn.get(p, 0),
+            "out": o, "in": i,
+            "alt": round((o - i) / (o + i), 4) if (o + i) else 0.0,
+        }
+
+    return {
+        "repo": {"root": str(root), "name": root.name, "roots": roots,
+                 "depth": depth, "n_files": n_files, "n_parse_errors": n_err},
+        "packages": packages,
+        "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
+        "symbols": {k: s.as_json() for k, s in symbols.items()},
+        "files": files,
+    }
+
+
+def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
+    """写盘。符号表单独存 symbols.json——它比图数据大一两个数量级，
+    渲染总图时不需要全量加载。"""
+    outdir = outdir or (root / ".codestrata")
+    outdir.mkdir(parents=True, exist_ok=True)
+    symbols = index.pop("symbols", {})
+    files = index.pop("files", {})
+    (outdir / "symbols.json").write_text(
+        json.dumps({"symbols": symbols, "files": files}, ensure_ascii=False),
+        encoding="utf-8")
+    index["n_symbols"] = len(symbols)
+    p = outdir / "index.json"
+    p.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
+    index["symbols"], index["files"] = symbols, files      # 调用方还要用
+    return p
