@@ -2,7 +2,7 @@
 written_by: claude-opus-5-5
 target: codestrata.scan
 kind: package
-code_sha: 29750d358de5ceac
+code_sha: 07db1278dc059709
 status: draft
 refs: scan.py:569@bb6ab5ba,scan.py:1@5f7a6e1c,scan.py:523@2373040a,scan.py:46@29d84015,scan.py:267@f6d3c9da,scan.py:59@04872629,scan.py:345@0ee68e12,scan.py:394@6907e072,scan.py:388@74e4ca0b,scan.py:356@75f875f9,scan.py:450@5ae71828,scan.py:496@6f938f80,scan.py:308@e7e68c0d,scan.py:424@8526611d
 ---
