@@ -77,6 +77,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 /* dim / hi 必须写在 warm 后面：同优先级后者覆盖。早先顺序反了，
    runtime 边在选中别的节点时永远不淡化，看起来像和选中节点相关。
    hi 只提不透明度、不改颜色：选中不能把「是不是真调用」这层信息抹掉。 */
+.e.bg{opacity:.28}
 .e.dim{opacity:.07}.e.hi,.e.hover{opacity:1}
 .halo{fill:none;stroke:var(--sel);stroke-width:12;stroke-linecap:round;opacity:0;pointer-events:none}
 .halo.hover{opacity:.13}.halo.on{opacity:.45}
@@ -284,3 +285,4 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .dep .eb2:hover,.dep .eb2:focus-visible{color:var(--sel);border-color:var(--sel)}
 .checked{font-size:11.5px;color:var(--cool);margin:0 0 8px}
 .stalewarn ul{margin:4px 0 0;padding-left:18px}
+.fl.lang-doc{background:var(--cool-bg);color:var(--cool)}

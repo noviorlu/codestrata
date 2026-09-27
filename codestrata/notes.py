@@ -290,6 +290,24 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
     if hot and hot.get("packages", {}).get(target):
         L.append(f"- runtime：这个包在记录的 case 里被调用 {hot['packages'][target]} 次")
     L.append("")
+    docs = (index.get("docs") or {}).get(target) or []
+    if docs:
+        L.append("## 作者写的文档（先读这些：「为什么」往往写在这里）")
+        label = {"readme": "包内 README", "primary": "设计文档，主要描述这里",
+                 "related": "设计文档，涉及这里", "mentions": "开头提到了这里"}
+        for d in docs[:12]:
+            L.append(f"- `{d['f']}` — {d['title']}（{label[d['kind']]}）")
+        L.append("")
+    if hot and hot.get("symbols"):
+        top = sorted(((k, n) for k, n in hot["symbols"].items()
+                      if (index.get("symbols") or {}).get(k, {}).get("p") == target),
+                     key=lambda kv: -kv[1])[:12]
+        if top:
+            L.append("## 记录的 case 里实际调用最多的符号（次数高也可能只是轮询）")
+            for k, n in top:
+                s = index["symbols"][k]
+                L.append(f"- `{s['n']}` — {s['f']}:{s['l']}，{n} 次")
+            L.append("")
     L.append("## 这个包里的符号（按建议阅读顺序）")
     for k, s in syms[:max_symbols]:
         h = (hot or {}).get("symbols", {}).get(k)

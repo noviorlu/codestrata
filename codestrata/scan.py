@@ -12,6 +12,7 @@
     edge_sites 每条边背后的 import 语句
     edge_uses  每条边上实际引用了对方的哪些符号、在哪一行
     edge_dead  导入了但从没引用的名字，以及原因
+    docs       作者写的文档 → 包（包内 README、frontmatter 声明了代码路径的设计文档）
 
 「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
 
@@ -28,6 +29,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -135,6 +137,88 @@ def detect_roots(root: Path) -> list[str]:
     return [max(counts, key=counts.get)] if counts else []
 
 
+# 设计文档在 frontmatter 里声明自己管哪些代码（vllm-omni 的 docs/design 就是这样），
+# 这几个键下面的列表项是仓库内路径（文件、目录或 dir/**）
+DOC_PATH_KEYS = {"primary_code_paths": "primary", "code_paths": "primary",
+                 "related_code_paths": "related"}
+
+
+def collect_docs(root: Path, files: dict[str, str]) -> dict[str, list]:
+    """把作者写的文档挂到包上：包目录里的 README，和 frontmatter 声明了代码路径的设计文档。
+
+    解读层最缺的是「为什么」，而作者往往在文档里写过。输入包和详情面板会列出它们，
+    让写解读的人或 agent 先读作者自己的说法，而不是从命名去猜。
+    """
+    dir_pkg: dict[str, str] = {}
+    for rel, pkg in files.items():
+        dir_pkg.setdefault(os.path.dirname(rel), pkg)
+    out: dict[str, dict] = {}
+
+    rank = {"readme": 0, "primary": 1, "related": 2, "mentions": 3}
+
+    def paths_to_pkgs(path: str) -> set[str]:
+        path = path.removesuffix("/**").removesuffix("/*").rstrip("/")
+        if path in files:
+            return {files[path]}
+        return {pkg for fr, pkg in files.items()
+                if fr.startswith(path + "/") or fr.startswith(path + ".")}
+
+    def add(pkg: str, rel: str, kind: str, title: str) -> None:
+        cur = out.setdefault(pkg, {}).get(rel)
+        if cur is None or rank[kind] < rank[cur["kind"]]:
+            out[pkg][rel] = {"f": rel, "kind": kind, "title": title}
+
+    n = 0
+    for dp, dn, fn in os.walk(root):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        for f in fn:
+            if not f.lower().endswith(".md"):
+                continue
+            n += 1
+            if n > 5000:
+                break
+            p = Path(dp, f)
+            rel = str(p.relative_to(root))
+            try:
+                if p.stat().st_size > 1_000_000:
+                    continue
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), f)
+            if f.lower().startswith("readme"):
+                pkg = dir_pkg.get(os.path.dirname(rel))
+                if pkg:
+                    add(pkg, rel, "readme", title)
+            if not text.startswith("---"):
+                # 没有 frontmatter 的设计文档常在开头一段写「本文负责 `pkg/sub/**`」：
+                # 开头 40 行里用反引号写出的仓库路径算「提到」（最弱的一档）
+                head = "\n".join(text.splitlines()[:40])
+                for m in re.finditer(r"`([\w./*-]+/[\w./*-]+)`", head):
+                    for pkg in paths_to_pkgs(m.group(1)):
+                        add(pkg, rel, "mentions", title)
+                continue
+            end = text.find("\n---", 3)
+            if end < 0:
+                continue
+            kind = None
+            for line in text[3:end].splitlines():
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if not line.startswith((" ", "\t", "-")):          # 新的顶层键
+                    k = s.split(":", 1)[0].strip()
+                    kind = DOC_PATH_KEYS.get(k)
+                    if k == "title":
+                        title = s.split(":", 1)[1].strip().strip('"') or title
+                    continue
+                if kind and s.startswith("- "):
+                    for pkg in paths_to_pkgs(s[2:].strip().strip('"').strip("'")):
+                        add(pkg, rel, kind, title)
+    return {pkg: sorted(v.values(), key=lambda d: (rank[d["kind"]], d["f"]))
+            for pkg, v in out.items()}
+
+
 def module_of(rel: Path) -> str:
     parts = list(rel.parts)
     if parts and parts[-1] == "__init__.py":
@@ -145,10 +229,15 @@ def module_of(rel: Path) -> str:
 
 
 def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
-         include_non_lib: bool = False) -> dict:
+         include_non_lib: bool = False, expand: list[str] | None = None) -> dict:
     """扫描仓库，返回 index 字典。
 
     depth 是聚合粒度：2 表示把 a.b.c.d 归到 a.b。包太多时调大，太笼统时调小。
+
+    expand 是「只把这几个包往下拆一层」：大仓库里往往只有一两个包大到看不清
+    （vllm-omni 的 model_executor.models 是 45 个模型族挤在一个框里），整体加深
+    depth 又会让其余部分碎成几百个节点。被展开的包，**子目录**各自成为节点，
+    直接放在它下面的散文件仍归它自己——否则会炸出一堆文件级的小节点。
     """
     root = root.resolve()
     roots = roots or detect_roots(root)
@@ -171,7 +260,25 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
     edge_dead: dict[tuple[str, str], list] = {}
     n_files = n_err = 0
 
+    expand = sorted(expand or [], key=lambda p: -p.count("."))    # 最具体的前缀优先
+    # 哪些点分名是「目录包」（有 __init__.py）：展开时只有它们能成为节点
+    pkg_dirs: set[str] = set()
+    if expand:
+        for r in roots:
+            base = root / r
+            if base.exists():
+                for p in iter_py_files(base):
+                    if p.name == "__init__.py":
+                        pkg_dirs.add(module_of(p.relative_to(base.parent)))
+
     def pkg_of(module: str) -> str:
+        for pre in expand:
+            if module == pre or module.startswith(pre + "."):
+                n = pre.count(".") + 1
+                parts = module.split(".")
+                if len(parts) > n + 1 or (len(parts) == n + 1 and module in pkg_dirs):
+                    return ".".join(parts[:n + 1])
+                return pre
         return ".".join(module.split(".")[:depth])
 
     for r in roots:
@@ -399,9 +506,11 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                     mod = ".".join(p.relative_to(base.parent).parent.parts)
                     aux[str(p.relative_to(root))] = pkg_of(mod) if mod else ""
 
+    docs = collect_docs(root, files)
     return {
+        "docs": docs,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
-                 "depth": depth, "n_files": n_files, "n_parse_errors": n_err,
+                 "depth": depth, "expand": expand, "n_files": n_files, "n_parse_errors": n_err,
                  "n_aux": len(aux)},
         "aux": aux,
         "edge_sites": {f"{a}|{b}": v for (a, b), v in edge_sites.items()},
@@ -429,8 +538,9 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     sites = index.pop("edge_sites", {})
     uses = index.pop("edge_uses", {})
     dead = index.pop("edge_dead", {})
+    docs = index.pop("docs", {})
     (outdir / "symbols.json").write_text(
-        json.dumps({"symbols": symbols, "files": files, "aux": aux,
+        json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs,
                     "edge_sites": sites, "edge_uses": uses, "edge_dead": dead},
                    ensure_ascii=False),
         encoding="utf-8")
@@ -439,4 +549,5 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     p.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     index["symbols"], index["files"], index["aux"] = symbols, files, aux   # 调用方还要用
     index["edge_sites"], index["edge_uses"], index["edge_dead"] = sites, uses, dead
+    index["docs"] = docs
     return p

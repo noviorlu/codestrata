@@ -13,6 +13,11 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
    sys.monitoring：仓库外的代码第一次命中就返回 DISABLE，之后不再回调，开销低一个量级。
    老版本退回 setprofile。
 
+   case 可以分阶段：往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后写 serving），
+   之后用 `--hot 名字@serving` 只看那一段——启动时的初始化不会混进「请求走了哪条路」。
+   子进程不一定跑 atexit（multiprocessing 的 fork 子进程以 os._exit 结束），所以另外
+   拦截 os._exit、并每 10 秒落一次盘；fork 后子进程的计数清零，免得重复计入父进程的调用。
+
 3. **调用者要对。** 要知道「谁调了谁」就得维护调用栈：进（PY_START / PY_RESUME）和出
    （PY_RETURN / PY_YIELD / PY_UNWIND）都要订阅。只订阅 PY_START 的话，调用者会变成
    「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
@@ -36,6 +41,7 @@ from pathlib import Path
 
 ENV_ROOT = "CODESTRATA_ROOT"
 ENV_OUT = "CODESTRATA_OUT"
+ENV_PKGS = "CODESTRATA_PKGS"      # "顶层包=仓库内目录;..."，把安装包里的代码映射回仓库
 
 # ---------------------------------------------------------------- 被注入的一侧
 
@@ -49,8 +55,12 @@ if _root and _out:
     _root = os.path.realpath(_root)
     _funcs = {}          # "rel:firstlineno" -> 被调次数（模块顶层是 "rel:0"）
     _fedges = {}         # "调用者key|被调者key" -> 次数（函数粒度，真正的 caller→callee）
+    _mapped = {}         # 从安装包映射回仓库的文件：rel -> 实际执行的路径
     _tls = threading.local()
     _relc = {}
+    # 被 trace 的常常是 pip 装进 site-packages 的那份，而不是仓库里的源码。
+    # 顶层包名 → 它在仓库里的目录（src-layout 下是 src/pkg）
+    _pkgs = dict(x.split("=", 1) for x in os.environ.get("CODESTRATA_PKGS", "").split(";") if "=" in x)
 
     def _rel(code):
         # 只记仓库内的代码，仓库外（stdlib、torch…）一律忽略。
@@ -68,6 +78,16 @@ if _root and _out:
                 rp = ""
             if rp.startswith(_root + os.sep):
                 r = rp[len(_root) + 1:]
+            elif _pkgs:
+                for sp in ("/site-packages/", "/dist-packages/"):
+                    i = rp.find(sp)
+                    if i >= 0:
+                        tail = rp[i + len(sp):]
+                        top = tail.split("/", 1)[0]
+                        if top in _pkgs:
+                            r = _pkgs[top] + tail[len(top):]
+                            _mapped[r] = rp
+                        break
         _relc[fn] = r
         return r
 
@@ -111,16 +131,78 @@ if _root and _out:
                 pass
         return True
 
+    # 阶段：被 trace 的命令往 $CODESTRATA_OUT/PHASE 写一个名字（比如服务就绪后写 serving），
+    # 每个进程在 1 秒内看到它，就给切换前的累计计数拍一张快照。合并时相邻快照相减，
+    # 就能把「启动时调了什么」和「处理请求时调了什么」分开。
+    _phase_file = os.path.join(_out, "PHASE")
+    def _read_phase():
+        try:
+            with open(_phase_file) as f:
+                return f.read().strip() or "start"
+        except OSError:
+            return "start"
+    _phase = [_read_phase()]
+    _snaps = []
+
+    def _snapshot(name):
+        try:
+            p = os.path.join(_out, "part-%d@%d-%s.json" % (os.getpid(), len(_snaps), name))
+            with open(p + ".tmp", "w") as f:
+                json.dump({"funcs": dict(_funcs), "func_edges": dict(_fedges)}, f)
+            os.replace(p + ".tmp", p)
+        except Exception:
+            pass
+        _snaps.append(name)
+
     def _dump():
+        # 先拷贝再写：落盘线程和主线程并发，dict(...) 在 GIL 下是原子的。
+        # 写临时文件再 rename，读的一方永远看不到写了一半的 JSON。
         try:
             os.makedirs(_out, exist_ok=True)
             p = os.path.join(_out, "part-%d.json" % os.getpid())
-            with open(p, "w") as f:
-                json.dump({"pid": os.getpid(), "argv": sys.argv[:6],
-                           "funcs": _funcs, "func_edges": _fedges}, f)
+            data = {"pid": os.getpid(), "argv": sys.argv[:6], "funcs": dict(_funcs),
+                    "func_edges": dict(_fedges), "mapped": dict(_mapped), "phase": _phase[0]}
+            with open(p + ".tmp", "w") as f:
+                json.dump(data, f)
+            os.replace(p + ".tmp", p)
         except Exception:
             pass
     atexit.register(_dump)
+
+    # atexit 不是总会跑：multiprocessing 的 fork 子进程以 os._exit 结束，被 SIGKILL 的
+    # 进程什么都不跑。所以 (1) 拦下 os._exit 先落盘；(2) 后台线程每 10 秒落一次盘，
+    # 被强杀最多丢最后 10 秒。
+    _real_exit = os._exit
+    def _exit_hook(code):
+        _dump()
+        _real_exit(code)
+    os._exit = _exit_hook
+
+    def _flusher():
+        import time
+        n = 0
+        while True:
+            time.sleep(1)
+            ph = _read_phase()
+            if ph != _phase[0]:
+                _snapshot(_phase[0])
+                _phase[0] = ph
+                _dump()
+            n += 1
+            if n % 10 == 0:
+                _dump()
+    def _start_flusher():
+        threading.Thread(target=_flusher, name="codestrata-flush", daemon=True).start()
+    _start_flusher()
+
+    # fork 出来的子进程继承父进程的计数，不清零就会把父进程 fork 之前的调用再算一遍；
+    # 线程也不会跟着 fork 过来，落盘线程要重启。调用栈保留——子进程还会从这些帧里返回。
+    def _after_fork():
+        _funcs.clear()
+        _fedges.clear()
+        del _snaps[:]             # fork 之前的阶段属于父进程
+        _start_flusher()
+    os.register_at_fork(after_in_child=_after_fork)
 
     _mon = getattr(sys, "monitoring", None)
     if _mon is not None:
@@ -128,7 +210,9 @@ if _root and _out:
         # 变成「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
         E = _mon.events
         _TID = None
-        for tid in (_mon.PROFILER_ID, 3, 4, 5):
+        # 3、4 号没有分配给标准工具；PROFILER_ID 留给 cProfile（3.12 起它也走 sys.monitoring），
+        # 占了它，被 trace 的程序里一用 cProfile 就会报「tool id 已被占用」
+        for tid in (4, 3, _mon.PROFILER_ID):
             try:
                 _mon.use_tool_id(tid, "codestrata")
                 _TID = tid
@@ -172,25 +256,33 @@ def _make_bootstrap(root: Path, outdir: Path) -> Path:
 # ---------------------------------------------------------------- 驱动的一侧
 
 def run(root: Path, cmd: list[str], case: str,
-        outdir: Path | None = None, timeout: float | None = None) -> dict:
+        outdir: Path | None = None, timeout: float | None = None,
+        pkgs: dict[str, str] | None = None) -> dict:
     """在 hook 下跑一条命令，返回合并后的 trace。
 
     cmd 就是你平时怎么跑那个 case，比如
         ["python", "examples/online_serving/minicpmo/realtime_duplex_demo.py", "--input-wav", "..."]
     子进程会一并被 trace。
+
+    pkgs 是 {顶层包名: 它在仓库里的目录}。命令跑的若是 pip 装进 site-packages 的那份，
+    靠它把执行路径映射回仓库文件；映射过的文件会逐个比对内容，不一致就报出来——
+    那时 hot 图的行号不可信。
     """
     root = root.resolve()
     outdir = outdir or (root / ".codestrata")
     parts = outdir / f"parts-{case}"
     if parts.exists():
-        for f in parts.glob("part-*.json"):
+        for f in list(parts.glob("part-*.json")) + list(parts.glob("part-*.json.tmp")):
             f.unlink()
+        (parts / "PHASE").unlink(missing_ok=True)
     parts.mkdir(parents=True, exist_ok=True)
 
     boot = _make_bootstrap(root, parts)
     env = dict(os.environ)
     env[ENV_ROOT] = str(root)
     env[ENV_OUT] = str(parts)
+    if pkgs:
+        env[ENV_PKGS] = ";".join(f"{k}={v}" for k, v in pkgs.items())
     env["PYTHONPATH"] = str(boot) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
     print(f"[codestrata] 跑 case {case!r}: {' '.join(cmd)}", file=sys.stderr)
@@ -206,6 +298,31 @@ def run(root: Path, cmd: list[str], case: str,
     tr = merge(parts, case=case, cmd=cmd, returncode=rc)
     rels = {k.rpartition(":")[0] for k in tr["funcs"]}
     tr["file_shas"] = file_shas(root, rels)
+    if tr["mapped"]:
+        # 实际执行的安装包文件 vs 仓库里的同名文件
+        import hashlib
+        bad, extra = [], []
+        for rel, real in tr["mapped"].items():
+            if not (root / rel).is_file():
+                # 仓库里本来就没有：构建时生成的文件（setuptools_scm 的 _version.py 之类），
+                # 不是「不一致」，也不会出现在图上
+                extra.append(rel)
+                continue
+            try:
+                a = hashlib.sha256(Path(real).read_bytes()).hexdigest()[:16]
+            except OSError:
+                a = "?"
+            if a != tr["file_shas"].get(rel):
+                bad.append(rel)
+        tr["mapped_mismatch"] = sorted(bad)
+        tr["mapped_only_installed"] = sorted(extra)
+        where = os.path.commonpath(list(tr["mapped"].values()))
+        tr["mapped_from"] = where
+        print(f"[codestrata] 运行的是安装包 {where}，已映射回仓库 {len(tr['mapped'])} 个文件，"
+              + (f"其中 {len(bad)} 个和仓库内容不一致——这些文件的行号不可信" if bad
+                 else "内容与仓库逐文件一致")
+              + (f"（另有 {len(extra)} 个只在安装包里：{', '.join(extra[:3])}）" if extra else ""),
+              file=sys.stderr)
     return tr
 
 
@@ -214,18 +331,43 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
     """把各进程写的 part-*.json 合并。"""
     funcs: dict[str, int] = {}
     fedges: dict[str, int] = {}
+    mapped: dict[str, str] = {}
     pids: list[dict] = []
+    phases: dict[str, dict] = {}
     for f in sorted(parts.glob("part-*.json")):
+        if "@" in f.name:                      # 阶段快照，下面按进程处理
+            continue
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
+        # 这个进程的各阶段 = 相邻两次累计快照之差；最后一段到进程退出为止
+        seq = []
+        for s in sorted(parts.glob(f"part-{d.get('pid')}@*.json"),
+                        key=lambda p: int(p.name.split("@")[1].split("-")[0])):
+            try:
+                sd = json.loads(s.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            seq.append((s.name.split("@", 1)[1][:-5].split("-", 1)[1], sd["funcs"], sd["func_edges"]))
+        seq.append((d.get("phase") or "start", d.get("funcs") or {}, d.get("func_edges") or {}))
+        pf: dict = {}
+        pe: dict = {}
+        for name, fu, fe in seq:
+            ph = phases.setdefault(name, {"funcs": {}, "func_edges": {}})
+            for src, prev, dst in ((fu, pf, ph["funcs"]), (fe, pe, ph["func_edges"])):
+                for k, v in src.items():
+                    dv = v - prev.get(k, 0)
+                    if dv > 0:
+                        dst[k] = dst.get(k, 0) + dv
+            pf, pe = fu, fe
         pids.append({"pid": d.get("pid"), "argv": d.get("argv"),
                      "n_funcs": len(d.get("funcs") or {})})
         for k, v in (d.get("funcs") or {}).items():
             funcs[k] = funcs.get(k, 0) + v
         for k, v in (d.get("func_edges") or {}).items():
             fedges[k] = fedges.get(k, 0) + v
+        mapped.update(d.get("mapped") or {})
     # 文件粒度的边由函数粒度派生（跨文件的才算）
     edges: dict[str, int] = {}
     for k, v in fedges.items():
@@ -236,7 +378,9 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
             edges[ek] = edges.get(ek, 0) + v
     return {"case": case, "cmd": cmd or [], "returncode": returncode,
             "pids": pids, "n_procs": len(pids),
-            "funcs": funcs, "func_edges": fedges, "file_edges": edges}
+            "funcs": funcs, "func_edges": fedges, "file_edges": edges, "mapped": mapped,
+            # 只有一个阶段时不存：它就等于总数
+            "phases": phases if len(phases) > 1 else {}}
 
 
 def file_shas(root: Path, rels) -> dict:

@@ -176,7 +176,8 @@ window.CS = window.CS || {};
         show = show && self.vis(E.a) && self.vis(E.b);
         var mine = s.selEdge ? s.selEdge === E.a + '|' + E.b
                  : !!s.sel && (E.a === s.sel || E.b === s.sel);
-        var cls = 'e ' + E.kind + (warm || E.kind === 'dyn' ? ' warm' : '')
+        // hot 视图里没被调用的静态边退到背景：要看的是这个 case 走过的路
+        var cls = 'e ' + E.kind + (warm || E.kind === 'dyn' ? ' warm' : (s.onlyHot ? ' bg' : ''))
                 + (keep && !mine ? ' dim' : '') + (mine ? ' hi' : '');
         E.p.setAttribute('class', cls);
         E.p.style.strokeWidth = ((warm || E.kind === 'dyn') ? E.w : 1.2) + (mine ? 1 : 0);

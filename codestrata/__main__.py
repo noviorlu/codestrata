@@ -33,7 +33,8 @@ def _load_index(repo: Path) -> dict:
     return _payload.load_index(repo)
 
 
-def _resolve_depth(repo: Path, depth: str, roots: list[str] | None) -> tuple[dict, int]:
+def _resolve_depth(repo: Path, depth: str, roots: list[str] | None,
+                   expand: list[str] | None = None) -> tuple[dict, int]:
     """depth=auto 时自动加深，直到包数够画一张有信息量的图。
 
     所有代码都在一个子包里的仓库（mypkg/core/*.py）在 depth=2 下会退化成一个节点，
@@ -42,10 +43,10 @@ def _resolve_depth(repo: Path, depth: str, roots: list[str] | None) -> tuple[dic
     """
     if depth != "auto":
         d = int(depth)
-        return _scan.scan(repo, depth=d, roots=roots), d
+        return _scan.scan(repo, depth=d, roots=roots, expand=expand), d
     best = None
     for d in (2, 3, 4):
-        idx = _scan.scan(repo, depth=d, roots=roots)
+        idx = _scan.scan(repo, depth=d, roots=roots, expand=expand)
         n = len(idx["packages"])
         best = (idx, d)
         if n >= 4:
@@ -55,7 +56,7 @@ def _resolve_depth(repo: Path, depth: str, roots: list[str] | None) -> tuple[dic
 
 def cmd_scan(a) -> int:
     repo = Path(a.repo).resolve()
-    idx, depth = _resolve_depth(repo, a.depth, a.roots)
+    idx, depth = _resolve_depth(repo, a.depth, a.roots, a.expand)
     p = _scan.write_index(repo, idx, _outdir(repo))
     r = idx["repo"]
     print(f"扫描 {r['n_files']} 文件（解析失败 {r['n_parse_errors']}），"
@@ -160,7 +161,10 @@ def cmd_trace(a) -> int:
     if not a.cmd:
         raise SystemExit("要在 -- 之后给出命令，例如：\n"
                          "  codestrata trace . --case demo -- python examples/foo.py")
-    tr = _trace.run(repo, a.cmd, case=a.case, outdir=_outdir(repo), timeout=a.timeout)
+    # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
+    roots = a.roots or _scan.detect_roots(repo)
+    pkgs = {r.split("/")[-1]: r for r in roots}
+    tr = _trace.run(repo, a.cmd, case=a.case, outdir=_outdir(repo), timeout=a.timeout, pkgs=pkgs)
     p = _outdir(repo) / f"trace-{a.case}.json"
     p.write_text(json.dumps(tr, ensure_ascii=False), encoding="utf-8")
     print(f"→ {p}")
@@ -198,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("scan", help="静态扫描")
     common(s)
     s.add_argument("--depth", default="auto", help="包聚合粒度，auto 会自动加深（默认 auto）")
+    s.add_argument("--expand", action="append", default=[], metavar="PKG",
+                   help="把这个包按子目录再拆一层（可重复），比如 vllm_omni.model_executor.models")
     s.set_defaults(fn=cmd_scan)
 
     g = sub.add_parser("graph", help="导出单文件 HTML（只读、可分享）")

@@ -47,10 +47,19 @@ window.CS = window.CS || {};
         var m = d.hotMeta;
         document.getElementById('hotbanner').innerHTML =
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
+          + (m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
+          + (m.phases && Object.keys(m.phases).length
+             ? '<span class="lab">（这次 trace 分了阶段：' + Object.keys(m.phases).map(function (k) {
+                 return esc(k) + ' ' + m.phases[k] + ' 个函数'; }).join(' / ')
+               + (m.phase ? '' : '；现在显示的是全部') + '）</span>　' : '')
           + (m.n_procs ? '跨 ' + m.n_procs + ' 个进程　' : '')
           + (m.unmapped ? '<span title="lambda、闭包、生成器表达式和模块顶层执行没有自己的符号，'
              + '不计入符号的调用次数（闭包的调用在边详情里会归到外层函数）">未归到命名符号的调用 '
              + m.unmapped + '</span>　' : '')
+          + (m.mapped_from ? '运行的是安装包 <code>' + esc(m.mapped_from) + '</code>，已映射回仓库 ' + m.n_mapped + ' 个文件'
+             + (m.mapped_mismatch && m.mapped_mismatch.length
+                ? '，<span style="color:var(--stale)">其中 ' + m.mapped_mismatch.length + ' 个与仓库内容不一致，行号不可信</span>'
+                : '（逐文件与仓库一致 ✓）') + '　' : '')
           + (m.stale_files && m.stale_files.length ? '<span style="color:var(--stale)">⚠ 录制后有 '
              + m.stale_files.length + ' 个文件改动过，叠加可能不准，重跑 trace 即可</span>　' : '')
           + '<div class="cmd">' + esc((m.cmd || []).join(' ')) + '</div></div></div>';
@@ -75,18 +84,28 @@ window.CS = window.CS || {};
       }).join('');
     },
 
+    redraw: function () {
+      var d = this.data, s = CS.graph.state;
+      CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
+                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges });
+      if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
+    },
+
     controls: function () {
-      var s = CS.graph.state;
+      var s = CS.graph.state, self = this;
       var KEY = { refs: 'refs', imp: 'imp', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
         if (key === 'onlyHot' && !CS.graph.hot) { b.style.display = 'none'; return; }
         b.onclick = function () {
           s[key] = b.getAttribute('aria-pressed') !== 'true';
-          b.setAttribute('aria-pressed', s[key]); CS.graph.paint();
+          b.setAttribute('aria-pressed', s[key]);
+          // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
+          if (key === 'onlyHot' && self.data.graphHot) self.redraw();
+          else CS.graph.paint();
         };
       });
-      var q = document.getElementById('q'), self = this;
+      var q = document.getElementById('q');
       q.oninput = function () {
         var t = q.value.trim().toLowerCase();
         CS.graph.highlight(t ? function (n) {

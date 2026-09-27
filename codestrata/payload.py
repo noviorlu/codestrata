@@ -25,21 +25,33 @@ def load_index(repo: Path) -> dict:
         idx["edge_sites"] = extra.get("edge_sites", {})
         idx["edge_uses"] = extra.get("edge_uses", {})
         idx["edge_dead"] = extra.get("edge_dead", {})
+        idx["docs"] = extra.get("docs", {})
     return idx
 
 
 def load_hot(repo: Path, idx: dict, case: str | None) -> tuple[dict | None, dict | None]:
+    """case 可以写成 名字@阶段，只叠加那个阶段的调用（见 trace 的 PHASE 约定）。"""
     if not case:
         return None, None
+    case, _, phase = case.partition("@")
     tp = repo / ".codestrata" / f"trace-{case}.json"
     if not tp.exists():
         raise SystemExit(f"没有 {tp}；先跑 codestrata trace {repo} --case {case} -- <命令>")
     tr = json.loads(tp.read_text(encoding="utf-8"))
+    phases = tr.get("phases") or {}
+    if phase:
+        if phase not in phases:
+            raise SystemExit(f"trace {case} 里没有阶段 {phase!r}；有的是：{', '.join(phases) or '（没分阶段）'}")
+        tr = {**tr, "funcs": phases[phase]["funcs"], "func_edges": phases[phase]["func_edges"]}
     hot = _trace.to_package_graph(tr, idx)
-    meta = {"case": tr.get("case"), "cmd": tr.get("cmd"),
+    meta = {"case": tr.get("case"), "cmd": tr.get("cmd"), "phase": phase or None,
+            "phases": {k: len(v["funcs"]) for k, v in phases.items()},
             "n_procs": tr.get("n_procs"), "unmapped": hot.get("unmapped"),
             # 老 trace 没存哈希时拿不到这个信息，就不报（而不是误报全部过期）
-            "stale_files": _trace.stale_files(repo, tr) if tr.get("file_shas") else []}
+            "stale_files": _trace.stale_files(repo, tr) if tr.get("file_shas") else [],
+            # 跑的是安装包时：从哪映射来的、有没有和仓库对不上的文件
+            "mapped_from": tr.get("mapped_from"), "n_mapped": len(tr.get("mapped") or {}),
+            "mapped_mismatch": tr.get("mapped_mismatch") or []}
     return hot, meta
 
 
@@ -84,8 +96,12 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             a, _, b = k.partition("|")
             if k not in static and a in shown and b in shown:
                 rt_only.append([a, b, n])
-    return {"repo": repo_info, "graph": g, "pkgs": idx["packages"],
-            "pkgSyms": _pkg_syms(idx), "pkgFiles": pkg_files,
+    # hot 视图单独排版：只放跑到的包，泳道数沿用总图，纵坐标含义不变、横向更紧凑
+    g_hot = (_layout.build(idx, lanes=g["lanes"], min_files=min_files,
+                           only={p for p, n in hot["packages"].items() if n})
+             if hot else None)
+    return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": idx["packages"],
+            "pkgSyms": _pkg_syms(idx), "pkgFiles": pkg_files, "pkgDocs": idx.get("docs") or {},
             "edgeKinds": kinds, "runtimeOnlyEdges": rt_only,
             "hot": hot, "hotMeta": hot_meta}
 
@@ -181,6 +197,9 @@ def _known(idx: dict, rel: str) -> str | None:
         return idx["files"][rel]
     if rel in (idx.get("aux") or {}):
         return idx["aux"][rel] or "(无所属包)"
+    for pkg, ds in (idx.get("docs") or {}).items():         # 挂在包上的文档也能打开
+        if any(d["f"] == rel for d in ds):
+            return pkg
     return None
 
 
@@ -240,7 +259,8 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     # 整文件内嵌有上限：小仓库全带上；大仓库（vllm-omni 57 万行）只能带一部分，
     # 超出的文件在导出版里退化成只看符号片段，要看全文就用 serve。
     files, used = {}, 0
-    every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {}))
+    every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})
+                   | {d["f"] for ds in (idx.get("docs") or {}).values() for d in ds})
     for rel in every:
         fv = file_view(repo, idx, rel)
         if not fv:

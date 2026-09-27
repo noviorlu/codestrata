@@ -119,6 +119,7 @@ window.CS = window.CS || {};
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
         + '<span>函数 <b>' + (v.funcs || 0) + '</b></span></div>'
         + pills(x.o, '依赖 →', true) + pills(x.i, '← 被依赖', false)
+        + this._docs(id)
         + this._files(id)
         + (list.length ? ('<div class="slist">' + list.slice(0, 40).map(function (s) {
             var h = (hot && hot.symbols[s.key]) || 0;
@@ -130,6 +131,17 @@ window.CS = window.CS || {};
         + '<div id="srcslot"></div>';
       this._wireDet(id);
       if (symKey) this.showSource(id, symKey);
+    },
+
+    /* 作者写的文档：包内 README、frontmatter 声明了管这里的设计文档 */
+    _docs: function (id) {
+      var ds = (D.pkgDocs || {})[id] || [];
+      if (!ds.length) return '';
+      var K = { readme: 'README', primary: '设计', related: '相关', mentions: '提到' };
+      return '<div class="kv files"><span>文档</span>' + ds.slice(0, 10).map(function (d) {
+        return '<button class="filebtn" data-view="' + esc(d.f) + '" title="' + esc(d.f) + '">'
+          + '<span class="fl lang-doc">' + K[d.kind] + '</span>' + esc(d.title) + '</button>';
+      }).join('') + (ds.length > 10 ? '<span>…还有 ' + (ds.length - 10) + ' 份</span>' : '') + '</div>';
     },
 
     _files: function (id) {
