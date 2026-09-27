@@ -45,7 +45,7 @@ src-layout 下，文件 src/mypkg/core/x.py 的模块名是 mypkg.core.x，不�
 `from . import layout, render` 的目标是 `<base>.layout`、`<base>.render`，不是 `<base>` 本身；早先只取 base，所有这类 import 都塌成指向包自己的边（scan.py:374）。codestrata 自己全是这种写法，这个 bug 会让自扫描一条边都没有。
 
 
-`__init__.py` 还要再特殊一层：它的模块名就是包本身，所以「一个点」指的是它自己，不用往上退（scan.py:368）。早先按普通模块处理，`pkg/__init__.py` 里的 `from .x import` 被解析成兄弟包 x——vllm-omni 上凭空多出 15 条指向不存在的包的边，把 host_weight_runtime、metrics、quantization 等包的高度都算偏了。现在指向仓库里不存在的模块的边（比如构建时才生成的 `_version.py`）不进图，只记进 `repo.unresolved_imports`。
+`__init__.py` 还要再特殊一层：它的模块名就是包本身，所以「一个点」指的是它自己，不用往上退（scan.py:368）。早先按普通模块处理，某个包的 `__init__.py` 里写 `from .x import` 被解析成兄弟包 x——vllm-omni 上凭空多出 15 条指向不存在的包的边，把 host_weight_runtime、metrics、quantization 等包的高度都算偏了。现在指向仓库里不存在的模块的边（比如构建时才生成的 `_version.py`）不进图，只记进 `repo.unresolved_imports`。
 
 ### 「import 了」和「用了」分两遍
 第一遍记下每条 import 在本文件绑定的本地名字（`bound`，以及 `import a.b.c` 这种只绑定根名的 `chains`）；第二遍扫所有 `Name` / `Attribute` 读取，命中哪个绑定就算用了对方哪个符号，记进 `edge_uses`（经 `_use`，同一行只记一次）。一次都没被读到的绑定进 `edge_dead`，并按原因分类：
