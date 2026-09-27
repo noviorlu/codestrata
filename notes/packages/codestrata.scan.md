@@ -2,9 +2,9 @@
 written_by: claude-opus-5-5
 target: codestrata.scan
 kind: package
-code_sha: 928a3cae230c1677
+code_sha: ab141bcac80c01e6
 status: draft
-refs: scan.py:530@bb6ab5ba,scan.py:1@5f7a6e1c,scan.py:490@2373040a,scan.py:46@29d84015,scan.py:263@f6d3c9da,scan.py:59@04872629,scan.py:333@0ee68e12,scan.py:371@6907e072,scan.py:344@75f875f9,scan.py:426@5ae71828,scan.py:472@6f938f80
+refs: scan.py:543@bb6ab5ba,scan.py:1@5f7a6e1c,scan.py:502@2373040a,scan.py:46@29d84015,scan.py:263@f6d3c9da,scan.py:59@04872629,scan.py:333@0ee68e12,scan.py:374@6907e072,scan.py:368@74e4ca0b,scan.py:344@75f875f9,scan.py:429@5ae71828,scan.py:475@6f938f80
 ---
 
 ## 是什么
@@ -13,7 +13,7 @@ refs: scan.py:530@bb6ab5ba,scan.py:1@5f7a6e1c,scan.py:490@2373040a,scan.py:46@29
 ## 为什么这样切
 它是整个工具的**事实来源**，而且只做这一件事：不画图、不读 trace、不碰解读。产出落到 `.codestrata/` 下两个 JSON，别的模块只读这两个文件，所以它可以随时删掉重跑。它不 import 任何内部模块（叶子），被 `__main__` 调用。
 
-`write_index` 把结果拆成 `index.json`（包和边，画图用，小）和 `symbols.json`（符号、文件映射、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:530）。
+`write_index` 把结果拆成 `index.json`（包和边，画图用，小）和 `symbols.json`（符号、文件映射、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:543）。
 
 ## 读法
 1. 模块 docstring（scan.py:1）——先看「架构高度」的定义和为什么不用 SCC
@@ -24,7 +24,7 @@ refs: scan.py:530@bb6ab5ba,scan.py:1@5f7a6e1c,scan.py:490@2373040a,scan.py:46@29
 
 ## 关键算法
 ### 架构高度而不是拓扑分层
-`alt = (出 − 入) / (出 + 入)`（scan.py:490）。docstring 里记了为什么：Python 仓库普遍循环 import，在 vllm-omni 上 30 个包有 20 个塌进同一个强连通分量，缩点后分层信息全丢；最长路径分层又会退化成 19 层的链。出入度比值不需要无环。
+`alt = (出 − 入) / (出 + 入)`（scan.py:502）。docstring 里记了为什么：Python 仓库普遍循环 import，在 vllm-omni 上 30 个包有 20 个塌进同一个强连通分量，缩点后分层信息全丢；最长路径分层又会退化成 19 层的链。出入度比值不需要无环。
 
 ### tests / examples 不进图
 它们 import 一切、几乎没人 import 它们，算进来会把高度冲掉：vllm-omni 的 entrypoints 会从 +0.85 掉到 −0.33（scan.py:46 的注释）。
@@ -42,14 +42,17 @@ src-layout 下，文件 src/mypkg/core/x.py 的模块名是 mypkg.core.x，不�
 `walk` 只递归进 `_STMT_CONTAINERS`（scan.py:59）。def/class 只能出现在语句位置，所以不用遍历表达式子树；早先只白名单了 If/Try/With，for 循环体里的嵌套函数全漏了，换成全树递归又在 vllm-omni 上慢一个量级（scan.py:333 的注释）。
 
 ### 相对 import 要看 names
-`from . import layout, render` 的目标是 `<base>.layout`、`<base>.render`，不是 `<base>` 本身；早先只取 base，所有这类 import 都塌成指向包自己的边（scan.py:371）。codestrata 自己全是这种写法，这个 bug 会让自扫描一条边都没有。
+`from . import layout, render` 的目标是 `<base>.layout`、`<base>.render`，不是 `<base>` 本身；早先只取 base，所有这类 import 都塌成指向包自己的边（scan.py:374）。codestrata 自己全是这种写法，这个 bug 会让自扫描一条边都没有。
+
+
+`__init__.py` 还要再特殊一层：它的模块名就是包本身，所以「一个点」指的是它自己，不用往上退（scan.py:368）。早先按普通模块处理，`pkg/__init__.py` 里的 `from .x import` 被解析成兄弟包 x——vllm-omni 上凭空多出 15 条指向不存在的包的边，把 host_weight_runtime、metrics、quantization 等包的高度都算偏了。现在指向仓库里不存在的模块的边（比如构建时才生成的 `_version.py`）不进图，只记进 `repo.unresolved_imports`。
 
 ### 「import 了」和「用了」分两遍
 第一遍记下每条 import 在本文件绑定的本地名字（`bound`，以及 `import a.b.c` 这种只绑定根名的 `chains`）；第二遍扫所有 `Name` / `Attribute` 读取，命中哪个绑定就算用了对方哪个符号，记进 `edge_uses`（经 `_use`，同一行只记一次）。一次都没被读到的绑定进 `edge_dead`，并按原因分类：
 - `type`：在 `if TYPE_CHECKING:` 里（scan.py:344）——常配字符串标注，AST 里看不到引用，不能判死
 - `reexport`：写在 `__init__.py` 里，是给包外用的
-- `sideeffect`：`import a.b.c` 且从没出现 `a.b.c.X`——要的是模块顶层执行（scan.py:426）
-- `intentional`：行上带 `noqa: F401`（scan.py:472）
+- `sideeffect`：`import a.b.c` 且从没出现 `a.b.c.X`——要的是模块顶层执行（scan.py:429）
+- `intentional`：行上带 `noqa: F401`（scan.py:475）
 - 其余才是 `unused`
 
 这个区分是前端「灰实线 / 灰虚线」和边详情的数据来源。

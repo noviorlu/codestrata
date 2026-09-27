@@ -360,9 +360,12 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                 targets: list[str] = []
                 if isinstance(node, ast.ImportFrom):
                     if node.level:
-                        # 相对 import。先算出“点号指向的那个包”
+                        # 相对 import。先算出“点号指向的那个包”：一个点是当前文件所在的包。
+                        # __init__.py 的模块名就是包本身，所以它不用再往上退一层——早先按
+                        # 普通模块处理，pkg/__init__.py 里的 `from .x import` 被解析成
+                        # 兄弟包 x，vllm-omni 上凭空多出 15 条指向不存在的包的边。
                         up = module.split(".")
-                        up = up[: max(0, len(up) - node.level)]
+                        up = up[: max(0, len(up) - node.level + (1 if is_init else 0))]
                         base = ".".join(up)
                         if node.module:
                             # from .layout import x  →  <base>.layout
@@ -474,6 +477,15 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                         "f": str(rel), "l": b["line"], "n": b["orig"],
                         "sym": b["sym"], "why": why})
 
+    # 指向仓库里不存在的包的边（构建时生成的 _version.py、可选依赖的桩……）不进图：
+    # 它们没有节点可画，却会虚增源包的出边、把高度算偏
+    unresolved = {k: w for k, w in edges.items() if k[1] not in pkg_files}
+    for k in unresolved:
+        edges.pop(k)
+        edge_sites.pop(k, None)
+        edge_uses.pop(k, None)
+        edge_dead.pop(k, None)
+
     # 架构高度
     out: dict[str, int] = {}
     inn: dict[str, int] = {}
@@ -511,6 +523,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
         "docs": docs,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
                  "depth": depth, "expand": expand, "n_files": n_files, "n_parse_errors": n_err,
+                 "unresolved_imports": sorted(f"{a} → {b}" for a, b in unresolved),
                  "n_aux": len(aux)},
         "aux": aux,
         "edge_sites": {f"{a}|{b}": v for (a, b), v in edge_sites.items()},
