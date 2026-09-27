@@ -58,12 +58,15 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .lanealt{font-size:9px;fill:var(--faint)}
 .lanealt.empty{font-style:italic;opacity:.7}
 .e{fill:none;stroke:var(--edge);stroke-width:1.2}
-.e.dim{opacity:.08}.e.hi{stroke:var(--hot);stroke-width:2.4;opacity:1}.e.warm{stroke:var(--hot);opacity:.85}
+.e.warm{stroke:var(--hot);opacity:.85}
+/* dim / hi 必须写在 warm 后面：同优先级后者覆盖。早先顺序反了，
+   runtime 边在选中别的节点时永远不淡化，看起来像和选中节点相关。 */
+.e.dim{opacity:.07}.e.hi{stroke:var(--hot);stroke-width:2.4;opacity:1}
 .nd{cursor:pointer}
 .nd rect{fill:var(--card);stroke:var(--line);stroke-width:1.2;rx:6}
 .nd .nl{font-size:11.5px;font-weight:600;fill:var(--ink);dominant-baseline:middle}
 .nd .ns{font-size:8.5px;fill:var(--faint);dominant-baseline:middle}
-.nd.dim{opacity:.18}
+.nd.dim{opacity:.34}   /* .18 时非邻居的标签读不出来 */
 .nd.sel rect{stroke:var(--hot);stroke-width:2.4}
 .nd.match rect{stroke:var(--hot);stroke-width:2}
 .nd.warm rect{fill:var(--hot-bg);stroke:var(--hot)}

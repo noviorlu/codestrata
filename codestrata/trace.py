@@ -160,7 +160,10 @@ def run(root: Path, cmd: list[str], case: str,
     except KeyboardInterrupt:
         print("[codestrata] 被中断，用已收集到的数据", file=sys.stderr)
 
-    return merge(parts, case=case, cmd=cmd, returncode=rc)
+    tr = merge(parts, case=case, cmd=cmd, returncode=rc)
+    rels = {k.rpartition(":")[0] for k in tr["funcs"]}
+    tr["file_shas"] = file_shas(root, rels)
+    return tr
 
 
 def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
@@ -183,6 +186,25 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
     return {"case": case, "cmd": cmd or [], "returncode": returncode,
             "pids": pids, "n_procs": len(pids),
             "funcs": funcs, "file_edges": edges}
+
+
+def file_shas(root: Path, rels) -> dict:
+    """runtime 数据和解读一样会腐烂：trace 以 file:行号 为键，代码一改就对不上。
+    录制时记下每个涉及文件的内容哈希，加载时比对，就知道哪些叠加已经不准了。"""
+    import hashlib
+    out = {}
+    for rel in sorted(set(rels)):
+        try:
+            out[rel] = hashlib.sha256((root / rel).read_bytes()).hexdigest()[:16]
+        except OSError:
+            out[rel] = ""
+    return out
+
+
+def stale_files(root: Path, trace: dict) -> list[str]:
+    was = trace.get("file_shas") or {}
+    now = file_shas(root, was.keys())
+    return sorted(r for r in was if was[r] != now.get(r))
 
 
 def to_package_graph(trace: dict, index: dict) -> dict:

@@ -45,6 +45,8 @@ window.CS = window.CS || {};
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.n_procs ? '跨 ' + m.n_procs + ' 个进程　' : '')
           + (m.unmapped ? '未映射 ' + m.unmapped + '　' : '')
+          + (m.stale_files && m.stale_files.length ? '<span style="color:var(--stale)">⚠ 录制后有 '
+             + m.stale_files.length + ' 个文件改动过，叠加可能不准，重跑 trace 即可</span>　' : '')
           + '<div class="cmd">' + esc((m.cmd || []).join(' ')) + '</div></div></div>';
       }
     },
@@ -77,7 +79,8 @@ window.CS = window.CS || {};
 
     /* 每个节点的解读状态：图上打 ✓ / ! 徽标，工具栏显示进度 */
     refreshStatus: function () {
-      var ids = Object.keys(this.data.pkgs || {});
+      // 分母取图上的节点：空包（如空 __init__.py）不上图也不派活，不该算进进度
+      var ids = this.data.graph.nodes.map(function (n) { return n.id; });
       var map = {}, self = this;
       Promise.all(ids.map(function (id) {
         return CS.ds.note(id).then(function (nt) {

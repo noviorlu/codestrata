@@ -32,7 +32,9 @@ def load_hot(repo: Path, idx: dict, case: str | None) -> tuple[dict | None, dict
     tr = json.loads(tp.read_text(encoding="utf-8"))
     hot = _trace.to_package_graph(tr, idx)
     meta = {"case": tr.get("case"), "cmd": tr.get("cmd"),
-            "n_procs": tr.get("n_procs"), "unmapped": hot.get("unmapped")}
+            "n_procs": tr.get("n_procs"), "unmapped": hot.get("unmapped"),
+            # 老 trace 没存哈希时拿不到这个信息，就不报（而不是误报全部过期）
+            "stale_files": _trace.stale_files(repo, tr) if tr.get("file_shas") else []}
     return hot, meta
 
 

@@ -4,6 +4,7 @@
     codestrata serve <repo> [--hot CASE]         本地部署前端：图 + 源码 + 解读 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用
     codestrata tasks <repo> [--write]            待解读的模块（自底向上）+ 给 agent 的输入包
+    codestrata pack  <repo> <target>             打印某个模块给 agent 的输入包
     codestrata note  <repo> <target> <file.md>   写回一份解读
     codestrata graph <repo> [--hot CASE]         导出单文件 HTML（只读、离线、可分享）
 """
@@ -108,6 +109,17 @@ def cmd_tasks(a) -> int:
     return 0
 
 
+def cmd_pack(a) -> int:
+    """打印一个模块的输入包。每次现算：下层解读写好后，上层的包会自动带上它们。"""
+    repo = Path(a.repo).resolve()
+    idx = _load_index(repo)
+    if a.target not in idx["packages"]:
+        raise SystemExit(f"没有这个模块：{a.target}")
+    hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
+    print(_notes.prompt_pack(repo, idx, a.target, hot=hot))
+    return 0
+
+
 def cmd_note(a) -> int:
     """把一份 Markdown 写成某个模块的解读（自动补 frontmatter 和 code_sha）。"""
     repo = Path(a.repo).resolve()
@@ -178,6 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--hot", default=None, metavar="CASE")
     k.add_argument("--write", action="store_true", help="把输入包写到 .codestrata/tasks/")
     k.set_defaults(fn=cmd_tasks)
+
+    pk = sub.add_parser("pack", help="打印某个模块给 agent 的输入包")
+    pk.add_argument("repo")
+    pk.add_argument("target")
+    pk.add_argument("--hot", default=None, metavar="CASE")
+    pk.set_defaults(fn=cmd_pack)
 
     nn = sub.add_parser("note", help="把一份 Markdown 写成某个模块的解读")
     nn.add_argument("repo")
