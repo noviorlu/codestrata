@@ -2,9 +2,9 @@
 written_by: claude-opus-5-5
 target: codestrata.__main__
 kind: package
-code_sha: ad6de99854c1f8fc
+code_sha: 734ab346e8a3808a
 status: draft
-refs: __main__.py:252@ec9fb5ef,__main__.py:189@d41c8ef6,__main__.py:47@551969ee,__main__.py:182@4c85e081
+refs: __main__.py:253@ec9fb5ef,__main__.py:190@d41c8ef6,__main__.py:47@551969ee,__main__.py:183@4c85e081
 ---
 
 ## 是什么
@@ -21,13 +21,13 @@ refs: __main__.py:252@ec9fb5ef,__main__.py:189@d41c8ef6,__main__.py:47@551969ee,
 
 ## 关键算法
 ### 自己按第一个 `--` 切 argv
-`trace . --case X -- python demo.py` 里，`--` 之后的整条命令要原样交给被 trace 的进程。argparse 的 REMAINDER 和可选位置参数放在一起时会互相抢参数（会报 `--case` 缺失），所以 `main` 先自己按第一个 `--` 切开（__main__.py:252），前半给 argparse，后半直接当命令。
+`trace . --case X -- python demo.py` 里，`--` 之后的整条命令要原样交给被 trace 的进程。argparse 的 REMAINDER 和可选位置参数放在一起时会互相抢参数（会报 `--case` 缺失），所以 `main` 先自己按第一个 `--` 切开（__main__.py:253），前半给 argparse，后半直接当命令。
 
 ### 子命令的 dest 不能叫 `cmd`
-`trace` 的位置参数叫 `cmd`，subparsers 的 dest 也叫 `cmd` 的话两者会互相覆盖，所以叫 `which`（__main__.py:189）。
+`trace` 的位置参数叫 `cmd`，subparsers 的 dest 也叫 `cmd` 的话两者会互相覆盖，所以叫 `which`（__main__.py:190）。
 
 ### depth 自动加深
 `_resolve_depth` 从 depth=2 开始试，包数不到 4 就加深到 3、4（__main__.py:47）。所有代码都在一个子包里的仓库在 depth=2 下只有一个节点，没有图可看。
 
 ## 不确定
-- `cmd_serve` 在函数体内才 `from . import serve`（__main__.py:182），代码里没写原因；推测是让不启动服务的子命令不必加载 `http.server`，但不能确认。静态扫描照样把它算成一条边。
+- `cmd_serve` 在函数体内才 `from . import serve`（__main__.py:183），代码里没写原因；推测是让不启动服务的子命令不必加载 `http.server`，但不能确认。静态扫描照样把它算成一条边。

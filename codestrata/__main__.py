@@ -82,9 +82,10 @@ def cmd_graph(a) -> int:
     out = Path(a.out) if a.out else (_outdir(repo) / name)
     out.write_text(html, encoding="utf-8")
     g = pl["graph"]
-    noted = sum(1 for n in pl["notes"].values() if n["present"] and not n["stale"])
+    ids = [n["id"] for n in g["nodes"]]                 # 和前端同口径：只数图上的节点
+    noted = sum(1 for i in ids if pl["notes"][i]["present"] and not pl["notes"][i]["stale"])
     print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边，"
-          f"泳道 {g['lanes']}，解读 {noted}/{len(pl['notes'])}"
+          f"泳道 {g['lanes']}，解读 {noted}/{len(ids)}"
           + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "") + ")")
     return 0
 
