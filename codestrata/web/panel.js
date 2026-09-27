@@ -7,7 +7,7 @@ window.CS = window.CS || {};
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
-  var det, side, D;
+  var det, side, D, OVERVIEW = '_overview';
 
   function short(id) { return String(id).split('.').pop(); }
   /* 符号键 codestrata.payload:Handler.do_GET → payload:Handler.do_GET；兜底键（文件:行）原样显示 */
@@ -88,6 +88,11 @@ window.CS = window.CS || {};
       side.innerHTML = '<h3>解读层</h3><p class="hint">机器只能给出结构；'
         + '「为什么这样切、算法为什么这么写、该按什么顺序读」需要人或 agent 补。'
         + '点一个节点看它的解读状态。</p>';
+      // 没选中任何东西时，右边放仓库总览——第一次打开页面最需要的就是它
+      var self = this;
+      CS.ds.note(OVERVIEW).then(function (nt) {
+        if (nt && nt.present && !CS.graph.state.sel && !CS.graph.state.selEdge) self._renderNote(OVERVIEW, nt);
+      }).catch(function () {});
     },
 
     /* ---- 左：机器事实 ---- */
@@ -272,11 +277,16 @@ window.CS = window.CS || {};
     },
 
     _renderNote: function (id, nt) {
-      var short = id.split('.').pop();
+      var short = id === OVERVIEW ? '仓库总览' : id.split('.').pop();
       var tag = nt.present ? (nt.stale ? '<span class="tagpill stale">可能过期</span>'
                                        : '<span class="tagpill noted">已解读</span>')
                            : '<span class="tagpill">未解读</span>';
-      var head = '<h3>' + esc(short) + ' 的解读 ' + tag + '</h3>';
+      var head = '<h3>' + esc(short) + (id === OVERVIEW ? ' ' : ' 的解读 ') + tag + '</h3>';
+      var probs = (nt.problems || []);
+      var check = probs.length ? '<div class="stalewarn">机器核对：这份解读里有 ' + probs.length
+          + ' 处引用在代码里对不上<ul>' + probs.map(function (p) {
+            return '<li><code>' + esc(p.text) + '</code> ' + esc(p.msg) + '</li>'; }).join('') + '</ul></div>'
+        : (nt.present ? '<p class="checked">✓ 引用的文件行号和符号名都在代码里核对过</p>' : '');
 
       if (!nt.present) {
         side.innerHTML = head
@@ -293,6 +303,7 @@ window.CS = window.CS || {};
         + (nt.stale ? '<div class="stalewarn">这份解读写于代码的另一个版本'
             + '（哈希 ' + esc((nt.code_sha_note || '').slice(0, 8)) + ' → 现在 '
             + esc((nt.code_sha_now || '').slice(0, 8)) + '）。内容可能已经不准。</div>' : '')
+        + check
         + '<div class="note">' + (nt.html || '') + '</div>'
         + '<div class="rowbtn">'
         + (nt.stale && CS.ds.canWrite ? '<button class="primary" id="genpack">重写：生成输入包</button>' : '')

@@ -9,15 +9,21 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
    临时目录、里面放 sitecustomize.py：**每个**新起的 Python 进程都会自动 import 它，
    于是自动挂上 hook，按 pid 各写一份，最后合并。
 
-2. **开销。** sys.setprofile 对每次调用都回调，跑大框架会慢到不可用。Python 3.12+ 的
-   sys.monitoring 只订阅 PY_START 事件，开销低一个量级。这里优先用它，老版本退回
-   setprofile。
+2. **开销。** sys.setprofile 对每次调用都回调，跑大框架会慢到不可用。Python 3.12+ 用
+   sys.monitoring：仓库外的代码第一次命中就返回 DISABLE，之后不再回调，开销低一个量级。
+   老版本退回 setprofile。
+
+3. **调用者要对。** 要知道「谁调了谁」就得维护调用栈：进（PY_START / PY_RESUME）和出
+   （PY_RETURN / PY_YIELD / PY_UNWIND）都要订阅。只订阅 PY_START 的话，调用者会变成
+   「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
 
 产出 trace-<case>.json：
 
-    {"case": "...", "argv": [...], "pids": [...],
-     "funcs":  {"<relfile>:<firstlineno>": count},   # 函数粒度，映射到 symbols
-     "edges":  {"<pkgA>|<pkgB>": count}}             # 包粒度，直接叠到总图上
+    {"case": "...", "cmd": [...], "pids": [...], "file_shas": {...},
+     "funcs":      {"<relfile>:<firstlineno>": 次数},      # 模块顶层记为 <relfile>:0
+     "func_edges": {"<调用方>|<被调方>": 次数},              # 函数粒度，真正的 caller→callee
+     "file_edges": {"<relfileA>|<relfileB>": 次数}}          # 由 func_edges 派生
+包粒度的叠图数据由 to_package_graph() 在加载时现算，因为它依赖当前的 index。
 """
 from __future__ import annotations
 
@@ -253,7 +259,8 @@ def stale_files(root: Path, trace: dict) -> list[str]:
 
 
 def to_package_graph(trace: dict, index: dict) -> dict:
-    """把文件粒度的 trace 折算到包粒度，好直接叠在总图上。
+    """把函数粒度的 trace 折算到包粒度，好直接叠在总图上；同时保留每条包间边上
+    「谁调了谁」的明细，给点开箭头时用。
 
     返回 {"packages": {pkg: hits}, "edges": {"a|b": 调用次数},
           "symbols": {symbol_key: hits},
@@ -274,8 +281,8 @@ def to_package_graph(trace: dict, index: dict) -> dict:
     pkg_hits: dict[str, int] = {}
     sym_hits: dict[str, int] = {}
     # 映射不到命名符号的调用分两类，都是正常现象、不是丢数据：
-    #   module  —— 第 1 行，即 import 时的模块级执行（<module> 帧）
-    #   anon    —— lambda、生成器表达式、推导式，本来就没有名字
+    #   module  —— 第 0 行（老 trace 是第 1 行），即 import 时的模块级执行（<module> 帧）
+    #   anon    —— 闭包、lambda、生成器表达式，本来就没有自己的符号
     module_frames = anon = 0
     for k, n in trace["funcs"].items():
         rel, _, ln = k.rpartition(":")

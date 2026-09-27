@@ -21,6 +21,9 @@ import re
 from pathlib import Path
 
 NOTES_DIRNAME = "notes"
+# 仓库总览：不属于任何一个包，回答「整个仓库怎么读」。按保留名当作一个目标处理，
+# 这样 CLI / API / 前端不用为它另开一套通道。
+OVERVIEW = "_overview"
 
 
 # ---------------------------------------------------------------- 路径与哈希
@@ -34,6 +37,8 @@ def _safe_name(target: str) -> str:
 
 
 def note_path(repo: Path, target: str, kind: str = "package") -> Path:
+    if target == OVERVIEW:
+        return notes_root(repo) / "overview.md"
     sub = {"package": "packages", "symbol": "symbols", "edge": "edges"}.get(kind, "packages")
     return notes_root(repo) / sub / (_safe_name(target) + ".md")
 
@@ -45,6 +50,13 @@ def code_sha(repo: Path, index: dict, target: str, kind: str = "package") -> str
     只要其中任何一个字节变了，哈希就变，解读被标记为可能过期。
     """
     h = hashlib.sha256()
+    if target == OVERVIEW:
+        # 总览描述的是架构骨架（有哪些包、谁依赖谁），不是某段代码的细节。
+        # 只哈希骨架：改一个函数体不会让总览过期，加一个包或一条依赖会。
+        skel = {"packages": sorted(index.get("packages") or {}),
+                "edges": sorted(f"{a}|{b}" for a, b, _ in index.get("edges") or [])}
+        h.update(json.dumps(skel, sort_keys=True).encode())
+        return h.hexdigest()[:16]
     if kind == "package":
         rels = sorted(r for r, p in (index.get("files") or {}).items() if p == target)
     else:
@@ -112,9 +124,15 @@ def save(repo: Path, index: dict, target: str, body: str, *,
     p.parent.mkdir(parents=True, exist_ok=True)
     m = dict(meta or {})
     m.setdefault("target", target)
-    m.setdefault("kind", kind)
+    m.setdefault("kind", "repo" if target == OVERVIEW else kind)
     m["code_sha"] = code_sha(repo, index, target, kind)
     m.setdefault("status", "draft")
+    # 给每处 file:line 引用记下那一行内容的指纹：代码改了之后能精确指出哪处引用漂了
+    refs = _ref_snapshot(repo, index, body)
+    if refs:
+        m["refs"] = refs
+    else:
+        m.pop("refs", None)
     p.write_text(dump(m, body), encoding="utf-8")
     return load(repo, index, target, kind)
 
@@ -220,6 +238,7 @@ def tasks(repo: Path, index: dict, *, include_stale: bool = True) -> list[dict]:
     """
     pkgs = index["packages"]
     out = []
+    ov = load(repo, index, OVERVIEW)
     for name in sorted(pkgs, key=lambda n: pkgs[n]["alt"]):
         v = pkgs[name]
         # 跟图保持一致：既无符号又无连边的空包（典型是空 __init__.py）没有可解读的内容
@@ -234,6 +253,11 @@ def tasks(repo: Path, index: dict, *, include_stale: bool = True) -> list[dict]:
             "alt": pkgs[name]["alt"], "files": pkgs[name]["files"],
             "classes": pkgs[name]["classes"], "funcs": pkgs[name]["funcs"],
         })
+    # 总览最后写：它要引用所有模块的解读
+    if not ov["present"] or (include_stale and ov["stale"]):
+        out.append({"target": OVERVIEW, "kind": "repo",
+                    "reason": "stale" if ov["present"] else "missing",
+                    "alt": 2.0, "files": 0, "classes": 0, "funcs": 0})
     return out
 
 
@@ -243,6 +267,8 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
 
     邻居的解读也一并给出，这样上层的解读能引用下层，而不是各说各话。
     """
+    if target == OVERVIEW:
+        return _overview_pack(repo, index)
     pkgs = index["packages"]
     v = pkgs.get(target, {})
     syms = [(k, s) for k, s in (index.get("symbols") or {}).items()
@@ -293,3 +319,154 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
     L.append("要求：读真源码再写，不要从命名猜。说不准的地方直接说不确定，"
              "不要编。能指出具体 file:line 的就指出来。")
     return "\n".join(L)
+
+
+_OVERVIEW_QUESTIONS = [
+    ("这个仓库做什么", "一段话：输入是什么、产出是什么、给谁用。"),
+    ("主干", "一次典型使用里数据怎么流过这些模块（按调用顺序，点名模块）。"),
+    ("为什么分成这几层", "入口 / 中间 / 叶子各自承担什么；哪条边界最值得注意、为什么画在那里。"),
+    ("阅读顺序", "第一次读这个仓库，按什么顺序看模块，每一步看完能回答什么问题。"),
+]
+
+
+def _overview_pack(repo: Path, index: dict) -> str:
+    pkgs = index["packages"]
+    L = ["# 解读任务：仓库总览", "",
+         "## 机器已知的事实（不用再查）",
+         f"- {len(pkgs)} 个模块，{len(index.get('edges') or [])} 条内部依赖", "",
+         "## 模块（按架构高度从入口到叶子）"]
+    for name in sorted(pkgs, key=lambda n: -pkgs[n]["alt"]):
+        v = pkgs[name]
+        if v["out"] == 0 and v["in"] == 0 and v["classes"] == 0 and v["funcs"] == 0:
+            continue
+        st = load(repo, index, name)
+        first = next((ln.strip() for ln in st["md"].splitlines()
+                      if ln.strip() and not ln.startswith("#")), "") if st["present"] else ""
+        L.append(f"- **{name}**（{v['alt']:+.2f}，{v['files']} 文件 {v['loc']} 行）"
+                 + (f"：{first[:200]}" if first else "：（还没有解读）"))
+    L += ["", "## 依赖（A → B：A import 了 B）"]
+    for a, b, w in index.get("edges") or []:
+        L.append(f"- {a} → {b}")
+    L += ["", "## 请产出（Markdown，不要 frontmatter，我会自动加）"]
+    for h, q in _OVERVIEW_QUESTIONS:
+        L += [f"### {h}", f"> {q}", ""]
+    L.append("要求：以各模块已有的解读为准，引用而不是重复；说不准就说不确定。")
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------- 机器核对
+
+_REF_RE = re.compile(r"([\w./-]+\.(?:py|pyi|js|css|html|c|cc|cpp|h|hpp|cu|cuh)):(\d+)")
+_TICK_RE = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`")
+
+
+def _line_fp(text: str) -> str:
+    return hashlib.sha256(text.strip().encode()).hexdigest()[:8]
+
+
+def _resolve_ref(repo: Path, index: dict, rel: str) -> tuple[Path | None, str]:
+    """解读里的文件引用 → 实际路径。允许只写文件名（payload.py:83），在已扫描的文件里找唯一匹配。"""
+    p = repo / rel
+    if p.is_file():
+        return p, ""
+    cands = [r for r in list(index.get("files") or {}) + list(index.get("aux") or {})
+             if r == rel or r.endswith("/" + rel)]
+    if len(cands) == 1:
+        return repo / cands[0], ""
+    return None, ("文件不存在" if not cands else f"文件名有歧义：{cands[:3]}")
+
+
+def _ref_snapshot(repo: Path, index: dict, body: str) -> str:
+    out = []
+    for m in _REF_RE.finditer(body):
+        p, _ = _resolve_ref(repo, index, m.group(1))
+        if not p:
+            continue
+        lines = p.read_text(encoding="utf-8", errors="replace").split("\n")
+        ln = int(m.group(2))
+        if 1 <= ln <= len(lines):
+            out.append(f"{m.group(0)}@{_line_fp(lines[ln - 1])}")
+    return ",".join(dict.fromkeys(out))
+
+
+def verify(repo: Path, index: dict, target: str) -> list[dict]:
+    """解读是 LLM 写的，这里用机器核对其中**可核对**的部分：
+
+    - `file:line` 引用：文件要存在，行号不能越界；
+    - 反引号里的标识符（`build`、`Handler.do_GET`）：代码里要真有这个名字。
+
+    核对不了「为什么这么写」对不对——那要人或另一个 agent 去读。但凭空编出来的
+    函数名、写错的行号，这里能抓住。
+    """
+    st = load(repo, index, target)
+    if not st["present"]:
+        return []
+    body = st["md"]
+    probs: list[dict] = []
+    # 写解读时记下的「这一行长什么样」
+    snap = {}
+    for item in (st["meta"].get("refs") or "").split(","):
+        ref, _, fp = item.rpartition("@")
+        if ref:
+            snap[ref] = fp
+    for m in _REF_RE.finditer(body):
+        rel, ln = m.group(1), int(m.group(2))
+        p, err = _resolve_ref(repo, index, rel)
+        if not p:
+            probs.append({"kind": "ref", "text": m.group(0), "msg": err})
+            continue
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").split("\n")
+        except OSError:
+            lines = []
+        if not 1 <= ln <= len(lines):
+            probs.append({"kind": "ref", "text": m.group(0), "msg": f"行号越界（文件共 {len(lines)} 行）"})
+            continue
+        want = snap.get(m.group(0))
+        if want and _line_fp(lines[ln - 1]) != want:
+            # 那一行变了。内容多半只是挪了位置：在文件里找同样的内容
+            moved = [i for i, t in enumerate(lines, 1) if t.strip() and _line_fp(t) == want]
+            msg = (f"引用的那一行已经移到第 {moved[0]} 行" if len(moved) == 1
+                   else "引用的那一行在写解读之后改掉了，需要重读")
+            probs.append({"kind": "drift", "text": m.group(0), "msg": msg,
+                          "moved_to": moved[0] if len(moved) == 1 else None})
+
+    names: set[str] = set()
+    for s in (index.get("symbols") or {}).values():
+        names.update(s["n"].split("."))
+        names.add(s["n"])
+    words: set[str] | None = None
+    for m in _TICK_RE.finditer(body):
+        tok = m.group(1)
+        if tok in names or tok.split(".")[-1] in names:
+            continue
+        if words is None:                       # 懒加载：全仓源码里出现过的标识符
+            words = set()
+            for rel in (index.get("files") or {}):
+                try:
+                    words.update(re.findall(r"[A-Za-z_]\w*",
+                                            (repo / rel).read_text(encoding="utf-8", errors="replace")))
+                except OSError:
+                    pass
+        if all(part in words for part in tok.split(".") if part):
+            continue
+        if _stdlib_has(tok):                    # os._exit、sys.monitoring 这类标准库名字
+            continue
+        probs.append({"kind": "name", "text": tok, "msg": "代码里找不到这个名字"})
+    return probs
+
+
+def _stdlib_has(dotted: str) -> bool:
+    """只对根名是标准库模块的名字真去 import：不会执行仓库或第三方代码。"""
+    import importlib
+    import sys
+    parts = dotted.split(".")
+    if parts[0] not in getattr(sys, "stdlib_module_names", ()):
+        return False
+    try:
+        obj = importlib.import_module(parts[0])
+        for p in parts[1:]:
+            obj = getattr(obj, p)
+        return True
+    except Exception:
+        return False

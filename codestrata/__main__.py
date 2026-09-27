@@ -5,7 +5,8 @@
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用
     codestrata tasks <repo> [--write]            待解读的模块（自底向上）+ 给 agent 的输入包
     codestrata pack  <repo> <target>             打印某个模块给 agent 的输入包
-    codestrata note  <repo> <target> <file.md>   写回一份解读
+    codestrata note  <repo> <target> <file.md>   写回一份解读（仓库总览的 target 是 _overview）
+    codestrata check <repo> [target ...]         机器核对解读：过期、引用的 file:line / 符号是否存在
     codestrata graph <repo> [--hot CASE]         导出单文件 HTML（只读、离线、可分享）
 """
 from __future__ import annotations
@@ -35,8 +36,9 @@ def _load_index(repo: Path) -> dict:
 def _resolve_depth(repo: Path, depth: str, roots: list[str] | None) -> tuple[dict, int]:
     """depth=auto 时自动加深，直到包数够画一张有信息量的图。
 
-    小仓库（比如 codestrata 自己只有一个包）在 depth=2 下会退化成一个节点，
-    这时必须下潜到模块粒度才有东西可看。
+    所有代码都在一个子包里的仓库（mypkg/core/*.py）在 depth=2 下会退化成一个节点，
+    这时必须下潜到模块粒度才有东西可看。（codestrata 自己在 depth=2 就已经是模块粒度：
+    codestrata.scan、codestrata.trace……）
     """
     if depth != "auto":
         d = int(depth)
@@ -113,8 +115,8 @@ def cmd_pack(a) -> int:
     """打印一个模块的输入包。每次现算：下层解读写好后，上层的包会自动带上它们。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
-    if a.target not in idx["packages"]:
-        raise SystemExit(f"没有这个模块：{a.target}")
+    if a.target not in idx["packages"] and a.target != _notes.OVERVIEW:
+        raise SystemExit(f"没有这个模块：{a.target}（仓库总览用 {_notes.OVERVIEW}）")
     hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
     print(_notes.prompt_pack(repo, idx, a.target, hot=hot))
     return 0
@@ -124,12 +126,32 @@ def cmd_note(a) -> int:
     """把一份 Markdown 写成某个模块的解读（自动补 frontmatter 和 code_sha）。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
-    if a.target not in idx["packages"]:
-        raise SystemExit(f"没有这个模块：{a.target}")
+    if a.target not in idx["packages"] and a.target != _notes.OVERVIEW:
+        raise SystemExit(f"没有这个模块：{a.target}（仓库总览用 {_notes.OVERVIEW}）")
     body = Path(a.file).read_text(encoding="utf-8") if a.file != "-" else sys.stdin.read()
     nt = _notes.save(repo, idx, a.target, body, meta={"written_by": a.by})
     print(f"→ {nt['path']}  code_sha={nt['code_sha_now']}")
     return 0
+
+
+def cmd_check(a) -> int:
+    """机器核对已写的解读：过期没有、引用的 file:line 和符号名在代码里是否真的存在。"""
+    repo = Path(a.repo).resolve()
+    idx = _load_index(repo)
+    targets = a.targets or (list(idx["packages"]) + [_notes.OVERVIEW])
+    bad = 0
+    for t in targets:
+        nt = _notes.load(repo, idx, t)
+        if not nt["present"]:
+            continue
+        probs = _notes.verify(repo, idx, t)
+        mark = "过期" if nt["stale"] else ("✗" if probs else "✓")
+        print(f"  {mark:<3} {t}")
+        for p in probs:
+            print(f"        {p['text']}：{p['msg']}")
+        bad += bool(probs) or nt["stale"]
+    print(f"{'有问题' if bad else '全部通过'}（{bad} 份需要处理）")
+    return 1 if bad else 0
 
 
 def cmd_trace(a) -> int:
@@ -203,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
     nn.add_argument("file", help="Markdown 文件；- 表示从 stdin 读")
     nn.add_argument("--by", default="human", help="记在 frontmatter 的 written_by")
     nn.set_defaults(fn=cmd_note)
+
+    c = sub.add_parser("check", help="机器核对已写的解读（过期 / 引用不存在）")
+    c.add_argument("repo", nargs="?", default=".")
+    c.add_argument("targets", nargs="*")
+    c.set_defaults(fn=cmd_check)
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")
     common(t)

@@ -97,12 +97,19 @@ def _top(symkey: str) -> str:
 
 
 def _module_files(idx: dict) -> dict:
+    """点分模块名 → 文件。src-layout 的 src/ 前缀不属于模块名，要去掉（同 scan）。"""
+    prefixes = [r.rsplit("/", 1)[0] + "/" for r in idx["repo"].get("roots") or [] if "/" in r]
     out = {}
-    for rel in idx.get("files") or {}:
+    for orig in idx.get("files") or {}:
+        rel = orig
+        for pre in prefixes:
+            if rel.startswith(pre):
+                rel = rel[len(pre):]
+                break
         parts = rel[:-3].split("/")
         if parts[-1] == "__init__":
             parts = parts[:-1]
-        out[".".join(parts)] = rel
+        out[".".join(parts)] = orig
     return out
 
 
@@ -219,7 +226,9 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                    file_budget: int = 8_000_000) -> dict:
     """单文件导出要的全部数据：图 + 已有解读 + 待办输入包 + 代表符号的源码。"""
     p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta)
-    nts = {name: _notes.load(repo, idx, name) for name in idx["packages"]}
+    nts = {name: _notes.load(repo, idx, name) for name in list(idx["packages"]) + [_notes.OVERVIEW]}
+    for name, nt in nts.items():
+        nt["problems"] = _notes.verify(repo, idx, name)
     todo = _notes.tasks(repo, idx)
     packs = {t["target"]: _notes.prompt_pack(repo, idx, t["target"], hot=hot) for t in todo}
     sources = {}

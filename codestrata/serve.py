@@ -100,8 +100,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _target(self, prefix: str, path: str) -> str | None:
         t = urllib.parse.unquote(path[len(prefix):])
-        # 只接受图上真实存在的包名，防止借 target 写出仓库外的文件
-        return t if t in self.idx["packages"] else None
+        # 只接受图上真实存在的包名（和总览这个保留名），防止借 target 写出仓库外的文件
+        return t if (t in self.idx["packages"] or t == _notes.OVERVIEW) else None
 
     # ---- GET ----
     def do_GET(self):
@@ -120,7 +120,9 @@ class Handler(BaseHTTPRequestHandler):
             t = self._target("/api/notes/", path)
             if not t:
                 return self._json({"error": "unknown target"}, 404)
-            return self._json(_notes.load(self.repo, self.idx, t))
+            nt = _notes.load(self.repo, self.idx, t)
+            nt["problems"] = _notes.verify(self.repo, self.idx, t)
+            return self._json(nt)
 
         if path == "/api/tasks":
             return self._json(_notes.tasks(self.repo, self.idx))

@@ -64,6 +64,18 @@ codestrata note . <模块> out.md # 写回（自动补 frontmatter 和 code_sha�
 **解读会腐烂。** 每份解读的 frontmatter 里存 `code_sha`——它所描述的那些源文件的内容哈希。
 代码一改，前端立刻把它标成「可能过期」。只看所描述的文件：改别的模块不会误报。
 
+**LLM 写的解读要机器核对。** `codestrata check` 核对解读里能核对的部分：
+- `file:line` 引用：文件在不在、行号越没越界；保存时给每处引用记下那一行的内容指纹，
+  代码改了之后能精确指出「`render.py:17` 引用的那一行已经移到第 18 行」；
+- 反引号里的名字（`build`、`Handler.do_GET`、`os._exit`）：代码里（或标准库里）是否真有。
+
+它核对不了「为什么这么写」对不对，但编出来的函数名、写错的行号、引用了已删掉的代码都能抓住。
+前端在每份解读顶上显示核对结果。
+
+除了每个模块一份，还有一份**仓库总览**（target 名 `_overview`，存在 `notes/overview.md`）：
+这个仓库做什么、主干数据流、为什么这样分层、阅读顺序。它最后写（输入包会带上所有模块解读），
+只在架构骨架（包和依赖）变了时才过期；没选中任何节点时，右侧面板显示的就是它。
+
 ## 前端：一套代码，两种模式
 
 前端在 `codestrata/web/`，普通 HTML/CSS/JS，零构建、不要 npm。`web/ds.js` 一层决定数据从哪来：
@@ -94,7 +106,8 @@ codestrata scan  <repo>                       # 静态扫描
 codestrata serve <repo> [--hot CASE]          # 本地部署前端
 codestrata trace <repo> --case NAME -- CMD    # 跑一个 case，记录真实调用（子进程一并 trace）
 codestrata tasks <repo> [--write]             # 待解读 + 输入包
-codestrata note  <repo> <模块> <file.md>       # 写回解读
+codestrata note  <repo> <模块> <file.md>       # 写回解读（总览用 _overview）
+codestrata check <repo> [模块 ...]             # 机器核对解读：过期、引用漂移、名字不存在
 codestrata graph <repo> [--hot CASE]          # 导出单文件
 ```
 
@@ -103,6 +116,9 @@ codestrata graph <repo> [--hot CASE]          # 导出单文件
 早期。已验证：AST 扫描（vllm-omni 1608 文件 / 4.5s / 0 失败）、高度分层（排序符合架构直觉）、
 runtime trace（真值测试：返回后再调用、生成器恢复、异常展开三种情况下调用者都正确；
 动态分派被正确识别为静态盲区）、边的五类归并、解读的写回与过期检测、serve 的路径越权防护。
+
+src-layout（`src/mypkg/...`）的模块名相对 `src/` 算，而不是相对仓库根——否则模块名带上 `src.`
+前缀、和代码里的 `import mypkg.x` 对不上，所有边都会指向不存在的包。
 
 trace 踩过的两个坑，写在这里免得重犯：
 - 只订阅 `PY_START` 不订阅返回/展开，调用者会变成「上一个开始执行的函数」。

@@ -1,11 +1,17 @@
 """静态扫描：用 ast 遍历一个 Python 仓库，产出总图需要的一切。
 
-只用标准库。产出 index.json：
+只用标准库。产出两个文件：
 
+  index.json（画总图要的，小）
     packages   聚合单位（默认二级包，如 vllm_omni.engine），含「架构高度」
     edges      包之间的 import 边，权重 = import 语句条数
-    symbols    每个类/函数的 file:line、基类、所属包
+  symbols.json（按需加载，大）
+    symbols    每个类/函数的 file:line、结束行、基类、所属包
     files      文件 → 包的映射，给 runtime tracer 反查用
+    aux        包目录里的 C/C++/CUDA 文件 → 包
+    edge_sites 每条边背后的 import 语句
+    edge_uses  每条边上实际引用了对方的哪些符号、在哪一行
+    edge_dead  导入了但从没引用的名字，以及原因
 
 「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
 
@@ -32,12 +38,13 @@ SKIP_DIRS = {
     ".ruff_cache", ".eggs", "site-packages",
 }
 
+# 包目录里的 C/C++/CUDA 源文件：挂在所在的包下供浏览，不参与 import 图
+AUX_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl", ".cu", ".cuh"}
+
 # 这些顶层目录默认不进总图。它们 import 一切、却几乎无人 import，
 # 算进去会把「架构高度」彻底冲掉：在 vllm-omni 上，把 tests/ 算进来会让
 # entrypoints 从 +0.85 掉到 -0.33（因为测试大量 import 它，入度暴涨）。
 # 注意 examples/ 仍然是 hot 图的 case 来源，只是不参与静态图与高度计算。
-AUX_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl", ".cu", ".cuh"}
-
 NON_LIB_DIRS = {
     "tests", "test", "testing", "examples", "example", "samples",
     "benchmarks", "benchmark", "bench", "docs", "doc", "scripts",
@@ -171,6 +178,10 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
         base = root / r
         if not base.exists():
             continue
+        # 模块名相对于包根的**父目录**算，文件路径仍相对仓库根。
+        # src-layout（src/mypkg/...）下若相对仓库根算，模块名会变成 src.mypkg.x，
+        # 而代码里写的是 import mypkg.x——所有边都指向不存在的包，图上一条边都画不出来。
+        mod_base = base.parent
         for path in iter_py_files(base):
             rel = path.relative_to(root)
             n_files += 1
@@ -180,7 +191,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             except (SyntaxError, ValueError, OSError):
                 n_err += 1
                 continue
-            module = module_of(rel)
+            module = module_of(path.relative_to(mod_base))
             pkg = pkg_of(module)
             files[str(rel)] = pkg
             pkg_files[pkg] = pkg_files.get(pkg, 0) + 1
@@ -265,10 +276,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                             targets.append(a.name)
                 if not targets:
                     continue
-                if isinstance(node, ast.ImportFrom):
-                    names = [a.name for a in node.names]
-                else:
-                    names = [a.name for a in node.names]
+                names = [a.name for a in node.names]
                 try:
                     stmt = ast.unparse(node)
                 except Exception:
@@ -387,9 +395,9 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
             for f in fn:
                 if os.path.splitext(f)[1].lower() in AUX_EXTS:
-                    rel = Path(dp, f).relative_to(root)
-                    mod = ".".join(rel.parent.parts)
-                    aux[str(rel)] = pkg_of(mod) if mod else ""
+                    p = Path(dp, f)
+                    mod = ".".join(p.relative_to(base.parent).parent.parts)
+                    aux[str(p.relative_to(root))] = pkg_of(mod) if mod else ""
 
     return {
         "repo": {"root": str(root), "name": root.name, "roots": roots,

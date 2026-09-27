@@ -63,11 +63,11 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
         return max(0, min(k - 1, int(t * k)))
 
     if lanes == "auto":
-        # 挑最小的那个「占用率 ≥ 60%」的泳道数：泳道太多会出现大片空带
-        # （6 个模块摊到 9 条泳道时有 6 条是空的），太少又把不同高度压在一起。
-        alts = [v["alt"] for _, v in items]
-        # 取「占用率最高」的泳道数，占用率相同时偏向更多泳道（保留更多高度分辨率）。
+        # 泳道太多会出现大片空带（6 个模块摊到 9 条泳道时有 6 条是空的），
+        # 太少又把不同高度压在一起。所以取「占用率最高」的泳道数，
+        # 占用率相同时偏向更多泳道（保留更多高度分辨率）。
         # 早先取的是「满足 ≥60% 的最大 k」，于是 6 个模块也会摊到 6 条、空 2 条。
+        alts = [v["alt"] for _, v in items]
         lanes = max(range(3, 10),
                     key=lambda k: (len({lane_at(a, k) for a in alts}) / k, k))
     lanes = int(lanes)
@@ -183,7 +183,3 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
         "root_prefix": root_prefix,
     }
 
-
-def lane_legend(graph: dict) -> list[dict]:
-    """兼容旧调用：泳道信息现在由 build() 直接给出。"""
-    return graph.get("lane_rows", [])
