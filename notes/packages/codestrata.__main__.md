@@ -2,9 +2,9 @@
 written_by: claude-opus-5-5
 target: codestrata.__main__
 kind: package
-code_sha: f65e0f2472690658
+code_sha: facf656c3e335c0b
 status: draft
-refs: __main__.py:266@ec9fb5ef,__main__.py:199@d41c8ef6,__main__.py:48@551969ee,__main__.py:192@4c85e081
+refs: __main__.py:266@ec9fb5ef,__main__.py:198@d41c8ef6,__main__.py:48@da773ad3,__main__.py:191@4c85e081
 ---
 
 ## 是什么
@@ -16,7 +16,7 @@ refs: __main__.py:266@ec9fb5ef,__main__.py:199@d41c8ef6,__main__.py:48@551969ee,
 ## 读法
 1. 模块 docstring —— 子命令一览
 2. `main` —— argparse 的搭法，重点看最后切 `--` 那段
-3. `cmd_scan` + `_resolve_depth` —— 最常用的子命令
+3. `cmd_scan` —— 最常用的子命令，也是看「默认切面拆了什么」的地方
 4. 其余 `cmd_*` 按需看，都很短
 
 ## 关键算法
@@ -24,13 +24,13 @@ refs: __main__.py:266@ec9fb5ef,__main__.py:199@d41c8ef6,__main__.py:48@551969ee,
 `trace . --case X -- python demo.py` 里，`--` 之后的整条命令要原样交给被 trace 的进程。argparse 的 REMAINDER 和可选位置参数放在一起时会互相抢参数（会报 `--case` 缺失），所以 `main` 先自己按第一个 `--` 切开（__main__.py:266），前半给 argparse，后半直接当命令。
 
 ### 子命令的 dest 不能叫 `cmd`
-`trace` 的位置参数叫 `cmd`，subparsers 的 dest 也叫 `cmd` 的话两者会互相覆盖，所以叫 `which`（__main__.py:199）。
+`trace` 的位置参数叫 `cmd`，subparsers 的 dest 也叫 `cmd` 的话两者会互相覆盖，所以叫 `which`（__main__.py:198）。
 
 ### scan 和 trace 的两个开关
-`scan --expand PKG`（可重复）把大包按子目录拆开；`trace` 会从 `--roots` 或自动探测的包根算出「顶层包 → 仓库内目录」交给 `trace.run`，被 trace 的命令跑的若是 pip 安装的那份，就靠它映射回仓库。
+`scan --depth` 默认是 `auto`（按规模自动拆分），给数字就是固定深度；`scan --expand DIR`（可重复）在默认切面上额外展开某个目录。两者都只影响**默认切面**，不影响扫描出来的数据——图上随时还能展开 / 收起。`trace` 会从 `--roots` 或自动探测的包根算出「顶层包 → 仓库内目录」交给 `trace.run`，被 trace 的命令跑的若是 pip 安装的那份，就靠它映射回仓库。
 
-### depth 自动加深
-`_resolve_depth` 从 depth=2 开始试，包数不到 4 就加深到 3、4（__main__.py:48）。所有代码都在一个子包里的仓库在 depth=2 下只有一个节点，没有图可看。
+### scan 的摘要按默认切面打印
+`cmd_scan` 打印的节点数、高度列表都是默认切面上的（`cut.visible` 过滤掉只有空 `__init__.py` 的目录），并列出自动拆开了哪些目录、各占全仓多少代码（__main__.py:48 起）。早先「包太少就把 depth 加深」的做法被 `cut.default_open` 的 `MIN_NODES` 取代：小仓库先不看比例把最大的拆开。`tasks` 的分母同样是默认切面上的节点加总览，不是文件数。
 
 ## 不确定
-- `cmd_serve` 在函数体内才 `from . import serve`（__main__.py:192），代码里没写原因；推测是让不启动服务的子命令不必加载 `http.server`，但不能确认。静态扫描照样把它算成一条边。
+- `cmd_serve` 在函数体内才 `from . import serve`（__main__.py:191），代码里没写原因；推测是让不启动服务的子命令不必加载 `http.server`，但不能确认。静态扫描照样把它算成一条边。

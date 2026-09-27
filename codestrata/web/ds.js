@@ -18,8 +18,19 @@ window.CS = window.CS || {};
     mode: 'embedded',
     canWrite: false,
     canOpenEditor: false,
-    graph: function () { return Promise.resolve(EMB); },     // 和 /api/graph 同形：整份 payload
+    // 和 /api/graph 同形：整份 payload。导出版只有导出时的那个切面，展开 / 收起要靠 serve
+    graph: function (open) {
+      var same = !open || open.slice().sort().join(',') === (EMB.open || []).slice().sort().join(',');
+      return same ? Promise.resolve(EMB)
+                  : Promise.reject(new Error('导出的单文件是固定的切面，不能展开 / 收起；要交互请用 codestrata serve'));
+    },
+    canCut: false,
     note: function (t) { return Promise.resolve((EMB.notes || {})[t] || blank(t)); },
+    status: function (ids) {
+      var out = {};
+      ids.forEach(function (t) { var nt = (EMB.notes || {})[t]; out[t] = !nt || !nt.present ? 'todo' : (nt.stale ? 'stale' : 'noted'); });
+      return Promise.resolve(out);
+    },
     saveNote: function () { return Promise.reject(new Error('导出的单文件是只读的')); },
     tasks: function () { return Promise.resolve(EMB.tasks || []); },
     pack: function (t) { return Promise.resolve((EMB.packs || {})[t] || ''); },
@@ -33,8 +44,13 @@ window.CS = window.CS || {};
     mode: 'live',
     canWrite: true,
     canOpenEditor: true,
-    graph: function () { return j('/api/graph'); },
+    graph: function (open) {
+      return j('/api/graph' + (open ? '?open=' + encodeURIComponent(open.join(',')) : ''));
+    },
+    canCut: true,
     note: function (t) { return j('/api/notes/' + encodeURIComponent(t)); },
+    // 一批节点的解读状态（noted / stale / todo），不核对内容，给图上的徽标用
+    status: function (ids) { return j('/api/status?ids=' + encodeURIComponent(ids.join(','))); },
     saveNote: function (t, md) {
       return j('/api/notes/' + encodeURIComponent(t),
         { method: 'PUT', headers: { 'content-type': 'application/json' },

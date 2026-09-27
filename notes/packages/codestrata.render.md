@@ -16,11 +16,11 @@ refs: render.py:1@1b5c0234,render.py:17@628cbed4,render.py:26@70185c58
 ## 读法
 只有一个函数 `export`；但要读懂它，得先知道它打包的前端长什么样（图上看不到，因为前端不是 Python）：
 
-- `web/ds.js` —— 数据源层：live 走 `/api/*`，embedded 读内嵌 JSON；整个前端只通过它拿数据
-- `web/graph.js` —— SVG 绘图：泳道、节点、边（边的颜色编码种类，选中用蓝色光晕）
+- `web/ds.js` —— 数据源层：live 走 `/api/*`，embedded 读内嵌 JSON；整个前端只通过它拿数据。live 能按切面重新要图（`graph(open)`），导出版只有导出时那一个切面、不能展开
+- `web/graph.js` —— SVG 绘图：泳道、节点、边（边的颜色编码种类，选中用蓝色光晕）；能展开的节点左上角画「＋」，导出版不画
 - `web/viewer.js` —— 整个文件的查看窗口（逐行高亮 + 大纲）
 - `web/panel.js` —— 左：模块 / 边的机器事实；右：解读（空槽、已写、过期、核对结果）
-- `web/app.js` —— 启动：串起上面四个
+- `web/app.js` —— 启动：串起上面四个；展开 / 收起时算出新的 `open`、重新要图、重画（收起用的是 payload 给每个节点的 `parent`）
 
 `SCRIPTS` 的顺序就是依赖顺序（render.py:17）。
 

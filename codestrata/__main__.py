@@ -16,6 +16,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import cut as _cut
 from . import notes as _notes
 from . import payload as _payload
 from . import render as _render
@@ -33,42 +34,40 @@ def _load_index(repo: Path) -> dict:
     return _payload.load_index(repo)
 
 
-def _resolve_depth(repo: Path, depth: str, roots: list[str] | None,
-                   expand: list[str] | None = None) -> tuple[dict, int]:
-    """depth=auto 时自动加深，直到包数够画一张有信息量的图。
-
-    所有代码都在一个子包里的仓库（mypkg/core/*.py）在 depth=2 下会退化成一个节点，
-    这时必须下潜到模块粒度才有东西可看。（codestrata 自己在 depth=2 就已经是模块粒度：
-    codestrata.scan、codestrata.trace……）
-    """
-    if depth != "auto":
-        d = int(depth)
-        return _scan.scan(repo, depth=d, roots=roots, expand=expand), d
-    best = None
-    for d in (2, 3, 4):
-        idx = _scan.scan(repo, depth=d, roots=roots, expand=expand)
-        n = len(idx["packages"])
-        best = (idx, d)
-        if n >= 4:
-            break
-    return best
-
-
 def cmd_scan(a) -> int:
     repo = Path(a.repo).resolve()
-    idx, depth = _resolve_depth(repo, a.depth, a.roots, a.expand)
+    depth = None if a.depth == "auto" else int(a.depth)
+    idx = _scan.scan(repo, depth=depth, roots=a.roots, expand=a.expand)
     p = _scan.write_index(repo, idx, _outdir(repo))
     r = idx["repo"]
-    print(f"扫描 {r['n_files']} 文件（解析失败 {r['n_parse_errors']}），"
-          f"包 {len(idx['packages'])} 个（depth={depth}），"
-          f"import 边 {len(idx['edges'])} 条，符号 {len(idx['symbols'])} 个")
+    v = _cut.view(idx, set(idx["default_open"]))
+    shown = _cut.visible(v)
+    print(f"扫描 {r['n_files']} 文件（解析失败 {r['n_parse_errors']}），{len(idx['packages'])} 个模块、"
+          f"{len(idx['edges'])} 条模块间 import 边、{len(idx['symbols'])} 个符号")
+    if depth is None:
+        split = "，".join(f"{_short(idx, x['node'])}（占 {x['share']:.0%}，拆成 {x['fanout']} 块）"
+                          for x in r.get("auto_split") or [])
+        print(f"默认切面 {len(shown)} 个节点、{len(v['edges'])} 条边；按规模自动拆开：{split or '无'}")
+    else:
+        print(f"默认切面 {len(shown)} 个节点、{len(v['edges'])} 条边（depth={depth}）")
+    if r.get("unresolved_imports"):
+        print(f"指向仓库里不存在的模块的 import {len(r['unresolved_imports'])} 条（不进图）："
+              + "；".join(r["unresolved_imports"][:5]) + ("…" if len(r["unresolved_imports"]) > 5 else ""))
     print(f"→ {p}")
     print(f"→ {p.parent / 'symbols.json'}")
-    print("\n架构高度（+1 入口 … −1 叶子）：")
-    for name, v in sorted(idx["packages"].items(), key=lambda kv: -kv[1]["alt"]):
-        bar = "█" * int((v["alt"] + 1) * 11)
-        print(f"  {v['alt']:+.2f} {bar:<24} {name:<34} {v['files']:4d}f {v['classes']:4d}c")
+    print("\n架构高度（+1 入口 … −1 叶子），默认切面上的节点：")
+    for name in sorted(shown, key=lambda n: -v["nodes"][n]["alt"]):
+        x = v["nodes"][name]
+        bar = "█" * int((x["alt"] + 1) * 11)
+        tag = {"dir": "/", "residual": "", "unit": ""}[x["kind"]]
+        print(f"  {x['alt']:+.2f} {bar:<24} {_short(idx, name) + tag:<40} {x['files']:4d}f {x['classes']:4d}c")
     return 0
+
+
+def _short(idx: dict, name: str) -> str:
+    roots = idx["repo"].get("roots") or []
+    pre = roots[0].split("/")[-1] + "." if len(roots) == 1 else ""
+    return name[len(pre):] if pre and name.startswith(pre) else name
 
 
 def cmd_graph(a) -> int:
@@ -97,8 +96,8 @@ def cmd_tasks(a) -> int:
     idx = _load_index(repo)
     hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
     todo = _notes.tasks(repo, idx)
-    total = len(idx["packages"])
-    print(f"待解读 {len(todo)} / {total}（按架构高度自底向上：先读叶子，再读依赖它们的）")
+    total = len(_cut.visible(_cut.view(idx, set(idx["default_open"])))) + 1      # + 仓库总览
+    print(f"待解读 {len(todo)} / {total}（默认切面上的节点 + 总览；按架构高度自底向上：先读叶子，再读依赖它们的）")
     for t in todo:
         print(f"  {t['alt']:+.2f}  {t['reason']:<7}  {t['target']:<36} "
               f"{t['files']}f {t['classes']}c {t['funcs']}fn")
@@ -117,7 +116,7 @@ def cmd_pack(a) -> int:
     """打印一个模块的输入包。每次现算：下层解读写好后，上层的包会自动带上它们。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
-    if a.target not in idx["packages"] and a.target != _notes.OVERVIEW:
+    if not _cut.is_node(idx, a.target) and a.target != _notes.OVERVIEW:
         raise SystemExit(f"没有这个模块：{a.target}（仓库总览用 {_notes.OVERVIEW}）")
     hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
     print(_notes.prompt_pack(repo, idx, a.target, hot=hot))
@@ -128,7 +127,7 @@ def cmd_note(a) -> int:
     """把一份 Markdown 写成某个模块的解读（自动补 frontmatter 和 code_sha）。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
-    if a.target not in idx["packages"] and a.target != _notes.OVERVIEW:
+    if not _cut.is_node(idx, a.target) and a.target != _notes.OVERVIEW:
         raise SystemExit(f"没有这个模块：{a.target}（仓库总览用 {_notes.OVERVIEW}）")
     body = Path(a.file).read_text(encoding="utf-8") if a.file != "-" else sys.stdin.read()
     nt = _notes.save(repo, idx, a.target, body, meta={"written_by": a.by})
@@ -206,9 +205,10 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("scan", help="静态扫描")
     common(s)
-    s.add_argument("--depth", default="auto", help="包聚合粒度，auto 会自动加深（默认 auto）")
-    s.add_argument("--expand", action="append", default=[], metavar="PKG",
-                   help="把这个包按子目录再拆一层（可重复），比如 vllm_omni.model_executor.models")
+    s.add_argument("--depth", default="auto",
+                   help="默认切面：auto 按规模自动拆分；给数字就展开所有深度小于它的目录（2 = 二级包）")
+    s.add_argument("--expand", action="append", default=[], metavar="DIR",
+                   help="默认切面里额外展开这个目录（可重复），比如 vllm_omni.model_executor.models")
     s.set_defaults(fn=cmd_scan)
 
     g = sub.add_parser("graph", help="导出单文件 HTML（只读、可分享）")

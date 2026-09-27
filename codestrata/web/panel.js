@@ -9,7 +9,11 @@ window.CS = window.CS || {};
 
   var det, side, D, OVERVIEW = '_overview';
 
-  function short(id) { return String(id).split('.').pop(); }
+  function short(id) {
+    id = String(id);
+    return /\.\*$/.test(id) ? id.slice(0, -2).split('.').pop() + '/ 本层' : id.split('.').pop();
+  }
+  var KIND = { dir: '目录（整棵子树收成一个节点）', residual: '目录里直接放着的文件（不含子目录）', unit: '单个文件' };
   /* 符号键 codestrata.payload:Handler.do_GET → payload:Handler.do_GET；兜底键（文件:行）原样显示 */
   function symLabel(k) {
     var i = k.indexOf(':'); if (i < 0) return k;
@@ -81,6 +85,9 @@ window.CS = window.CS || {};
   CS.panel = {
     init: function (detEl, sideEl, data) { det = detEl; side = sideEl; D = data; this.reset(); },
 
+    /* 展开 / 收起之后换一份切面数据 */
+    setData: function (data) { D = data; },
+
     reset: function () {
       det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是一段架构高度区间，'
         + '越上面越靠入口、越下面越是被依赖的叶子；节点大小编码文件数。'
@@ -124,6 +131,7 @@ window.CS = window.CS || {};
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
         + '<span>函数（含方法）<b>' + (v.funcs || 0) + '</b></span></div>'
+        + this._cutRow(id, v)
         + pills(x.o, '依赖 →', true) + pills(x.i, '← 被依赖', false)
         + pills(dyn.o, 'runtime 才出现 →', true) + pills(dyn.i, '← runtime 才出现', false)
         + this._docs(id)
@@ -132,6 +140,18 @@ window.CS = window.CS || {};
       this._wireDet(id);
       this._mountTree(id);
       if (symKey) this.showSource(id, symKey);
+    },
+
+    /* 这个节点在切面上是什么、能不能展开 / 收起 */
+    _cutRow: function (id, v) {
+      var h = '<div class="cutrow"><span class="kindtag">' + esc(KIND[v.kind] || '') + '</span>';
+      if (!CS.ds.canCut) return h + '</div>';
+      if (v.expandable)
+        h += '<button class="chip" data-cut="expand" title="在图上把它换成子模块">展开（' + v.fanout + ' 个子模块）</button>';
+      if (v.parent && (D.open || []).some(function (o) { return o === v.parent; }))
+        h += '<button class="chip" data-cut="collapse" title="连同兄弟节点一起收回到上一级">收起到 '
+          + esc(short(v.parent)) + '</button>';
+      return h + '</div>';
     },
 
     /* 作者写的文档：包内 README、frontmatter 声明了管这里的设计文档 */
@@ -408,6 +428,9 @@ window.CS = window.CS || {};
       });
       [].forEach.call(det.querySelectorAll('[data-edge]'), function (b) {
         b.onclick = function () { var ab = b.dataset.edge.split('|'); CS.graph.pickEdge(ab[0], ab[1]); };
+      });
+      [].forEach.call(det.querySelectorAll('[data-cut]'), function (b) {
+        b.onclick = function () { CS.app[b.dataset.cut](pkg); };
       });
       [].forEach.call(det.querySelectorAll('[data-view]'), function (b) {
         b.onclick = function () { CS.viewer.open(b.dataset.view, b.dataset.line ? +b.dataset.line : 0); };

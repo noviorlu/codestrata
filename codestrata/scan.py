@@ -3,16 +3,17 @@
 只用标准库。产出两个文件：
 
   index.json（画总图要的，小）
-    packages   聚合单位（默认二级包，如 vllm_omni.engine），含「架构高度」
-    edges      包之间的 import 边，权重 = import 语句条数
+    packages   单元：每个 .py 文件一个（包的 __init__.py 是 <包>.__init__），含「架构高度」
+    edges      单元之间的 import 边，权重 = import 语句条数
+    dirs       目录树；default_open 是默认切面（图上显示哪一层，见 cut.py）
   symbols.json（按需加载，大）
-    symbols    每个类/函数的 file:line、结束行、基类、所属包
-    files      文件 → 包的映射，给 runtime tracer 反查用
-    aux        包目录里的 C/C++/CUDA 文件 → 包
+    symbols    每个类/函数的 file:line、结束行、基类、所属单元
+    files      文件 → 单元的映射，给 runtime tracer 反查用
+    aux        包目录里的 C/C++/CUDA 文件 → 所在目录
     edge_sites 每条边背后的 import 语句
     edge_uses  每条边上实际引用了对方的哪些符号、在哪一行
     edge_dead  导入了但从没引用的名字，以及原因
-    docs       作者写的文档 → 包（包内 README、frontmatter 声明了代码路径的设计文档）
+    docs       作者写的文档 → 目录 / 单元（包内 README、frontmatter 声明了代码路径的设计文档）
 
 「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
 
@@ -33,6 +34,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+
+from . import cut as _cut
 
 SKIP_DIRS = {
     "__pycache__", ".git", ".hg", ".svn", ".tox", ".venv", "venv", "env",
@@ -153,8 +156,8 @@ def collect_docs(root: Path, files: dict[str, str]) -> dict[str, list]:
     让写解读的人或 agent 先读作者自己的说法，而不是从命名去猜。
     """
     dir_pkg: dict[str, str] = {}
-    for rel, pkg in files.items():
-        dir_pkg.setdefault(os.path.dirname(rel), pkg)
+    for rel, unit in files.items():
+        dir_pkg.setdefault(os.path.dirname(rel), _cut.unit_dir(unit))   # README 挂到它所在的目录
     out: dict[str, dict] = {}
 
     rank = {"readme": 0, "primary": 1, "related": 2, "mentions": 3}
@@ -231,16 +234,13 @@ def module_of(rel: Path) -> str:
     return ".".join(parts)
 
 
-def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
+def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
          include_non_lib: bool = False, expand: list[str] | None = None) -> dict:
     """扫描仓库，返回 index 字典。
 
-    depth 是聚合粒度：2 表示把 a.b.c.d 归到 a.b。包太多时调大，太笼统时调小。
-
-    expand 是「只把这几个包往下拆一层」：大仓库里往往只有一两个包大到看不清
-    （vllm-omni 的 model_executor.models 是 45 个模型族挤在一个框里），整体加深
-    depth 又会让其余部分碎成几百个节点。被展开的包，**子目录**各自成为节点，
-    直接放在它下面的散文件仍归它自己——否则会炸出一堆文件级的小节点。
+    记录的是最细的粒度（每个 .py 文件一个单元）和目录树；图上显示哪一层是 cut.py 的事。
+    depth / expand 只决定默认切面：给了 depth 就展开所有深度小于它的目录（depth=2 是老的
+    「二级包」）；不给就按规模自动拆分。expand 额外展开指定的目录。
     """
     root = root.resolve()
     roots = roots or detect_roots(root)
@@ -264,26 +264,17 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
     file_loc: dict[str, int] = {}          # 文件 → 行数（含 C/C++/CUDA）
     n_files = n_err = 0
 
-    expand = sorted(expand or [], key=lambda p: -p.count("."))    # 最具体的前缀优先
-    # 哪些点分名是「目录包」（有 __init__.py）：展开时只有它们能成为节点
-    pkg_dirs: set[str] = set()
-    if expand:
-        for r in roots:
-            base = root / r
-            if base.exists():
-                for p in iter_py_files(base):
-                    if p.name == "__init__.py":
-                        pkg_dirs.add(module_of(p.relative_to(base.parent)))
-
-    def pkg_of(module: str) -> str:
-        for pre in expand:
-            if module == pre or module.startswith(pre + "."):
-                n = pre.count(".") + 1
-                parts = module.split(".")
-                if len(parts) > n + 1 or (len(parts) == n + 1 and module in pkg_dirs):
-                    return ".".join(parts[:n + 1])
-                return pre
-        return ".".join(module.split(".")[:depth])
+    # 最细的粒度：每个 .py 文件是一个「单元」，依赖边、符号、调用明细都记在单元之间。
+    # 包目录的 __init__.py 记成 <包>.__init__，目录本身的名字（vllm_omni.engine）留给
+    # 图上「整个目录收起来」的那个节点——图上显示哪一层，由 cut.py 在目录树上取切面。
+    unit_of_module: dict[str, str] = {}
+    for r in roots:
+        base = root / r
+        if base.exists():
+            for p in iter_py_files(base):
+                m = module_of(p.relative_to(base.parent))
+                unit_of_module[m] = m + ".__init__" if p.name == "__init__.py" else m
+    unresolved: dict[tuple[str, str], int] = {}
 
     for r in roots:
         base = root / r
@@ -303,7 +294,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                 n_err += 1
                 continue
             module = module_of(path.relative_to(mod_base))
-            pkg = pkg_of(module)
+            pkg = unit_of_module[module]           # 这个文件自己的单元
             files[str(rel)] = pkg
             file_loc[str(rel)] = src.count("\n") + 1
             pkg_files[pkg] = pkg_files.get(pkg, 0) + 1
@@ -351,7 +342,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
 
             walk(tree)
 
-            # 包级 import 边（只算内部依赖）
+            # 单元间 import 边（只算内部依赖）
             bound: dict[str, dict] = {}
             # `if TYPE_CHECKING:` 里的 import 只服务于类型标注，而且常写成字符串标注，
             # AST 里看不到 Name 引用——不能因此判成死 import
@@ -377,8 +368,12 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             chains: dict[str, dict] = {}
             src_lines = src.split("\n")
             for node in ast.walk(tree):
-                targets: list[str] = []
+                # (目标模块, 别名, 绑定方式)。每个导入名各自解析：`from pkg import a, b` 里
+                # a、b 可能是子模块，也可能是 pkg 里的名字。早先整条语句只算一个目标，
+                # 一行导入多个名字时，绑定关系会被最后一个目标覆盖。
+                entries: list[tuple[str, ast.alias, str]] = []
                 if isinstance(node, ast.ImportFrom):
+                    mod0 = None
                     if node.level:
                         # 相对 import。先算出“点号指向的那个包”：一个点是当前文件所在的包。
                         # __init__.py 的模块名就是包本身，所以它不用再往上退一层——早先按
@@ -387,69 +382,66 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                         up = module.split(".")
                         up = up[: max(0, len(up) - node.level + (1 if is_init else 0))]
                         base = ".".join(up)
-                        if node.module:
-                            # from .layout import x  →  <base>.layout
-                            targets.append(f"{base}.{node.module}" if base else node.module)
-                        else:
-                            # from . import layout, render  →  <base>.layout, <base>.render
-                            # 这里必须看 names：早先版本只取 base，于是所有
-                            # `from . import X` 都塌成指向包自己的边，模块间依赖全丢。
-                            for a in node.names:
-                                targets.append(f"{base}.{a.name}" if base else a.name)
+                        mod0 = (f"{base}.{node.module}" if base else node.module) if node.module else base
                     elif node.module and node.module.split(".")[0] in top:
-                        targets.append(node.module)
-                        # from pkg.mod import Thing —— Thing 也可能是子模块，
-                        # 但无法静态区分，按模块算即可（粒度聚合后无差别）
+                        mod0 = node.module
+                    if mod0:
+                        for a in node.names:
+                            sub = f"{mod0}.{a.name}"
+                            # from . import layout / from pkg import submodule：导入的是子模块
+                            entries.append((sub, a, "mod") if a.name != "*" and sub in unit_of_module
+                                           else (mod0, a, "name"))
                 elif isinstance(node, ast.Import):
                     for a in node.names:
                         if a.name.split(".")[0] in top:
-                            targets.append(a.name)
-                if not targets:
+                            entries.append((a.name, a, "import"))
+                if not entries:
                     continue
                 names = [a.name for a in node.names]
                 try:
                     stmt = ast.unparse(node)
                 except Exception:
                     stmt = ""
-                for target in targets:
-                    if not target:
+                # 记下这条 import 在本文件里引入的本地名字，第二遍用来找「实际用到了什么」
+                why = ("type" if id(node) in typeonly
+                       else "reexport" if is_init else None)
+                seen_dst: set[str] = set()
+                for target, a, how in entries:
+                    dst = unit_of_module.get(target)
+                    if dst is None:
+                        # 指向仓库里不存在的模块（构建时生成的 _version.py、可选依赖的桩……）：
+                        # 没有节点可画，只记数
+                        unresolved[(pkg, target)] = unresolved.get((pkg, target), 0) + 1
                         continue
-                    dst = pkg_of(target)
-                    if dst and dst != pkg and dst.split(".")[0] in top:
+                    if dst == pkg:
+                        continue
+                    if dst not in seen_dst:
+                        seen_dst.add(dst)
                         edges[(pkg, dst)] = edges.get((pkg, dst), 0) + 1
                         # 点开一条边时要看到「具体用了对方的哪些东西、在哪一行」
                         edge_sites.setdefault((pkg, dst), []).append({
                             "f": str(rel), "l": node.lineno, "s": stmt[:200],
                             "m": target, "n": names[:12],
                             "lazy": id(node) in lazy, "type": id(node) in typeonly})
-                        # 记下这条 import 在本文件里引入的本地名字，第二遍用来找「实际用到了什么」
-                        why = ("type" if id(node) in typeonly
-                               else "reexport" if is_init else None)
-                        if isinstance(node, ast.ImportFrom):
-                            for a in node.names:
-                                if a.name == "*":
-                                    continue            # 通配导入无法追踪
-                                local = a.asname or a.name
-                                if node.module is None:
-                                    # from . import payload as _payload → _payload 是模块别名
-                                    bound[local] = {"kind": "mod", "sym": target, "dst": dst,
-                                                    "line": node.lineno, "orig": a.name, "why": why}
-                                else:
-                                    # from x.y import Name → Name 可能是符号，也可能是子模块
-                                    bound[local] = {"kind": "name", "sym": f"{target}:{a.name}",
-                                                    "dst": dst, "line": node.lineno,
-                                                    "orig": a.name, "why": why}
-                        else:
-                            for a in node.names:
-                                if a.asname:
-                                    bound[a.asname] = {"kind": "mod", "sym": a.name, "dst": dst,
-                                                       "line": node.lineno, "orig": a.name, "why": why}
-                                elif "." in a.name:
-                                    # import a.b.c：绑定的是根名 a，使用形如 a.b.c.X。
-                                    # 没有任何这样的使用时，几乎总是为了副作用（注册、打补丁）。
-                                    chains[a.name] = {"kind": "chain", "sym": a.name, "dst": dst,
-                                                      "line": node.lineno, "orig": a.name,
-                                                      "why": why or "sideeffect"}
+                    if how == "mod":
+                        # from . import payload as _payload → _payload 是模块别名
+                        bound[a.asname or a.name] = {"kind": "mod", "sym": target, "dst": dst,
+                                                     "line": node.lineno, "orig": a.name, "why": why}
+                    elif how == "name":
+                        if a.name == "*":
+                            continue                    # 通配导入无法追踪
+                        bound[a.asname or a.name] = {"kind": "name", "sym": f"{target}:{a.name}",
+                                                     "dst": dst, "line": node.lineno,
+                                                     "orig": a.name, "why": why}
+                    elif a.asname:
+                        bound[a.asname] = {"kind": "mod", "sym": a.name, "dst": dst,
+                                           "line": node.lineno, "orig": a.name, "why": why}
+                    elif "." in a.name:
+                        # import a.b.c：绑定的是根名 a，使用形如 a.b.c.X。
+                        # 没有任何这样的使用时，几乎总是为了副作用（注册、打补丁）。
+                        chains[a.name] = {"kind": "chain", "sym": a.name, "dst": dst,
+                                          "line": node.lineno, "orig": a.name,
+                                          "why": why or "sideeffect"}
 
             # 第二遍：本地名字的实际使用点。`_payload.graph_payload(...)` → 用了 graph_payload；
             # `Orchestrator(...)` → 用了 Orchestrator。这才回答得了「具体用了对方哪些函数」。
@@ -498,15 +490,6 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                         "f": str(rel), "l": b["line"], "n": b["orig"],
                         "sym": b["sym"], "why": why})
 
-    # 指向仓库里不存在的包的边（构建时生成的 _version.py、可选依赖的桩……）不进图：
-    # 它们没有节点可画，却会虚增源包的出边、把高度算偏
-    unresolved = {k: w for k, w in edges.items() if k[1] not in pkg_files}
-    for k in unresolved:
-        edges.pop(k)
-        edge_sites.pop(k, None)
-        edge_uses.pop(k, None)
-        edge_dead.pop(k, None)
-
     # 架构高度
     out: dict[str, int] = {}
     inn: dict[str, int] = {}
@@ -536,8 +519,8 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             for f in fn:
                 if os.path.splitext(f)[1].lower() in AUX_EXTS:
                     p = Path(dp, f)
-                    mod = ".".join(p.relative_to(base.parent).parent.parts)
-                    aux[str(p.relative_to(root))] = pkg_of(mod) if mod else ""
+                    # 挂到所在目录（点分名）；图上显示在包含这个目录的节点里
+                    aux[str(p.relative_to(root))] = ".".join(p.relative_to(base.parent).parent.parts)
                     try:
                         with open(p, "rb") as fh:
                             file_loc[str(p.relative_to(root))] = fh.read().count(b"\n") + 1
@@ -545,10 +528,10 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                         pass
 
     docs = collect_docs(root, files)
-    return {
+    index = {
         "docs": docs, "file_loc": file_loc,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
-                 "depth": depth, "expand": expand, "n_files": n_files, "n_parse_errors": n_err,
+                 "n_files": n_files, "n_parse_errors": n_err,
                  "unresolved_imports": sorted(f"{a} → {b}" for a, b in unresolved),
                  "n_aux": len(aux)},
         "aux": aux,
@@ -563,7 +546,11 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
         "symbols": {k: s.as_json() for k, s in symbols.items()},
         "files": files,
+        "dirs": _cut.dir_tree(packages, roots),
     }
+    # 图上默认显示哪一层：按规模自动拆分，或按用户给的 depth / expand
+    index["default_open"], index["repo"]["auto_split"] = _cut.default_open(index, depth=depth, expand=expand)
+    return index
 
 
 def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:

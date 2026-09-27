@@ -116,13 +116,24 @@ window.CS = window.CS || {};
       var ng = el('g', {}); svg.appendChild(ng); this.nodes = {};
       G.nodes.forEach(function (n) {
         var hits = hotPk[n.id] || 0;
-        var g = el('g', { class: 'nd' + (hot ? (hits ? ' warm' : ' cold') : ''), tabindex: '0', role: 'button' });
+        var g = el('g', { class: 'nd' + (hot ? (hits ? ' warm' : ' cold') : ''), tabindex: '0', role: 'button', 'data-id': n.id });
         g.dataset.id = n.id;
         g.appendChild(el('rect', { x: n.cx - n.w / 2, y: n.cy - n.h / 2, width: n.w, height: n.h }));
         var t = el('text', { x: n.cx, y: n.cy - 3, class: 'nl', 'text-anchor': 'middle' });
         t.textContent = n.label; g.appendChild(t);
         var s = el('text', { x: n.cx, y: n.cy + 9, class: 'ns', 'text-anchor': 'middle' });
         s.textContent = n.files + 'f · ' + n.classes + 'c' + (hits ? (' · ' + hits) : ''); g.appendChild(s);
+        if (n.expandable && CS.ds.canCut) {
+          // 左上角的 ＋：在当前图上展开成子模块
+          var xp = el('g', { class: 'xp', role: 'button', tabindex: '0' });
+          xp.appendChild(el('circle', { cx: n.cx - n.w / 2 + 1, cy: n.cy - n.h / 2 + 1, r: 7 }));
+          var xt = el('text', { x: n.cx - n.w / 2 + 1, y: n.cy - n.h / 2 + 4.5, 'text-anchor': 'middle' });
+          xt.textContent = '+'; xp.appendChild(xt);
+          var tip = el('title', {}); tip.textContent = '展开成 ' + n.fanout + ' 个子模块'; xp.appendChild(tip);
+          xp.onclick = function (ev) { ev.stopPropagation(); if (self.onExpand) self.onExpand(n.id); };
+          xp.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); if (self.onExpand) self.onExpand(n.id); } };
+          g.appendChild(xp);
+        }
         var bd = el('text', { x: n.cx + n.w / 2 - 5, y: n.cy - n.h / 2 + 8, class: 'badge todo', 'text-anchor': 'end' });
         g.appendChild(bd); g._badge = bd;
         ng.appendChild(g); self.nodes[n.id] = g;
@@ -205,6 +216,17 @@ window.CS = window.CS || {};
     pickEdge: function (a, b) {
       this.state.selEdge = a + '|' + b; this.state.sel = null; this.paint();
       if (this.onPickEdge) this.onPickEdge(a, b);
+    },
+
+    /* 刚展开出来的节点闪一下 */
+    flash: function (ids) {
+      var self = this;
+      ids.forEach(function (id) {
+        var g = self.nodes[id];
+        if (!g) return;
+        g.classList.add('fresh');
+        setTimeout(function () { g.classList.remove('fresh'); }, 1600);
+      });
     },
 
     highlight: function (pred) {

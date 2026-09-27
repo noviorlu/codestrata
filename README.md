@@ -2,7 +2,7 @@
 
 给一个 Python 仓库画两张图：
 
-- **总图（static）** —— 全仓的包级架构。层次不是手工标的，而是由 import 出入度算出的
+- **总图（static）** —— 全仓的模块级架构。层次不是手工标的，而是由 import 出入度算出的
   「架构高度」`(out−in)/(out+in)`：+1 是入口、−1 是纯被依赖的叶子。
 - **hot 图（runtime）** —— 跑一个真实 case（仓库自带的 demo / example），
   把实际发生的调用叠在**同一张图的同一套坐标**上。于是「这个 case 走了哪条路」一眼可见。
@@ -55,11 +55,24 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
 读 hot 图要知道两件事：「调用方」是最近的仓库内的帧，穿过仓库外代码（如 vLLM 内部）的调用
 会显示成直接调用；调用次数高的多半是轮询，不等于重要。
 
-## 大仓库
+## 大仓库：图是目录树的一个切面，节点能就地展开 / 收起
 
-- `scan --expand PKG`：只把太大的那个包按子目录拆一层（比如 vllm-omni 的
-  `vllm_omni.model_executor.models`，45 个模型族），其余保持包粒度。
-- 泳道放不下时折行，框永远装得下标签；hot 视图单独排版，只放跑到的包。
+scan 记的是最细的粒度——每个 `.py` 文件一个模块，依赖、符号、调用明细都在文件之间。
+图上显示的是目录树的一个**切面**：收起的目录是一个节点（名字带 `/`），展开的目录换成它的
+子目录和文件；直接放在一个目录里的文件多了（> 12 个）会合成一个「本层」节点，也能再展开。
+
+- **默认切面按规模自动算**：从根开始，反复把代码量超过全仓 10%、拆开后不超过 20 个节点的
+  最大节点拆开，直到拆不动或图上到了 80 个节点。宽而平的目录（几十个同类实现，比如 vllm-omni 的 43 个模型族）
+  留成一个节点。vllm-omni 上是 diffusion（41%）拆成 19 块、model_executor（29%）拆成 7 块，
+  58 个节点；scan 会打印拆了哪些。
+- **点节点左上角的 ＋** 就在当前图上把它换成子模块（重新汇总边和高度、重新排版，新出来的节点闪一下）；
+  详情面板里有「展开」和「收起到上一级」，工具栏的「恢复默认层级」回到 scan 算出的切面。
+  切面只是一组展开着的目录（`/api/graph?open=a,b`），不改任何数据。
+- `scan --depth N` 改成固定深度（2 = 老的「二级包」），`scan --expand DIR` 在默认切面上额外展开某个目录。
+- 解读、派活（`tasks`）都按默认切面上的节点；展开出来的节点也能单独写解读，target 就是节点名
+  （目录 `vllm_omni.engine`、本层 `vllm_omni.engine.*`、文件 `vllm_omni.engine.async_omni`）。
+- 导出的单文件是固定切面，不能展开；要交互用 `serve`。
+- 泳道放不下时折行，框永远装得下标签；hot 视图单独排版，只放跑到的节点。
 - 作者写的文档自动挂到包上：包内 README、frontmatter 用 `primary_code_paths` 声明了代码路径的
   设计文档、开头用反引号写出仓库路径的文档。它们出现在详情面板和给 agent 的输入包里——
   「为什么这样切」往往作者已经写过。
@@ -119,10 +132,11 @@ codestrata graph .              # 单文件导出：数据内嵌，只读、离�
 serve 提供的 API（agent 也可以直接调）：
 
 ```
-GET  /api/graph               静态图 + hot 叠加
+GET  /api/graph?open=a,b      一个切面上的静态图 + hot 叠加（不给 open 是默认切面）
 GET  /api/tasks               待解读清单（自底向上）
 GET  /api/pack/<模块>          给 agent 的输入包
 GET  /api/notes/<模块>         解读 + 是否过期
+GET  /api/status?ids=a,b      一批节点的解读状态（noted / stale / todo）
 PUT  /api/notes/<模块>         写回解读        ← agent 从这里介入
 GET  /api/symbol/<key>        符号源码
 GET  /api/file?f=             整个文件（高亮）+ 符号大纲
@@ -133,7 +147,7 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 ## 用法
 
 ```bash
-codestrata scan  <repo> [--expand PKG]        # 静态扫描
+codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描；默认切面按规模自动拆分
 codestrata serve <repo> [--hot CASE[@阶段]]    # 本地部署前端
 codestrata trace <repo> --case NAME -- CMD    # 跑一个 case，记录真实调用（子进程一并 trace）
 codestrata tasks <repo> [--write]             # 待解读 + 输入包

@@ -20,6 +20,8 @@ import json
 import re
 from pathlib import Path
 
+from . import cut as _cut
+
 NOTES_DIRNAME = "notes"
 # 仓库总览：不属于任何一个包，回答「整个仓库怎么读」。按保留名当作一个目标处理，
 # 这样 CLI / API / 前端不用为它另开一套通道。
@@ -53,12 +55,13 @@ def code_sha(repo: Path, index: dict, target: str, kind: str = "package") -> str
     if target == OVERVIEW:
         # 总览描述的是架构骨架（有哪些包、谁依赖谁），不是某段代码的细节。
         # 只哈希骨架：改一个函数体不会让总览过期，加一个包或一条依赖会。
-        skel = {"packages": sorted(index.get("packages") or {}),
-                "edges": sorted(f"{a}|{b}" for a, b, _ in index.get("edges") or [])}
+        v = _default_view(index)
+        skel = {"packages": sorted(_cut.visible(v)), "edges": sorted(f"{a}|{b}" for a, b, _ in v["edges"])}
         h.update(json.dumps(skel, sort_keys=True).encode())
         return h.hexdigest()[:16]
     if kind == "package":
-        rels = sorted(r for r, p in (index.get("files") or {}).items() if p == target)
+        # 目标是图上的一个节点：收起的目录是整棵子树，本层文件是直接文件，单元是它自己
+        rels = _cut.node_files(index, target)
     else:
         s = (index.get("symbols") or {}).get(target)
         rels = [s["f"]] if s else []
@@ -91,6 +94,11 @@ def parse(md: str) -> tuple[dict, str]:
     return meta, body.lstrip("\n")
 
 
+def _default_view(index: dict) -> dict:
+    """默认切面（scan 算出来的）——派活、总览都以它为准。"""
+    return _cut.view(index, set(index.get("default_open") or []))
+
+
 def dump(meta: dict, body: str) -> str:
     lines = ["---"]
     for k, v in meta.items():
@@ -116,6 +124,21 @@ def load(repo: Path, index: dict, target: str, kind: str = "package") -> dict:
             "code_sha_now": now, "code_sha_note": was,
             "stale": bool(was and now and was != now),
             "md": body, "html": md_to_html(body), "meta": meta}
+
+
+def status(repo: Path, index: dict, targets) -> dict:
+    """一批节点的解读状态：noted / stale / todo。图上打徽标用——不核对内容，
+    没写解读的节点也不去哈希代码（展开一个大目录后图上有上百个节点）。"""
+    out = {}
+    for t in targets:
+        p = note_path(repo, t)
+        if not p.exists():
+            out[t] = "todo"
+            continue
+        was = (parse(p.read_text(encoding="utf-8"))[0].get("code_sha") or "").strip()
+        now = code_sha(repo, index, t)
+        out[t] = "stale" if was and now and was != now else "noted"
+    return out
 
 
 def save(repo: Path, index: dict, target: str, body: str, *,
@@ -236,14 +259,12 @@ def tasks(repo: Path, index: dict, *, include_stale: bool = True) -> list[dict]:
     叶子模块没有内部依赖，可以孤立读懂；入口层必须先理解它依赖的东西。
     所以从底往上派活，写到上层时下层的解读已经存在、可以直接引用。
     """
-    pkgs = index["packages"]
+    view = _default_view(index)
+    pkgs = view["nodes"]
     out = []
     ov = load(repo, index, OVERVIEW)
-    for name in sorted(pkgs, key=lambda n: pkgs[n]["alt"]):
-        v = pkgs[name]
-        # 跟图保持一致：既无符号又无连边的空包（典型是空 __init__.py）没有可解读的内容
-        if v["out"] == 0 and v["in"] == 0 and v["classes"] == 0 and v["funcs"] == 0:
-            continue
+    # 派活的单位是默认切面上的节点；跟图保持一致，跳过既无符号又无连边的空节点
+    for name in sorted(_cut.visible(view), key=lambda n: pkgs[n]["alt"]):
         st = load(repo, index, name, "package")
         if st["present"] and not (include_stale and st["stale"]):
             continue
@@ -269,13 +290,16 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
     """
     if target == OVERVIEW:
         return _overview_pack(repo, index)
-    pkgs = index["packages"]
-    v = pkgs.get(target, {})
+    # 在「默认切面 + 让 target 可见」的切面上取事实：依赖 / 被依赖是这个切面上的节点
+    view = _cut.view(index, _cut.open_for(index, set(index.get("default_open") or []), target))
+    v = view["nodes"].get(target, {})
+    units = set(view["members"].get(target) or _cut.units_of(index, target))
     syms = [(k, s) for k, s in (index.get("symbols") or {}).items()
-            if s["p"] == target and "." not in s["n"]]
+            if s["p"] in units and "." not in s["n"]]
     syms.sort(key=lambda kv: (kv[1]["k"] != "class", kv[1]["f"], kv[1]["l"]))
-    dep = sorted({b for a, b, _ in index["edges"] if a == target})
-    rdep = sorted({a for a, b, _ in index["edges"] if b == target})
+    dep = sorted({b for a, b, _ in view["edges"] if a == target})
+    rdep = sorted({a for a, b, _ in view["edges"] if b == target})
+    hot_hits = sum((hot or {}).get("packages", {}).get(u, 0) for u in units)
 
     L: list[str] = []
     L.append(f"# 解读任务：{target}")
@@ -287,10 +311,14 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
              f"{v.get('classes', 0)} 个类，{v.get('funcs', 0)} 个函数")
     L.append(f"- 依赖 → {', '.join(dep) or '（无内部依赖，是叶子）'}")
     L.append(f"- 被依赖 ← {', '.join(rdep) or '（无人依赖，是入口）'}")
-    if hot and hot.get("packages", {}).get(target):
-        L.append(f"- runtime：这个包在记录的 case 里被调用 {hot['packages'][target]} 次")
+    if hot_hits:
+        L.append(f"- runtime：这个节点在记录的 case 里被调用 {hot_hits} 次")
     L.append("")
-    docs = (index.get("docs") or {}).get(target) or []
+    docs, seen = [], set()
+    dirs = {_cut.unit_dir(u) for u in units}
+    for key, ds in (index.get("docs") or {}).items():
+        if key in units or key in dirs:
+            docs += [d for d in ds if d["f"] not in seen and not seen.add(d["f"])]
     if docs:
         L.append("## 作者写的文档（先读这些：「为什么」往往写在这里）")
         label = {"readme": "包内 README", "primary": "设计文档，主要描述这里",
@@ -300,7 +328,7 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
         L.append("")
     if hot and hot.get("symbols"):
         top = sorted(((k, n) for k, n in hot["symbols"].items()
-                      if (index.get("symbols") or {}).get(k, {}).get("p") == target),
+                      if (index.get("symbols") or {}).get(k, {}).get("p") in units),
                      key=lambda kv: -kv[1])[:12]
         if top:
             L.append("## 记录的 case 里实际调用最多的符号（次数高也可能只是轮询）")
@@ -348,22 +376,22 @@ _OVERVIEW_QUESTIONS = [
 
 
 def _overview_pack(repo: Path, index: dict) -> str:
-    pkgs = index["packages"]
+    view = _default_view(index)
+    pkgs = view["nodes"]
     L = ["# 解读任务：仓库总览", "",
          "## 机器已知的事实（不用再查）",
-         f"- {len(pkgs)} 个模块，{len(index.get('edges') or [])} 条内部依赖", "",
+         f"- 默认切面上 {len(_cut.visible(view))} 个节点，{len(view['edges'])} 条内部依赖"
+         f"（共 {len(index['packages'])} 个文件级模块）", "",
          "## 模块（按架构高度从入口到叶子）"]
-    for name in sorted(pkgs, key=lambda n: -pkgs[n]["alt"]):
+    for name in sorted(_cut.visible(view), key=lambda n: -pkgs[n]["alt"]):
         v = pkgs[name]
-        if v["out"] == 0 and v["in"] == 0 and v["classes"] == 0 and v["funcs"] == 0:
-            continue
         st = load(repo, index, name)
         first = next((ln.strip() for ln in st["md"].splitlines()
                       if ln.strip() and not ln.startswith("#")), "") if st["present"] else ""
         L.append(f"- **{name}**（{v['alt']:+.2f}，{v['files']} 文件 {v['loc']} 行）"
                  + (f"：{first[:200]}" if first else "：（还没有解读）"))
     L += ["", "## 依赖（A → B：A import 了 B）"]
-    for a, b, w in index.get("edges") or []:
+    for a, b, w in view["edges"]:
         L.append(f"- {a} → {b}")
     L += ["", "## 请产出（Markdown，不要 frontmatter，我会自动加）"]
     for h, q in _OVERVIEW_QUESTIONS:
@@ -393,7 +421,8 @@ def _resolve_ref(repo: Path, index: dict, rel: str, target: str | None = None) -
     owner = {**(index.get("aux") or {}), **(index.get("files") or {})}
     cands = [r for r in owner if r == rel or r.endswith("/" + rel)]
     if len(cands) > 1 and target:
-        mine = [r for r in cands if owner[r] == target]
+        own = set(_cut.node_files(index, target))
+        mine = [r for r in cands if r in own]
         if len(mine) == 1:
             cands = mine
     if len(cands) == 1:

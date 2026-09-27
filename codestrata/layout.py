@@ -42,6 +42,13 @@ def _label(pkg: str, root_prefix: str) -> str:
     return ".".join(parts[-2:]) if len(parts) > 2 else pkg
 
 
+def _display(pkg: str, kind: str | None, root_prefix: str) -> str:
+    """图上的名字：收起的目录带 /，「本层文件」节点写成 目录/ 本层，单个文件原样。"""
+    if kind == "residual":
+        return _label(pkg[:-2], root_prefix) + "/ 本层"
+    return _label(pkg, root_prefix) + ("/" if kind == "dir" else "")
+
+
 def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
           top: int | None = None, width: float = 1180.0,
           only: set[str] | None = None) -> dict:
@@ -88,7 +95,7 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
     nodes: dict[str, Node] = {}
     for p, v in items:
         nodes[p] = Node(
-            id=p, label=_label(p, root_prefix), lane=lane_of(v["alt"]),
+            id=p, label=_display(p, v.get("kind"), root_prefix), lane=lane_of(v["alt"]),
             alt=v["alt"], files=v["files"], loc=v["loc"],
             classes=v["classes"], funcs=v["funcs"], out=v["out"], inn=v["in"],
         )

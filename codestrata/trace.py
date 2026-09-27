@@ -29,7 +29,7 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
      "funcs":      {"<relfile>:<firstlineno>": 次数},      # 模块顶层记为 <relfile>:0
      "func_edges": {"<调用方>|<被调方>": 次数},              # 函数粒度，真正的 caller→callee
      "file_edges": {"<relfileA>|<relfileB>": 次数}}          # 由 func_edges 派生
-包粒度的叠图数据由 to_package_graph() 在加载时现算，因为它依赖当前的 index。
+叠图用的单元（文件）粒度数据由 to_package_graph() 在加载时现算，因为它依赖当前的 index。
 """
 from __future__ import annotations
 
@@ -404,8 +404,8 @@ def stale_files(root: Path, trace: dict) -> list[str]:
 
 
 def to_package_graph(trace: dict, index: dict) -> dict:
-    """把函数粒度的 trace 折算到包粒度，好直接叠在总图上；同时保留每条包间边上
-    「谁调了谁」的明细，给点开箭头时用。
+    """把函数粒度的 trace 折算到单元（文件）粒度，payload 再按切面汇总叠到图上；同时保留
+    每条单元间边上「谁调了谁」的明细，给点开箭头时用。
 
     返回 {"packages": {pkg: hits}, "edges": {"a|b": 调用次数},
           "symbols": {symbol_key: hits},

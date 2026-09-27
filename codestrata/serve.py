@@ -2,8 +2,9 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
-    GET  /api/graph               静态图 + hot 叠加
+    GET  /api/graph?open=a,b      一个切面上的图 + hot 叠加（open：展开着的目录，缺省是默认切面）
     GET  /api/notes/<target>      解读（含 stale 判定）
+    GET  /api/status?ids=a,b      一批节点的解读状态 noted / stale / todo（图上的徽标）
     PUT  /api/notes/<target>      写入解读        ← LLM agent 从这里介入
     GET  /api/tasks               还没解读 / 已过期的目标，按架构高度自底向上
     GET  /api/pack/<target>       给 agent 的输入包（纯文本 Markdown）
@@ -28,6 +29,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import cut as _cut
 from . import notes as _notes
 from . import payload as _payload
 
@@ -72,7 +74,7 @@ class Handler(BaseHTTPRequestHandler):
     idx: dict
     hot: dict | None = None
     hot_meta: dict | None = None
-    _graph: bytes | None = None
+    _graphs: dict = {}          # 切面（open 的规范化字符串）→ 已算好的 /api/graph 结果
 
     def log_message(self, fmt, *a):
         if os.environ.get("CODESTRATA_VERBOSE"):
@@ -101,8 +103,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _target(self, prefix: str, path: str) -> str | None:
         t = urllib.parse.unquote(path[len(prefix):])
-        # 只接受图上真实存在的包名（和总览这个保留名），防止借 target 写出仓库外的文件
-        return t if (t in self.idx["packages"] or t == _notes.OVERVIEW) else None
+        # 只接受目录树上真实存在的节点（和总览这个保留名），防止借 target 写出仓库外的文件
+        return t if (_cut.is_node(self.idx, t) or t == _notes.OVERVIEW) else None
 
     # ---- GET ----
     def do_GET(self):
@@ -111,11 +113,16 @@ class Handler(BaseHTTPRequestHandler):
         path = u.path
 
         if path == "/api/graph":
-            if Handler._graph is None:
-                Handler._graph = json.dumps(_payload.graph_payload(
-                    self.repo, self.idx, hot=self.hot, hot_meta=self.hot_meta),
+            raw = (q.get("open") or [None])[0]
+            open_ = None if raw is None else [o for o in raw.split(",") if o]
+            key = "\u0000" if open_ is None else ",".join(sorted(open_))
+            if key not in Handler._graphs:
+                if len(Handler._graphs) > 32:          # 切面可以任意组合，缓存只留最近的一些
+                    Handler._graphs.pop(next(iter(Handler._graphs)))
+                Handler._graphs[key] = json.dumps(_payload.graph_payload(
+                    self.repo, self.idx, hot=self.hot, hot_meta=self.hot_meta, open_=open_),
                     ensure_ascii=False).encode()
-            return self._send(200, Handler._graph, "application/json; charset=utf-8")
+            return self._send(200, Handler._graphs[key], "application/json; charset=utf-8")
 
         if path.startswith("/api/notes/"):
             t = self._target("/api/notes/", path)
@@ -124,6 +131,11 @@ class Handler(BaseHTTPRequestHandler):
             nt = _notes.load(self.repo, self.idx, t)
             nt["problems"] = _notes.verify(self.repo, self.idx, t)
             return self._json(nt)
+
+        if path == "/api/status":
+            ids = [t for t in (q.get("ids") or [""])[0].split(",")
+                   if t and (t == _notes.OVERVIEW or _cut.is_node(self.idx, t))]
+            return self._json(_notes.status(self.repo, self.idx, ids))
 
         if path == "/api/tasks":
             return self._json(_notes.tasks(self.repo, self.idx))
@@ -142,8 +154,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/edge":
             a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
-            if a not in self.idx["packages"] or b not in self.idx["packages"]:
-                return self._json({"error": "unknown package"}, 404)
+            if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
+                return self._json({"error": "unknown node"}, 404)
             return self._json(_payload.edge_detail(self.repo, self.idx, a, b, self.hot))
 
         if path == "/api/outline":
@@ -220,17 +232,19 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
     idx = _payload.load_index(repo)
     h, hm = _payload.load_hot(repo, idx, hot)
     Handler.repo, Handler.idx, Handler.hot, Handler.hot_meta = repo, idx, h, hm
-    Handler._graph = None
+    Handler._graphs = {}
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     ed = _editor()
     todo = _notes.tasks(repo, idx)
     print(f"codestrata serve → http://127.0.0.1:{port}/")
     print(f"  仓库   {repo}")
     print(f"  前端   {WEB}")
-    print(f"  解读   {_notes.notes_root(repo)}  （待写 {len(todo)} / {len(idx['packages'])}）")
+    n_default = len(_cut.visible(_cut.view(idx, set(idx.get("default_open") or []))))
+    print(f"  图     默认切面 {n_default} 个节点（{len(idx['packages'])} 个文件级模块，点节点可展开 / 收起）")
+    print(f"  解读   {_notes.notes_root(repo)}  （待写 {len(todo)}）")
     print(f"  编辑器 {' '.join(ed) if ed else '没找到，跳转按钮会返回 501'}")
     if h:
-        print(f"  hot    case={hm['case']}，{len(h['packages'])} 个包跑到")
+        print(f"  hot    case={hm['case']}，{len(h['packages'])} 个模块跑到")
     print("  Ctrl+C 停止", flush=True)
     try:
         srv.serve_forever()

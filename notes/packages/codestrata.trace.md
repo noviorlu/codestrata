@@ -2,23 +2,23 @@
 written_by: claude-opus-5-5
 target: codestrata.trace
 kind: package
-code_sha: 2c5ef6193d04da36
+code_sha: b15547cff9d9227a
 status: draft
 refs: trace.py:1@65dc008a,trace.py:49@971f709d,trace.py:287@6cf25a9e,trace.py:238@064c41d5,trace.py:231@c90d778b,trace.py:214@f1b535c0,trace.py:82@cf21a031,trace.py:68@da61d85c,trace.py:101@c744b643,trace.py:173@380940f5,trace.py:199@39c6dbe6,trace.py:135@1d891628,trace.py:504@a0b425ed,trace.py:117@158ddf0b
 ---
 
 ## 是什么
-runtime 一侧：在 hook 下跑一个真实 case（仓库自带的 demo / example，或者起一个服务再发请求），记录**函数粒度**的 caller→callee，再折算成能叠在总图同一套坐标上的包级数据，以及每条包间边上「谁调了谁几次」的明细。
+runtime 一侧：在 hook 下跑一个真实 case（仓库自带的 demo / example，或者起一个服务再发请求），记录**函数粒度**的 caller→callee，再折算成单元（文件）级的数据——图上当前切面的节点由 `payload` 再汇总——以及每条单元间边上「谁调了谁几次」的明细。
 
 ## 为什么这样切
-和 `scan` 对称：`scan` 回答「代码里写了什么」，它回答「这次真的跑了什么」。两者都只产出数据、互不依赖（都是叶子）。录制（`run` / `merge`）和解读录制结果（`to_package_graph`）分开：前者只在 `trace` 子命令时跑，后者由 `payload.load_hot` 在每次加载时现算——因为折算要用**当前**的 index，scan 重跑（比如换了 `--expand`）后旧 trace 也能重新映射。
+和 `scan` 对称：`scan` 回答「代码里写了什么」，它回答「这次真的跑了什么」。两者都只产出数据、互不依赖（都是叶子）。录制（`run` / `merge`）和解读录制结果（`to_package_graph`）分开：前者只在 `trace` 子命令时跑，后者由 `payload.load_hot` 在每次加载时现算——因为折算要用**当前**的 index，scan 重跑后旧 trace 也能重新映射；图上展开 / 收起也不用重新折算。
 
 ## 读法
 1. 模块 docstring（trace.py:1）——三个必须处理的现实问题：多进程（含子进程落盘和分阶段）、开销、调用者要对
 2. `_SITECUSTOMIZE`（trace.py:49）——被注入到每个 Python 子进程里的那段代码。按 `_rel` → `_key` → `_enter` / `_leave` → 落盘（`_dump`、拦截 `os._exit`、后台线程、fork 后清零）→ 阶段快照 → 回调注册 的顺序读
 3. `run` —— 怎么注入、怎么收、怎么核对安装包
 4. `merge` —— 多进程、多阶段的合并
-5. `to_package_graph` —— 函数粒度 → 包粒度 + 边的调用明细
+5. `to_package_graph` —— 函数粒度 → 单元（文件）粒度 + 边的调用明细
 6. `file_shas` / `stale_files` —— trace 的过期检测
 
 ## 关键算法

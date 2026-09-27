@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import cut as _cut
 from . import highlight as _hl
 from . import layout as _layout
 from . import notes as _notes
@@ -56,56 +57,107 @@ def load_hot(repo: Path, idx: dict, case: str | None) -> tuple[dict | None, dict
     return hot, meta
 
 
-def _pkg_syms(idx: dict) -> dict:
-    out: dict[str, list] = {}
-    for key, s in (idx.get("symbols") or {}).items():
-        if "." in s["n"]:                  # 只列顶层类/函数，方法太多
-            continue
-        out.setdefault(s["p"], []).append(
-            {"key": key, "n": s["n"], "k": s["k"], "f": s["f"], "l": s["l"],
-             "b": s.get("b", [])})
-    for v in out.values():
-        v.sort(key=lambda d: (d["k"] != "class", d["f"], d["l"]))
-    return out
+def _unit_syms(idx: dict) -> dict:
+    """顶层类 / 函数按单元分组（方法太多，只在文件树展开时按需取）。"""
+    if "_unit_syms" not in idx:
+        out: dict[str, list] = {}
+        for key, s in (idx.get("symbols") or {}).items():
+            if "." in s["n"]:
+                continue
+            out.setdefault(s["p"], []).append(
+                {"key": key, "n": s["n"], "k": s["k"], "f": s["f"], "l": s["l"], "b": s.get("b", [])})
+        idx["_unit_syms"] = out
+    return idx["_unit_syms"]
+
+
+def _norm_open(idx: dict, open_) -> set:
+    return set(idx.get("default_open") or []) if open_ is None else {o for o in open_ if _cut.is_node(idx, o)}
 
 
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
-                  hot_meta: dict | None = None, lanes="auto", min_files: int = 1) -> dict:
-    g = _layout.build(idx, lanes=lanes, min_files=min_files)
+                  hot_meta: dict | None = None, open_=None, lanes="auto", min_files: int = 1) -> dict:
+    """一个切面上的全部前端数据。open_ 是展开着的目录（不给就用 scan 算出的默认切面）；
+    图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。"""
+    open_ = _norm_open(idx, open_)
+    v = _cut.view(idx, open_)
+    syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"]}
+    g = _layout.build(syn, lanes=lanes, min_files=min_files)
+    mem, node_of = v["members"], v["node_of"]
     repo_info = dict(idx["repo"])
     repo_info["n_symbols"] = len(idx.get("symbols") or {})
+    repo_info["n_units"] = len(idx["packages"])
+    usyms = _unit_syms(idx)
     pkg_files: dict[str, list] = {}
-    for rel, pkg in list((idx.get("files") or {}).items()) + list((idx.get("aux") or {}).items()):
-        if pkg:
-            pkg_files.setdefault(pkg, []).append(rel)
-    for v in pkg_files.values():
-        v.sort()
-    # 每条静态边的「实质」：用到了对方几个符号、有几个只 import 没用的绑定。
+    pkg_syms: dict[str, list] = {}
+    for rel, u in (idx.get("files") or {}).items():
+        pkg_files.setdefault(node_of[u], []).append(rel)
+    for rel, d in (idx.get("aux") or {}).items():
+        n = _cut.dir_node(idx, open_, d)
+        if n:
+            pkg_files.setdefault(n, []).append(rel)
+    for n, us in mem.items():
+        syms = [x for u in us for x in usyms.get(u, [])]
+        syms.sort(key=lambda d: (d["k"] != "class", d["f"], d["l"]))
+        pkg_syms[n] = syms
+    for fs in pkg_files.values():
+        fs.sort()
+    pkg_docs: dict[str, list] = {}
+    for key, ds in (idx.get("docs") or {}).items():
+        n = node_of.get(key) or _cut.dir_node(idx, open_, key)
+        if n:
+            have = {d["f"] for d in pkg_docs.get(n, [])}
+            pkg_docs.setdefault(n, []).extend(d for d in ds if d["f"] not in have)
+    # 每条边的「实质」：用到了对方几个符号、有几个只 import 没用的绑定。
     # 一个符号都没用到的边（纯 import）在图上画成虚线——它不承载任何调用。
     uses, dead = idx.get("edge_uses") or {}, idx.get("edge_dead") or {}
-    kinds = {}
-    for a, b, w in g["edges"]:
-        k = f"{a}|{b}"
-        kinds[k] = {"uses": len(uses.get(k, {})), "dead": len(dead.get(k, [])), "sites": w}
-    # 只在 runtime 出现、静态 import 图里根本没有的包间调用——插件、importlib、注册表。
-    # 这是静态分析的盲区，必须单独画出来，否则图会说谎。
-    rt_only = []
+    kinds: dict[str, dict] = {}
+    syms_used: dict[str, set] = {}
+    for a, b, w in idx.get("edges") or []:
+        na, nb = node_of[a], node_of[b]
+        if na == nb:
+            continue
+        k = f"{na}|{nb}"
+        d = kinds.setdefault(k, {"uses": 0, "dead": 0, "sites": 0})
+        syms_used.setdefault(k, set()).update(uses.get(f"{a}|{b}", {}))
+        d["dead"] += len(dead.get(f"{a}|{b}", []))
+        d["sites"] += w
+    for k, ss in syms_used.items():
+        kinds[k]["uses"] = len(ss)
+    # hot 叠加也按切面汇总；只在 runtime 出现、静态 import 图里根本没有的节点间调用——插件、
+    # importlib、注册表——是静态分析的盲区，必须单独画出来，否则图会说谎。
+    hot_view, rt_only = None, []
     if hot:
-        static = {f"{a}|{b}" for a, b, _ in g["edges"]}
-        shown = {n["id"] for n in g["nodes"]}
-        for k, n in hot.get("edges", {}).items():
+        hp: dict[str, int] = {}
+        for u, n in hot["packages"].items():
+            if u in node_of:
+                hp[node_of[u]] = hp.get(node_of[u], 0) + n
+        he: dict[str, int] = {}
+        for k, n in hot["edges"].items():
             a, _, b = k.partition("|")
-            if k not in static and a in shown and b in shown:
+            if a in node_of and b in node_of and node_of[a] != node_of[b]:
+                kk = f"{node_of[a]}|{node_of[b]}"
+                he[kk] = he.get(kk, 0) + n
+        hot_view = {**hot, "packages": hp, "edges": he}
+        shown = {n["id"] for n in g["nodes"]}
+        for k, n in he.items():
+            a, _, b = k.partition("|")
+            if k not in kinds and a in shown and b in shown:
                 rt_only.append([a, b, n])
-    # hot 视图单独排版：只放跑到的包，泳道数沿用总图，纵坐标含义不变、横向更紧凑
-    g_hot = (_layout.build(idx, lanes=g["lanes"], min_files=min_files,
-                           only={p for p, n in hot["packages"].items() if n})
-             if hot else None)
-    return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": idx["packages"],
-            "pkgSyms": _pkg_syms(idx), "pkgFiles": pkg_files, "pkgDocs": idx.get("docs") or {},
+    # hot 视图单独排版：只放跑到的节点，泳道数沿用总图，纵坐标含义不变、横向更紧凑
+    g_hot = (_layout.build(syn, lanes=g["lanes"], min_files=min_files,
+                           only={p for p, n in hot_view["packages"].items() if n})
+             if hot_view else None)
+    for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里
+        x = v["nodes"][nd["id"]]
+        nd.update(kind=x["kind"], expandable=x["expandable"], parent=x["parent"],
+                  fanout=x["fanout"], units=x["units"])
+    return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"],
+            "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
             "edgeKinds": kinds, "runtimeOnlyEdges": rt_only,
-            "hot": hot, "hotMeta": hot_meta}
+            "hot": hot_view, "hotMeta": hot_meta,
+            "open": sorted(open_), "defaultOpen": idx.get("default_open") or [],
+            "autoSplit": idx["repo"].get("auto_split") or []}
 
 
 def _top(symkey: str) -> str:
@@ -131,7 +183,7 @@ def _module_files(idx: dict) -> dict:
     return out
 
 
-def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
+def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
     """点开一条边：它到底承载了什么。
 
     静态引用 × runtime 调用 两个维度交叉，归成五类：
@@ -193,13 +245,58 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
                        "calls": sum(x["calls"] for x in items)}}
 
 
+def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
+    """点开一条边：a、b 可以是目录、本层文件或单个文件节点。把两端底下每一对有依赖
+    （静态的或 runtime 的）单元的明细合起来；同一个被引用的符号只列一次。"""
+    A, B = _cut.units_of(idx, a), _cut.units_of(idx, b)
+    if A == [a] and B == [b]:
+        return _pair_detail(repo, idx, a, b, hot)
+    Bs = set(B)
+    hot_edges = (hot or {}).get("edges") or {}
+    pairs = sorted({(x, y) for x, y, _ in idx.get("edges") or [] if y in Bs and x in set(A)}
+                   | {tuple(k.split("|")) for k in hot_edges
+                      if k.split("|")[1] in Bs and k.split("|")[0] in set(A)})
+    parts = [_pair_detail(repo, idx, x, y, hot) for x, y in pairs]
+    out = {"a": a, "b": b, "has_runtime": bool(hot), "import_exec": 0, "static_edge": False,
+           "sites": [], "n_sites": 0, "items": [], "import_only": [], "n_pairs": len(parts),
+           "counts": {"confirmed": 0, "static": 0, "dynamic": 0, "import_only": 0, "calls": 0}}
+    items: dict[str, dict] = {}
+    for p in parts:
+        out["import_exec"] += p.get("import_exec", 0)
+        out["static_edge"] = out["static_edge"] or p["static_edge"]
+        out["sites"] += p["sites"]
+        out["n_sites"] += p["n_sites"]
+        out["import_only"] += p["import_only"]
+        for it in p["items"]:
+            cur = items.get(it["sym"])
+            if cur is None:
+                items[it["sym"]] = {**it, "uses": list(it["uses"]), "runtime": list(it["runtime"])}
+                continue
+            cur["uses"] += it["uses"]
+            cur["n_uses"] += it["n_uses"]
+            cur["runtime"] += it["runtime"]
+            cur["calls"] += it["calls"]
+    for it in items.values():               # 合并完再定状态：同一个符号可能一对里静态引用、另一对里 runtime 调到
+        it["status"] = ("confirmed" if it["runtime"] and it["uses"] else
+                        "dynamic" if it["runtime"] else "static")
+    order = {"confirmed": 0, "dynamic": 1, "static": 2}
+    out["items"] = sorted(items.values(), key=lambda x: (order[x["status"]], -x["calls"], -x["n_uses"], x["name"]))
+    for it in out["items"]:
+        it["uses"] = it["uses"][:20]
+        out["counts"][it["status"]] += 1
+        out["counts"]["calls"] += it["calls"]
+    out["counts"]["import_only"] = len(out["import_only"])
+    out["sites"] = out["sites"][:80]
+    return out
+
+
 def _known(idx: dict, rel: str) -> str | None:
-    """只允许打开扫描过的文件（Python 或包内的 C++/CUDA），返回所属包。"""
+    """只允许打开扫描过的文件（Python 或包内的 C++/CUDA），返回所属单元（C++ 是所在目录）。"""
     if rel in (idx.get("files") or {}):
         return idx["files"][rel]
     if rel in (idx.get("aux") or {}):
         return idx["aux"][rel] or "(无所属包)"
-    for pkg, ds in (idx.get("docs") or {}).items():         # 挂在包上的文档也能打开
+    for pkg, ds in (idx.get("docs") or {}).items():         # 挂在目录 / 单元上的文档也能打开
         if any(d["f"] == rel for d in ds):
             return pkg
     return None
@@ -264,7 +361,8 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     整个 HTML 要装得进一个单文件（artifact 之类的宿主上限 16 MB），所以先算好其余部分，
     剩下的额度才留给全文；这次 case 实际跑到的文件优先。"""
     p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta)
-    nts = {name: _notes.load(repo, idx, name) for name in list(idx["packages"]) + [_notes.OVERVIEW]}
+    nts = {n["id"]: _notes.load(repo, idx, n["id"]) for n in p["graph"]["nodes"]}
+    nts[_notes.OVERVIEW] = _notes.load(repo, idx, _notes.OVERVIEW)
     for name, nt in nts.items():
         nt["problems"] = _notes.verify(repo, idx, name)
     todo = _notes.tasks(repo, idx)
