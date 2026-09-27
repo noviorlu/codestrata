@@ -365,8 +365,8 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                             for n4 in ast.walk(n3):
                                 if isinstance(n4, (ast.Import, ast.ImportFrom)):
                                     typeonly.add(id(n4))
-            # 函数体内的延迟 import：运行到那里才加载。常用来打破循环，或按需分派到实现，
-            # 结构层据此判断一条「往上指」的依赖是不是分派（见 structure.py）
+            # 函数体内的延迟 import：运行到那里才加载。常用来打破循环，或按需分派到实现——
+            # 一条依赖如果全部是延迟 import，它在 import 时并不存在
             lazy: set[int] = set()
             for fn in ast.walk(tree):
                 if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
