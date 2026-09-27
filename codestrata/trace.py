@@ -497,7 +497,12 @@ def to_package_graph(trace: dict, index: dict) -> dict:
     module_exec = sorted({k.rpartition(":")[0] for k in trace["funcs"]
                           if k.endswith(":0") or (k.endswith(":1")
                               and (k.rpartition(":")[0], 1) not in loc2sym)})
-    return {"packages": pkg_hits, "edges": edge_hits, "symbols": sym_hits,
+    file_hits: dict[str, int] = {}
+    for k, n in trace["funcs"].items():
+        rel, _, ln = k.rpartition(":")
+        if rel in files and ln not in ("0",) and not (ln == "1" and (rel, 1) not in loc2sym):
+            file_hits[rel] = file_hits.get(rel, 0) + n
+    return {"packages": pkg_hits, "edges": edge_hits, "symbols": sym_hits, "files": file_hits,
             "edge_calls": edge_calls, "edge_import_exec": import_exec,
             "module_exec": module_exec,
             "module_frames": module_frames, "anon": anon,

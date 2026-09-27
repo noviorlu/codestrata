@@ -2,9 +2,9 @@
 written_by: claude-opus-5-5
 target: codestrata.trace
 kind: package
-code_sha: 90b7ff0901547027
+code_sha: 2c5ef6193d04da36
 status: draft
-refs: trace.py:1@65dc008a,trace.py:49@971f709d,trace.py:287@6cf25a9e,trace.py:238@064c41d5,trace.py:231@c90d778b,trace.py:214@f1b535c0,trace.py:82@cf21a031,trace.py:68@da61d85c,trace.py:101@c744b643,trace.py:173@380940f5,trace.py:199@39c6dbe6,trace.py:135@1d891628,trace.py:117@158ddf0b
+refs: trace.py:1@65dc008a,trace.py:49@971f709d,trace.py:287@6cf25a9e,trace.py:238@064c41d5,trace.py:231@c90d778b,trace.py:214@f1b535c0,trace.py:82@cf21a031,trace.py:68@da61d85c,trace.py:101@c744b643,trace.py:173@380940f5,trace.py:199@39c6dbe6,trace.py:135@1d891628,trace.py:504@a0b425ed,trace.py:117@158ddf0b
 ---
 
 ## 是什么
@@ -40,6 +40,9 @@ atexit 不是总会跑：multiprocessing 的 fork 子进程以 `os._exit` 结束
 
 ### 分阶段
 被 trace 的命令往 `$CODESTRATA_OUT/PHASE` 写一个名字（比如服务就绪后写 `serving`），每个进程 1 秒内看到，就给切换前的累计计数拍一张快照（trace.py:135 起）。`merge` 按进程把相邻快照相减得到每个阶段的调用，于是 `--hot case@serving` 能只看处理请求的那一段，启动时的初始化（注册表探测、模型加载、CUDA graph 捕获）不会混进「请求走了哪条路」。
+
+### 按文件汇总
+`to_package_graph` 还按文件汇总调用次数（trace.py:504，同样不算 import 触发的模块执行），详情面板的文件树据此在目录、文件上标出这次 case 走了哪里。
 
 ### 折算时分开「调用」和「import 触发的执行」
 被调方是模块帧的边不算调用，单独记进 `edge_import_exec`；否则每条 import 边都会因为「导入过」被染成橙色。没有自己符号的帧（闭包、lambda、生成器表达式）按符号的起止行归到最内层的外层符号，标成 `外层.<L行号>`。

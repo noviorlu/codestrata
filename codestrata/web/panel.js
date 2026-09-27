@@ -123,20 +123,14 @@ window.CS = window.CS || {};
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
-        + '<span>函数 <b>' + (v.funcs || 0) + '</b></span></div>'
+        + '<span>函数（含方法）<b>' + (v.funcs || 0) + '</b></span></div>'
         + pills(x.o, '依赖 →', true) + pills(x.i, '← 被依赖', false)
         + pills(dyn.o, 'runtime 才出现 →', true) + pills(dyn.i, '← runtime 才出现', false)
         + this._docs(id)
-        + this._files(id)
-        + (list.length ? ('<div class="slist">' + list.slice(0, 40).map(function (s) {
-            var h = (hot && hot.symbols[s.key]) || 0;
-            return '<div class="si" data-sym="' + esc(s.key) + '" data-pkg="' + esc(id) + '">'
-              + '<span class="k' + (s.k === 'class' ? ' c' : '') + '">' + (s.k === 'class' ? 'C' : 'f') + '</span>'
-              + '<span class="n" title="' + esc(s.n) + '">' + esc(s.n) + '</span>'
-              + (h ? '<span class="h">' + h + '</span>' : '') + '</div>';
-          }).join('') + '</div>') : '')
+        + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
       this._wireDet(id);
+      this._mountTree(id);
       if (symKey) this.showSource(id, symKey);
     },
 
@@ -151,28 +145,214 @@ window.CS = window.CS || {};
       }).join('') + (ds.length > 10 ? '<span>…还有 ' + (ds.length - 10) + ' 份</span>' : '') + '</div>';
     },
 
-    _files: function (id) {
-      var fs = (D.pkgFiles || {})[id] || [];
-      if (!fs.length) return '';
-      var LANG = { py: 'Python', pyi: 'Python', cu: 'CUDA', cuh: 'CUDA', c: 'C',
-                   cc: 'C++', cpp: 'C++', cxx: 'C++', h: 'C++', hh: 'C++', hpp: 'C++', inl: 'C++' };
-      var shown = fs.slice(0, 24);
-      return '<div class="kv files"><span>全文</span>' + shown.map(function (f) {
-        var ext = f.split('.').pop().toLowerCase();
-        return '<button class="filebtn" data-view="' + esc(f) + '" title="' + esc(f) + '">'
-          + '<span class="fl lang-' + (LANG[ext] || 'x').replace(/\W/g, '').toLowerCase() + '">'
-          + (LANG[ext] || ext) + '</span>' + esc(f.split('/').pop()) + '</button>';
-      }).join('') + (fs.length > shown.length ? '<span>…还有 ' + (fs.length - shown.length) + ' 个</span>' : '')
-        + '</div>';
+    /* ---- 文件树：模块根目录 → 子目录（缩进）→ 文件 → 类 / 函数 → 方法 ----
+     * 目录和文件一次性画出来（文件数是有限的），文件里的符号在展开时才取：
+     * live 模式走 /api/outline（含方法），导出版用内嵌的全文大纲，都没有就退回顶层符号。 */
+    _mountTree: function (id) {
+      var box = document.getElementById('tree');
+      if (!box) return;
+      var ids = [id];
+      var files = [], syms = [];
+      ids.forEach(function (p) {
+        files = files.concat((D.pkgFiles || {})[p] || []);
+        syms = syms.concat((D.pkgSyms || {})[p] || []);
+      });
+      if (!files.length) { box.innerHTML = ''; return; }
+      files.sort();
+      var byFile = {};
+      syms.forEach(function (x) { (byFile[x.f] = byFile[x.f] || []).push(x); });
+      Object.keys(byFile).forEach(function (f) { byFile[f].sort(function (a, b) { return a.l - b.l; }); });
+      var T = { id: id, files: files, byFile: byFile, pkg: id };
+      this._tree = T;
+      box.innerHTML = '<div class="tree-tools"><input type="search" class="tree-q" placeholder="筛选文件 / 类 / 函数…">'
+        + '<button class="linkbtn" data-tree="open">全部展开</button><button class="linkbtn" data-tree="close">全部折叠</button>'
+        + '<span class="tree-sum"></span></div><div class="tree-body"></div>';
+      var self = this;
+      box.querySelector('.tree-q').oninput = function () { self._renderTree(this.value.trim().toLowerCase()); };
+      [].forEach.call(box.querySelectorAll('[data-tree]'), function (b) {
+        b.onclick = function () {
+          var open = b.dataset.tree === 'open';
+          [].forEach.call(box.querySelectorAll('.tn.dir'), function (n) { n.classList.toggle('closed', !open); });
+        };
+      });
+      this._renderTree('');
     },
 
-    showSource: function (pkg, key) {
-      var slot = document.getElementById('srcslot');
+    _renderTree: function (q) {
+      var T = this._tree, box = document.getElementById('tree');
+      if (!T || !box) return;
+      var hotF = (D.hot && D.hot.files) || {}, hotS = (D.hot && D.hot.symbols) || {}, loc = D.fileLoc || {};
+      var match = function (f) {
+        if (!q) return true;
+        if (f.toLowerCase().indexOf(q) !== -1) return true;
+        return (T.byFile[f] || []).some(function (x) { return x.n.toLowerCase().indexOf(q) !== -1; });
+      };
+      var files = T.files.filter(match);
+      // 目录树：以所有文件的最长公共目录为根
+      var pre = null;
+      files.forEach(function (f) {
+        var d = f.split('/').slice(0, -1);
+        if (pre === null) { pre = d; return; }
+        var i = 0; while (i < pre.length && i < d.length && pre[i] === d[i]) i++;
+        pre = pre.slice(0, i);
+      });
+      pre = pre || [];
+      var root = { name: pre.join('/'), dirs: {}, files: [] };
+      files.forEach(function (f) {
+        var node = root;
+        f.split('/').slice(pre.length, -1).forEach(function (seg) {
+          node = node.dirs[seg] || (node.dirs[seg] = { name: seg, dirs: {}, files: [] });
+        });
+        node.files.push(f);
+      });
+      function agg(n) {
+        var a = { files: n.files.length, loc: 0, cls: 0, fn: 0, hot: 0 };
+        n.files.forEach(function (f) {
+          a.loc += loc[f] || 0; a.hot += hotF[f] || 0;
+          (T.byFile[f] || []).forEach(function (x) { if (x.k === 'class') a.cls++; else a.fn++; });
+        });
+        Object.keys(n.dirs).forEach(function (k) {
+          var c = agg(n.dirs[k]);
+          a.files += c.files; a.loc += c.loc; a.cls += c.cls; a.fn += c.fn; a.hot += c.hot;
+        });
+        n.agg = a;
+        return a;
+      }
+      var total = agg(root);
+      var kloc = function (n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); };
+      var meta = function (a, isFile) {
+        return (isFile ? '' : a.files + ' 文件 · ') + kloc(a.loc) + ' 行'
+          + (a.cls ? ' · ' + a.cls + ' 类' : '') + (a.fn ? ' · ' + a.fn + ' 函数' : '');
+      };
+      var hotB = function (n) { return n ? '<span class="rt" title="这次 case 里的调用次数">' + n + '</span>' : ''; };
+      var openDirs = !!q || total.files <= 40, openFiles = !!q || total.files <= 3;
+      var LANG = { py: 'Py', pyi: 'Py', cu: 'CUDA', cuh: 'CUDA', c: 'C', cc: 'C++', cpp: 'C++', cxx: 'C++',
+                   h: 'C++', hh: 'C++', hpp: 'C++', inl: 'C++', md: 'MD' };
+      function fileRow(f, depth) {
+        var ext = f.split('.').pop().toLowerCase(), a = { loc: loc[f] || 0, cls: 0, fn: 0 };
+        (T.byFile[f] || []).forEach(function (x) { if (x.k === 'class') a.cls++; else a.fn++; });
+        return '<div class="tn file' + (openFiles ? '' : ' closed') + '" data-file="' + esc(f) + '">'
+          + '<div class="tr" style="--d:' + depth + '"><button class="tg" aria-label="展开">' + (openFiles ? '▾' : '▸') + '</button>'
+          + '<span class="fl lang-' + (LANG[ext] || 'x').replace(/\W/g, '').toLowerCase() + '">' + (LANG[ext] || ext) + '</span>'
+          + '<span class="tn-name">' + esc(f.split('/').pop()) + '</span>'
+          + '<span class="tn-meta">' + meta(a, true) + '</span>' + hotB(hotF[f])
+          + '<button class="linkbtn" data-view="' + esc(f) + '" title="打开整个文件">全文</button></div>'
+          + '<div class="tc"></div></div>';
+      }
+      function dirHtml(n, depth, isRoot) {
+        var h = '<div class="tn dir' + (isRoot || openDirs ? '' : ' closed') + '">'
+          + '<div class="tr" style="--d:' + depth + '"><button class="tg" aria-label="展开">▾</button>'
+          + '<span class="tn-name dirname">' + esc((isRoot ? (n.name || '.') : n.name) + '/') + '</span>'
+          + '<span class="tn-meta">' + meta(n.agg) + '</span>' + hotB(n.agg.hot) + '</div><div class="tc">';
+        Object.keys(n.dirs).sort().forEach(function (k) { h += dirHtml(n.dirs[k], depth + 1, false); });
+        n.files.forEach(function (f) { h += fileRow(f, depth + 1); });
+        return h + '</div></div>';
+      }
+      box.querySelector('.tree-sum').textContent = files.length + (q ? ' / ' + T.files.length : '') + ' 个文件';
+      var body = box.querySelector('.tree-body');
+      body.innerHTML = files.length ? dirHtml(root, 0, true) : '<p class="hint">没有匹配的文件或符号</p>';
+      var self = this;
+      [].forEach.call(body.querySelectorAll('.tn.dir > .tr'), function (r) {
+        r.onclick = function () { r.parentNode.classList.toggle('closed'); };
+      });
+      [].forEach.call(body.querySelectorAll('.tn.file'), function (n) {
+        var r = n.querySelector('.tr');
+        r.onclick = function () { self._toggleFile(n, q); };
+        if (!n.classList.contains('closed')) self._fillFile(n, q);
+      });
+      this._wireIn(body);
+      // 目录行的三角形跟着折叠状态变
+      [].forEach.call(body.querySelectorAll('.tn.dir'), function (n) {
+        new MutationObserver(function () {
+          n.querySelector('.tg').textContent = n.classList.contains('closed') ? '▸' : '▾';
+        }).observe(n, { attributes: true, attributeFilter: ['class'] });
+        n.querySelector('.tg').textContent = n.classList.contains('closed') ? '▸' : '▾';
+      });
+    },
+
+    _toggleFile: function (n, q) {
+      var closed = n.classList.toggle('closed');
+      n.querySelector('.tg').textContent = closed ? '▸' : '▾';
+      if (!closed && !n.dataset.filled) this._fillFile(n, q);
+    },
+
+    /* 展开一个文件：类（可再展开看方法）和函数，按行号排。点符号名在这一行下面展开源码片段 */
+    _fillFile: function (n, q) {
+      var T = this._tree, f = n.dataset.file, tc = n.querySelector('.tc'), self = this;
+      var depth = +(n.querySelector('.tr').style.getPropertyValue('--d') || 0) + 1;
+      var hotS = (D.hot && D.hot.symbols) || {};
+      n.dataset.filled = '1';
+      var top = T.byFile[f] || [];
+      var draw = function (all) {
+        // all：完整大纲（含方法）；拿不到就只有顶层
+        var kids = {};
+        (all || []).forEach(function (x) {
+          var parts = x.n.split('.');
+          if (parts.length === 2) (kids[parts[0]] = kids[parts[0]] || []).push(x);
+        });
+        var list = all ? all.filter(function (x) { return x.n.indexOf('.') === -1; }) : top;
+        if (q) {
+          var hit = list.filter(function (x) { return x.n.toLowerCase().indexOf(q) !== -1; });
+          if (hit.length) list = hit;
+        }
+        if (!list.length) { tc.innerHTML = '<div class="tr empty" style="--d:' + depth + '">（没有类或函数）</div>'; return; }
+        tc.innerHTML = list.map(function (x) {
+          var ms = kids[x.n] || [], isC = x.k === 'class';
+          return '<div class="tn sym' + (ms.length ? ' closed' : '') + '">'
+            + '<div class="tr" style="--d:' + depth + '">'
+            + (ms.length ? '<button class="tg" aria-label="展开方法">▸</button>' : '<span class="tg sp"></span>')
+            + '<span class="k' + (isC ? ' c' : '') + '">' + (isC ? 'C' : 'f') + '</span>'
+            + '<button class="tn-name symname" data-tsym="' + esc(x.key) + '" data-f="' + esc(f) + '" data-l="' + x.l + '">' + esc(x.n) + '</button>'
+            + '<span class="tn-meta">:' + x.l + (ms.length ? ' · ' + ms.length + ' 方法' : '') + '</span>'
+            + (hotS[x.key] ? '<span class="rt">' + hotS[x.key] + '</span>' : '') + '</div>'
+            + '<div class="snip"></div>'
+            + (ms.length ? '<div class="tc">' + ms.map(function (m) {
+                return '<div class="tn sym"><div class="tr" style="--d:' + (depth + 1) + '"><span class="tg sp"></span>'
+                  + '<span class="k">' + (isC ? 'm' : 'f') + '</span><button class="tn-name symname" data-tsym="' + esc(m.key) + '" data-f="' + esc(f) + '" data-l="' + m.l + '">'
+                  + esc(m.n.split('.').pop()) + '</button><span class="tn-meta">:' + m.l + '</span>'
+                  + (hotS[m.key] ? '<span class="rt">' + hotS[m.key] + '</span>' : '') + '</div><div class="snip"></div></div>';
+              }).join('') + '</div>' : '')
+            + '</div>';
+        }).join('');
+        [].forEach.call(tc.querySelectorAll('.tn.sym > .tr > .tg:not(.sp)'), function (b) {
+          b.onclick = function (ev) {
+            ev.stopPropagation();
+            var c = b.parentNode.parentNode.classList.toggle('closed');
+            b.textContent = c ? '▸' : '▾';
+          };
+        });
+        [].forEach.call(tc.querySelectorAll('[data-tsym]'), function (b) {
+          b.onclick = function (ev) {
+            ev.stopPropagation();
+            var slot = b.parentNode.nextElementSibling;
+            if (slot.innerHTML) { slot.innerHTML = ''; return; }          // 再点一次收起
+            self.showSource(T.pkg, b.dataset.tsym, slot, { f: b.dataset.f, l: +b.dataset.l });
+          };
+        });
+      };
+      tc.innerHTML = '<div class="tr empty" style="--d:' + depth + '">读取大纲…</div>';
+      var lang = f.split('.').pop().toLowerCase();
+      CS.ds.outline ? CS.ds.outline(f).then(function (o) { draw(o && o.symbols && o.symbols.length ? o.symbols : null); },
+                                             function () { draw(null); }) : draw(null);
+    },
+
+    showSource: function (pkg, key, slotEl, where) {
+      var slot = slotEl || document.getElementById('srcslot');
       if (!slot) return;
       slot.innerHTML = '<p class="hint" style="margin-top:10px">读取源码…</p>';
       var self = this;
       CS.ds.source(key).then(function (s) {
-        if (!s) { slot.innerHTML = ''; return; }
+        if (!s) {
+          // 导出版只内嵌了每个包前几个符号的片段；其他符号退回到全文窗口——前提是这个文件内嵌了
+          if (!where) { slot.innerHTML = ''; return; }
+          CS.ds.file(where.f).then(function (fv) {
+            slot.innerHTML = '<p class="hint" style="margin:4px 0 6px">' + (fv
+              ? '导出版里没有这个符号的片段。<button class="linkbtn" data-view="' + esc(where.f) + '" data-line="' + where.l + '">在全文里看（第 ' + where.l + ' 行）</button>'
+              : '导出版的体积有上限，没带上这个文件。要看源码请用 <code>codestrata serve</code>。') + '</p>';
+            self._wireIn(slot);
+          });
+          return;
+        }
         var L = s.lines || [], g = [];
         for (var i = 0; i < L.length; i++) g.push(s.line + i);
         var hot = CS.graph.hot, h = (hot && hot.symbols[key]) || 0;
@@ -189,8 +369,24 @@ window.CS = window.CS || {};
           + '<div class="gut">' + g.join('\n') + '</div>'
           + '<pre class="code"><code>' + L.join('\n') + '</code></pre>'
           + '</div></div></div>';
-        self._wireDet(pkg);
+        self._wireIn(slot);
       }).catch(function () { slot.innerHTML = ''; });
+    },
+
+    /* 只给某个容器里的按钮绑事件（源码片段插在树里时用，免得把整个面板重绑一遍） */
+    _wireIn: function (el) {
+      [].forEach.call(el.querySelectorAll('[data-copy]'), function (b) {
+        b.onclick = function () {
+          if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.copy).then(function () {
+            b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制路径'; }, 1200); }, function () {});
+        };
+      });
+      [].forEach.call(el.querySelectorAll('[data-open]'), function (b) {
+        b.onclick = function () { CS.ds.openEditor(b.dataset.open, b.dataset.line); };
+      });
+      [].forEach.call(el.querySelectorAll('[data-view]'), function (b) {
+        b.onclick = function (ev) { ev.stopPropagation(); CS.viewer.open(b.dataset.view, b.dataset.line ? +b.dataset.line : 0); };
+      });
     },
 
     _wireDet: function (pkg) {

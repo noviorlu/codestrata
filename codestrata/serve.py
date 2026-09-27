@@ -9,6 +9,7 @@
     GET  /api/pack/<target>       给 agent 的输入包（纯文本 Markdown）
     GET  /api/symbol/<key>        一个符号的源码片段
     GET  /api/file?f=             整个文件 + 符号大纲（全文窗口用）
+    GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
     GET  /api/edge?a=&b=          一条边承载了什么：用到了对方哪些符号、runtime 调了哪些
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line
     GET  /code/<path>?l=N         整个文件，带行号锚点
@@ -144,6 +145,11 @@ class Handler(BaseHTTPRequestHandler):
             if a not in self.idx["packages"] or b not in self.idx["packages"]:
                 return self._json({"error": "unknown package"}, 404)
             return self._json(_payload.edge_detail(self.repo, self.idx, a, b, self.hot))
+
+        if path == "/api/outline":
+            rel = (q.get("f") or [""])[0]
+            ol = _payload.file_outline(self.repo, self.idx, rel) if self._in_repo(rel) else None
+            return self._json(ol) if ol else self._json({"error": "不是已扫描的文件"}, 404)
 
         if path == "/api/file":
             rel = (q.get("f") or [""])[0]

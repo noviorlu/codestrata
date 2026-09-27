@@ -75,6 +75,7 @@ class Symbol:
     pkg: str             # 聚合用的包名
     bases: list[str] = field(default_factory=list)
     end: int = 0         # 最后一行；runtime 里的闭包 / lambda 靠它归到外层符号
+    decos: list[str] = field(default_factory=list)   # 类的装饰器名（dataclass 之类，结构层判断纯声明用）
 
     def key(self) -> str:
         return f"{self.module}:{self.name}"
@@ -88,6 +89,8 @@ class Symbol:
             d["b"] = self.bases
         if self.end:
             d["e"] = self.end
+        if self.decos:
+            d["d"] = self.decos
         return d
 
 
@@ -258,6 +261,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
     edge_sites: dict[tuple[str, str], list] = {}
     edge_uses: dict[tuple[str, str], dict] = {}
     edge_dead: dict[tuple[str, str], list] = {}
+    file_loc: dict[str, int] = {}          # 文件 → 行数（含 C/C++/CUDA）
     n_files = n_err = 0
 
     expand = sorted(expand or [], key=lambda p: -p.count("."))    # 最具体的前缀优先
@@ -301,6 +305,7 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             module = module_of(path.relative_to(mod_base))
             pkg = pkg_of(module)
             files[str(rel)] = pkg
+            file_loc[str(rel)] = src.count("\n") + 1
             pkg_files[pkg] = pkg_files.get(pkg, 0) + 1
             pkg_loc[pkg] = pkg_loc.get(pkg, 0) + src.count("\n") + 1
 
@@ -316,8 +321,15 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                             except Exception:
                                 pass
                         dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
+                        decos = []
+                        for d in child.decorator_list:
+                            fn = d.func if isinstance(d, ast.Call) else d
+                            try:
+                                decos.append(ast.unparse(fn).split(".")[-1])
+                            except Exception:
+                                pass
                         s = Symbol(qn, "class", str(rel), child.lineno, dl, module, pkg, bases,
-                                   child.end_lineno or 0)
+                                   child.end_lineno or 0, decos)
                         symbols[s.key()] = s
                         pkg_cls[pkg] = pkg_cls.get(pkg, 0) + 1
                         walk(child, qn + ".")
@@ -353,6 +365,14 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                             for n4 in ast.walk(n3):
                                 if isinstance(n4, (ast.Import, ast.ImportFrom)):
                                     typeonly.add(id(n4))
+            # 函数体内的延迟 import：运行到那里才加载。常用来打破循环，或按需分派到实现，
+            # 结构层据此判断一条「往上指」的依赖是不是分派（见 structure.py）
+            lazy: set[int] = set()
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for n4 in ast.walk(fn):
+                        if isinstance(n4, (ast.Import, ast.ImportFrom)):
+                            lazy.add(id(n4))
             is_init = rel.name == "__init__.py"
             chains: dict[str, dict] = {}
             src_lines = src.split("\n")
@@ -400,7 +420,8 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                         # 点开一条边时要看到「具体用了对方的哪些东西、在哪一行」
                         edge_sites.setdefault((pkg, dst), []).append({
                             "f": str(rel), "l": node.lineno, "s": stmt[:200],
-                            "m": target, "n": names[:12]})
+                            "m": target, "n": names[:12],
+                            "lazy": id(node) in lazy, "type": id(node) in typeonly})
                         # 记下这条 import 在本文件里引入的本地名字，第二遍用来找「实际用到了什么」
                         why = ("type" if id(node) in typeonly
                                else "reexport" if is_init else None)
@@ -517,10 +538,15 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                     p = Path(dp, f)
                     mod = ".".join(p.relative_to(base.parent).parent.parts)
                     aux[str(p.relative_to(root))] = pkg_of(mod) if mod else ""
+                    try:
+                        with open(p, "rb") as fh:
+                            file_loc[str(p.relative_to(root))] = fh.read().count(b"\n") + 1
+                    except OSError:
+                        pass
 
     docs = collect_docs(root, files)
     return {
-        "docs": docs,
+        "docs": docs, "file_loc": file_loc,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
                  "depth": depth, "expand": expand, "n_files": n_files, "n_parse_errors": n_err,
                  "unresolved_imports": sorted(f"{a} → {b}" for a, b in unresolved),
@@ -552,8 +578,9 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     uses = index.pop("edge_uses", {})
     dead = index.pop("edge_dead", {})
     docs = index.pop("docs", {})
+    file_loc = index.pop("file_loc", {})
     (outdir / "symbols.json").write_text(
-        json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs,
+        json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs, "file_loc": file_loc,
                     "edge_sites": sites, "edge_uses": uses, "edge_dead": dead},
                    ensure_ascii=False),
         encoding="utf-8")
@@ -563,4 +590,5 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     index["symbols"], index["files"], index["aux"] = symbols, files, aux   # 调用方还要用
     index["edge_sites"], index["edge_uses"], index["edge_dead"] = sites, uses, dead
     index["docs"] = docs
+    index["file_loc"] = file_loc
     return p

@@ -25,6 +25,8 @@ window.CS = window.CS || {};
     pack: function (t) { return Promise.resolve((EMB.packs || {})[t] || ''); },
     source: function (k) { return Promise.resolve((EMB.sources || {})[k] || null); },
     file: function (f) { return Promise.resolve((EMB.files || {})[f] || null); },
+    // 导出版：内嵌了全文的文件带着完整大纲；没内嵌的返回 null，前端退回只列顶层符号
+    outline: function (f) { var x = (EMB.files || {})[f]; return Promise.resolve(x ? { file: f, symbols: x.symbols } : null); },
     edge: function (a, b) { return Promise.resolve((EMB.edges || {})[a + '|' + b] || null); },
     openEditor: function () { return Promise.resolve(); }
   } : {
@@ -44,6 +46,7 @@ window.CS = window.CS || {};
     },
     source: function (k) { return j('/api/symbol/' + encodeURIComponent(k)); },
     file: function (f) { return j('/api/file?f=' + encodeURIComponent(f)); },
+    outline: function (f) { return j('/api/outline?f=' + encodeURIComponent(f)); },
     edge: function (a, b) { return j('/api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)); },
     openEditor: function (f, l) {
       return fetch('/api/open?f=' + encodeURIComponent(f) + '&l=' + l).catch(function () {});

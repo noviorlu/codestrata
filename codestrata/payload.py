@@ -26,6 +26,7 @@ def load_index(repo: Path) -> dict:
         idx["edge_uses"] = extra.get("edge_uses", {})
         idx["edge_dead"] = extra.get("edge_dead", {})
         idx["docs"] = extra.get("docs", {})
+        idx["file_loc"] = extra.get("file_loc", {})
     return idx
 
 
@@ -102,6 +103,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
              if hot else None)
     return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": idx["packages"],
             "pkgSyms": _pkg_syms(idx), "pkgFiles": pkg_files, "pkgDocs": idx.get("docs") or {},
+            "fileLoc": idx.get("file_loc") or {},
             "edgeKinds": kinds, "runtimeOnlyEdges": rt_only,
             "hot": hot, "hotMeta": hot_meta}
 
@@ -203,6 +205,20 @@ def _known(idx: dict, rel: str) -> str | None:
     return None
 
 
+def file_outline(repo: Path, idx: dict, rel: str) -> dict | None:
+    """一个文件的完整符号大纲（含方法），给详情面板的文件树按需展开。
+    Python 直接取扫描时的符号表，不用读文件；C++ / CUDA 用词法大纲（要高亮一遍，有缓存）。"""
+    pkg = _known(idx, rel)
+    if pkg is None:
+        return None
+    syms = [{"key": k, "n": x["n"], "k": x["k"], "l": x["l"]}
+            for k, x in (idx.get("symbols") or {}).items() if x["f"] == rel]
+    if syms or rel.endswith((".py", ".pyi")):
+        return {"file": rel, "symbols": sorted(syms, key=lambda d: d["l"]), "outline_kind": "ast"}
+    fv = file_view(repo, idx, rel)
+    return {"file": rel, "symbols": fv["symbols"] if fv else [], "outline_kind": "lexer"}
+
+
 def file_view(repo: Path, idx: dict, rel: str) -> dict | None:
     """整个文件（逐行高亮）+ 符号大纲。Python 的大纲来自 ast（精确），
     C++/CUDA 的来自词法 token（启发式）。"""
@@ -242,8 +258,11 @@ def symbol_source(repo: Path, idx: dict, key: str, lines: int = 40) -> dict | No
 
 def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                    per_pkg: int = 10, lines: int = 30,
-                   file_budget: int = 8_000_000) -> dict:
-    """单文件导出要的全部数据：图 + 已有解读 + 待办输入包 + 代表符号的源码。"""
+                   total_budget: int = 14_000_000) -> dict:
+    """单文件导出要的全部数据：图 + 已有解读 + 待办输入包 + 代表符号的源码 + 尽量多的全文。
+
+    整个 HTML 要装得进一个单文件（artifact 之类的宿主上限 16 MB），所以先算好其余部分，
+    剩下的额度才留给全文；这次 case 实际跑到的文件优先。"""
     p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta)
     nts = {name: _notes.load(repo, idx, name) for name in list(idx["packages"]) + [_notes.OVERVIEW]}
     for name, nt in nts.items():
@@ -256,25 +275,43 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
             src = symbol_source(repo, idx, s["key"], lines)
             if src:
                 sources[s["key"]] = src
-    # 整文件内嵌有上限：小仓库全带上；大仓库（vllm-omni 57 万行）只能带一部分，
-    # 超出的文件在导出版里退化成只看符号片段，要看全文就用 serve。
-    files, used = {}, 0
-    every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})
-                   | {d["f"] for ds in (idx.get("docs") or {}).values() for d in ds})
-    for rel in every:
-        fv = file_view(repo, idx, rel)
-        if not fv:
-            continue
-        sz = sum(len(x) for x in fv["lines"])        # 高亮后的 HTML 才是真实体积
-        if used + sz > file_budget:
-            continue
-        files[rel] = fv
-        used += sz
     edges = {}
     for a, b, _ in p["graph"]["edges"]:
         edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
     for a, b, _ in p["runtimeOnlyEdges"]:
         edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
-    p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources,
-              "files": files, "filesTruncated": len(files) < len(every), "edges": edges})
+    p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources, "edges": edges})
+
+    # 全文：用剩下的额度。跑到过的文件优先，其次按体积从小到大（同样额度能带上更多文件）。
+    # 先用原始字节数估算（高亮 + JSON 转义后约 3 倍），明显放不下的不去高亮，省掉大部分时间。
+    remaining = total_budget - len(json.dumps(p, ensure_ascii=False))
+    ran = {k.rpartition(":")[0] for k in ((hot or {}).get("symbols") or {})}
+    ran |= {s["f"] for k, s in (idx.get("symbols") or {}).items() if k in ((hot or {}).get("symbols") or {})}
+    # 解读里引用过的文件也优先：读者最常从解读点进去看的就是它们
+    for name, nt in nts.items():
+        for m in _notes._REF_RE.finditer(nt.get("md") or ""):
+            fp, _ = _notes._resolve_ref(repo, idx, m.group(1), name)
+            if fp:
+                ran.add(str(fp.relative_to(repo)))
+    every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})
+                   | {d["f"] for ds in (idx.get("docs") or {}).values() for d in ds})
+    def size(rel):
+        try:
+            return (repo / rel).stat().st_size
+        except OSError:
+            return 1 << 30
+    order = sorted(every, key=lambda r: (r not in ran, size(r)))
+    files = {}
+    for rel in order:
+        if size(rel) * 3 > remaining:
+            continue
+        fv = file_view(repo, idx, rel)
+        if not fv:
+            continue
+        sz = len(json.dumps(fv, ensure_ascii=False))
+        if sz > remaining:
+            continue
+        files[rel] = fv
+        remaining -= sz
+    p.update({"files": files, "filesTruncated": len(files) < len(every)})
     return p

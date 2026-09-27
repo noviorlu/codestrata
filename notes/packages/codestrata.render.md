@@ -32,4 +32,4 @@ refs: render.py:1@1b5c0234,render.py:17@628cbed4,render.py:26@70185c58
 `fragment=True` 去掉 doctype 和 meta 外壳，给自己会包外壳的宿主（比如 artifact 页面）用。也因为这种宿主会在 DOMContentLoaded 之后才执行内联脚本，`web/app.js` 的启动写成了「已经加载完就直接启动」。
 
 ## 局限
-导出的整文件内容有 8 MB 上限（`payload.export_payload` 的 `file_budget`）：大仓库只带一部分，超出的文件在导出版里只能看符号片段，要看全文用 serve。
+整个导出文件控制在 14 MB 以内（`payload.export_payload` 的 `total_budget`，单文件宿主的上限是 16 MB）：先算好其余部分，剩下的额度才给全文，这次 case 跑到过的文件和解读里引用过的文件优先。大仓库只能带一部分，没带上的文件在导出版里只能看顶层符号，要看全文用 serve。
