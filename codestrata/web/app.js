@@ -16,6 +16,8 @@ window.CS = window.CS || {};
         CS.panel.init(document.getElementById('det'), document.getElementById('side'), d);
         CS.graph.onPick = function (id) { CS.panel.showPkg(id); CS.panel.showNote(id); };
         CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); CS.panel.showEdgeSide(a, b); };
+        CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
+        CS.graph.onClear = function () { CS.panel.reset(); };
         CS.graph.onExpand = function (id) {
           if (!CS.ds.canCut) { document.getElementById('prog').textContent = '导出的单文件不能展开，请用 codestrata serve'; return; }
           self.expand(id);
@@ -41,7 +43,8 @@ window.CS = window.CS || {};
         + '最下面的只被依赖。横轴用重心排序减少交叉。'
         + ' 灰实线是真的用到了对方符号的 import，灰虚线是只 import 没用到的。'
         + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的部分。' : '')
-        + '　左上角带 <b>＋</b> 的节点可以在图上展开成子模块，展开后的节点能在详情里收起。'
+        + '　左上角带 <b>＋</b> 的节点可以就地展开：子模块出现在一个框里，框头的 <b>−</b> 收起；'
+        + '展开 / 收起不会取消选中，再点一次选中的节点才取消。'
         + '　右侧是<b>解读层</b>——机器给不出的那部分。';
       var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
                 ['符号', r.n_symbols || 0], ['图上的边', d.graph.edges.length],
@@ -91,40 +94,97 @@ window.CS = window.CS || {};
     },
 
     /* ---- 切面：展开 / 收起 ---- */
-    expand: function (id) { this.setCut(this.data.open.concat([id]), id); },
+    /* 当前（或正在路上的）切面：连着点几个 ＋ 时，后一次要在前一次的基础上改，而不是在旧图上改 */
+    curOpen: function () { return (this._pending || this.data.open).slice(); },
 
-    collapse: function (id) {
-      var p = ((this.data.pkgs || {})[id] || {}).parent;
-      if (!p) return;
-      var open = this.data.open.filter(function (x) {
-        return /\.\*$/.test(p) ? x !== p : !(x === p || x.indexOf(p + '.') === 0);
-      });
-      this.setCut(open, p);
+    expand: function (id) {
+      var open = this.curOpen();
+      if (open.indexOf(id) < 0) open.push(id);
+      this.setCut(open, id);
     },
 
-    resetCut: function () { this.setCut(this.data.defaultOpen.slice(), null); },
+    /* 收起一个节点 = 收起套着它的那个框 */
+    collapse: function (id) {
+      var v = (this.data.pkgs || {})[id] || {};
+      if (v.collapsible) this.collapseFrame(v.parent);
+    },
 
+    /* 收起一个框：本层文件的框只去掉它自己；目录的框连同它底下所有展开的东西一起去掉 */
+    collapseFrame: function (f) {
+      var open = this.curOpen().filter(function (x) {
+        return /\.\*$/.test(f) ? x !== f : !(x === f || x.indexOf(f + '.') === 0);
+      });
+      this.setCut(open, f);
+    },
+
+    resetCut: function () { this.setCut(this.data.defaultOpen.slice()); },
+
+    /* 换一个切面。focus 是这次展开 / 收起的那个目录：新图画好后把它滚进图框里 */
     setCut: function (open, focus) {
-      var self = this, before = {};
+      var self = this, before = {}, st = CS.graph.state;
+      var seq = this._cutSeq = (this._cutSeq || 0) + 1;
+      this._pending = open.slice();
+      var was = { sel: st.sel, selEdge: st.selEdge, selFrame: st.selFrame, kind: {} };
+      // 记下选中的东西是目录、本层文件还是单个文件：新图上找「谁装着它」时要用
+      this.data.graph.nodes.concat(this.data.graph.frames || []).forEach(function (n) { was.kind[n.id] = n.kind; });
       this.data.graph.nodes.forEach(function (n) { before[n.id] = 1; });
       document.getElementById('prog').textContent = '重新汇总…';
       CS.ds.graph(open).then(function (d) {
+        if (seq !== self._cutSeq) return;   // 连着点了几次：只认最后一次，先发出的请求晚回来也不能盖掉它
+        self._pending = null;
         self.data = d;
         CS.panel.setData(d);
         self.header(d);
-        CS.graph.state.sel = CS.graph.state.selEdge = null;
+        st.sel = st.selEdge = st.selFrame = null;
         self.redraw();
-        self.edgeChips();              // 边的条数变了；开关状态沿用
-        self.controls();
         self.refreshStatus();
-        CS.panel.reset();
-        // 新出现的节点闪一下，好看出展开出来的是哪些；收起时选中收回去的那个节点
+        self.keepSelection(was);
+        if (focus) {
+          CS.graph.reveal(focus);
+          // 用键盘点的 ＋ / − 随着重画没了，焦点会掉回 body：交给刚展开的框（它的 −）或刚收回的节点
+          var ae = document.activeElement;
+          if (!ae || ae === document.body || !document.contains(ae)) CS.graph.focus(focus);
+        }
+        // 新出现的节点闪一下，好看出展开出来的是哪些
         CS.graph.flash(d.graph.nodes.filter(function (n) { return !before[n.id]; }).map(function (n) { return n.id; }));
-        if (focus && CS.graph.nodes[focus]) CS.graph.pick(focus);
         self.cutBar();
       }).catch(function (e) {
+        if (seq !== self._cutSeq) return;
+        self._pending = null;
         document.getElementById('prog').textContent = e.message;
       });
+    },
+
+    /* 展开 / 收起不取消选中。选中的节点还在就还选它（详情重画：它的邻居可能变了）；
+       它被收进了某个节点就选那个节点；它自己被展开成了框，就选中那个框、详情面板不动。
+       选中的边两头按同样的规则落到新节点上，新图上还有这条边就接着选它。 */
+    keepSelection: function (was) {
+      var g = this.data.graph, ids = {}, frames = {};
+      g.nodes.forEach(function (n) { ids[n.id] = 1; });
+      (g.frames || []).forEach(function (f) { frames[f.id] = 1; });
+      // id 在新图上落在哪个节点：还是节点就是它自己；被收起了就是装着它的那个节点。
+      // 目录节点装着它底下的一切；本层文件节点只装直接放在这个目录里的单个文件（不装子目录）
+      function home(id) {
+        if (ids[id]) return id;
+        var best = null, unit = was.kind[id] === 'unit';
+        g.nodes.forEach(function (n) {
+          var res = /\.\*$/.test(n.id), base = res ? n.id.slice(0, -2) : n.id;
+          var inside = id.indexOf(base + '.') === 0
+            && (!res || (unit && id.slice(base.length + 1).indexOf('.') < 0));
+          if (inside && (!best || n.id.length > best.length)) best = n.id;
+        });
+        return best;
+      }
+      var id = was.sel || was.selFrame;
+      if (id) {
+        if (frames[id]) { CS.graph.selectFrame(id); CS.panel.asFrame(id); }   // 自己被展开成了框
+        else if (home(id)) CS.graph.pick(home(id), true);   // 不滚动：视线留在刚点的地方
+        else CS.panel.reset();
+      } else if (was.selEdge) {
+        var ab = was.selEdge.split('|'), a = home(ab[0]), b = home(ab[1]);
+        if (a && b && a !== b && CS.graph.edgeInfo(a, b)) CS.graph.pickEdge(a, b);
+        // 否则边详情留在面板上（它讲的那两组代码没变），图上不再高亮
+      }
     },
 
     cutBar: function () {
@@ -139,6 +199,11 @@ window.CS = window.CS || {};
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
+      // 重画会重建所有节点：图例上边的条数按这张图重数，搜索框里还有字就把高亮重新套上
+      this.edgeChips();
+      this.controls();
+      var q = document.getElementById('q');
+      if (q.value.trim()) q.oninput();
     },
 
     controls: function () {
@@ -167,16 +232,28 @@ window.CS = window.CS || {};
       var rc = document.getElementById('resetcut');
       if (rc) rc.onclick = function () { self.resetCut(); };
       document.getElementById('reset').onclick = function () {
-        q.value = ''; CS.graph.highlight(null);
-        CS.graph.state.sel = null; CS.graph.state.selEdge = null; CS.graph.paint(); CS.panel.reset();
+        q.value = ''; CS.graph.highlight(null); CS.graph.clear();
       };
+      if (!this._esc) {
+        this._esc = true;
+        document.addEventListener('keydown', function (ev) {
+          // Esc 取消选中（全文窗口开着时 Esc 先关窗口，那边自己处理）
+          // 正在输入框里打字（搜索框、文件树过滤、贴解读的文本框）时 Esc 归输入框自己
+          var s = CS.graph.state, t = ev.target;
+          if (ev.isComposing || (t && t.closest && t.closest('input, textarea, select, [contenteditable]'))) return;
+          if (ev.key === 'Escape' && document.getElementById('viewer').hidden
+              && (s.sel || s.selEdge || s.selFrame)) CS.graph.clear();
+        });
+      }
     },
 
     /* 每个节点的解读状态：图上打 ✓ / ! 徽标，工具栏显示进度 */
     refreshStatus: function () {
       // 分母取图上的节点：空包（如空 __init__.py）不上图也不派活，不该算进进度
       var ids = this.data.graph.nodes.map(function (n) { return n.id; });
+      var self = this, seq = this._cutSeq;
       CS.ds.status(ids).catch(function () { return {}; }).then(function (map) {
+        if (seq !== self._cutSeq) return;      // 这期间切面又变了：这份状态是旧图的
         CS.graph.setNoteStatus(map);
         var n = 0, st = 0;
         ids.forEach(function (i) { if (map[i] === 'noted') n++; else if (map[i] === 'stale') st++; });

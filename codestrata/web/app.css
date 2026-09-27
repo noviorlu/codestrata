@@ -63,7 +63,16 @@ h1{margin:8px 0 6px;font-size:clamp(22px,3.4vw,30px);color:var(--ink);letter-spa
 .hotbanner b{color:var(--ink)}
 .hotbanner .cmd{font:11.5px/1.5 ui-monospace,monospace;color:var(--muted);word-break:break-all}
 .gbox{border:1px solid var(--line);border-radius:11px;background:var(--card);box-shadow:var(--shadow);overflow-x:auto}
-svg.g{display:block;min-width:900px;width:100%;height:auto}
+svg.g{display:block;min-width:900px;width:100%;height:auto;margin:0 auto}
+/* 画布比页面宽时（展开了很多目录），图框撑到整个窗口宽 */
+/* 画布比一栏宽时（展开了很多目录），图框由 graph.js 撑宽到窗口；两侧的渐隐提示「那边还有」 */
+.gwrap{position:relative}
+.gfade{position:absolute;top:1px;bottom:1px;width:44px;pointer-events:none;opacity:0;transition:opacity .15s}
+.gfade.l{left:1px;border-radius:11px 0 0 11px;background:linear-gradient(90deg,var(--card),transparent)}
+.gfade.r{right:1px;border-radius:0 11px 11px 0;background:linear-gradient(270deg,var(--card),transparent)}
+.gfade.on{opacity:.95}
+.gbox.pan{cursor:grab}
+.gbox.dragging{cursor:grabbing;user-select:none}
 svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .laneband{fill:var(--sunk);opacity:.4}
 .lanerule{stroke:var(--rule);stroke-width:1}
@@ -317,12 +326,20 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .linkbtn{all:unset;cursor:pointer;color:var(--muted);font:11px/1.3 system-ui,sans-serif;border-bottom:1px dotted var(--line)}
 .linkbtn:hover,.linkbtn:focus-visible{color:var(--sel);border-bottom-color:var(--sel)}
 /* ---- 切面：节点左上角的「展开」、刚展开出来的节点、详情里的展开 / 收起 ---- */
-.nd .xp{cursor:pointer}
-.nd .xp circle{fill:var(--card);stroke:var(--sel);stroke-width:1.2}
-.nd .xp text{font:700 11px/1 ui-monospace,monospace;fill:var(--sel);pointer-events:none}
-.nd .xp:hover circle,.nd .xp:focus-visible circle{fill:var(--sel)}
-.nd .xp:hover text,.nd .xp:focus-visible text{fill:var(--card)}
-.nd .xp:focus{outline:none}
+.xp{cursor:pointer}
+.xp circle{fill:var(--card);stroke:var(--sel);stroke-width:1.2}
+.xp text{font:700 11px/1 ui-monospace,monospace;fill:var(--sel);pointer-events:none}
+.xp:hover circle,.xp:focus-visible circle{fill:var(--sel)}
+.xp:hover text,.xp:focus-visible text{fill:var(--card)}
+.xp:focus{outline:none}
+/* 展开着的目录：框体淡淡地铺底，嵌套越深越深一点；框头是收起按钮 + 名字 + 节点数 */
+.frame rect{fill:var(--sel);fill-opacity:.055;stroke:var(--sel);stroke-opacity:.62;stroke-width:1.3}
+.frame.hover rect{fill-opacity:.07;stroke-opacity:.8;stroke-width:1.8}
+.frame.sel rect{fill-opacity:.08;stroke-opacity:1;stroke-width:2.4}
+.fh .fl{font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:var(--sel)}
+.fh .fn{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:var(--muted)}
+.fh text.fl,.fh text.fn{pointer-events:none;paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}
+/* 框头的字：不挡下面的边的点击；描一圈底色，穿过去的边不会把字划花 */
 .nd.fresh rect{stroke:var(--sel);stroke-width:2.4;animation:fresh 1.6s ease-out}
 @keyframes fresh{from{fill:var(--sel-bg)}to{}}
 .cutrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}

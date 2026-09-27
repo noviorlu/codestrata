@@ -109,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
-        q = urllib.parse.parse_qs(u.query)
+        q = urllib.parse.parse_qs(u.query, keep_blank_values=True)   # ?open= 是「什么都不展开」，不是缺省
         path = u.path
 
         if path == "/api/graph":

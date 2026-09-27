@@ -80,7 +80,25 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。"""
     open_ = _norm_open(idx, open_)
     v = _cut.view(idx, open_)
-    syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"]}
+    # 框：每个节点被哪个展开着的目录（或展开着的本层文件）直接套着，一路往上。
+    # 只有一个根时不画根的框——它就是整张图
+    roots = _cut.roots_of(idx)
+    top = roots[0] if len(roots) == 1 else None
+    frames: dict[str, dict] = {}
+    for n, x in v["nodes"].items():
+        f = x["parent"] if x["parent"] != top else None
+        x["frame"] = f
+        x["collapsible"] = f is not None
+        while f and f not in frames:
+            p = _cut.parent_of(idx, f)
+            frames[f] = {"parent": p if p != top else None, "kind": _cut.kind(idx, f), "n": 0}
+            f = frames[f]["parent"]
+    for n in _cut.visible(v):              # 每个框里一共有几个画得出来的节点（hot 视图只画一部分）
+        f = v["nodes"][n]["frame"]
+        while f:
+            frames[f]["n"] += 1
+            f = frames[f]["parent"]
+    syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames}
     g = _layout.build(syn, lanes=lanes, min_files=min_files)
     mem, node_of = v["members"], v["node_of"]
     repo_info = dict(idx["repo"])
@@ -150,7 +168,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里
         x = v["nodes"][nd["id"]]
         nd.update(kind=x["kind"], expandable=x["expandable"], parent=x["parent"],
-                  fanout=x["fanout"], units=x["units"])
+                  collapsible=x["collapsible"], fanout=x["fanout"], units=x["units"])
     return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"],
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},

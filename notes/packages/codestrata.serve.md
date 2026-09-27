@@ -2,9 +2,9 @@
 written_by: claude-opus-5-5
 target: codestrata.serve
 kind: package
-code_sha: 651548d9846a047a
+code_sha: 02f0b3faa0bf802b
 status: draft
-refs: serve.py:1@48ec2c0a,serve.py:231@ed0daba7,serve.py:236@3885b904,serve.py:216@8775e5c5,serve.py:226@e84bd2dc,serve.py:115@5b6d121a,serve.py:120@fcd0389a,serve.py:135@5e77a01f,serve.py:161@820288c5
+refs: serve.py:1@48ec2c0a,serve.py:231@ed0daba7,serve.py:236@3885b904,serve.py:216@8775e5c5,serve.py:226@e84bd2dc,serve.py:115@5b6d121a,serve.py:120@fcd0389a,serve.py:112@bbaaeff1,serve.py:135@5e77a01f,serve.py:161@820288c5
 ---
 
 ## 是什么
@@ -29,7 +29,7 @@ refs: serve.py:1@48ec2c0a,serve.py:231@ed0daba7,serve.py:236@3885b904,serve.py:2
 - 解读的目标只接受目录树上真实存在的节点名（目录、`目录.*`、文件级模块，由 `cut.is_node` 判断）或总览保留名，防止借 target 写出仓库外的文件；请求体上限 2 MB（serve.py:216），元数据只收 `written_by` / `status` / `confidence` 三个键（serve.py:226）。
 
 ### 状态放在类属性上
-`BaseHTTPRequestHandler` 每个请求实例化一次，所以仓库、index、trace 这些进程级状态挂在 `Handler` 类上。`/api/graph?open=a,b` 按切面（排序后的 open 集合）缓存成字节串（serve.py:115 起）——同一个切面的布局只依赖 index 和 trace，进程内不会变；切面可以任意组合，所以缓存只留最近的三十来个（serve.py:120）。
+`BaseHTTPRequestHandler` 每个请求实例化一次，所以仓库、index、trace 这些进程级状态挂在 `Handler` 类上。`/api/graph?open=a,b` 按切面（排序后的 open 集合）缓存成字节串（serve.py:115 起）——同一个切面的布局只依赖 index 和 trace，进程内不会变；切面可以任意组合，所以缓存只留最近的三十来个（serve.py:120）。查询串按「保留空值」解析（serve.py:112）：`?open=` 的意思是「什么都不展开」，和不带 `open` 的「默认切面」不同——多个根的仓库里把最后一个根的框也收起时发的就是它；早先空值被丢掉，页面会跳回整个默认切面。
 
 ### 读解读时顺带核对
 `GET /api/notes/<target>` 返回解读的同时附上 `notes.verify` 的结果，前端直接显示「引用对不上」的地方。图上的徽标走另一条路：`GET /api/status?ids=`（serve.py:135）一次取回一批节点的状态，不核对内容——展开之后图上有上百个节点，逐个核对太慢。

@@ -33,7 +33,7 @@ window.CS = window.CS || {};
 
   CS.graph = {
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
-    state: { sel: null, selEdge: null, refs: true, imp: true, hot: true, dyn: true,
+    state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, hot: true, dyn: true,
              onlyHot: false, onlyNoted: false },
     noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
     counts: { ref: 0, imp: 0, warm: 0, dyn: 0 },
@@ -44,6 +44,7 @@ window.CS = window.CS || {};
       var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [];
       svg.textContent = '';
       svg.setAttribute('viewBox', '0 0 ' + G.width + ' ' + G.height);
+      this.svg = svg;
 
       var lg = el('g', {});
       (G.lane_rows || []).forEach(function (L) {
@@ -52,8 +53,10 @@ window.CS = window.CS || {};
         lg.appendChild(el('line', { x1: 0, y1: L.y, x2: G.width, y2: L.y, class: 'lanerule' }));
         var rng = (L.hi > 0 ? '+' : '') + L.hi.toFixed(2) + '…' + (L.lo > 0 ? '+' : '') + L.lo.toFixed(2);
         if (L.empty) {
+          // 只写高度区间（放在左边的留白里，不伸进框）；「这段高度没有模块」放在悬停提示里
           var t0 = el('text', { x: 8, y: L.y + L.h / 2 + 3, class: 'lanealt empty' });
-          t0.textContent = rng + '　（没有模块落在这段高度）';
+          t0.textContent = rng;
+          var tt = el('title', {}); tt.textContent = '没有模块落在 ' + rng + ' 这段高度'; t0.appendChild(tt);
           lg.appendChild(t0); return;
         }
         if (L.name) { var t = el('text', { x: 8, y: L.y + 14, class: 'lanetxt' }); t.textContent = L.name; lg.appendChild(t); }
@@ -74,14 +77,57 @@ window.CS = window.CS || {};
 
       var N = {}; G.nodes.forEach(function (n) { n.cx = n.x * G.width; N[n.id] = n; });
       this.N = N;
+      var self = this;
+
+      // 展开着的目录：一个框把它底下的节点框在一起。框体在边的下面（背景），
+      // 框头（收起按钮 + 名字）在边的命中区上面，否则按钮会被透明的宽命中区挡住。
+      var fg = el('g', {}), fh = el('g', {});
+      this.frames = {}; this.heads = {}; this.inFrame = {};
+      var fpar = {};
+      (G.frames || []).forEach(function (F) { fpar[F.id] = F.parent; });
+      G.nodes.forEach(function (n) {             // 每个框底下有哪些节点（「只看……」过滤后要重数）
+        for (var f = n.frame; f; f = fpar[f]) (self.inFrame[f] = self.inFrame[f] || []).push(n.id);
+      });
+      (G.frames || []).forEach(function (F) {
+        var g = el('g', { class: 'frame', 'data-frame': F.id });
+        g.appendChild(el('rect', { x: F.x, y: F.y, width: F.w, height: F.h, rx: 10 }));
+        fg.appendChild(g); self.frames[F.id] = g;
+        var h = el('g', { class: 'fh', 'data-frame': F.id }), tx = F.x + 10;
+        if (CS.ds.canCut) {
+          var cb = el('g', { class: 'xp', role: 'button', tabindex: '0', 'aria-label': '收起 ' + F.label });
+          cb.appendChild(el('circle', { cx: F.x + 15, cy: F.y + 12, r: 7 }));
+          var ct = el('text', { x: F.x + 15, y: F.y + 15.5, 'text-anchor': 'middle' });
+          ct.textContent = '−'; cb.appendChild(ct);
+          var tip = el('title', {});
+          tip.textContent = '收起 ' + F.label + '：框里的 ' + (F.total || F.n) + ' 个节点合回一个'; cb.appendChild(tip);
+          var go = function (ev) { ev.preventDefault(); ev.stopPropagation(); if (self.onCollapse) self.onCollapse(F.id); };
+          cb.onclick = go;
+          cb.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') go(ev); };
+          cb.onmouseenter = function () { g.classList.add('hover'); };
+          cb.onmouseleave = function () { g.classList.remove('hover'); };
+          h.appendChild(cb); tx = F.x + 28;
+        }
+        var t = el('text', { x: tx, y: F.y + 16, class: 'fl' });
+        t.textContent = F.label; h.appendChild(t);
+        var c = el('text', { x: tx + F.lw + 8, y: F.y + 16, class: 'fn' });
+        c.textContent = F.count || ('· ' + F.n); h.appendChild(c);
+        h._count = c; h._F = F; h._label = t; h._tx = tx;
+        fh.appendChild(h); self.heads[F.id] = h;
+      });
+      svg.appendChild(fg);
 
       var hotPk = (hot && hot.packages) || {}, hotEd = (hot && hot.edges) || {};
       var maxE = 1; for (var k in hotEd) maxE = Math.max(maxE, hotEd[k]);
       // 三层：光晕在最下，可见的边在中间，透明的宽命中区在最上（但仍在节点下面，节点照样能点）
       var hg = el('g', {}), eg = el('g', {}), xg = el('g', {});
-      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(xg);
+      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(xg); svg.appendChild(fh);
+      // 框头上的数紧跟在名字后面：名字的实际宽度要画出来才量得准（估算对长名字会偏）
+      Object.keys(this.heads).forEach(function (f) {
+        var h = self.heads[f], w = h._label.getComputedTextLength ? h._label.getComputedTextLength() : 0;
+        if (w) h._count.setAttribute('x', h._tx + w + 8);
+      });
       this.edges = [];
-      var self = this, cnt = { ref: 0, imp: 0, warm: 0, dyn: 0 };
+      var cnt = { ref: 0, imp: 0, warm: 0, dyn: 0 };
 
       function add(src, dst, kind, hits, info) {
         var a = N[src], b = N[dst]; if (!a || !b) return;
@@ -99,7 +145,10 @@ window.CS = window.CS || {};
                + (info.dead ? '　·　' + info.dead + ' 个 import 没被引用' : ''))
           + (hits ? '\nruntime 调用 ' + hits + ' 次' : '') + '\n点击看具体是哪些函数';
         E.x.appendChild(tip);
-        E.x.onclick = function (ev) { ev.stopPropagation(); self.pickEdge(src, dst); };
+        E.x.onclick = function (ev) {
+          ev.stopPropagation();
+          if (self.state.selEdge === src + '|' + dst) self.clear(); else self.pickEdge(src, dst);   // 再点一次取消选中
+        };
         E.x.onmouseenter = function () { E.p.classList.add('hover'); E.halo.classList.add('hover'); };
         E.x.onmouseleave = function () { E.p.classList.remove('hover'); E.halo.classList.remove('hover'); };
         hg.appendChild(E.halo); hg.appendChild(E.gap); eg.appendChild(E.p); xg.appendChild(E.x);
@@ -137,10 +186,103 @@ window.CS = window.CS || {};
         var bd = el('text', { x: n.cx + n.w / 2 - 5, y: n.cy - n.h / 2 + 8, class: 'badge todo', 'text-anchor': 'end' });
         g.appendChild(bd); g._badge = bd;
         ng.appendChild(g); self.nodes[n.id] = g;
-        g.onclick = function () { self.pick(n.id); };
-        g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); self.pick(n.id); } };
+        // 再点一次选中的节点就取消选中（程序里调 pick 总是选中，比如从详情面板跳过来）
+        var toggle = function () { if (self.state.sel === n.id) self.clear(); else self.pick(n.id); };
+        g.onclick = function (ev) { ev.stopPropagation(); toggle(); };
+        g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } };
       });
+      this.wireBox(svg.parentNode);
+      this.fit();
       this.paint();
+    },
+
+    /* 图框：点空白处（泳道、框体、图框两侧）取消选中；图比窗口宽时按住空白处拖动来平移。
+       节点、边、按钮的点击自己 stopPropagation，到不了这里 */
+    wireBox: function (box) {
+      if (!box || box._wired) return;
+      box._wired = true;
+      var self = this, drag = null, moved = false;
+      box.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0 || ev.target.closest('.nd, .ehit, .xp')) return;
+        drag = { x: ev.clientX, y: ev.clientY, sl: box.scrollLeft, sy: window.scrollY };
+        moved = false;
+      });
+      window.addEventListener('mousemove', function (ev) {
+        if (!drag) return;
+        var dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+        if (!moved && Math.abs(dx) + Math.abs(dy) < 5) return;
+        moved = true; box.classList.add('dragging');
+        box.scrollLeft = drag.sl - dx;
+        window.scrollTo(window.scrollX, drag.sy - dy);
+      });
+      window.addEventListener('mouseup', function () { drag = null; box.classList.remove('dragging'); });
+      box.addEventListener('click', function () {
+        if (moved) { moved = false; return; }        // 拖动结束时的那次 click 不算点空白
+        var s = self.state;
+        if (s.sel || s.selEdge || s.selFrame) self.clear();
+      });
+      box.addEventListener('scroll', function () { self.fade(); });
+      window.addEventListener('resize', function () { self.fit(); });
+    },
+
+    /* 图框多宽：默认画布（≤1200）和页面一栏同宽、按比例缩放（老样子）。展开多了画布变宽时，
+       图框撑宽到窗口（但不超过画布本身，免得两侧大片空白），字最多缩到 0.88 倍，
+       再宽就在图框里横向滚动——而不是整页横向滚动，也不是把字缩到看不清 */
+    fit: function () {
+      var svg = this.svg, G = this.G, box = svg && svg.parentNode, wrap = box && box.parentNode;
+      if (!wrap || !G) return;
+      wrap.style.width = wrap.style.marginLeft = '';
+      svg.style.minWidth = svg.style.maxWidth = '';
+      var wide = G.width > 1200;
+      box.classList.toggle('wide', wide);
+      if (wide) {
+        var col = wrap.getBoundingClientRect().width;
+        var win = document.documentElement.clientWidth - 48;
+        var w = Math.max(col, Math.min(win, G.width + 2));
+        wrap.style.width = w + 'px';
+        wrap.style.marginLeft = ((col - w) / 2) + 'px';
+        svg.style.minWidth = Math.round(G.width * 0.88) + 'px';
+        svg.style.maxWidth = G.width + 'px';
+      }
+      this.fade();
+    },
+
+    /* 图框能横向滚动时，哪边还有东西就在哪边渐隐；顺便显示「可以拖动」的提示 */
+    fade: function () {
+      var box = this.svg && this.svg.parentNode, wrap = box && box.parentNode;
+      if (!wrap) return;
+      var more = box.scrollWidth - box.clientWidth > 2;
+      var l = wrap.querySelector('.gfade.l'), r = wrap.querySelector('.gfade.r');
+      if (l) l.classList.toggle('on', more && box.scrollLeft > 2);
+      if (r) r.classList.toggle('on', more && box.scrollLeft < box.scrollWidth - box.clientWidth - 2);
+      box.classList.toggle('pan', more);
+      var hint = document.getElementById('panhint');
+      if (hint) hint.hidden = !more;
+    },
+
+    focus: function (id) {
+      var el = this.heads && this.heads[id] ? this.heads[id].querySelector('.xp') : this.nodes[id];
+      if (el && el.focus) el.focus({ preventScroll: true });
+    },
+
+    /* 把刚展开的框 / 刚收回的节点横向滚进图框里（只横向：纵向交给页面，框可能比屏幕还高） */
+    reveal: function (id) {
+      var box = this.svg && this.svg.parentNode, el = (this.frames || {})[id] || this.nodes[id];
+      if (!el || !box || box.scrollWidth <= box.clientWidth) return;
+      var r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+      if (r.left >= b.left && r.right <= b.right) return;
+      box.scrollLeft += (r.left + r.width / 2) - (b.left + b.width / 2);
+    },
+
+    /* 取消选中：节点、边、框都不选，面板回到总览 */
+    clear: function () {
+      this.state.sel = this.state.selEdge = this.state.selFrame = null; this.paint();
+      if (this.onClear) this.onClear();
+    },
+
+    /* 选中的节点被展开成了框：框算选中，面板不动（它讲的还是这个目录） */
+    selectFrame: function (id) {
+      this.state.sel = this.state.selEdge = null; this.state.selFrame = id; this.paint();
     },
 
     setNoteStatus: function (map) {
@@ -204,17 +346,25 @@ window.CS = window.CS || {};
         g.classList.toggle('sel', s.sel === id);
         g.classList.toggle('end', !!s.selEdge && !!keep && !!keep[id]);
       });
+      // 框：「只看跑到的 / 已解读」把框里的节点全滤掉了就不画这个框；滤掉一部分就写「剩几个 / 一共几个」
+      Object.keys(this.frames || {}).forEach(function (f) {
+        var h = self.heads[f], F = h._F, ids = self.inFrame[f] || [];
+        var k = ids.filter(function (i) { return self.vis(i); }).length;
+        self.frames[f].style.display = h.style.display = k ? '' : 'none';
+        self.frames[f].classList.toggle('sel', s.selFrame === f);
+        h._count.textContent = k < ids.length ? '· ' + k + '/' + (F.total || F.n) : (F.count || '· ' + F.n);
+      });
     },
 
-    pick: function (id) {
-      this.state.sel = id; this.state.selEdge = null; this.paint();
+    pick: function (id, stay) {
+      this.state.sel = id; this.state.selEdge = this.state.selFrame = null; this.paint();
       if (this.onPick) this.onPick(id);
       var g = this.nodes[id];
-      if (g && g.scrollIntoView) g.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+      if (!stay && g && g.scrollIntoView) g.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
     },
 
     pickEdge: function (a, b) {
-      this.state.selEdge = a + '|' + b; this.state.sel = null; this.paint();
+      this.state.selEdge = a + '|' + b; this.state.sel = this.state.selFrame = null; this.paint();
       if (this.onPickEdge) this.onPickEdge(a, b);
     },
 

@@ -83,27 +83,35 @@ window.CS = window.CS || {};
   }
 
   CS.panel = {
+    _sideTok: 0, _detTok: 0,      // 面板每换一次内容加一：异步请求回来时据此判断还要不要画
     init: function (detEl, sideEl, data) { det = detEl; side = sideEl; D = data; this.reset(); },
 
     /* 展开 / 收起之后换一份切面数据 */
     setData: function (data) { D = data; },
 
     reset: function () {
+      this._detTok++;
+      delete det.dataset.pkg;
       det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是一段架构高度区间，'
         + '越上面越靠入口、越下面越是被依赖的叶子；节点大小编码文件数。'
         + '点节点看它依赖谁、里面有什么符号，右边是这个模块的<b>解读</b>。</p>';
+      // 右边正贴着一份还没保存的解读时不清掉它（取消选中、换切面都会走到这里）
+      var ta = side.querySelector('#noteta');
+      if (ta && ta.value.trim()) return;
+      var tok = ++this._sideTok;
       side.innerHTML = '<h3>解读层</h3><p class="hint">机器只能给出结构；'
         + '「为什么这样切、算法为什么这么写、该按什么顺序读」需要人或 agent 补。'
         + '点一个节点看它的解读状态。</p>';
       // 没选中任何东西时，右边放仓库总览——第一次打开页面最需要的就是它
       var self = this;
       CS.ds.note(OVERVIEW).then(function (nt) {
-        if (nt && nt.present && !CS.graph.state.sel && !CS.graph.state.selEdge) self._renderNote(OVERVIEW, nt);
+        if (nt && nt.present && tok === self._sideTok) self._renderNote(OVERVIEW, nt);
       }).catch(function () {});
     },
 
     /* ---- 左：机器事实 ---- */
     showPkg: function (id, symKey) {
+      this._detTok++;
       var v = (D.pkgs || {})[id] || {}, x = CS.graph.nb(id);
       // 静态 import 图里没有、只在 runtime 出现的依赖（按名字加载、注册表、鸭子类型）
       var dyn = { i: [], o: [] };
@@ -123,6 +131,7 @@ window.CS = window.CS || {};
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
         }).join('') + '</div>';
       }
+      det.dataset.pkg = id;
       det.innerHTML = '<h2>' + esc(id) + '</h2>'
         + '<div class="sub">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
@@ -142,14 +151,23 @@ window.CS = window.CS || {};
       if (symKey) this.showSource(id, symKey);
     },
 
+    /* 详情里的节点刚被展开成了框：内容照旧，只把「展开」换成「收起」 */
+    asFrame: function (id) {
+      var row = det.querySelector('.cutrow');
+      if (det.dataset.pkg !== id || !row) return;
+      row.innerHTML = '<span class="kindtag">已在图上展开成框</span>'
+        + '<button class="chip" title="框里的子模块合回一个节点">收起</button>';
+      row.querySelector('button').onclick = function () { CS.app.collapseFrame(id); };
+    },
+
     /* 这个节点在切面上是什么、能不能展开 / 收起 */
     _cutRow: function (id, v) {
       var h = '<div class="cutrow"><span class="kindtag">' + esc(KIND[v.kind] || '') + '</span>';
       if (!CS.ds.canCut) return h + '</div>';
       if (v.expandable)
         h += '<button class="chip" data-cut="expand" title="在图上把它换成子模块">展开（' + v.fanout + ' 个子模块）</button>';
-      if (v.parent && (D.open || []).some(function (o) { return o === v.parent; }))
-        h += '<button class="chip" data-cut="collapse" title="连同兄弟节点一起收回到上一级">收起到 '
+      if (v.collapsible)
+        h += '<button class="chip" data-cut="collapse" title="连同框里的兄弟节点一起收回到上一级">收起到 '
           + esc(short(v.parent)) + '</button>';
       return h + '</div>';
     },
@@ -439,13 +457,15 @@ window.CS = window.CS || {};
 
     /* ---- 左：一条边承载了什么 ---- */
     showEdge: function (a, b) {
+      delete det.dataset.pkg;
       det.innerHTML = '<h2>' + esc(short(a)) + '<span class="arr">→</span>' + esc(short(b)) + '</h2>'
         + '<div class="sub">' + esc(a) + ' → ' + esc(b) + '</div><p class="hint">读取中…</p>';
-      var self = this;
+      var self = this, tok = ++this._detTok;
       CS.ds.edge(a, b).then(function (E) {
+        if (tok !== self._detTok) return;          // 这期间面板已经换了内容
         if (!E) { det.querySelector('.hint').textContent = '导出版里没有这条边的详情'; return; }
         self._renderEdge(E);
-      }).catch(function (e) { det.querySelector('.hint').textContent = '读取失败：' + e.message; });
+      }).catch(function (e) { if (tok === self._detTok) det.querySelector('.hint').textContent = '读取失败：' + e.message; });
     },
 
     _renderEdge: function (E) {
@@ -495,6 +515,7 @@ window.CS = window.CS || {};
     },
 
     showEdgeSide: function (a, b) {
+      this._sideTok++;
       side.innerHTML = '<h3>这条边的解读</h3>'
         + '<p class="hint">边本身不单独写解读：它为什么存在，由两端模块的解读回答'
         + '（「为什么这样切、和相邻模块的分界是什么」）。</p>'
@@ -507,20 +528,23 @@ window.CS = window.CS || {};
 
     /* ---- 右：解读层 ---- */
     showNote: function (id) {
-      side.innerHTML = '<h3>' + esc(id.split('.').pop()) + ' 的解读</h3>'
+      side.innerHTML = '<h3>' + esc(short(id)) + ' 的解读</h3>'
         + '<p class="hint">读取中…</p>';
-      var self = this;
-      CS.ds.note(id).then(function (nt) { self._renderNote(id, nt); })
-                    .catch(function (e) { side.innerHTML = '<h3>解读</h3><p class="hint">读取失败：'
-                      + esc(e.message) + '</p>'; });
+      // 请求回来之前面板可能已经换了内容（再点一次取消选中、换了节点）：那就丢掉这次的结果
+      var self = this, tok = ++this._sideTok;
+      CS.ds.note(id).then(function (nt) { if (tok === self._sideTok) self._renderNote(id, nt); })
+                    .catch(function (e) {
+                      if (tok === self._sideTok)
+                        side.innerHTML = '<h3>解读</h3><p class="hint">读取失败：' + esc(e.message) + '</p>';
+                    });
     },
 
     _renderNote: function (id, nt) {
-      var short = id === OVERVIEW ? '仓库总览' : id.split('.').pop();
+      var title = id === OVERVIEW ? '仓库总览' : short(id);
       var tag = nt.present ? (nt.stale ? '<span class="tagpill stale">可能过期</span>'
                                        : '<span class="tagpill noted">已解读</span>')
                            : '<span class="tagpill">未解读</span>';
-      var head = '<h3>' + esc(short) + (id === OVERVIEW ? ' ' : ' 的解读 ') + tag + '</h3>';
+      var head = '<h3>' + esc(title) + (id === OVERVIEW ? ' ' : ' 的解读 ') + tag + '</h3>';
       var probs = (nt.problems || []);
       var check = probs.length ? '<div class="stalewarn">机器核对：这份解读里有 ' + probs.length
           + ' 处引用在代码里对不上<ul>' + probs.map(function (p) {
