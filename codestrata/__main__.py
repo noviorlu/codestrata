@@ -141,6 +141,11 @@ def cmd_check(a) -> int:
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
     targets = a.targets or (list(idx["packages"]) + [_notes.OVERVIEW])
+    if a.fix:
+        for t in targets:
+            n = _notes.fix_refs(repo, idx, t)
+            if n:
+                print(f"  修正 {t}：{n} 处引用改到了新行号（内容仍需重读确认，所以还标着过期）")
     bad = 0
     for t in targets:
         nt = _notes.load(repo, idx, t)
@@ -236,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="机器核对已写的解读（过期 / 引用不存在）")
     c.add_argument("repo", nargs="?", default=".")
     c.add_argument("targets", nargs="*")
+    c.add_argument("--fix", action="store_true",
+                   help="把只是挪了位置的 file:line 引用改到新行号（不会把过期标记去掉）")
     c.set_defaults(fn=cmd_check)
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")

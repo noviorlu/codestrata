@@ -33,6 +33,37 @@ import 了不等于用了，用了不等于这次跑到了。每条边都拿「�
 
 选中用蓝色光晕，不改边本身的颜色——选中一个节点时，最想看的恰恰是它的边里哪些是真调用。
 
+## trace 真实部署
+
+hot 图的 case 往往是「起一个服务、发一次请求」，被 trace 的是 pip 装好的包、拆成好几个进程。
+codestrata 为此处理了几件事：
+
+- **跑的是安装包也能叠图。** 执行路径落在 `site-packages/<顶层包>/` 下时映射回仓库文件，
+  并逐文件比对内容；不一致会警告行号不可信。
+- **子进程数据不丢。** 拦截 `os._exit`（multiprocessing 的 fork 子进程这样退出）、每 10 秒落盘
+  （被 SIGKILL 最多丢 10 秒）、fork 后清零计数（不重复计入父进程）。
+- **分阶段。** case 脚本往 `$CODESTRATA_OUT/PHASE` 写一个名字，各进程 1 秒内切换；之后
+  `--hot 名字@serving` 只看处理请求的那一段，启动时的初始化不会混进来。
+
+```bash
+# case 脚本里（服务就绪后）：
+[[ -n "${CODESTRATA_OUT:-}" ]] && { echo serving > "$CODESTRATA_OUT/PHASE"; sleep 2; }
+codestrata trace <repo> --case demo -- bash case.sh
+codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得到单独排版的 hot 图
+```
+
+读 hot 图要知道两件事：「调用方」是最近的仓库内的帧，穿过仓库外代码（如 vLLM 内部）的调用
+会显示成直接调用；调用次数高的多半是轮询，不等于重要。
+
+## 大仓库
+
+- `scan --expand PKG`：只把太大的那个包按子目录拆一层（比如 vllm-omni 的
+  `vllm_omni.model_executor.models`，45 个模型族），其余保持包粒度。
+- 泳道放不下时折行，框永远装得下标签；hot 视图单独排版，只放跑到的包。
+- 作者写的文档自动挂到包上：包内 README、frontmatter 用 `primary_code_paths` 声明了代码路径的
+  设计文档、开头用反引号写出仓库路径的文档。它们出现在详情面板和给 agent 的输入包里——
+  「为什么这样切」往往作者已经写过。
+
 ## 为什么不用 OpenGrok / Sourcetrail
 
 - OpenGrok 要 Java + Tomcat + universal-ctags，为读代码架一套太重，而且它给的是**搜索与交叉引用**，
@@ -102,12 +133,13 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 ## 用法
 
 ```bash
-codestrata scan  <repo>                       # 静态扫描
-codestrata serve <repo> [--hot CASE]          # 本地部署前端
+codestrata scan  <repo> [--expand PKG]        # 静态扫描
+codestrata serve <repo> [--hot CASE[@阶段]]    # 本地部署前端
 codestrata trace <repo> --case NAME -- CMD    # 跑一个 case，记录真实调用（子进程一并 trace）
 codestrata tasks <repo> [--write]             # 待解读 + 输入包
 codestrata note  <repo> <模块> <file.md>       # 写回解读（总览用 _overview）
-codestrata check <repo> [模块 ...]             # 机器核对解读：过期、引用漂移、名字不存在
+codestrata check <repo> [模块 ...] [--fix]     # 机器核对解读：过期、引用漂移、名字 / 路径不存在
+                                              # --fix 把只是挪了位置的引用改到新行号（不去掉过期标记）
 codestrata graph <repo> [--hot CASE]          # 导出单文件
 ```
 

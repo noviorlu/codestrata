@@ -98,15 +98,21 @@ window.CS = window.CS || {};
     /* ---- 左：机器事实 ---- */
     showPkg: function (id, symKey) {
       var v = (D.pkgs || {})[id] || {}, x = CS.graph.nb(id);
+      // 静态 import 图里没有、只在 runtime 出现的依赖（按名字加载、注册表、鸭子类型）
+      var dyn = { i: [], o: [] };
+      CS.graph.edges.forEach(function (E) {
+        if (E.kind !== 'dyn') return;
+        if (E.a === id) dyn.o.push(E.b); if (E.b === id) dyn.i.push(E.a);
+      });
       var list = (D.pkgSyms || {})[id] || [];
       var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0;
       function pills(a, l, out) {
         if (!a.length) return '';
         return '<div class="kv"><span>' + l + '</span>' + a.map(function (i) {
           var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || {}, inf = E.info || {};
-          var tag = inf.uses ? inf.uses + ' 符号' : '只 import';
+          var tag = E.kind === 'dyn' ? E.hits + ' 次' : (inf.uses ? inf.uses + ' 符号' : '只 import');
           return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(i.split('.').pop())
-            + '</button><button class="eb2' + (inf.uses ? '' : ' imp') + (E.hits ? ' warm' : '')
+            + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + (E.hits ? ' warm' : '')
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
         }).join('') + '</div>';
       }
@@ -119,6 +125,7 @@ window.CS = window.CS || {};
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
         + '<span>函数 <b>' + (v.funcs || 0) + '</b></span></div>'
         + pills(x.o, '依赖 →', true) + pills(x.i, '← 被依赖', false)
+        + pills(dyn.o, 'runtime 才出现 →', true) + pills(dyn.i, '← runtime 才出现', false)
         + this._docs(id)
         + this._files(id)
         + (list.length ? ('<div class="slist">' + list.slice(0, 40).map(function (s) {
@@ -227,7 +234,8 @@ window.CS = window.CS || {};
       var sub = (E.static_edge ? E.n_sites + ' 条 import 语句' : '静态 import 图里<b>没有</b>这条边')
         + (rt ? '　·　runtime 跨这条边调用 <b>' + c.calls + '</b> 次'
               : '　·　没有 runtime 数据：只能说「引用了」，不能说「调用了」')
-        + (E.import_exec ? '<br>另有 ' + E.import_exec + ' 次是 import 触发的模块顶层执行，不算调用' : '');
+        + (E.import_exec ? '<br>另有 ' + E.import_exec + ' 次是 import 触发的模块顶层执行，不算调用' : '')
+        + (rt ? '<br><span class="lab">「调用方」是最近的仓库内的帧：中间经过仓库外的代码（比如 vLLM 内部）时，会显示成直接调用。</span>' : '');
       var pills = [];
       if (rt) {
         pills.push(['confirmed', '确认调用', c.confirmed]);

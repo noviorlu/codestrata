@@ -128,7 +128,7 @@ def save(repo: Path, index: dict, target: str, body: str, *,
     m["code_sha"] = code_sha(repo, index, target, kind)
     m.setdefault("status", "draft")
     # 给每处 file:line 引用记下那一行内容的指纹：代码改了之后能精确指出哪处引用漂了
-    refs = _ref_snapshot(repo, index, body)
+    refs = _ref_snapshot(repo, index, body, target)
     if refs:
         m["refs"] = refs
     else:
@@ -375,6 +375,7 @@ def _overview_pack(repo: Path, index: dict) -> str:
 # ---------------------------------------------------------------- 机器核对
 
 _REF_RE = re.compile(r"([\w./-]+\.(?:py|pyi|js|css|html|c|cc|cpp|h|hpp|cu|cuh)):(\d+)")
+_FILE_EXTS = {"toml", "yaml", "yml", "json", "md", "txt", "cfg", "ini", "sh", "lock", "jinja", "html"}
 _TICK_RE = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`")
 
 
@@ -382,22 +383,28 @@ def _line_fp(text: str) -> str:
     return hashlib.sha256(text.strip().encode()).hexdigest()[:8]
 
 
-def _resolve_ref(repo: Path, index: dict, rel: str) -> tuple[Path | None, str]:
-    """解读里的文件引用 → 实际路径。允许只写文件名（payload.py:83），在已扫描的文件里找唯一匹配。"""
+def _resolve_ref(repo: Path, index: dict, rel: str, target: str | None = None) -> tuple[Path | None, str]:
+    """解读里的文件引用 → 实际路径。允许只写文件名或包内相对路径（payload.py:83、
+    duplex/policy.py:64），在已扫描的文件里找唯一匹配；有多个时，优先这份解读
+    所描述的包自己的文件——一个包的解读里写短路径，指的几乎总是自己包里的。"""
     p = repo / rel
     if p.is_file():
         return p, ""
-    cands = [r for r in list(index.get("files") or {}) + list(index.get("aux") or {})
-             if r == rel or r.endswith("/" + rel)]
+    owner = {**(index.get("aux") or {}), **(index.get("files") or {})}
+    cands = [r for r in owner if r == rel or r.endswith("/" + rel)]
+    if len(cands) > 1 and target:
+        mine = [r for r in cands if owner[r] == target]
+        if len(mine) == 1:
+            cands = mine
     if len(cands) == 1:
         return repo / cands[0], ""
-    return None, ("文件不存在" if not cands else f"文件名有歧义：{cands[:3]}")
+    return None, ("文件不存在" if not cands else f"文件名有歧义，写长一点：{cands[:3]}")
 
 
-def _ref_snapshot(repo: Path, index: dict, body: str) -> str:
+def _ref_snapshot(repo: Path, index: dict, body: str, target: str | None = None) -> str:
     out = []
     for m in _REF_RE.finditer(body):
-        p, _ = _resolve_ref(repo, index, m.group(1))
+        p, _ = _resolve_ref(repo, index, m.group(1), target)
         if not p:
             continue
         lines = p.read_text(encoding="utf-8", errors="replace").split("\n")
@@ -429,7 +436,7 @@ def verify(repo: Path, index: dict, target: str) -> list[dict]:
             snap[ref] = fp
     for m in _REF_RE.finditer(body):
         rel, ln = m.group(1), int(m.group(2))
-        p, err = _resolve_ref(repo, index, rel)
+        p, err = _resolve_ref(repo, index, rel, target)
         if not p:
             probs.append({"kind": "ref", "text": m.group(0), "msg": err})
             continue
@@ -449,6 +456,17 @@ def verify(repo: Path, index: dict, target: str) -> list[dict]:
             probs.append({"kind": "drift", "text": m.group(0), "msg": msg,
                           "moved_to": moved[0] if len(moved) == 1 else None})
 
+    # 反引号里的路径（`docs/design/fullduplex.md`、`engine/duplex/`）：要真的存在。
+    # 带通配符的是模式，不核对；仓库根下找不到时，允许是包内的相对路径
+    all_files = list(index.get("files") or {}) + list(index.get("aux") or {})
+    for m in re.finditer(r"`([\w.-]+(?:/[\w.-]+)+/?)`", body):
+        path = m.group(1).rstrip("/")
+        roots = (index.get("repo") or {}).get("roots") or []
+        if (repo / path).exists() or any((repo / r / path).exists() for r in roots) or any(f == path or f.endswith("/" + path) or
+                                         ("/" + path + "/") in ("/" + f) for f in all_files):
+            continue
+        probs.append({"kind": "path", "text": m.group(1), "msg": "仓库里没有这个路径"})
+
     names: set[str] = set()
     for s in (index.get("symbols") or {}).values():
         names.update(s["n"].split("."))
@@ -456,6 +474,12 @@ def verify(repo: Path, index: dict, target: str) -> list[dict]:
     words: set[str] | None = None
     for m in _TICK_RE.finditer(body):
         tok = m.group(1)
+        if tok.rsplit(".", 1)[-1] in _FILE_EXTS and "." in tok:
+            # `pyproject.toml`、`minicpmo_4_5.yaml` 是文件名：核对仓库里有没有这个文件
+            if (repo / tok).exists() or next(repo.rglob(tok), None) is not None:
+                continue
+            probs.append({"kind": "name", "text": tok, "msg": "仓库里没有这个文件"})
+            continue
         if tok in names or tok.split(".")[-1] in names:
             continue
         if words is None:                       # 懒加载：全仓源码里出现过的标识符
@@ -488,3 +512,26 @@ def _stdlib_has(dotted: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def fix_refs(repo: Path, index: dict, target: str) -> int:
+    """把「引用的那一行已经移到第 N 行」的引用改成新行号，并刷新指纹。
+
+    只动行号，**不动 code_sha**：代码改了，解读的内容还对不对要人重读确认，
+    所以修完它照样标着过期，直到有人重新保存。返回修了几处。
+    """
+    st = load(repo, index, target)
+    if not st["present"]:
+        return 0
+    moved = {p["text"]: p["moved_to"] for p in verify(repo, index, target)
+             if p["kind"] == "drift" and p.get("moved_to")}
+    if not moved:
+        return 0
+    body = _REF_RE.sub(lambda m: (f"{m.group(1)}:{moved[m.group(0)]}" if m.group(0) in moved
+                                  else m.group(0)), st["md"])
+    meta = dict(st["meta"])
+    refs = _ref_snapshot(repo, index, body, target)
+    if refs:
+        meta["refs"] = refs
+    note_path(repo, target).write_text(dump(meta, body), encoding="utf-8")
+    return len(moved)

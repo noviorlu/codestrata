@@ -2,25 +2,26 @@
 
 hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast，hot 图是这里。
 
-两个必须处理的现实问题：
+四个必须处理的现实问题：
 
 1. **多进程。** vLLM / vllm-omni 这类框架会 fork 出一堆工作进程（每个 stage 一个
    engine core），只 trace 父进程会丢掉最关键的部分。做法是往 PYTHONPATH 前面插一个
    临时目录、里面放 sitecustomize.py：**每个**新起的 Python 进程都会自动 import 它，
-   于是自动挂上 hook，按 pid 各写一份，最后合并。
+   于是自动挂上 hook，按 pid 各写一份，最后合并。子进程不一定跑 atexit
+   （multiprocessing 的 fork 子进程以 os._exit 结束），所以另外拦截 os._exit、并每
+   10 秒落一次盘；fork 后子进程的计数清零，免得重复计入父进程的调用。
 
 2. **开销。** sys.setprofile 对每次调用都回调，跑大框架会慢到不可用。Python 3.12+ 用
    sys.monitoring：仓库外的代码第一次命中就返回 DISABLE，之后不再回调，开销低一个量级。
    老版本退回 setprofile。
 
-   case 可以分阶段：往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后写 serving），
-   之后用 `--hot 名字@serving` 只看那一段——启动时的初始化不会混进「请求走了哪条路」。
-   子进程不一定跑 atexit（multiprocessing 的 fork 子进程以 os._exit 结束），所以另外
-   拦截 os._exit、并每 10 秒落一次盘；fork 后子进程的计数清零，免得重复计入父进程的调用。
-
 3. **调用者要对。** 要知道「谁调了谁」就得维护调用栈：进（PY_START / PY_RESUME）和出
    （PY_RETURN / PY_YIELD / PY_UNWIND）都要订阅。只订阅 PY_START 的话，调用者会变成
    「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
+
+4. **启动和请求要分开。** 起一个服务再发请求时，启动阶段的初始化会淹没请求本身。
+   case 可以分阶段：往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后写 serving），
+   之后用 `--hot 名字@serving` 只看那一段。
 
 产出 trace-<case>.json：
 
