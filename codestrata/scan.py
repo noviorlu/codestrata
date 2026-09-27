@@ -36,6 +36,8 @@ SKIP_DIRS = {
 # 算进去会把「架构高度」彻底冲掉：在 vllm-omni 上，把 tests/ 算进来会让
 # entrypoints 从 +0.85 掉到 -0.33（因为测试大量 import 它，入度暴涨）。
 # 注意 examples/ 仍然是 hot 图的 case 来源，只是不参与静态图与高度计算。
+AUX_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl", ".cu", ".cuh"}
+
 NON_LIB_DIRS = {
     "tests", "test", "testing", "examples", "example", "samples",
     "benchmarks", "benchmark", "bench", "docs", "doc", "scripts",
@@ -63,6 +65,7 @@ class Symbol:
     module: str          # 点分模块名
     pkg: str             # 聚合用的包名
     bases: list[str] = field(default_factory=list)
+    end: int = 0         # 最后一行；runtime 里的闭包 / lambda 靠它归到外层符号
 
     def key(self) -> str:
         return f"{self.module}:{self.name}"
@@ -74,7 +77,18 @@ class Symbol:
             d["dl"] = self.dline
         if self.bases:
             d["b"] = self.bases
+        if self.end:
+            d["e"] = self.end
         return d
+
+
+def _use(store: dict, a: str, b: str, sym: str, f: str, line: int) -> None:
+    """记一次跨包使用。同一行重复出现（a.x.y 链）只记一次。"""
+    if not b or a == b:
+        return
+    lst = store.setdefault((a, b), {}).setdefault(sym, [])
+    if not lst or lst[-1] != [f, line]:
+        lst.append([f, line])
 
 
 def iter_py_files(root: Path) -> Iterable[Path]:
@@ -145,6 +159,9 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
     pkg_cls: dict[str, int] = {}
     pkg_fn: dict[str, int] = {}
     edges: dict[tuple[str, str], int] = {}
+    edge_sites: dict[tuple[str, str], list] = {}
+    edge_uses: dict[tuple[str, str], dict] = {}
+    edge_dead: dict[tuple[str, str], list] = {}
     n_files = n_err = 0
 
     def pkg_of(module: str) -> str:
@@ -181,14 +198,16 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                             except Exception:
                                 pass
                         dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
-                        s = Symbol(qn, "class", str(rel), child.lineno, dl, module, pkg, bases)
+                        s = Symbol(qn, "class", str(rel), child.lineno, dl, module, pkg, bases,
+                                   child.end_lineno or 0)
                         symbols[s.key()] = s
                         pkg_cls[pkg] = pkg_cls.get(pkg, 0) + 1
                         walk(child, qn + ".")
                     elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         qn = f"{prefix}{child.name}"
                         dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
-                        s = Symbol(qn, "func", str(rel), child.lineno, dl, module, pkg)
+                        s = Symbol(qn, "func", str(rel), child.lineno, dl, module, pkg,
+                                   end=child.end_lineno or 0)
                         symbols[s.key()] = s
                         pkg_fn[pkg] = pkg_fn.get(pkg, 0) + 1
                         walk(child, qn + ".")
@@ -203,6 +222,22 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             walk(tree)
 
             # 包级 import 边（只算内部依赖）
+            bound: dict[str, dict] = {}
+            # `if TYPE_CHECKING:` 里的 import 只服务于类型标注，而且常写成字符串标注，
+            # AST 里看不到 Name 引用——不能因此判成死 import
+            typeonly: set[int] = set()
+            for n2 in ast.walk(tree):
+                if isinstance(n2, ast.If):
+                    t = n2.test
+                    if (isinstance(t, ast.Name) and t.id == "TYPE_CHECKING") or \
+                       (isinstance(t, ast.Attribute) and t.attr == "TYPE_CHECKING"):
+                        for n3 in n2.body:
+                            for n4 in ast.walk(n3):
+                                if isinstance(n4, (ast.Import, ast.ImportFrom)):
+                                    typeonly.add(id(n4))
+            is_init = rel.name == "__init__.py"
+            chains: dict[str, dict] = {}
+            src_lines = src.split("\n")
             for node in ast.walk(tree):
                 targets: list[str] = []
                 if isinstance(node, ast.ImportFrom):
@@ -228,12 +263,101 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
                     for a in node.names:
                         if a.name.split(".")[0] in top:
                             targets.append(a.name)
+                if not targets:
+                    continue
+                if isinstance(node, ast.ImportFrom):
+                    names = [a.name for a in node.names]
+                else:
+                    names = [a.name for a in node.names]
+                try:
+                    stmt = ast.unparse(node)
+                except Exception:
+                    stmt = ""
                 for target in targets:
                     if not target:
                         continue
                     dst = pkg_of(target)
                     if dst and dst != pkg and dst.split(".")[0] in top:
                         edges[(pkg, dst)] = edges.get((pkg, dst), 0) + 1
+                        # 点开一条边时要看到「具体用了对方的哪些东西、在哪一行」
+                        edge_sites.setdefault((pkg, dst), []).append({
+                            "f": str(rel), "l": node.lineno, "s": stmt[:200],
+                            "m": target, "n": names[:12]})
+                        # 记下这条 import 在本文件里引入的本地名字，第二遍用来找「实际用到了什么」
+                        why = ("type" if id(node) in typeonly
+                               else "reexport" if is_init else None)
+                        if isinstance(node, ast.ImportFrom):
+                            for a in node.names:
+                                if a.name == "*":
+                                    continue            # 通配导入无法追踪
+                                local = a.asname or a.name
+                                if node.module is None:
+                                    # from . import payload as _payload → _payload 是模块别名
+                                    bound[local] = {"kind": "mod", "sym": target, "dst": dst,
+                                                    "line": node.lineno, "orig": a.name, "why": why}
+                                else:
+                                    # from x.y import Name → Name 可能是符号，也可能是子模块
+                                    bound[local] = {"kind": "name", "sym": f"{target}:{a.name}",
+                                                    "dst": dst, "line": node.lineno,
+                                                    "orig": a.name, "why": why}
+                        else:
+                            for a in node.names:
+                                if a.asname:
+                                    bound[a.asname] = {"kind": "mod", "sym": a.name, "dst": dst,
+                                                       "line": node.lineno, "orig": a.name, "why": why}
+                                elif "." in a.name:
+                                    # import a.b.c：绑定的是根名 a，使用形如 a.b.c.X。
+                                    # 没有任何这样的使用时，几乎总是为了副作用（注册、打补丁）。
+                                    chains[a.name] = {"kind": "chain", "sym": a.name, "dst": dst,
+                                                      "line": node.lineno, "orig": a.name,
+                                                      "why": why or "sideeffect"}
+
+            # 第二遍：本地名字的实际使用点。`_payload.graph_payload(...)` → 用了 graph_payload；
+            # `Orchestrator(...)` → 用了 Orchestrator。这才回答得了「具体用了对方哪些函数」。
+            if bound or chains:
+                used: set[str] = set()
+                for node in ast.walk(tree):
+                    if chains and isinstance(node, ast.Attribute):
+                        # 还原 a.b.c.X 这条链，前缀命中某个 import a.b.c 就算用了 X
+                        parts, cur = [], node
+                        while isinstance(cur, ast.Attribute):
+                            parts.append(cur.attr)
+                            cur = cur.value
+                        if isinstance(cur, ast.Name):
+                            parts.append(cur.id)
+                            parts.reverse()
+                            for cut in range(len(parts) - 1, 0, -1):
+                                mod = ".".join(parts[:cut])
+                                c = chains.get(mod)
+                                if c:
+                                    used.add(mod)
+                                    _use(edge_uses, pkg, c["dst"], f"{mod}:{parts[cut]}",
+                                         str(rel), node.lineno)
+                                    break
+                    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                        b = bound.get(node.value.id)
+                        if b and b["kind"] == "mod":
+                            used.add(node.value.id)
+                            _use(edge_uses, pkg, b["dst"], f"{b['sym']}:{node.attr}",
+                                 str(rel), node.lineno)
+                    elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                        b = bound.get(node.id)
+                        if b:
+                            used.add(node.id)
+                            if b["kind"] == "name":
+                                _use(edge_uses, pkg, b["dst"], b["sym"], str(rel), node.lineno)
+                # 导入了但本文件从没引用过
+                for local, b in list(bound.items()) + list(chains.items()):
+                    if local in used:
+                        continue
+                    why = b["why"]
+                    if not why:
+                        ln = src_lines[b["line"] - 1] if 0 < b["line"] <= len(src_lines) else ""
+                        # 作者用 noqa: F401 明确说了「这个没用的 import 是故意的」
+                        why = "intentional" if ("noqa" in ln and "F401" in ln) else "unused"
+                    edge_dead.setdefault((pkg, b["dst"]), []).append({
+                        "f": str(rel), "l": b["line"], "n": b["orig"],
+                        "sym": b["sym"], "why": why})
 
     # 架构高度
     out: dict[str, int] = {}
@@ -251,9 +375,34 @@ def scan(root: Path, depth: int = 2, roots: list[str] | None = None,
             "alt": round((o - i) / (o + i), 4) if (o + i) else 0.0,
         }
 
+    # 包目录里的 C++ / CUDA 源文件：挂到所在的包下，供浏览和高亮。
+    # 它们不进 import 图——C++ 与 Python 之间的绑定边（pybind、torch.ops）
+    # 需要真正的 C++ 解析（tree-sitter），是另一件事。
+    aux: dict[str, str] = {}
+    for r in roots:
+        base = root / r
+        if not base.exists():
+            continue
+        for dp, dn, fn in os.walk(base):
+            dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+            for f in fn:
+                if os.path.splitext(f)[1].lower() in AUX_EXTS:
+                    rel = Path(dp, f).relative_to(root)
+                    mod = ".".join(rel.parent.parts)
+                    aux[str(rel)] = pkg_of(mod) if mod else ""
+
     return {
         "repo": {"root": str(root), "name": root.name, "roots": roots,
-                 "depth": depth, "n_files": n_files, "n_parse_errors": n_err},
+                 "depth": depth, "n_files": n_files, "n_parse_errors": n_err,
+                 "n_aux": len(aux)},
+        "aux": aux,
+        "edge_sites": {f"{a}|{b}": v for (a, b), v in edge_sites.items()},
+        # 用到的对方符号：{"a|b": {"模块:名字": [[文件, 行], ...]}}
+        "edge_uses": {f"{a}|{b}": v for (a, b), v in edge_uses.items()},
+        # 导入了但没引用。why：unused 真的没用 / type 只在 TYPE_CHECKING 里 /
+        # reexport __init__ 里的再导出 / sideeffect import a.b.c 为了注册或打补丁 /
+        # intentional 行上带 noqa: F401，作者说了是故意的
+        "edge_dead": {f"{a}|{b}": v for (a, b), v in edge_dead.items()},
         "packages": packages,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
         "symbols": {k: s.as_json() for k, s in symbols.items()},
@@ -268,11 +417,18 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     outdir.mkdir(parents=True, exist_ok=True)
     symbols = index.pop("symbols", {})
     files = index.pop("files", {})
+    aux = index.pop("aux", {})
+    sites = index.pop("edge_sites", {})
+    uses = index.pop("edge_uses", {})
+    dead = index.pop("edge_dead", {})
     (outdir / "symbols.json").write_text(
-        json.dumps({"symbols": symbols, "files": files}, ensure_ascii=False),
+        json.dumps({"symbols": symbols, "files": files, "aux": aux,
+                    "edge_sites": sites, "edge_uses": uses, "edge_dead": dead},
+                   ensure_ascii=False),
         encoding="utf-8")
     index["n_symbols"] = len(symbols)
     p = outdir / "index.json"
     p.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
-    index["symbols"], index["files"] = symbols, files      # 调用方还要用
+    index["symbols"], index["files"], index["aux"] = symbols, files, aux   # 调用方还要用
+    index["edge_sites"], index["edge_uses"], index["edge_dead"] = sites, uses, dead
     return p

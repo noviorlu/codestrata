@@ -18,12 +18,14 @@ window.CS = window.CS || {};
     mode: 'embedded',
     canWrite: false,
     canOpenEditor: false,
-    graph: function () { return Promise.resolve(EMB.graph); },
+    graph: function () { return Promise.resolve(EMB); },     // 和 /api/graph 同形：整份 payload
     note: function (t) { return Promise.resolve((EMB.notes || {})[t] || blank(t)); },
     saveNote: function () { return Promise.reject(new Error('导出的单文件是只读的')); },
     tasks: function () { return Promise.resolve(EMB.tasks || []); },
     pack: function (t) { return Promise.resolve((EMB.packs || {})[t] || ''); },
     source: function (k) { return Promise.resolve((EMB.sources || {})[k] || null); },
+    file: function (f) { return Promise.resolve((EMB.files || {})[f] || null); },
+    edge: function (a, b) { return Promise.resolve((EMB.edges || {})[a + '|' + b] || null); },
     openEditor: function () { return Promise.resolve(); }
   } : {
     mode: 'live',
@@ -41,6 +43,8 @@ window.CS = window.CS || {};
       return fetch('/api/pack/' + encodeURIComponent(t)).then(function (r) { return r.text(); });
     },
     source: function (k) { return j('/api/symbol/' + encodeURIComponent(k)); },
+    file: function (f) { return j('/api/file?f=' + encodeURIComponent(f)); },
+    edge: function (a, b) { return j('/api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)); },
     openEditor: function (f, l) {
       return fetch('/api/open?f=' + encodeURIComponent(f) + '&l=' + l).catch(function () {});
     }

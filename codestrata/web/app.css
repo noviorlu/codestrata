@@ -3,24 +3,37 @@
   --ink:#11161f; --body:#39424f; --muted:#6b7686; --faint:#9aa4b2;
   --paper:#f6f7f9; --card:#fff; --sunk:#eef0f4; --line:#dde1e8; --rule:#e6e9ef;
   --hot:#b4690e; --hot-bg:#fdf3e2; --cool:#0f7b74; --cool-bg:#e6f4f2;
-  --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3;
+  --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd;
   --edge:#c3cad5; --shadow:0 1px 2px rgba(17,22,31,.06),0 8px 24px rgba(17,22,31,.05);
+  /* 代码 token：三类语言共用一套语义色，语言专属的构造（Triton 原语、CUDA、预处理）各有一色 */
+  --t-kw:#8f3fb0; --t-str:#2f7d3b; --t-doc:#5b8a62; --t-com:#8a94a3; --t-num:#b4580e;
+  --t-type:#0f6d8a; --t-fn:#2451b7; --t-cls:#8a5a00; --t-dec:#9b6a00; --t-bi:#7a4fb5;
+  --t-self:#b03a48; --t-const:#b4580e; --t-ns:#5d6878;
+  --t-tri:#c2410c; --t-tri-bg:#fff1e6; --t-cuda:#15803d; --t-cuda-bg:#e9f7ee; --t-pre:#7c5a17;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   color-scheme:dark;
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a;
-  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889;
+  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
+  --t-kw:#d19be8; --t-str:#8fd19e; --t-doc:#7fae87; --t-com:#6d7889; --t-num:#f0a868;
+  --t-type:#6cc6e0; --t-fn:#8fb4ff; --t-cls:#e8c170; --t-dec:#e0b24f; --t-bi:#c3a6f0;
+  --t-self:#f08a95; --t-const:#f0a868; --t-ns:#98a3b5;
+  --t-tri:#ff9b5c; --t-tri-bg:#35200f; --t-cuda:#6fdc94; --t-cuda-bg:#10281a; --t-pre:#d6b36a;
 }}
 :root[data-theme=dark]{
   color-scheme:dark;
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a;
-  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889;
+  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
+  --t-kw:#d19be8; --t-str:#8fd19e; --t-doc:#7fae87; --t-com:#6d7889; --t-num:#f0a868;
+  --t-type:#6cc6e0; --t-fn:#8fb4ff; --t-cls:#e8c170; --t-dec:#e0b24f; --t-bi:#c3a6f0;
+  --t-self:#f08a95; --t-const:#f0a868; --t-ns:#98a3b5;
+  --t-tri:#ff9b5c; --t-tri-bg:#35200f; --t-cuda:#6fdc94; --t-cuda-bg:#10281a; --t-pre:#d6b36a;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--body);
@@ -58,20 +71,28 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .lanealt{font-size:9px;fill:var(--faint)}
 .lanealt.empty{font-style:italic;opacity:.7}
 .e{fill:none;stroke:var(--edge);stroke-width:1.2}
+.e.imp{stroke-dasharray:3 3}
 .e.warm{stroke:var(--hot);opacity:.85}
+.e.dyn{stroke-dasharray:6 3}
 /* dim / hi 必须写在 warm 后面：同优先级后者覆盖。早先顺序反了，
-   runtime 边在选中别的节点时永远不淡化，看起来像和选中节点相关。 */
-.e.dim{opacity:.07}.e.hi{stroke:var(--hot);stroke-width:2.4;opacity:1}
+   runtime 边在选中别的节点时永远不淡化，看起来像和选中节点相关。
+   hi 只提不透明度、不改颜色：选中不能把「是不是真调用」这层信息抹掉。 */
+.e.dim{opacity:.07}.e.hi,.e.hover{opacity:1}
+.halo{fill:none;stroke:var(--sel);stroke-width:12;stroke-linecap:round;opacity:0;pointer-events:none}
+.halo.hover{opacity:.13}.halo.on{opacity:.45}
+.gap{fill:none;stroke:var(--card);stroke-width:6;opacity:0;pointer-events:none}.gap.on{opacity:1}
+.ehit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer;pointer-events:stroke}
 .nd{cursor:pointer}
 .nd rect{fill:var(--card);stroke:var(--line);stroke-width:1.2;rx:6}
 .nd .nl{font-size:11.5px;font-weight:600;fill:var(--ink);dominant-baseline:middle}
 .nd .ns{font-size:8.5px;fill:var(--faint);dominant-baseline:middle}
 .nd.dim{opacity:.34}   /* .18 时非邻居的标签读不出来 */
-.nd.sel rect{stroke:var(--hot);stroke-width:2.4}
-.nd.match rect{stroke:var(--hot);stroke-width:2}
+.nd.match rect{stroke:var(--sel);stroke-width:2;stroke-dasharray:4 2}
 .nd.warm rect{fill:var(--hot-bg);stroke:var(--hot)}
+/* 选中必须写在 warm 后面，否则跑到过的节点选中了也还是橙框 */
+.nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
-.nd:focus{outline:none}.nd:focus rect{stroke:var(--hot);stroke-width:2.4}
+.nd:focus{outline:none}.nd:focus-visible rect{stroke:var(--sel);stroke-width:2.4}
 .nd .badge{font-size:8px;font-weight:700}
 .nd .badge.noted{fill:var(--cool)}
 .nd .badge.stale{fill:var(--stale)}
@@ -140,3 +161,124 @@ pre.note-code{background:var(--sunk);border:1px solid var(--rule);border-radius:
 .stalewarn{border-left:3px solid var(--stale);background:var(--stale-bg);padding:9px 11px;
   border-radius:0 6px 6px 0;font-size:12.5px;margin-bottom:10px}
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);font-size:12.5px;color:var(--muted)}
+
+/* ---- 代码 token ---- */
+.t-kw{color:var(--t-kw)}.t-str{color:var(--t-str)}.t-doc{color:var(--t-doc);font-style:italic}
+.t-com{color:var(--t-com);font-style:italic}.t-num,.t-const{color:var(--t-num)}
+.t-type{color:var(--t-type)}.t-fn{color:var(--t-fn);font-weight:600}.t-cls{color:var(--t-cls);font-weight:600}
+.t-dec{color:var(--t-dec)}.t-bi{color:var(--t-bi)}.t-self{color:var(--t-self)}.t-ns{color:var(--t-ns)}
+.t-pre{color:var(--t-pre)}
+.t-tri{color:var(--t-tri);background:var(--t-tri-bg);border-radius:2px}
+.t-tridec{color:var(--t-tri);font-weight:700}
+.t-cuda{color:var(--t-cuda);background:var(--t-cuda-bg);border-radius:2px;font-weight:600}
+/* ---- 语言标记 ---- */
+.langtag{font:600 9.5px/1 ui-monospace,monospace;padding:3px 6px;border-radius:4px;letter-spacing:.03em;
+  border:1px solid var(--line);color:var(--muted);background:var(--sunk);white-space:nowrap}
+.langtag.lang-python{color:var(--t-fn);border-color:var(--t-fn)}
+.langtag.lang-triton{color:var(--t-tri);border-color:var(--t-tri);background:var(--t-tri-bg)}
+.langtag.lang-cpp,.langtag.lang-c{color:var(--t-type);border-color:var(--t-type)}
+.langtag.lang-cuda{color:var(--t-cuda);border-color:var(--t-cuda);background:var(--t-cuda-bg)}
+/* ---- 包详情里的全文按钮 ---- */
+.kv.files{align-items:center}
+.filebtn{display:inline-flex;gap:6px;align-items:center;font:11.5px/1 ui-monospace,monospace;padding:5px 9px;
+  border-radius:6px;border:1px solid var(--line);background:var(--sunk);color:var(--ink);cursor:pointer}
+.filebtn:hover{border-color:var(--hot)}
+.filebtn .fl{font-size:9px;padding:2px 4px;border-radius:3px;background:var(--card);color:var(--muted);
+  border:1px solid var(--rule)}
+.filebtn .fl.lang-python{color:var(--t-fn)}.filebtn .fl.lang-cuda{color:var(--t-cuda)}
+.filebtn .fl.lang-c{color:var(--t-type)}
+/* ---- 全文窗口 ---- */
+.viewer{position:fixed;inset:0;z-index:100;background:rgba(10,13,19,.55);display:flex;
+  padding:max(16px,env(safe-area-inset-top,0px)) 16px max(16px,env(safe-area-inset-bottom,0px))}
+.viewer[hidden]{display:none}
+.vbox{margin:auto;width:min(1280px,100%);height:min(92vh,100%);background:var(--card);border:1px solid var(--line);
+  border-radius:11px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.vhead{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);
+  font:12.5px/1.4 ui-monospace,monospace;flex:none;flex-wrap:wrap}
+.vhead b{color:var(--ink);word-break:break-all}
+.vmeta{color:var(--muted);font-size:11.5px}
+.vhead .sp{margin-left:auto}
+.vbtn,.vclose{font:11.5px/1 ui-monospace,monospace;padding:6px 10px;border-radius:6px;border:1px solid var(--line);
+  background:var(--sunk);color:var(--body);cursor:pointer}
+.vbtn:hover,.vclose:hover{border-color:var(--hot);color:var(--hot)}
+.vclose{font-size:15px;padding:4px 10px}
+.vbody{display:grid;grid-template-columns:250px 1fr;flex:1;min-height:0}
+@media (max-width:760px){.vbody{grid-template-columns:1fr}.voutline{display:none}}
+.voutline{overflow:auto;border-right:1px solid var(--line);background:var(--sunk);padding:6px 0}
+.osym{display:flex;align-items:baseline;gap:6px;width:100%;text-align:left;border:0;background:none;
+  padding:4px 10px;cursor:pointer;font:11.5px/1.45 ui-monospace,monospace;color:var(--body)}
+.osym:hover{background:var(--card)}
+.osym.act{background:var(--hot-bg);color:var(--ink)}
+.osym.d1{padding-left:22px}.osym.d2{padding-left:34px}.osym.d3{padding-left:46px}
+.osym .ok{font-size:9px;padding:1px 3px;border-radius:3px;border:1px solid var(--rule);background:var(--card);
+  color:var(--muted);flex:none}
+.osym .ok.c{color:var(--t-cls);border-color:var(--t-cls)}
+.osym .ok.kn{color:var(--t-cuda);border-color:var(--t-cuda)}
+.osym .on{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.osym .oh{color:var(--hot);font-size:10px}
+.osym .ol{color:var(--faint);font-size:10px;flex:none}
+.vcode{overflow:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);tab-size:4}
+.vcode:focus{outline:none}
+.ln{display:flex;white-space:pre;min-height:19.2px}
+.ln .no{flex:none;width:52px;text-align:right;padding-right:12px;color:var(--faint);user-select:none;
+  border-right:1px solid var(--rule);background:var(--card);position:sticky;left:0}
+.ln .tx{padding-left:12px}
+.ln.focus{background:var(--hot-bg)}
+.ln.focus .no{color:var(--hot);background:var(--hot-bg)}
+.ln.pick{box-shadow:inset 3px 0 0 var(--hot)}
+.ln:hover .no{color:var(--body)}
+
+/* ---- 边：工具栏里的图例兼开关 ---- */
+.chip.lg{display:inline-flex;align-items:center;gap:6px}
+.chip.lg svg{flex:none;overflow:visible}
+.chip.lg .n{font:10.5px/1 ui-monospace,monospace;color:var(--faint);font-weight:400}
+.chip.lg[aria-pressed=false]{opacity:.5}
+.chip.lg[aria-pressed=true]{background:var(--sunk);border-color:var(--line);color:var(--ink)}
+.chip.lg.rt[aria-pressed=true]{background:var(--hot-bg);border-color:var(--hot);color:var(--hot)}
+.edgehint{font-size:12px;color:var(--faint);margin:-4px 0 8px}
+.edgehint b{color:var(--sel);font-weight:600}
+
+/* ---- 边详情 ---- */
+.det h2 .arr{color:var(--faint);font-weight:400;margin:0 6px}
+.ecount{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.ecount>span:not(.dep){font:11.5px/1 ui-monospace,monospace;padding:5px 8px;border-radius:6px;border:1px solid var(--line);color:var(--muted)}
+.ecount b{color:var(--ink);margin-left:3px}
+.ecount .z{opacity:.55}
+.ecount .confirmed{border-color:var(--hot);color:var(--hot);background:var(--hot-bg)}
+.ecount .dynamic{border-color:var(--hot);border-style:dashed;color:var(--hot)}
+.ecount .import_only{border-style:dashed}
+.esec{margin:14px 0 0}
+.esec h4{margin:0 0 3px;font-size:13px;color:var(--ink)}
+.esec h4 .n{color:var(--faint);font-weight:400;font-family:ui-monospace,monospace;font-size:11.5px;margin-left:4px}
+.esec .why{font-size:12.5px;color:var(--muted);margin:0 0 7px}
+.ei{border:1px solid var(--line);border-radius:7px;padding:7px 9px;margin:0 0 6px;font:12px/1.55 ui-monospace,monospace}
+.ei.confirmed{border-left:3px solid var(--hot)}
+.ei.dynamic{border-left:3px dashed var(--hot)}
+.ei.static{border-left:3px solid var(--edge)}
+.ei.import_only{border-left:3px dashed var(--edge)}
+.ei .eh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ei .k{flex:none;width:17px;height:17px;border-radius:4px;display:inline-grid;place-items:center;font-size:10px;font-weight:700;background:var(--sunk);color:var(--muted)}
+.ei .k.c{background:var(--cool-bg);color:var(--cool)}
+.ei .lk{all:unset;cursor:pointer;color:var(--ink);font-weight:600;border-bottom:1px dotted var(--faint)}
+.ei .lk:hover,.ei .lk:focus-visible{color:var(--sel);border-bottom-color:var(--sel)}
+.ei .loc{color:var(--faint);font-size:11px}
+.ei .cnt{margin-left:auto;color:var(--muted);font-size:11px}
+.ei .rt{color:var(--hot);font-size:11px;font-weight:600}
+.ei .eb{margin:5px 0 0 25px;color:var(--muted);font-size:11.5px}
+.ei .eb .row{display:flex;flex-wrap:wrap;gap:3px 8px;align-items:baseline;margin:2px 0}
+.ei .eb .lab{color:var(--faint)}
+.ei .site{all:unset;cursor:pointer;color:var(--muted);border-bottom:1px dotted var(--line)}
+.ei .site:hover,.ei .site:focus-visible{color:var(--sel);border-bottom-color:var(--sel)}
+.ei .src{display:block;color:var(--body);white-space:pre-wrap;word-break:break-all;margin-top:2px}
+.whytag{font-size:10.5px;padding:2px 6px;border-radius:4px;background:var(--sunk);color:var(--muted)}
+.whytag.unused{background:var(--stale-bg);color:var(--stale)}
+.ran{font-size:10.5px}.ran.y{color:var(--cool)}.ran.n{color:var(--faint)}
+details.esites{margin-top:14px;font-size:12.5px}
+details.esites summary{cursor:pointer;color:var(--muted)}
+.dep{display:inline-flex;align-items:stretch}
+.dep .chip{border-radius:999px 0 0 999px;border-right:none}
+.dep .eb2{all:unset;cursor:pointer;font:10.5px/1 ui-monospace,monospace;padding:0 7px;display:inline-flex;align-items:center;
+  border:1px solid var(--line);border-radius:0 999px 999px 0;color:var(--muted)}
+.dep .eb2.imp{border-style:dashed;color:var(--faint)}
+.dep .eb2.warm{color:var(--hot);border-color:var(--hot)}
+.dep .eb2:hover,.dep .eb2:focus-visible{color:var(--sel);border-color:var(--sel)}

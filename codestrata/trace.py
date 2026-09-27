@@ -41,80 +41,117 @@ _root = os.environ.get("CODESTRATA_ROOT")
 _out = os.environ.get("CODESTRATA_OUT")
 if _root and _out:
     _root = os.path.realpath(_root)
-    _funcs = {}
-    _edges = {}
-    _stack = threading.local()
+    _funcs = {}          # "rel:firstlineno" -> 被调次数（模块顶层是 "rel:0"）
+    _fedges = {}         # "调用者key|被调者key" -> 次数（函数粒度，真正的 caller→callee）
+    _tls = threading.local()
+    _relc = {}
 
-    def _rel(fn):
-        # 只记仓库内的代码；仓库外（stdlib、依赖）一律忽略
-        if not fn or fn[0] != "/":
-            return None
-        try:
-            rp = os.path.realpath(fn)
-        except OSError:
-            return None
-        if not rp.startswith(_root + os.sep):
-            return None
-        return rp[len(_root) + 1:]
+    def _rel(code):
+        # 只记仓库内的代码，仓库外（stdlib、torch…）一律忽略。
+        # 缓存必须按文件名、不能按 code 对象：code 对象按内容比较相等且不比 co_filename，
+        # 两个空 __init__.py、或不同文件里同名同行同体的小函数会撞成同一个键。
+        fn = code.co_filename
+        r = _relc.get(fn, 0)
+        if r != 0:
+            return r
+        r = None
+        if fn and fn[0] == "/":
+            try:
+                rp = os.path.realpath(fn)
+            except OSError:
+                rp = ""
+            if rp.startswith(_root + os.sep):
+                r = rp[len(_root) + 1:]
+        _relc[fn] = r
+        return r
 
-    def _record(rel, lineno):
-        k = rel + ":" + str(lineno)
-        _funcs[k] = _funcs.get(k, 0) + 1
-        st = getattr(_stack, "s", None)
-        if st is None:
-            st = _stack.s = []
-        if st:
-            a = st[-1]
-            if a != rel:
-                ek = a + "|" + rel
-                _edges[ek] = _edges.get(ek, 0) + 1
-        st.append(rel)
-        if len(st) > 400:            # 递归/深栈保护
-            del st[:200]
+    def _stack():
+        s = getattr(_tls, "s", None)
+        if s is None:
+            s = _tls.s = []
+        return s
+
+    def _key(code, rel):
+        # 模块顶层记成第 0 行：模块 code 的 firstlineno 是 1，会和写在第 1 行的函数撞键
+        return rel + ":" + ("0" if code.co_name == "<module>" else str(code.co_firstlineno))
+
+    def _enter(code, count):
+        rel = _rel(code)
+        if rel is None:
+            return False
+        k = _key(code, rel)
+        st = _stack()
+        if count:
+            _funcs[k] = _funcs.get(k, 0) + 1
+            if st and st[-1] != k:                 # 递归自调用不算边
+                ek = st[-1] + "|" + k
+                _fedges[ek] = _fedges.get(ek, 0) + 1
+        st.append(k)
+        if len(st) > 2000:                          # 失配时的兜底
+            del st[:1000]
+        return True
+
+    def _leave(code):
+        rel = _rel(code)
+        if rel is None:
+            return False
+        k = _key(code, rel)
+        st = _stack()
+        # 正常情况栈顶就是自己；若因仓库外的帧打乱了顺序，就弹到自己为止
+        if st and st[-1] == k:
+            st.pop()
+        elif k in st:
+            while st and st.pop() != k:
+                pass
+        return True
 
     def _dump():
         try:
             os.makedirs(_out, exist_ok=True)
             p = os.path.join(_out, "part-%d.json" % os.getpid())
             with open(p, "w") as f:
-                json.dump({"pid": os.getpid(),
-                           "argv": sys.argv[:6],
-                           "funcs": _funcs, "edges": _edges}, f)
+                json.dump({"pid": os.getpid(), "argv": sys.argv[:6],
+                           "funcs": _funcs, "func_edges": _fedges}, f)
         except Exception:
             pass
     atexit.register(_dump)
 
     _mon = getattr(sys, "monitoring", None)
     if _mon is not None:
-        # Python 3.12+：只订阅 PY_START，开销远低于 setprofile
-        _TID = _mon.PROFILER_ID
-        try:
-            _mon.use_tool_id(_TID, "codestrata")
-        except Exception:
-            _TID = 3
+        # Python 3.12+。必须同时订阅进出：只订阅 PY_START 不出栈的话，「调用者」会
+        # 变成「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
+        E = _mon.events
+        _TID = None
+        for tid in (_mon.PROFILER_ID, 3, 4, 5):
             try:
-                _mon.use_tool_id(_TID, "codestrata")
+                _mon.use_tool_id(tid, "codestrata")
+                _TID = tid
+                break
             except Exception:
-                _TID = None
+                continue
         if _TID is not None:
-            def _on_start(code, offset):
-                rel = _rel(code.co_filename)
-                if rel is not None:
-                    _record(rel, code.co_firstlineno)
-                return _mon.DISABLE if rel is None else None
-            _mon.register_callback(_TID, _mon.events.PY_START, _on_start)
-            _mon.set_events(_TID, _mon.events.PY_START)
+            D = _mon.DISABLE
+            def _on_start(code, off):
+                return None if _enter(code, True) else D
+            def _on_resume(code, off):               # 生成器/协程恢复：入栈但不算一次调用
+                return None if _enter(code, False) else D
+            def _on_return(code, off, val):          # PY_RETURN / PY_YIELD：出栈
+                return None if _leave(code) else D
+            def _on_unwind(code, off, exc):          # 异常展开出帧。这个事件不能 DISABLE
+                _leave(code)
+            _mon.register_callback(_TID, E.PY_START, _on_start)
+            _mon.register_callback(_TID, E.PY_RESUME, _on_resume)
+            _mon.register_callback(_TID, E.PY_RETURN, _on_return)
+            _mon.register_callback(_TID, E.PY_YIELD, _on_return)
+            _mon.register_callback(_TID, E.PY_UNWIND, _on_unwind)
+            _mon.set_events(_TID, E.PY_START | E.PY_RESUME | E.PY_RETURN
+                            | E.PY_YIELD | E.PY_UNWIND)
     else:
         def _prof(frame, event, arg):
             if event == "call":
-                c = frame.f_code
-                rel = _rel(c.co_filename)
-                if rel is not None:
-                    _record(rel, c.co_firstlineno)
+                _enter(frame.f_code, True)
             elif event == "return":
-                st = getattr(_stack, "s", None)
-                if st:
-                    st.pop()
+                _leave(frame.f_code)
         sys.setprofile(_prof)
         threading.setprofile(_prof)
 '''
@@ -170,7 +207,7 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
           returncode: int | None = None) -> dict:
     """把各进程写的 part-*.json 合并。"""
     funcs: dict[str, int] = {}
-    edges: dict[str, int] = {}
+    fedges: dict[str, int] = {}
     pids: list[dict] = []
     for f in sorted(parts.glob("part-*.json")):
         try:
@@ -181,11 +218,19 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
                      "n_funcs": len(d.get("funcs") or {})})
         for k, v in (d.get("funcs") or {}).items():
             funcs[k] = funcs.get(k, 0) + v
-        for k, v in (d.get("edges") or {}).items():
-            edges[k] = edges.get(k, 0) + v
+        for k, v in (d.get("func_edges") or {}).items():
+            fedges[k] = fedges.get(k, 0) + v
+    # 文件粒度的边由函数粒度派生（跨文件的才算）
+    edges: dict[str, int] = {}
+    for k, v in fedges.items():
+        a, _, b = k.partition("|")
+        fa, fb = a.rpartition(":")[0], b.rpartition(":")[0]
+        if fa != fb:
+            ek = f"{fa}|{fb}"
+            edges[ek] = edges.get(ek, 0) + v
     return {"case": case, "cmd": cmd or [], "returncode": returncode,
             "pids": pids, "n_procs": len(pids),
-            "funcs": funcs, "file_edges": edges}
+            "funcs": funcs, "func_edges": fedges, "file_edges": edges}
 
 
 def file_shas(root: Path, rels) -> dict:
@@ -210,8 +255,11 @@ def stale_files(root: Path, trace: dict) -> list[str]:
 def to_package_graph(trace: dict, index: dict) -> dict:
     """把文件粒度的 trace 折算到包粒度，好直接叠在总图上。
 
-    返回 {"packages": {pkg: hits}, "edges": {"a|b": hits},
-          "symbols": {symbol_key: hits}, "unmapped": n}
+    返回 {"packages": {pkg: hits}, "edges": {"a|b": 调用次数},
+          "symbols": {symbol_key: hits},
+          "edge_calls": {"a|b": {被调符号: {n, f, l, callers: {调用方: {n, f, l}}}}},
+          "edge_import_exec": {"a|b": import 触发的模块执行次数},
+          "module_exec": [顶层代码执行过的文件], "unmapped": n}
     """
     files = index.get("files") or {}
     symbols = index.get("symbols") or {}
@@ -236,23 +284,69 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         except ValueError:
             continue
         pkg = files.get(rel)
-        if pkg:
-            pkg_hits[pkg] = pkg_hits.get(pkg, 0) + n
-        sk = loc2sym.get((rel, lineno))
+        sk = None if lineno == 0 else loc2sym.get((rel, lineno))
         if sk:
             sym_hits[sk] = sym_hits.get(sk, 0) + n
         elif lineno <= 1:
             module_frames += n
+            continue                    # 只被 import 过的包不算「跑到了」
         else:
             anon += n
+        if pkg:
+            pkg_hits[pkg] = pkg_hits.get(pkg, 0) + n
 
+    # 没有名字的帧（闭包、lambda、生成器表达式）归到包住它的最内层命名符号，
+    # 标成 外层符号.<L行号>，这样面板上能说「scan() 里的某个闭包调了它」。
+    spans: dict[str, list] = {}
+    for key, s in symbols.items():
+        if s.get("e"):
+            spans.setdefault(s["f"], []).append((s.get("dl", s["l"]), s["e"], key))
+
+    def label(rel: str, ln: int) -> tuple[str, int]:
+        sk = None if ln == 0 else loc2sym.get((rel, ln))
+        if sk:
+            return sk, symbols[sk]["l"]
+        if ln <= 1:
+            return f"{rel}:<module>", 1
+        inner = max((sp for sp in spans.get(rel, ()) if sp[0] <= ln <= sp[1]),
+                    key=lambda sp: sp[0], default=None)
+        return (f"{inner[2]}.<L{ln}>" if inner else f"{rel}:{ln}"), ln
+
+    # 包间的 runtime 边和函数粒度的明细从同一份 func_edges 算，两边的数字才对得上。
+    # 被调方是 <module> 帧的不算调用——那是 import 语句触发的模块顶层执行，
+    # 单独记在 edge_import_exec 里；否则每条 import 边都会因为「导入过」而被染成橙色。
     edge_hits: dict[str, int] = {}
-    for k, n in trace["file_edges"].items():
+    edge_calls: dict[str, dict] = {}
+    import_exec: dict[str, int] = {}
+    for k, n in (trace.get("func_edges") or {}).items():
         a, _, b = k.partition("|")
-        pa, pb = files.get(a), files.get(b)
-        if pa and pb and pa != pb:
-            ek = f"{pa}|{pb}"
-            edge_hits[ek] = edge_hits.get(ek, 0) + n
+        fa, _, la = a.rpartition(":")
+        fb, _, lb = b.rpartition(":")
+        try:
+            la_i, lb_i = int(la), int(lb)
+        except ValueError:
+            continue
+        pa, pb = files.get(fa), files.get(fb)
+        if not pa or not pb or pa == pb:
+            continue
+        ek = f"{pa}|{pb}"
+        if lb_i == 0 or (lb_i == 1 and (fb, 1) not in loc2sym):
+            import_exec[ek] = import_exec.get(ek, 0) + n
+            continue
+        edge_hits[ek] = edge_hits.get(ek, 0) + n
+        (callee, cl), (caller, rl) = label(fb, lb_i), label(fa, la_i)
+        slot = edge_calls.setdefault(ek, {}).setdefault(
+            callee, {"n": 0, "f": fb, "l": cl, "callers": {}})
+        slot["n"] += n
+        c = slot["callers"].setdefault(caller, {"n": 0, "f": fa, "l": rl})
+        c["n"] += n
+
+    # 哪些模块的顶层代码真的执行过——用来判断「副作用 import」是否在 runtime 生效了
+    module_exec = sorted({k.rpartition(":")[0] for k in trace["funcs"]
+                          if k.endswith(":0") or (k.endswith(":1")
+                              and (k.rpartition(":")[0], 1) not in loc2sym)})
     return {"packages": pkg_hits, "edges": edge_hits, "symbols": sym_hits,
+            "edge_calls": edge_calls, "edge_import_exec": import_exec,
+            "module_exec": module_exec,
             "module_frames": module_frames, "anon": anon,
             "unmapped": module_frames + anon}

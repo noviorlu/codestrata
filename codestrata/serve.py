@@ -8,6 +8,8 @@
     GET  /api/tasks               还没解读 / 已过期的目标，按架构高度自底向上
     GET  /api/pack/<target>       给 agent 的输入包（纯文本 Markdown）
     GET  /api/symbol/<key>        一个符号的源码片段
+    GET  /api/file?f=             整个文件 + 符号大纲（全文窗口用）
+    GET  /api/edge?a=&b=          一条边承载了什么：用到了对方哪些符号、runtime 调了哪些
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
@@ -134,6 +136,19 @@ class Handler(BaseHTTPRequestHandler):
             key = urllib.parse.unquote(path[len("/api/symbol/"):])
             s = _payload.symbol_source(self.repo, self.idx, key)
             return self._json(s) if s else self._json({"error": "unknown symbol"}, 404)
+
+        if path == "/api/edge":
+            a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
+            if a not in self.idx["packages"] or b not in self.idx["packages"]:
+                return self._json({"error": "unknown package"}, 404)
+            return self._json(_payload.edge_detail(self.repo, self.idx, a, b, self.hot))
+
+        if path == "/api/file":
+            rel = (q.get("f") or [""])[0]
+            if not self._in_repo(rel):
+                return self._json({"error": "bad path"}, 404)
+            fv = _payload.file_view(self.repo, self.idx, rel)
+            return self._json(fv) if fv else self._json({"error": "不是已扫描的文件"}, 404)
 
         if path == "/api/open":
             rel = (q.get("f") or [""])[0]

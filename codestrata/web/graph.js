@@ -1,17 +1,47 @@
-/* SVG 绘图。纯函数式：喂数据进来，画出来，把交互回调交给调用方。 */
+/* SVG 绘图。纯函数式：喂数据进来，画出来，把交互回调交给调用方。
+ *
+ * 边的颜色只表达「这条边是什么」，不表达「选没选中」：
+ *   灰实线  静态引用——import 了，而且真的用到了对方的符号
+ *   灰虚线  只 import——一个符号都没用到（再导出 / 类型标注 / 副作用 / 死 import）
+ *   橙色    这次 runtime 真的走过，粗细 ∝ log(调用次数)
+ *   橙虚线  只在 runtime 出现——静态 import 图里没有（插件、getattr、注册表）
+ * 选中用蓝色光晕叠在边下面，边本身的颜色不变——否则选中一个节点后，
+ * 它的所有边都变成同一种颜色，恰好把最想看的信息（哪些是真调用）抹掉了。 */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
   var NS = 'http://www.w3.org/2000/svg';
   function el(t, a) { var e = document.createElementNS(NS, t); for (var k in a) e.setAttribute(k, a[k]); return e; }
 
-  CS.graph = {
-    nodes: {}, edges: [], G: null, hot: null, onPick: null,
-    state: { sel: null, imports: true, hot: true, onlyHot: false, onlyNoted: false },
-    noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
+  /* a、b 两个节点之间的路径。同泳道时从顶边拱过去，否则竖向三次贝塞尔。 */
+  function route(a, b) {
+    if (Math.abs(a.cy - b.cy) < 2) {
+      // 早先画成「a 右缘 → b 左缘」的直线，默认 b 在 a 右侧；b 在左侧时
+      // 这条线会反向穿过两个框、被框挡住，箭头也落在 b 的远端。
+      var dir = b.cx >= a.cx ? 1 : -1;
+      var sx = a.cx + dir * a.w * 0.22, ex = b.cx - dir * b.w * 0.22;
+      var top = Math.min(a.cy - a.h / 2, b.cy - b.h / 2);
+      var lift = Math.min(26, 12 + Math.abs(ex - sx) * 0.08);
+      return 'M' + sx + ',' + (a.cy - a.h / 2) + ' C' + sx + ',' + (top - lift) + ' '
+        + ex + ',' + (top - lift) + ' ' + ex + ',' + (b.cy - b.h / 2 - 3);
+    }
+    var y1 = a.cy + a.h / 2, y2 = b.cy - b.h / 2 - 3;
+    if (b.cy < a.cy) { y1 = a.cy - a.h / 2; y2 = b.cy + b.h / 2 + 3; }
+    var my = (y1 + y2) / 2;
+    return 'M' + a.cx + ',' + y1 + ' C' + a.cx + ',' + my + ' ' + b.cx + ',' + my + ' ' + b.cx + ',' + y2;
+  }
 
-    draw: function (svg, G, hot) {
+  CS.graph = {
+    nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
+    state: { sel: null, selEdge: null, refs: true, imp: true, hot: true, dyn: true,
+             onlyHot: false, onlyNoted: false },
+    noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
+    counts: { ref: 0, imp: 0, warm: 0, dyn: 0 },
+
+    draw: function (svg, G, hot, extra) {
+      extra = extra || {};
       this.G = G; this.hot = hot || null;
+      var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [];
       svg.textContent = '';
       svg.setAttribute('viewBox', '0 0 ' + G.width + ' ' + G.height);
 
@@ -32,10 +62,12 @@ window.CS = window.CS || {};
       });
       svg.appendChild(lg);
 
+      // 箭头是独立的 marker，不会跟着 stroke 变色，每种边色各备一个
       var defs = el('defs', {});
       [['a', 'var(--edge)'], ['ah', 'var(--hot)']].forEach(function (p) {
-        var m = el('marker', { id: p[0], viewBox: '0 0 8 8', refX: '7', refY: '4',
-          markerWidth: '5.5', markerHeight: '5.5', orient: 'auto-start-reverse' });
+        // userSpaceOnUse：箭头大小固定，不随线宽放大（默认按 stroke-width 缩放，粗的 runtime 边箭头会大得离谱）
+        var m = el('marker', { id: p[0], viewBox: '0 0 8 8', refX: '7', refY: '4', markerUnits: 'userSpaceOnUse',
+          markerWidth: '8', markerHeight: '8', orient: 'auto-start-reverse' });
         m.appendChild(el('path', { d: 'M0,0 L8,4 L0,8 z', fill: p[1] })); defs.appendChild(m);
       });
       svg.appendChild(defs);
@@ -45,21 +77,41 @@ window.CS = window.CS || {};
 
       var hotPk = (hot && hot.packages) || {}, hotEd = (hot && hot.edges) || {};
       var maxE = 1; for (var k in hotEd) maxE = Math.max(maxE, hotEd[k]);
-      var eg = el('g', {}); svg.appendChild(eg); this.edges = [];
-      var self = this;
+      // 三层：光晕在最下，可见的边在中间，透明的宽命中区在最上（但仍在节点下面，节点照样能点）
+      var hg = el('g', {}), eg = el('g', {}), xg = el('g', {});
+      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(xg);
+      this.edges = [];
+      var self = this, cnt = { ref: 0, imp: 0, warm: 0, dyn: 0 };
+
+      function add(src, dst, kind, hits, info) {
+        var a = N[src], b = N[dst]; if (!a || !b) return;
+        var d = route(a, b);
+        var E = { a: src, b: dst, kind: kind, hits: hits, info: info,
+                  w: hits ? 1.2 + 2.2 * Math.log1p(hits) / Math.log1p(maxE) : 1.2 };
+        E.halo = el('path', { d: d, class: 'halo' });
+        E.gap = el('path', { d: d, class: 'gap' });   // 光晕中间垫一道底色，灰虚线在蓝底上才看得清
+        E.p = el('path', { d: d });
+        E.x = el('path', { d: d, class: 'ehit' });
+        var tip = el('title', {});
+        tip.textContent = src + ' → ' + dst + '\n'
+          + (kind === 'dyn' ? '静态 import 图里没有这条边（动态分派）'
+             : (info.uses ? '用到对方 ' + info.uses + ' 个符号' : '只 import，没用到任何符号')
+               + (info.dead ? '　·　' + info.dead + ' 个 import 没被引用' : ''))
+          + (hits ? '\nruntime 调用 ' + hits + ' 次' : '') + '\n点击看具体是哪些函数';
+        E.x.appendChild(tip);
+        E.x.onclick = function (ev) { ev.stopPropagation(); self.pickEdge(src, dst); };
+        E.x.onmouseenter = function () { E.p.classList.add('hover'); E.halo.classList.add('hover'); };
+        E.x.onmouseleave = function () { E.p.classList.remove('hover'); E.halo.classList.remove('hover'); };
+        hg.appendChild(E.halo); hg.appendChild(E.gap); eg.appendChild(E.p); xg.appendChild(E.x);
+        self.edges.push(E);
+        cnt[kind]++; if (hits && kind !== 'dyn') cnt.warm++;
+      }
       G.edges.forEach(function (e) {
-        var a = N[e[0]], b = N[e[1]]; if (!a || !b) return;
-        var y1 = a.cy + a.h / 2, y2 = b.cy - b.h / 2 - 3;
-        if (b.cy < a.cy) { y1 = a.cy - a.h / 2; y2 = b.cy + b.h / 2 + 3; }
-        var my = (y1 + y2) / 2, d;
-        if (Math.abs(a.cy - b.cy) < 2) d = 'M' + (a.cx + a.w / 2 + 3) + ',' + a.cy + ' L' + (b.cx - b.w / 2 - 4) + ',' + b.cy;
-        else d = 'M' + a.cx + ',' + y1 + ' C' + a.cx + ',' + my + ' ' + b.cx + ',' + my + ' ' + b.cx + ',' + y2;
-        var hits = hotEd[e[0] + '|' + e[1]] || 0;
-        var p = el('path', { d: d, class: 'e' + (hits ? ' warm' : ''), 'marker-end': 'url(#' + (hits ? 'ah' : 'a') + ')' });
-        if (hits) p.setAttribute('stroke-width', (1.2 + 2.2 * Math.log1p(hits) / Math.log1p(maxE)).toFixed(2));
-        p.dataset.a = e[0]; p.dataset.b = e[1]; p.dataset.hits = hits;
-        eg.appendChild(p); self.edges.push(p);
+        var key = e[0] + '|' + e[1], info = kinds[key] || { uses: 1, dead: 0 };
+        add(e[0], e[1], info.uses ? 'ref' : 'imp', hotEd[key] || 0, info);
       });
+      rtOnly.forEach(function (e) { add(e[0], e[1], 'dyn', e[2], {}); });
+      this.counts = cnt;
 
       var ng = el('g', {}); svg.appendChild(ng); this.nodes = {};
       G.nodes.forEach(function (n) {
@@ -91,10 +143,17 @@ window.CS = window.CS || {};
       this.paint();
     },
 
+    /* 静态邻居（详情面板的「依赖 / 被依赖」用） */
     nb: function (id) {
       var i = [], o = [];
       this.G.edges.forEach(function (e) { if (e[0] === id) o.push(e[1]); if (e[1] === id) i.push(e[0]); });
       return { i: i, o: o };
+    },
+
+    edgeInfo: function (a, b) {
+      for (var i = 0; i < this.edges.length; i++)
+        if (this.edges[i].a === a && this.edges[i].b === b) return this.edges[i];
+      return null;
     },
 
     vis: function (id) {
@@ -105,29 +164,46 @@ window.CS = window.CS || {};
     },
 
     paint: function () {
-      var s = this.state, self = this;
-      this.edges.forEach(function (p) {
-        var isHot = +p.dataset.hits > 0;
-        var show = (isHot ? s.hot : s.imports) && self.vis(p.dataset.a) && self.vis(p.dataset.b);
-        p.style.display = show ? '' : 'none';
-        p.classList.toggle('dim', !!s.sel && show && p.dataset.a !== s.sel && p.dataset.b !== s.sel);
-        p.classList.toggle('hi', !!s.sel && show && (p.dataset.a === s.sel || p.dataset.b === s.sel));
+      var s = this.state, self = this, keep = null;
+      if (s.selEdge) { keep = {}; var ab = s.selEdge.split('|'); keep[ab[0]] = keep[ab[1]] = 1; }
+      else if (s.sel) {
+        keep = {}; keep[s.sel] = 1;
+        this.edges.forEach(function (E) { if (E.a === s.sel) keep[E.b] = 1; if (E.b === s.sel) keep[E.a] = 1; });
+      }
+      this.edges.forEach(function (E) {
+        var warm = E.hits > 0 && s.hot && E.kind !== 'dyn';
+        var show = E.kind === 'dyn' ? s.dyn : (warm || (E.kind === 'ref' ? s.refs : s.imp));
+        show = show && self.vis(E.a) && self.vis(E.b);
+        var mine = s.selEdge ? s.selEdge === E.a + '|' + E.b
+                 : !!s.sel && (E.a === s.sel || E.b === s.sel);
+        var cls = 'e ' + E.kind + (warm || E.kind === 'dyn' ? ' warm' : '')
+                + (keep && !mine ? ' dim' : '') + (mine ? ' hi' : '');
+        E.p.setAttribute('class', cls);
+        E.p.style.strokeWidth = ((warm || E.kind === 'dyn') ? E.w : 1.2) + (mine ? 1 : 0);
+        E.p.setAttribute('marker-end', 'url(#' + (warm || E.kind === 'dyn' ? 'ah' : 'a') + ')');
+        [E.p, E.x, E.halo, E.gap].forEach(function (x) { x.style.display = show ? '' : 'none'; });
+        E.halo.classList.toggle('on', !!s.selEdge && mine);
+        E.gap.classList.toggle('on', !!s.selEdge && mine);
       });
-      var keep = null;
-      if (s.sel) { var x = this.nb(s.sel); keep = {}; keep[s.sel] = 1; x.i.concat(x.o).forEach(function (i) { keep[i] = 1; }); }
       Object.keys(this.nodes).forEach(function (id) {
         var g = self.nodes[id];
         g.style.display = self.vis(id) ? '' : 'none';
         g.classList.toggle('dim', !!keep && !keep[id]);
         g.classList.toggle('sel', s.sel === id);
+        g.classList.toggle('end', !!s.selEdge && !!keep && !!keep[id]);
       });
     },
 
     pick: function (id) {
-      this.state.sel = id; this.paint();
+      this.state.sel = id; this.state.selEdge = null; this.paint();
       if (this.onPick) this.onPick(id);
       var g = this.nodes[id];
       if (g && g.scrollIntoView) g.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+    },
+
+    pickEdge: function (a, b) {
+      this.state.selEdge = a + '|' + b; this.state.sel = null; this.paint();
+      if (this.onPickEdge) this.onPickEdge(a, b);
     },
 
     highlight: function (pred) {
