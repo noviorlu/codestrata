@@ -4,7 +4,7 @@ target: codestrata.scan
 kind: package
 code_sha: d25bd82c694a4c9c
 status: draft
-refs: scan.py:112@e3529493,scan.py:561@f74f5b17,scan.py:579@2a8f89e3,scan.py:581@c176b6f0,payload.py:35@d6513e46,scan.py:588@ae396e12,codestrata/__main__.py:80@d89a80ca,scan.py:1@5f7a6e1c,scan.py:272@255e30bf,scan.py:293@2fd7b37d,scan.py:304@e7e68c0d,scan.py:296@1920e340,scan.py:307@5e10daf1,runs.py:75@fb413b11,trace.py:108@0685df0e,scan.py:298@c8d01747,runs.py:587@2e266090,scan.py:514@2373040a,scan.py:51@b93afa5e,scan.py:400@b2d3284a,scan.py:422@22a9f949,scan.py:391@74e4ca0b,scan.py:63@04872629,scan.py:344@0ee68e12,scan.py:361@5898f2be,scan.py:449@b9696986,scan.py:496@6f938f80,scan.py:433@8526611d,scan.py:192@a99d3e2d
+refs: scan.py:112@e3529493,scan.py:561@f74f5b17,scan.py:579@2a8f89e3,scan.py:581@c176b6f0,payload.py:35@d6513e46,scan.py:588@ae396e12,codestrata/__main__.py:80@d89a80ca,scan.py:1@5f7a6e1c,scan.py:272@255e30bf,scan.py:293@2fd7b37d,scan.py:304@e7e68c0d,scan.py:296@1920e340,scan.py:307@5e10daf1,runs.py:78@fb413b11,trace.py:108@0685df0e,scan.py:298@c8d01747,runs.py:628@2e266090,scan.py:514@2373040a,scan.py:51@b93afa5e,scan.py:400@b2d3284a,scan.py:422@22a9f949,scan.py:391@74e4ca0b,scan.py:63@04872629,scan.py:344@0ee68e12,scan.py:361@5898f2be,scan.py:449@b9696986,scan.py:496@6f938f80,scan.py:433@8526611d,scan.py:192@a99d3e2d
 ---
 
 ## 是什么
@@ -31,12 +31,12 @@ refs: scan.py:112@e3529493,scan.py:561@f74f5b17,scan.py:579@2a8f89e3,scan.py:581
 每个 `.py` 先 `read_bytes`（scan.py:293），同一份字节派两个用处：
 
 - **解码**（scan.py:296）：用 `utf-8-sig`。Windows 编辑器存的文件开头常带 BOM，按普通 utf-8 解码时 BOM 会变成源码里的一个 U+FEFF 字符，`ast.parse` 直接报 `SyntaxError`——早先这种文件整个被算进解析失败（`n_parse_errors`），它的单元、符号、边全从图上消失。utf-8-sig 在解码时就去掉 BOM，行号不受影响（BOM 不占行）。`bytes.decode` 不像 `read_text` 那样做通用换行转换，所以这里手动把 CRLF 和单独的 CR 换成 LF：行数（`src.count("\n")`，scan.py:304）和第二遍查 noqa 用的 `src_lines` 与改用字节读之前完全一样，只用 CR 换行的老文件也不会被算成一行。xref 那边用 `read_text` 读、再手动去掉开头的 BOM，两边对同一个文件看到的仍是同一份文本。
-- **哈希**（scan.py:307）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:75）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:108）是同一种，三边能直接比。必须哈希原始字节而不是解码后的文本：另外两边哈希的都是磁盘上的字节，改成哈希文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，不再多读一遍（docs/design/runs.md 3.5）；这也保证了哈希和 index 里的行号出自同一份内容——分两次读的话，两次之间文件被改，就会记下一个版本的哈希、另一个版本的行号。
+- **哈希**（scan.py:307）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:78）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:108）是同一种，三边能直接比。必须哈希原始字节而不是解码后的文本：另外两边哈希的都是磁盘上的字节，改成哈希文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，不再多读一遍（docs/design/runs.md 3.5）；这也保证了哈希和 index 里的行号出自同一份内容——分两次读的话，两次之间文件被改，就会记下一个版本的哈希、另一个版本的行号。
 
 `file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:298 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
 
 ### 为什么过期判断要和 index 比
-run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:587）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；老办法 `trace.stale_files` 拿 run 去比工作区，这种时候会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
+run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:628）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；老办法 `trace.stale_files` 拿 run 去比工作区，这种时候会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
 
 ### 架构高度而不是拓扑分层
 `alt = (出 − 入) / (出 + 入)`（scan.py:514）。docstring 里记了为什么：Python 仓库普遍循环 import，在 vllm-omni 上 30 个包有 20 个塌进同一个强连通分量，缩点后分层信息全丢；最长路径分层又会退化成 19 层的链。出入度比值不需要无环。这里算的是单元的高度；图上节点的高度由 `cut.view` 在切面上重算（节点内部的边不算）。

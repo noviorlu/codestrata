@@ -29,5 +29,5 @@ for _ in $(seq 1 100); do [[ -s "$READY" ]] && break; sleep 0.1; done
 [[ -s "$READY" ]] || { echo "服务没起来" >&2; exit 1; }
 phase serving
 "$PY" -m fakesvc.client --port "$PORT" --n 3 || exit 1
-[[ "${FAKE_HANG:-}" == 1 ]] && sleep 1000
+[[ "${FAKE_HANG:-}" == 1 ]] && { phase hang; sleep 1000; }   # 请求都处理完了才卡住（测试等这个阶段）
 phase shutdown

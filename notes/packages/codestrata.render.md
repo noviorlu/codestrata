@@ -4,26 +4,26 @@ target: codestrata.render
 kind: package
 code_sha: ac7b762ee1c97dda
 status: draft
-refs: render.py:1@1b5c0234,render.py:17@d0eeb0d0,render.py:20@5e4e1cfc,render.py:26@70185c58,render.py:36@b0254794,payload.py:420@556fb9ff,payload.py:580@e6c4cb43,payload.py:543@52abe3fa,payload.py:559@c7e2ec1e,render.py:30@3c13f3a9
+refs: render.py:1@1b5c0234,render.py:17@d0eeb0d0,codestrata/web/ds.js:101@d7fdf381,codestrata/web/ds.js:35@b67f5ba4,render.py:20@5e4e1cfc,render.py:26@70185c58,render.py:36@b0254794,codestrata/web/app.js:208@b7807a3b,codestrata/web/app.js:42@0a996950,codestrata/web/app.js:227@577c9bd4,codestrata/web/app.js:398@8b036146,codestrata/web/app.js:231@9b6a4b25,codestrata/web/app.js:235@a8b2ab78,codestrata/web/app.js:482@42698abf,codestrata/web/app.js:244@30563aad,codestrata/web/app.js:293@b119d4f6,codestrata/web/app.js:258@ca554534,payload.py:420@556fb9ff,payload.py:580@e6c4cb43,payload.py:543@52abe3fa,payload.py:559@c7e2ec1e,render.py:30@3c13f3a9
 ---
 
 ## 是什么
 单文件导出：把 `codestrata/web/` 下的前端（`web/index.html` + `web/app.css` + 6 个 JS）和一份数据内联成一个 HTML，只读、离线、可以直接发给别人。只有一个函数 `export`，只被 `__main__` 的 `cmd_graph` 调用。
 
 ## 为什么这样切
-和 `serve` 用的是**同一套前端文件**，唯一的差别是数据源：serve 时前端 fetch `/api/*`，导出时读内嵌的 `window.CS_EMBEDDED`。切换由 `web/ds.js` 完成，UI 代码本身不感知（render.py:1）。数据怎么组装是 `payload` 的事（`export_payload`），这里只管打包——所以它不依赖任何内部模块。
+和 `serve` 用的是**同一套前端文件**，唯一的差别是数据源：serve 时前端 fetch /api/*，导出时读内嵌的 `window.CS_EMBEDDED`。切换由 `web/ds.js` 完成，UI 代码本身不感知（render.py:1）。数据怎么组装是 `payload` 的事（`export_payload`），这里只管打包——所以它不依赖任何内部模块。M4 之后两种模式多了一处差别：serve 能在页面里换叠在图上的 run，导出版固定叠导出时那一个；这个差别也收在 `web/ds.js` 里（一个「能不能换」的开关），不用给导出版另写一套 UI。
 
-代价是**脚本清单要手工维护两份**：`web/index.html` 末尾的一串 script 标签给 serve 用，`SCRIPTS` 给导出用（render.py:17）。这次新加了 `web/search.js`，两边都要加；漏了导出不会报错——`web/app.js` 里是「有搜索模块才初始化」，搜索栏和右上角的「搜索」按钮在 HTML 里默认都是隐藏的，导出版就只是悄悄没有搜索。
+代价是**脚本清单要手工维护两份**：`web/index.html` 末尾的一串 script 标签给 serve 用，`SCRIPTS` 给导出用（render.py:17）。`web/search.js` 当初新加时两边都要加；漏了导出不会报错——`web/app.js` 里是「有搜索模块才初始化」，搜索栏和右上角的「搜索」按钮在 HTML 里默认都是隐藏的，导出版就只是悄悄没有搜索。M4 没有新增 JS 文件，换 run 的逻辑都写在 ds / app 里，清单不用动。
 
 ## 读法
-要读懂 `export`，得先知道它打包的前端长什么样（图上看不到，前端不是 Python）。整页是一个应用：上面一条（标题、统计、「?」、边 / 视图开关），图铺满剩下的全部空间、在自己的框里上下左右滚；其余都**浮在图上、半透明**：右上角的搜索栏、图下沿的详情栏，两个都能收起、拖边框改大小（记在浏览器里）。
+要读懂 `export`，得先知道它打包的前端长什么样（图上看不到，前端不是 Python）。整页是一个应用：上面一条（标题、统计、「?」；下一行是 运行 / 阶段 / 边 / 视图 开关），图铺满剩下的全部空间、在自己的框里上下左右滚；其余都**浮在图上、半透明**：右上角的搜索栏、图下沿的详情栏，两个都能收起、拖边框改大小（记在浏览器里）。
 
-- `web/ds.js` —— 数据源层，整个前端只通过它拿数据。live 走 `/api/*`；embedded 读内嵌 JSON，另外补了导出版才需要的：判断某个文件带没带全文、在内嵌文件里自己找引用、把共用目标表里的 xref 目标补回每个文件
+- `web/ds.js` —— 数据源层，整个前端只通过它拿数据。live 走 /api/*；embedded 读内嵌 JSON，另外补了导出版才需要的：判断某个文件带没带全文、在内嵌文件里自己找引用、把共用目标表里的 xref 目标补回每个文件。**当前叠哪个 run 也放在这一层**：CS.ds.run 存「完整 id@阶段」（空 = 只看静态图），live 的图、边详情、引用、输入包四种请求都自动带上 run=（codestrata/web/ds.js:101）——叠加会影响的就这四样，其余模块照旧调 ds，不知道有 run 这回事。embedded 的 run 永远是空、canSwitchRun 为 false（codestrata/web/ds.js:35），它的 runs() 用内嵌的 `hotMeta` 拼一个只有一项的列表，让启动走同一条路
 - `web/graph.js` —— SVG 绘图：泳道、框、节点、边、「＋ / −」展开收起。缩放：图左上角的 ＋ / － / 100%，或按住 Ctrl（Mac 上 ⌘）滚滚轮，以鼠标所在点为中心（触控板捏合在浏览器里也是 Ctrl+滚轮，顺带支持）；「✥」移动模式下按在哪都能拖图，拖完那次 click 在捕获阶段拦掉，不会误选节点。选中时只把看不见的节点滚到「可见区域」中间——详情栏盖住的那截不算可见
 - `web/viewer.js` —— 全文窗口（逐行高亮 + 大纲）。Ctrl+点击名字跳到定义，旁边打开一栏：定义在最上面，下面是所有引用（按文件分组，调用 / 引用 / import）；点定义本身只开这一栏。跳转有「← 返回」栈，和编辑器的「转到定义 / 返回」一样。名字指向哪由 scan 时的交叉引用给出，这里只把能点的名字包一层 span
 - `web/panel.js` —— 详情栏的左右两半：左边模块 / 边的机器事实（文件树、源码片段——片段里也能 Ctrl+点击），右边解读。搜索栏定位到某个文件 / 函数时，由它在文件树里展开并标出那一行
 - `web/search.js` —— 搜索栏：名字索引一次拿全，在前端打分排序，不来回请求。按**名字本身**找（函数看自己的名字、文件看文件名、模块看最后一段），词里带 `.` 或 `/` 才看路径——早先连路径一起匹配，搜目录名时出来的全是那个目录下的函数。点结果先在图上展开到所在模块并选中，再在详情栏里展开到它；`/` 或 Ctrl+K 随时回到搜索框；框里有字时图上包含命中的节点一直高亮，换切面后重新套
-- `web/app.js` —— 启动，串起上面五个：切面（展开 / 收起、连点时只认最后一次、重画后尽量保留选中）、详情栏、拖边框改大小的通用逻辑、「?」帮助。帮助里收着怎么读图、怎么操作，以及 hot 图的来历：case 命令、被 trace 的进程**按命令合并**（跑到仓库代码多的在前）、case 脚本的内容（录制时没存的标明是现在的内容）。上面那条只留一个 hot 标记，点它打开帮助
+- `web/app.js` —— 启动，串起上面五个：切面（展开 / 收起、连点时只认最后一次、重画后尽量保留选中）、叠哪个 run（运行按钮、阶段按钮、URL hash，见下面「换 run」）、详情栏、拖边框改大小的通用逻辑、「?」帮助。帮助里收着怎么读图、怎么操作，以及 hot 图的来历：case 命令、被 trace 的进程**按命令合并**（跑到仓库代码多的在前）、case 脚本的内容（录制时没存的标明是现在的内容）。统计那一行只留一个 hot 标记，点它打开帮助
 
 `SCRIPTS` 的顺序就是依赖顺序：ds 被所有人用，viewer 定义了 panel 要用的 Ctrl+点击逻辑，app 必须最后——见下面的 fragment 模式，它可能一加载就同步启动。
 
@@ -37,12 +37,25 @@ refs: render.py:1@1b5c0234,render.py:17@d0eeb0d0,render.py:20@5e4e1cfc,render.py
 ### fragment 模式
 `fragment=True` 去掉 doctype 和 meta 外壳（render.py:36），给自己会包外壳的宿主（比如 artifact 页面）用。也因为这种宿主会在 DOMContentLoaded 之后才执行内联脚本，`web/app.js` 的启动写成了「已经加载完就直接启动」。
 
+### 换 run（M4，只在 serve 里）
+目标是不重启 serve 就能在「静态图 ↔ 这次 run ↔ 那次 run」之间来回切。
+- **先定 run 再取图**（codestrata/web/app.js:208）：URL hash 里的 `#run=<id>@<phase>` → /api/runs 返回的 default（也就是 `serve --hot` 给的）→ 只看静态图。按 id 或 case 名在列表里找；找不到、或者还不能加载（没有计数：还在录或中断了），就退回静态图并弹一个浮层提示，而不是整页加载失败。两种情况说法不同（「找不到了（删了？）」/「还没有计数，还在录或要 runs merge」），因为该做的事不一样。提示不写进工具栏的进度那一行：图画好后 refreshStatus 的解读统计一回来就把那一行盖掉，所以改成图画完后弹浮层（codestrata/web/app.js:42）。/api/runs 本身失败时也照样把「已知 run」集合设成空（codestrata/web/app.js:227）——否则之后刷新列表时查这个集合会抛错、被 catch 吞掉，run 列表就一直是空的。
+- **hash 里存解析好的完整 id**（codestrata/web/app.js:398）：图回来后按 `hotMeta` 把「run_id@阶段」写回 CS.ds.run 和 hash。case 名会随着重录指到新的 run，存 case 名的话刷新一下看到的就换了一个 run。
+- **运行按钮**：显示 case 和录制时间，弹出的列表第一行是「静态图」，下面按 case 分组。每行：时间（悬停看完整 id）、tags、git 短哈希、活跃进程数、各阶段的函数数、录了时序事件的加「时序」标记、「⚠ 录制后改过 N 个文件」和「录制时安装包和仓库有 N 个文件不一致」；status 不是 ok 的行变淡并列出 problems；没有计数的行不能点，悬停提示去 runs merge。
+- **阶段按钮**：当前 run 有两个以上阶段才出现（「全部」+ 各阶段）。从列表选一个 run 时，有 serving 阶段就先选它（codestrata/web/app.js:231）——启动阶段的初始化调用会淹没请求本身。
+- **切换本身**（codestrata/web/app.js:235）：先改 CS.ds.run、写 hash，然后拿当前切面调 setCut。于是换 run 就是「同一个切面再取一次图」：_cutSeq 丢掉晚回来的旧响应（codestrata/web/app.js:482），连着点几个 run 只认最后一个；keepSelection 让选中的节点 / 边换完还选着。换不过去（run 刚被删、还没有计数，setCut 返回 false）时把 CS.ds.run 和 hash 退回原来那个，并用浮层提示原因（codestrata/web/app.js:244）——不退的话，图还是旧的，之后取边详情、引用、输入包带的却是那个换不过去的 run。但如果这期间已经有更新的请求（_cutSeq 变了），就不退，免得盖掉后来的选择。设计里原本打算把 setCut 推广成 load({open, run, view})，run 放进 ds 之后就用不着了。
+- **新录的 run**：窗口重新获得焦点时刷新列表（codestrata/web/app.js:293），有新的只在按钮上加个点，不自动切过去——正在看的图不该自己变；打开列表时点就消了。
+- **换回静态图**：「只看跑到的」自动关掉（codestrata/web/app.js:258），不然节点会被全藏起来；这个开关连同帮助里的 hot 横幅一起藏掉。
+
+导出版走同一段代码，但按钮是灰的（悬停说明要换请用 serve），不出阶段按钮，也不监听焦点。
+
 ### 过期文件
-Ctrl+点击的行列号是 scan 时的快照。文件在 scan 之后改过（大小或修改时间变了，payload.py:420），链接会落在别的字上，所以宁可不给：全文窗口标一句「重新 scan 才能 Ctrl+点击」，引用列表里来自改过文件的行标「改过」。hot 图另有一套判断（和录制时记下的文件哈希比）：录制后有文件改过时，hot 标记和帮助里都提示叠加可能不准。
+Ctrl+点击的行列号是 scan 时的快照。文件在 scan 之后改过（大小或修改时间变了，payload.py:420），链接会落在别的字上，所以宁可不给：全文窗口标一句「重新 scan 才能 Ctrl+点击」，引用列表里来自改过文件的行标「改过」。hot 图另有一套判断（和录制时记下的文件哈希比）：录制后有文件改过时，hot 标记、帮助和运行列表里都提示叠加可能不准。
 
 ## 局限
 导出版是固定的一个切面加一份有限的数据：
 - 不能展开 / 收起（「＋ / −」不画）；排版宽度是导出时定的，窗口变宽只按比例放大（最多 1.25 倍），不像 serve 按图框宽度重排
+- 只叠导出时那一个 run（`graph --hot`），不能换 run、换阶段；设计里多 run 一起导出排在 M7，时序事件则一律不嵌入
 - 搜索能用（名字索引内嵌了，payload.py:580），但点一个被收着的模块只能选中装着它的节点
 - 整个文件控制在 14 MB 以内（`total_budget`，payload.py:543；单文件宿主上限 16 MB）：先算好其余部分，剩下的额度才给全文，这次跑到过的文件和解读里引用过的文件优先。xref 目标全文件共用一张表（payload.py:559），省下的额度能多带一两百个文件
 - 没带全文的文件只能看顶层符号；Ctrl+点击跳向这种文件时只提示、留在原地；「谁引用了它」只在内嵌了全文的文件里找，会标明结果不全

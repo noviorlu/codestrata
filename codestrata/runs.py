@@ -14,6 +14,8 @@ run 不能重建——一次录制往往要几分钟 GPU（起服务、加载模
   - run 只存原始键（文件:首行号）和录制时实际执行的文件的哈希，加载时现映射到当前的
     index 上（trace.to_package_graph），所以代码改了之后老 run 照样能用；哪些文件在录制
     之后改过，逐个标出来（file_state），而不是让整个 run 作废。
+  - 录了时序事件的（trace --events）：原始日志在 events/raw.tar.gz（原始数据），整理好的 span
+    在 events/spans/（派生，见 events.py）。`runs rm --events-only` 只删这一块。
 
 设计的来龙去脉见 docs/design/runs.md。
 """
@@ -33,6 +35,7 @@ import tarfile
 import time
 from pathlib import Path
 
+from . import events as _events
 from . import trace as _trace
 
 SCHEMA = 2
@@ -283,12 +286,16 @@ def capture(repo: Path, rd: Path, tr: dict, run: dict, *, leftovers: list | None
     return detail
 
 
-def _pack(rd: Path, src: Path) -> bool:
-    """把 src 下的分片打包成 parts.tar.gz：先写临时包、重新打开核对成员数，再替换。
+def _is_event_log(p: Path) -> bool:
+    return p.name.startswith("ev-") and p.name.endswith(".log")
+
+
+def _pack(dst: Path, members: list[Path]) -> bool:
+    """把 members 打包成 dst（tar.gz）：先写临时包、重新打开核对成员数，再替换。
     不会用成员更少的包替换已有的包。"""
-    members = sorted(p for p in src.iterdir() if p.is_file() and not p.name.endswith(".tmp"))
-    dst = rd / "parts.tar.gz"
-    tmp = rd / f"parts.tar.gz.{os.getpid()}.tmp"
+    members = sorted(members)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
     try:
         if dst.is_file():
             with tarfile.open(dst, "r:gz") as tf:
@@ -308,7 +315,35 @@ def _pack(rd: Path, src: Path) -> bool:
         tmp.unlink(missing_ok=True)
 
 
-def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: bool) -> dict:
+def _pack_all(rd: Path, src: Path) -> bool:
+    """src 下的原始数据分两个包：各进程的分片 → parts.tar.gz，时序事件日志 → events/raw.tar.gz。"""
+    files = [p for p in src.iterdir() if p.is_file() and not p.name.endswith(".tmp")]
+    ev = [p for p in files if _is_event_log(p)]
+    ok = _pack(rd / "parts.tar.gz", [p for p in files if not _is_event_log(p)])
+    if ev:
+        ok = _pack(rd / "events" / "raw.tar.gz", ev) and ok
+    return ok
+
+
+def _build_events(rd: Path, src: Path, run: dict) -> dict | None:
+    """src 下有事件日志就整理成 span（派生数据，写 events/spans/）。返回 run.json 的 events 摘要。
+    在打包之后调（原始日志先落进 events/raw.tar.gz）；整理失败只记下来，不耽误计数——
+    之后可以 runs merge 重来。"""
+    ev = sorted(p for p in src.iterdir() if p.is_file() and _is_event_log(p))
+    if not ev:
+        return None
+    raw = rd / "events" / "raw.tar.gz"
+    size = raw.stat().st_size if raw.is_file() else None      # 一律是压缩包的大小
+    try:
+        idx = _events.build(ev, (run.get("clock") or {}).get("mono0_ns"), rd / "events" / "spans")
+    except Exception as e:                                     # noqa: BLE001 —— 派生数据，失败了能重来
+        return {"error": f"{type(e).__name__}: {e}"[:300], "bytes": size}
+    return {"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"],
+            "truncated": idx["truncated"], "n_procs": len({p["pid"] for p in idx["procs"]}), "bytes": size}
+
+
+def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: bool,
+           events: dict | None = None) -> dict:
     """派生数据：计数、各阶段、状态。录制收尾和 runs merge 都走这里；录制时的数据
     （detail 里除 procs 以外的字段、files/）不动。"""
     phases = tr["phases"]
@@ -339,6 +374,8 @@ def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: b
     if detail.get("changed_during") or detail.get("sha_conflicts"):
         n = len(set(detail.get("changed_during") or []) | set(detail.get("sha_conflicts") or []))
         problems.append(f"{n} 个文件在录制过程中被改过")
+    # 时序事件到了行数上限、或整理失败，都不算进 status：计数是完整的，拿 case 名解析时不该因此
+    # 跳到更早的一次；events 摘要里有 truncated / error，runs show 会说
     status = ("failed" if n_funcs == 0 else
               "ok" if not problems and returncode == 0 and stop == "exit" else "partial")
     if not packed:
@@ -350,6 +387,9 @@ def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: b
         t_of.setdefault(name, t)
     order = list(dict.fromkeys([*t_of, *phases]))
     run.pop("status_shown", None)
+    if events is not None:
+        run["events"] = events
+    run.setdefault("events", None)
     run.update({
         "status": status, "problems": problems,
         "phases": [{"name": n, "t_us": t_of.get(n), "n_funcs": len(phases[n]["funcs"]),
@@ -380,12 +420,13 @@ def finalize(repo: Path, rd: Path, tr: dict, *, stop: str, returncode: int | Non
     detail = (_read(rd / "detail.json") if (rd / "detail.json").is_file() else
               capture(repo, rd, tr, run, leftovers=leftovers, attach=attach))
     parts = rd / "parts"
-    packed = True
+    packed, events = True, None
     if parts.is_dir():
-        packed = _pack(rd, parts)
+        packed = _pack_all(rd, parts)             # 原始数据先落包，再整理派生的 span
+        events = _build_events(rd, parts, run)
         if packed:
             shutil.rmtree(parts, ignore_errors=True)
-    return derive(repo, rd, tr, run, detail, packed=packed)
+    return derive(repo, rd, tr, run, detail, packed=packed, events=events)
 
 
 # ---------------------------------------------------------------- 迁移老的 trace-<case>.json
@@ -712,6 +753,24 @@ def remove(repo: Path, run_id: str) -> str:
     return run_id
 
 
+def remove_events(repo: Path, run_id: str) -> str:
+    """只删一个 run 的时序事件（events/，原始日志和 span 都删），计数和其余数据留着。"""
+    rd = runs_dir(repo) / run_id
+    if "/" in run_id or run_id.startswith(".") or not (rd / "run.json").is_file():
+        raise SystemExit(f"没有 id 为 {run_id!r} 的 run（rm 只认完整的 run id，runs ls 里看）")
+    run = _read(rd / "run.json")
+    if live(run):
+        raise SystemExit(f"run {run_id} 还在录制中，不能删")
+    left = _trace.leftovers(rd / "parts") if (rd / "parts").is_dir() else []
+    if left:                                  # 还有进程在写：删了它还会写新的日志进来
+        raise SystemExit(f"还有进程属于这个 run、可能还在往 {rd / 'parts'} 里写：{left}，先停掉它们")
+    shutil.rmtree(rd / "events", ignore_errors=True)
+    # 录制中断、还没 merge 的 run：原始日志还散在 parts/ 里，一起删，否则下次 merge 又整理出来
+    for p in (rd / "parts").glob("ev-*.log") if (rd / "parts").is_dir() else []:
+        p.unlink(missing_ok=True)
+    return _update(rd, lambda r: r.__setitem__("events", None))["id"]
+
+
 def merge_run(repo: Path, ref: str) -> dict:
     """从原始数据重算派生数据（计数、各阶段、状态）。原始分片取 parts.tar.gz 和散着的 parts/
     的并集（录制中断、或收尾时 parts/ 没删干净），并集打包回去——不会拿少的盖多的。
@@ -732,12 +791,13 @@ def merge_run(repo: Path, ref: str) -> dict:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir()
     try:
-        if tarball.is_file():
-            with tarfile.open(tarball, "r:gz") as tf:
-                if sys.version_info >= (3, 12):
-                    tf.extractall(tmp, filter="data")
-                else:
-                    tf.extractall(tmp)
+        for tb in (tarball, rd / "events" / "raw.tar.gz"):
+            if tb.is_file():
+                with tarfile.open(tb, "r:gz") as tf:
+                    if sys.version_info >= (3, 12):
+                        tf.extractall(tmp, filter="data")
+                    else:
+                        tf.extractall(tmp)
         if parts.is_dir():                        # 散着的分片盖在包上面：同名的是同一份或更新的
             for f in parts.iterdir():
                 if f.is_file() and not f.name.endswith(".tmp"):
@@ -749,12 +809,13 @@ def merge_run(repo: Path, ref: str) -> dict:
                   capture(repo, rd, tr, run, attach=(run.get("rec") or {}).get("attach"), late=True))
         packed = True
         if parts.is_dir():
-            packed = _pack(rd, tmp)
-            if packed:
-                shutil.rmtree(parts, ignore_errors=True)
+            packed = _pack_all(rd, tmp)
+        events = _build_events(rd, tmp, run)
+        if parts.is_dir() and packed:
+            shutil.rmtree(parts, ignore_errors=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    return derive(repo, rd, tr, run, detail, packed=packed)
+    return derive(repo, rd, tr, run, detail, packed=packed, events=events)
 
 
 def rerun_command(run: dict, repo: Path) -> str:
@@ -765,6 +826,8 @@ def rerun_command(run: dict, repo: Path) -> str:
     parts = ["codestrata", "trace", str(repo), f"--case={run['case']}"]
     if rec.get("timeout"):
         parts.append(f"--timeout={rec['timeout']:g}")
+    if rec.get("events"):
+        parts.append("--events")
     if rec.get("stop_grace") not in (None, 90.0):
         parts.append(f"--stop-grace={rec['stop_grace']:g}")
     for k, v in (run.get("env") or {}).items():

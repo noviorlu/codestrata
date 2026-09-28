@@ -34,6 +34,15 @@
       </div>
     </header>
     <div class="bar">
+      <!-- 叠哪个 run：静态图 / 录下的某一次运行；分了阶段的再选阶段 -->
+      <span class="lbl">运行</span>
+      <span class="runsel">
+        <button class="chip runbtn" id="runbtn" aria-haspopup="true" aria-expanded="false" aria-controls="runpop"
+                title="选一次录下的运行叠到图上（录一个：codestrata trace）">静态图</button>
+        <span class="rundot" id="rundot" hidden title="有新录的 run"></span>
+        <div class="runpop" id="runpop" role="menu" aria-label="选择 run" hidden></div>
+      </span>
+      <span id="phasechips" style="display:contents"></span>
       <span class="lbl">边</span>
       <span id="edgechips" style="display:contents"></span>
       <span class="lbl">视图</span>

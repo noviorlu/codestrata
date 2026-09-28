@@ -9,7 +9,14 @@ window.CS = window.CS || {};
 
   function j(url, opt) {
     return fetch(url, opt).then(function (r) {
-      if (!r.ok) throw new Error(url + ' → ' + r.status);
+      if (!r.ok) {
+        // 服务端的错误说明（「没有叫 X 的 run」「盘没挂上」）比状态码有用：有就用它
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          var e = new Error(b && b.error ? b.error : url + ' → ' + r.status);
+          e.status = r.status;
+          throw e;
+        });
+      }
       return r.status === 204 ? null : r.json();
     });
   }
@@ -25,6 +32,17 @@ window.CS = window.CS || {};
                   : Promise.reject(new Error('导出的单文件是固定的切面，不能展开 / 收起；要交互请用 codestrata serve'));
     },
     canCut: false,
+    // 导出版只带导出时叠的那一个 run（或者没有），不能换
+    run: '',
+    canSwitchRun: false,
+    runs: function () {
+      var m = EMB.hotMeta;
+      return Promise.resolve({ default: m ? m.run_id + (m.phase ? '@' + m.phase : '') : null,
+        runs: m ? [{ id: m.run_id, case: m.case, status: m.status, problems: m.problems || [], created: m.created,
+                     tags: m.tags || [], note: m.note || '', git: (m.git || {}).commit,
+                     phases: Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }),
+                     loadable: true }] : [] });
+    },
     note: function (t) { return Promise.resolve((EMB.notes || {})[t] || blank(t)); },
     status: function (ids) {
       var out = {};
@@ -76,9 +94,15 @@ window.CS = window.CS || {};
       var q = [];
       if (open) q.push('open=' + encodeURIComponent(open.join(',')));
       if (w) q.push('w=' + Math.round(w));
+      if (this.run) q.push('run=' + encodeURIComponent(this.run));
       return j('/api/graph' + (q.length ? '?' + q.join('&') : ''));
     },
     canCut: true,
+    // 当前叠在图上的 run（「完整 id@阶段」，空 = 只看静态图）。叠加相关的请求（图、边、引用、
+    // 输入包）都带上它，app 只管改这一个值
+    run: '',
+    canSwitchRun: true,
+    runs: function () { return j('/api/runs'); },
     note: function (t) { return j('/api/notes/' + encodeURIComponent(t)); },
     // 一批节点的解读状态（noted / stale / todo），不核对内容，给图上的徽标用
     status: function (ids) { return j('/api/status?ids=' + encodeURIComponent(ids.join(','))); },
@@ -89,13 +113,17 @@ window.CS = window.CS || {};
     },
     tasks: function () { return j('/api/tasks'); },
     pack: function (t) {
-      return fetch('/api/pack/' + encodeURIComponent(t)).then(function (r) { return r.text(); });
+      return fetch('/api/pack/' + encodeURIComponent(t) + (this.run ? '?run=' + encodeURIComponent(this.run) : ''))
+        .then(function (r) { return r.text(); });
     },
     source: function (k) { return j('/api/symbol/' + encodeURIComponent(k)); },
     file: function (f) { return j('/api/file?f=' + encodeURIComponent(f)); },
     outline: function (f) { return j('/api/outline?f=' + encodeURIComponent(f)); },
-    edge: function (a, b) { return j('/api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)); },
-    refs: function (t) { return j('/api/refs?t=' + encodeURIComponent(t)); },
+    edge: function (a, b) {
+      return j('/api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
+               + (this.run ? '&run=' + encodeURIComponent(this.run) : ''));
+    },
+    refs: function (t) { return j('/api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     hasFile: function () { return true; },
     searchIndex: function () { return j('/api/search-index'); },
     reveal: function (node, open) {

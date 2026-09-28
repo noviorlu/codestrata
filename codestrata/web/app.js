@@ -2,15 +2,20 @@
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
-  function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  // 「2026-09-27T15:34:10-0400」→「09-27 15:34」
+  function shortTime(t) { var m = /^\d{4}-(\d\d-\d\d)T(\d\d:\d\d)/.exec(t || ''); return m ? m[1] + ' ' + m[2] : (t || ''); }
 
   CS.app = {
     data: null,
 
     boot: function () {
       var self = this;
-      CS.ds.graph(null, CS.graph.boxWidth()).then(function (d) {
+      // 先定叠哪个 run（URL hash → serve --hot → 只看静态图），再取图
+      this.initRuns().then(function () {
+        return CS.ds.graph(null, CS.graph.boxWidth());
+      }).then(function (d) {
         self.data = d;
         self.header(d);
         CS.panel.init(document.getElementById('det'), document.getElementById('side'), d);
@@ -34,6 +39,7 @@ window.CS = window.CS || {};
         self.cutBar();
         self.refreshStatus();
         self.footer(d);
+        if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);   // 进度栏会被解读统计盖掉，用浮层提示
         if (CS.search) CS.search.init();
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
         self._w = CS.graph.boxWidth();
@@ -186,6 +192,179 @@ window.CS = window.CS || {};
 
     wireRun: function () { /* 目前只是静态内容；留个口子给以后的交互 */ },
 
+    /* ---- 叠哪个 run：静态图 / 某一次录下的运行，分了阶段的再选阶段。
+       选中的是「完整 id@阶段」，放在 CS.ds.run（叠加相关的请求都带上它）和 URL hash 里 ---- */
+    _hashRun: function () {
+      var m = /(?:^#|&)run=([^&]*)/.exec(location.hash || '');
+      return m ? decodeURIComponent(m[1]) : null;
+    },
+
+    _writeHash: function () {
+      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^run=/.test(x); });
+      if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
+      history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
+    },
+
+    initRuns: function () {
+      var self = this;
+      return CS.ds.runs().then(function (r) {
+        self.runList = r.runs || [];
+        self._known = {};
+        self.runList.forEach(function (x) { self._known[x.id] = 1; });
+        var want = self._hashRun();
+        if (want === null) want = r.default || '';
+        if (want && CS.ds.canSwitchRun) {
+          var id = want.split('@')[0];
+          var hit = self.runList.filter(function (x) { return x.id === id || x.case === id; })[0];
+          if (!hit || !hit.loadable) {
+            self._runMissing = '地址里的 run ' + want + (hit ? ' 还没有计数（还在录，或录制中断了要 runs merge）'
+                                                           : ' 找不到了（删了？）') + '，先只看静态图';
+            want = '';
+          }
+        }
+        if (CS.ds.canSwitchRun) CS.ds.run = want;
+        self.wireRunSel();
+      }).catch(function () { self.runList = []; self._known = {}; self.wireRunSel(); });
+    },
+
+    /* 列表里某个 run 默认看哪个阶段：有 serving 就只看 serving（启动时的初始化会淹没请求本身） */
+    _defaultPhase: function (x) {
+      return (x.phases || []).some(function (p) { return p.name === 'serving'; }) ? 'serving' : '';
+    },
+
+    selectRun: function (id, phase) {
+      var self = this, prev = CS.ds.run;
+      CS.ds.run = id ? id + (phase ? '@' + phase : '') : '';
+      this._writeHash();
+      this.closeRunPop();
+      var p = this.setCut(this.curOpen()), mine = this._cutSeq;
+      document.getElementById('prog').textContent = id ? '叠加 run ' + id + (phase ? ' @' + phase : '') + '…' : '重新汇总…';
+      return p.then(function (ok) {
+        // 换不过去（run 被删了、还没有计数）：退回原来那个，免得之后取边、引用、输入包用的是另一个 run
+        if (!ok && self._cutSeq === mine) {
+          CS.ds.run = prev;
+          self._writeHash();
+          self.runBar();
+          if (CS.viewer) CS.viewer.toast('换不过去：' + document.getElementById('prog').textContent);
+        }
+        return ok;
+      });
+    },
+
+    runBar: function () {
+      var self = this, b = document.getElementById('runbtn'), pc = document.getElementById('phasechips');
+      if (!b) return;
+      var d = this.data, m = d && d.hot && d.hotMeta;
+      if (!m && CS.graph.state.onlyHot) {       // 换成了静态图：「只看跑到的」没有意义了（不关掉会把节点全藏起来）
+        CS.graph.state.onlyHot = false;
+        var oh = document.querySelector('[data-t="onlyhot"]');
+        if (oh) oh.setAttribute('aria-pressed', 'false');
+      }
+      b.classList.toggle('on', !!m);
+      b.textContent = m ? m.case + ' · ' + shortTime(m.created) : '静态图';
+      b.title = !CS.ds.canSwitchRun ? '导出的单文件固定叠这一个（或不叠）；要换请用 codestrata serve'
+        : m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
+      var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
+      var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
+      if (!m || phases.length < 2 || !CS.ds.canSwitchRun) { pc.innerHTML = ''; return; }
+      pc.innerHTML = '<span class="lbl">阶段</span>' + [{ name: '' }].concat(phases).map(function (p) {
+        return '<button class="chip" data-ph="' + esc(p.name) + '" aria-pressed="' + ((m.phase || '') === p.name) + '" title="'
+          + (p.name ? '只看 ' + esc(p.name) + ' 这一段' + (p.n_funcs != null ? '（' + p.n_funcs + ' 个函数）' : '') : '各阶段加在一起')
+          + '">' + (p.name ? esc(p.name) : '全部') + '</button>';
+      }).join('');
+      [].forEach.call(pc.querySelectorAll('[data-ph]'), function (x) {
+        x.onclick = function () { if ((m.phase || '') !== x.dataset.ph) self.selectRun(m.run_id, x.dataset.ph); };
+      });
+    },
+
+    wireRunSel: function () {
+      var self = this, b = document.getElementById('runbtn'), pop = document.getElementById('runpop');
+      if (!b || b._wired) return;
+      b._wired = 1;
+      if (!CS.ds.canSwitchRun) { b.disabled = true; return; }
+      b.onclick = function (e) { e.stopPropagation(); if (pop.hidden) self.openRunPop(); else self.closeRunPop(); };
+      document.addEventListener('click', function (e) {
+        if (!pop.hidden && !pop.contains(e.target) && e.target !== b) self.closeRunPop();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !pop.hidden) { e.stopPropagation(); e.preventDefault(); self.closeRunPop(); b.focus(); }
+      }, true);
+      // serve 开着的时候又录了一个：回到页面时刷新列表，有新的只在按钮上加个点，不自动切过去
+      window.addEventListener('focus', function () { self.refreshRuns(true); });
+    },
+
+    refreshRuns: function (quiet) {
+      var self = this;
+      if (!CS.ds.canSwitchRun) return Promise.resolve();
+      return CS.ds.runs().then(function (r) {
+        var fresh = (r.runs || []).some(function (x) { return !self._known[x.id]; });
+        self.runList = r.runs || [];
+        if (fresh && quiet) document.getElementById('rundot').hidden = false;
+        if (!quiet) self.runList.forEach(function (x) { self._known[x.id] = 1; });
+      }).catch(function () {});
+    },
+
+    openRunPop: function () {
+      var self = this, pop = document.getElementById('runpop'), b = document.getElementById('runbtn');
+      document.getElementById('rundot').hidden = true;
+      pop.hidden = false;
+      b.setAttribute('aria-expanded', 'true');
+      pop.innerHTML = '<div class="empty">读取 run 列表…</div>';
+      this.refreshRuns(false).then(function () { if (!pop.hidden) self.renderRunPop(); });
+    },
+
+    closeRunPop: function () {
+      var pop = document.getElementById('runpop'), b = document.getElementById('runbtn');
+      if (!pop || pop.hidden) return;
+      pop.hidden = true;
+      b.setAttribute('aria-expanded', 'false');
+    },
+
+    renderRunPop: function () {
+      var self = this, pop = document.getElementById('runpop'), list = this.runList || [];
+      var cur = this.data && this.data.hot && this.data.hotMeta ? this.data.hotMeta.run_id : '';
+      var h = '<button class="rr" role="menuitem" data-run="" aria-current="' + !cur + '"><span class="rt">静态图</span>'
+        + '<span class="rm">不叠 runtime，只看 import 结构</span><span></span></button>';
+      if (!list.length) {
+        h += '<div class="empty">还没有录下的 run。录一个：<code>codestrata trace &lt;repo&gt; --case NAME -- 命令</code></div>';
+      }
+      var order = [], by = {};
+      list.forEach(function (x) { if (!by[x.case]) { by[x.case] = []; order.push(x.case); } by[x.case].push(x); });
+      order.forEach(function (c) {
+        h += '<div class="rg">' + esc(c) + '</div>';
+        by[c].forEach(function (x) {
+          var ok = x.status === 'ok', ph = (x.phases || []).filter(function (p) { return p.name; });
+          var meta = (x.tags || []).map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('')
+            + (x.git ? 'git <b>' + esc(x.git.slice(0, 8)) + '</b>　' : '')
+            + (x.n_procs_active != null ? x.n_procs_active + ' 个进程　' : '')
+            + (ph.length > 1 ? ph.map(function (p) { return esc(p.name) + ' ' + p.n_funcs; }).join(' / ') + '　'
+               : x.n_funcs != null ? x.n_funcs + ' 个函数　' : '')
+            + (x.events ? '<span class="ev" title="录了时序事件">时序</span>　' : '')
+            + (x.stale && x.stale.changed ? '<span style="color:var(--stale)">⚠ 录制后改过 ' + x.stale.changed + ' 个文件</span>　' : '')
+            + (x.stale && x.stale.mismatch ? '<span style="color:var(--stale)">录制时安装包和仓库有 ' + x.stale.mismatch + ' 个文件不一致</span>　' : '')
+            + (x.note ? '「' + esc(x.note) + '」' : '');
+          h += '<button class="rr' + (ok ? '' : ' weak') + '" role="menuitem" data-run="' + esc(x.id) + '"'
+            + (x.loadable ? '' : ' disabled title="还没有计数：还在录，或录制中断了（codestrata runs <repo> merge ' + esc(x.id) + '）"')
+            + ' aria-current="' + (x.id === cur) + '">'
+            + '<span class="rt" title="' + esc(x.id) + '">' + esc(shortTime(x.created)) + '</span>'
+            + '<span class="rm">' + meta + '</span>'
+            + '<span class="rs ' + (ok ? 'ok' : 'bad') + '">' + esc(x.status || '') + '</span>'
+            + (!ok && x.problems && x.problems.length ? '<span class="rx">' + esc(x.problems.join('；')) + '</span>' : '')
+            + '</button>';
+        });
+      });
+      pop.innerHTML = h;
+      [].forEach.call(pop.querySelectorAll('[data-run]'), function (el) {
+        el.onclick = function () {
+          var id = el.dataset.run, x = list.filter(function (r) { return r.id === id; })[0];
+          if (id === cur) { self.closeRunPop(); return; }
+          self.selectRun(id, x ? self._defaultPhase(x) : '');
+        };
+      });
+      var first = pop.querySelector('[aria-current=true]') || pop.querySelector('.rr');
+      if (first) first.focus();
+    },
+
     header: function (d) {
       var r = d.repo, self = this;
       document.getElementById('h1').textContent = r.name + ' 架构';
@@ -211,8 +390,13 @@ window.CS = window.CS || {};
                  + '</button>' : '');
       var ht = document.querySelector('#stats [data-help]');
       if (ht) ht.onclick = function () { self.help(true); };
+      this.runBar();
+      if (!(d.hot && d.hotMeta)) document.getElementById('hotbanner').innerHTML = '';
       if (d.hot && d.hotMeta) {
         var m = d.hotMeta;
+        // 地址里记完整的 id（case 名会随着重录指到别的 run 上），刷新页面还是同一个 run
+        var ref = m.run_id + (m.phase ? '@' + m.phase : '');
+        if (CS.ds.run !== ref && CS.ds.canSwitchRun) { CS.ds.run = ref; this._writeHash(); }
         document.getElementById('hotbanner').innerHTML =
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
@@ -433,7 +617,10 @@ window.CS = window.CS || {};
       var KEY = { refs: 'refs', imp: 'imp', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
-        if (key === 'onlyHot' && !CS.graph.hot) { b.style.display = 'none'; return; }
+        if (key === 'onlyHot') {                 // 换 run 时会来回切：没叠 runtime 就藏起来
+          b.style.display = CS.graph.hot ? '' : 'none';
+          if (!CS.graph.hot) return;
+        }
         b.onclick = function () {
           s[key] = b.getAttribute('aria-pressed') !== 'true';
           b.setAttribute('aria-pressed', s[key]);

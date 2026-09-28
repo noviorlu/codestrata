@@ -126,7 +126,7 @@
 | `clock` | `{"mono0_ns", "wall0"}`；driver 起跑的时刻，所有 `*_us` 都相对 `mono0` |
 | `phases` | `[{"name": "serving", "t_us": …, "n_funcs": 1657, "n_calls": 934915}, …]`；`t_us` 由 driver 每 100 ms 轮询 PHASE 得到；迁移来的 run 为 null |
 | `summary` | `{n_funcs, n_func_edges, n_files, n_procs, n_procs_active, n_mapped, n_leftovers, n_unclean}` |
-| `events` | `null` 或 `{n_lines, truncated: [pid…], bytes}` |
+| `events` | `null` 或 `{n_lines, n_spans, n_calls, n_procs, truncated: [pid…], bytes}`（bytes 是 events/raw.tar.gz 的大小）；整理 span 失败时是 `{error, bytes}` |
 | `tags` / `note` | run 完成后，只有这两个字段还会被 CLI 改写 |
 | `migrated_from` | 只有迁移来的 run 有 |
 | `sizes` | 各文件的字节数，`runs ls` 汇总大小用 |
@@ -498,6 +498,23 @@ T                                        达到上限，之后不再记（计数
 
 同时验证 `sys._getframe(1)` 在 sys.monitoring 回调里确实是被监控的帧；如果不是，只能退回用栈配对，并在 run.json 里标出 `pairing: "stack"`。
 
+**实现时的调整（M3）**：
+
+- 日志里不写帧地址，写**进程内的 span 号**：C 时分配（`itertools.count`，多线程也不重号），`_xf` 记 `id(帧) → span 号`，R / Y / S 写 span 号。配对因此是精确的，帧地址被复用也不会串。
+- 时间写**相对这个进程映像 t0 的微秒**，文件开头一行 `H <pid> <t0_ns> <ppid>`；整理成 span 时换算成相对 run 的 `mono0`。
+- 真值测试证实：sys.monitoring 回调里 `sys._getframe(1)` 就是被监控的那一帧，同一帧的 START / YIELD / RESUME / RETURN 拿到的 id 相同，同一个协程函数的两个并发实例 id 不同。
+- 线程的入口（`Thread.run`）在仓库外：线程里第一个仓库函数没有「调用方」，和 func_edges 一样不记；它再调别的文件才有事件。
+- 原始日志不进 parts.tar.gz，单独打成 `events/raw.tar.gz`；`runs merge` 取它和散着的 `parts/ev-*.log` 的并集重建 span。
+- M3 评审后补上的：
+  - **PY_THROW 也要订阅**（`throw()` / `close()` / asyncio 取消经它恢复帧，否则清理代码里的调用挂错父亲），而且它和 PY_UNWIND 一样**不能 DISABLE**——返回 DISABLE 会在被 trace 的程序里抛 ValueError（测试里 asyncio 取消就这样崩过）。
+  - `_xf` 存 `(span 号, code)`：半路被丢掉的生成器在 3.12 上关闭时不发事件，帧地址会被别的帧复用；code 对不上就作废旧账。这种 span 显示为没返回（-1）。
+  - 线程号缓存在线程局部变量里，不按 `get_ident()`（glibc 会把退出线程的 ident 分给新线程）。
+  - 行数上限只管调用（C）；返回 / 挂起 / 恢复照写，否则上限之前开始的调用会显示成没返回。上限到了只在 events 摘要里标 truncated，**不改 status**（计数是完整的，case 名不该因此跳到更早的一次）。
+  - 事件缓冲写成功才删；日志按 UTF-8 + backslashreplace 写，名字里的换行替换掉；解析时丢掉没有换行结尾的最后一行。
+  - 第一级折叠按 **(父 span, 段)** 认兄弟（不按深度）：同一线程上交错的两个协程，子调用深度相同但不是兄弟；「段」是这个线程上两次挂起 / 恢复之间，合出来的一行因此不会盖住别的协程的调用。
+  - 同一 pid 的多个映像（exec 前后）线程号接着编；原始日志先落包再整理 span，整理失败只记在 events 摘要里（`error`），不耽误计数。
+- 测试：`tests/test_runs.py` 的 `test_events_*`，场景在 `tests/trace_cases/fake_repo/fakesvc/truth.py`（多了一个第一级折叠的场景：连续 50 次叶子调用合成一条 rep=50，有跨文件子调用的不合）。fake_service 上各阶段 span 的 Σrep 和跨文件 func_edges 逐阶段相等。
+
 ### 7.2 时钟
 
 - 用 `time.monotonic_ns()`。它在 Linux 上是 CLOCK_MONOTONIC，全机共享，不同进程的时间可以直接比；换了机器、重启过都不可比。
@@ -507,15 +524,15 @@ T                                        达到上限，之后不再记（计数
 ### 7.3 整理成 span（派生数据；finalize 和 `runs merge` 都会做）
 
 1. **打包原始日志**：原始 `ev-*.log` 打成 `events/raw.tar.gz`，永久保留。
-2. **配对**：按 (pid, fr) 把 C 和 R 配成 span，每条是 `[t0_us, dur_us, tid, depth, a, b, rep, n_susp]`。
+2. **配对**：按 (pid, span 号) 把 C 和 R 配成 span，每条是 `[t0_us, dur_us, tid, depth, a, b, rep, n_susp]`。
    - 有 Y/S 的 span 标 async，`dur` 是墙钟时间，其中包含挂起的时间；
    - 进程结束时还没返回的，`dur_us = -1`；
-   - depth 取 C 那一刻，这个线程上还没返回的同步 span 数。
-3. **第一级折叠**：同一线程、同一深度、同一对 a→b，并且自己没有跨文件子调用的连续同步兄弟 span，合成一条，`rep = n`。
+   - depth 取 C 那一刻，这个线程上正在执行（没返回、也没挂起）的 span 数。
+3. **第一级折叠**：同一个**父 span** 下、中间这个线程上没有挂起 / 恢复、同一对 a→b、并且自己没有跨文件子调用的连续同步兄弟 span，合成一条，`rep = n`。按父 span 而不按深度：同一线程上交错的两个协程，子调用深度相同但不是兄弟。
 4. **写出**：
-   - 键表写到 `events/spans/keys.json`：`{keys, names, threads}`；
+   - 键表写到 `events/spans/keys.json`：`{keys, threads}`（qualname 在 counts.json.gz 的 names 里）；键丢了的指到 `"?"`；
    - span 按时间排序后分块写进 `p<pid>-NNN.jsonl.gz`，每块最多 10 万行；
-   - `index.json` 记 `[{pid, chunk, t0_us, t1_us, n}]` 和 `truncated`。
+   - `index.json` 记 `{pairing, chunks: [{pid, chunk, t0_us, t1_us, n}], procs, truncated, n_lines, n_spans, n_calls}`。
 
 大小估算：原始日志约 20–30 MB 文本，gzip 后约 4–6 MB；spans 约 2–3 MB。在 M3 实测确认。
 
@@ -621,7 +638,7 @@ T                                        达到上限，之后不再记（计数
   - server 忽略 SIGINT 时，会被记进 leftovers 并被停掉；
   - 录到一半对 driver 发 `kill -9`：`runs ls` 显示「中断」，执行 `runs merge` 后得到一个 partial 的 run。
 
-### M3　时序事件的录制端（约 1.5 天；排在后面所有 UI 之前）
+### M3　时序事件的录制端（约 1.5 天；排在后面所有 UI 之前）　✅ 已完成（CPU 部分；开销实测待 GPU）
 
 - **做什么**：
   - hook 的事件记录（7.1）；
@@ -633,7 +650,9 @@ T                                        达到上限，之后不再记（计数
   - 在 fake_service 上，每个阶段 span 的 `Σrep` 和 counts 里这一阶段跨文件的 `func_edges` 总数一致（允许阶段偏差带来的误差）。
 - **开销实测**：要征得用户同意，在 vllm-omni 上录两次，一次带事件、一次不带。比较 serving 阶段的时长、demo 是否通过、每个进程的行数、压缩后的大小，据此决定事件是否默认打开（见 11）。
 
-### M4　不重启切换 run（约 1 天）
+### M4　不重启切换 run（约 1 天）　✅ 已完成
+
+> 实现：`serve.Handler._hot`（按 run id、阶段、counts 的 mtime 缓存，最近 8 个）、`/api/runs`（「录制后改过几个文件」按 detail 的 mtime 缓存）；前端 `CS.ds.run` 一个值管住所有叠加相关的请求。浏览器验收：换 run 57 ms、换阶段 109 ms 出图；刷新后还是地址里那个 run；serve 开着时新录的 run 回到页面就在按钮上加点；选中的节点换 run 后还选着；换回静态图时自动关掉「只看跑到的」。
 
 - **做什么**：
   - 第 5 节 serve 的改动；

@@ -2,7 +2,7 @@
 
 hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast，hot 图是这里。
 
-四个必须处理的现实问题：
+五个必须处理的现实问题：
 
 1. **多进程。** vLLM / vllm-omni 这类框架会 fork 出一堆工作进程（每个 stage 一个
    engine core），只 trace 父进程会丢掉最关键的部分。做法是往 PYTHONPATH 前面插一个
@@ -16,7 +16,7 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
    sys.monitoring：仓库外的代码第一次命中就返回 DISABLE，之后不再回调，开销低一个量级。
    老版本退回 setprofile。
 
-3. **调用者要对。** 要知道「谁调了谁」就得维护调用栈：进（PY_START / PY_RESUME）和出
+3. **调用者要对。** 要知道「谁调了谁」就得维护调用栈：进（PY_START / PY_RESUME / PY_THROW）和出
    （PY_RETURN / PY_YIELD / PY_UNWIND）都要订阅。只订阅 PY_START 的话，调用者会变成
    「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
 
@@ -59,7 +59,7 @@ ENV_PKGS = "CODESTRATA_PKGS"      # "顶层包=仓库内目录;..."，把安装�
 
 _SITECUSTOMIZE = '''\
 # codestrata 自动注入。每个 Python 进程 import 它来挂上调用 hook。
-import os, sys, atexit, json, threading, time, hashlib
+import os, sys, atexit, json, threading, time, hashlib, itertools
 
 _root = os.environ.get("CODESTRATA_ROOT")
 _out = os.environ.get("CODESTRATA_OUT")
@@ -121,6 +121,84 @@ if _root and _out:
         # 模块顶层记成第 0 行：模块 code 的 firstlineno 是 1，会和写在第 1 行的函数撞键
         return rel + ":" + ("0" if code.co_name == "<module>" else str(code.co_firstlineno))
 
+    # ---- 时序事件（CODESTRATA_EVENTS=1，只有 sys.monitoring 才有）：只记跨文件的调用，
+    # 口径和 func_edges 相同（调用方是栈顶的仓库帧、和被调方不在同一个文件）。每次调用给一个
+    # span 号，返回 / 挂起 / 恢复按帧（id(帧)）找回 span 号——不按栈的顺序配，所以同一线程里
+    # asyncio 协程交错也配得对。日志的行格式见 events.py 开头的说明。
+    _EV = os.environ.get("CODESTRATA_EVENTS") == "1" and getattr(sys, "monitoring", None) is not None
+    _ev_max = 3000000
+    if _EV:
+        try:
+            _ev_max = int(float(os.environ.get("CODESTRATA_EV_MAX") or 3000000))
+        except (ValueError, OverflowError):      # 写错了（abc、inf）不能让 hook 整个失效
+            pass
+    _ev = []                 # 待写的事件行（落盘线程每秒写出去）
+    _ev_n = [0]              # 已记的调用行数，到上限就不再记新的调用（计数不受影响）
+    _ev_keys = {}            # "rel:firstlineno" -> 进程内的小整数
+    # id(帧) -> (span 号, code)：跨文件进来的、还没返回的帧。连 code 一起存：半路被丢掉的生成器
+    # 在 3.12 上关闭时不发任何事件，它的帧地址之后会被别的帧复用，code 对不上就知道是旧账
+    _xf = {}
+    _xc = set()              # 当过跨文件被调方的 code（的 id）：只有它们的返回 / 挂起 / 恢复才要查帧
+    _gen = [0]               # fork 代数：线程号缓存在线程局部变量里，fork 之后要作废
+    # 编号用 itertools.count：next() 在 CPython 里是原子的，多个线程同时调用不会拿到同一个号
+    _ids = [itertools.count(1), itertools.count(1), itertools.count(1)]    # span、键、线程
+
+    def _clean(x):
+        return x.replace("\\n", " ").replace("\\r", " ")
+
+    def _ev_kid(k):
+        i = _ev_keys.get(k)
+        if i is None:
+            i = _ev_keys[k] = next(_ids[1])
+            _ev.append("K %d %s" % (i, _clean(k)))
+        return i
+
+    def _ev_tid():
+        # 线程号缓存在线程局部变量里（随线程一起没），不按 get_ident()：glibc 会把退出线程的
+        # ident 分给下一个新线程，按它缓存的话后来的线程会顶着前一个线程的号和名字
+        c = getattr(_tls, "ev", None)
+        if c is not None and c[0] == _gen[0]:
+            return c[1]
+        i = next(_ids[2])
+        _tls.ev = (_gen[0], i)
+        _ev.append("N %d %s" % (i, _clean(threading.current_thread().name)))
+        return i
+
+    def _ev_room():
+        # 上限只管调用（C）；返回 / 挂起 / 恢复只写已经在 _xf 里的 span，数量有界，照写——
+        # 否则到上限之前开始、之后才返回的调用会显示成「到进程结束都没返回」
+        if _ev_n[0] < _ev_max:
+            _ev_n[0] += 1
+            return True
+        if _ev_n[0] == _ev_max:
+            _ev_n[0] += 1
+            _ev.append("T")
+        return False
+
+    def _ev_call(a, b, code):
+        if not _ev_room():
+            if _xf:                                    # 到了上限不再记新的调用，但这一帧的地址上的旧账还是要作废
+                _xf.pop(id(sys._getframe(3)), None)
+            return
+        fr = id(sys._getframe(3))                      # _ev_call ← _enter ← 回调 ← 被监控的帧
+        sp = next(_ids[0])
+        _xf[fr] = (sp, code)                          # 同一地址已有旧账：那一帧被丢掉了，覆盖
+        _xc.add(id(code))
+        _ev.append("C %d %d %d %d %d" % ((time.monotonic_ns() - _t0[0]) // 1000, _ev_tid(), sp,
+                                         _ev_kid(a), _ev_kid(b)))
+
+    def _ev_mark(tag, code, end):
+        fr = id(sys._getframe(3))                      # _ev_mark ← _enter / _leave ← 回调 ← 被监控的帧
+        x = _xf.get(fr)
+        if x is None:
+            return
+        if x[1] is not code:                           # 地址被别的帧复用了：旧账作废
+            del _xf[fr]
+            return
+        if end:
+            del _xf[fr]
+        _ev.append("%s %d %d %d" % (tag, (time.monotonic_ns() - _t0[0]) // 1000, _ev_tid(), x[0]))
+
     def _enter(code, count):
         rel = _rel(code)
         if rel is None:
@@ -136,15 +214,26 @@ if _root and _out:
             if st and st[-1] != k:                 # 递归自调用不算边
                 ek = st[-1] + "|" + k
                 _fedges[ek] = _fedges.get(ek, 0) + 1
+                if _EV and st[-1].rpartition(":")[0] != rel:
+                    _ev_call(st[-1], k, code)
+                elif _EV and id(code) in _xc:
+                    _xf.pop(id(sys._getframe(2)), None)   # 同文件里新起的一帧，地址上若有旧账（被丢掉的
+                                                          # 同一个函数的生成器）就作废，免得它的事件记到旧 span 上
+            elif _EV and id(code) in _xc:
+                _xf.pop(id(sys._getframe(2)), None)
+        elif _EV and id(code) in _xc:
+            _ev_mark("S", code, False)                          # 生成器 / 协程恢复（含 throw 进来的）
         st.append(k)
         if len(st) > 2000:                          # 失配时的兜底
             del st[:1000]
         return True
 
-    def _leave(code):
+    def _leave(code, tag="R"):
         rel = _rel(code)
         if rel is None:
             return False
+        if _EV and id(code) in _xc:
+            _ev_mark(tag, code, tag == "R")                      # R：返回或异常展开；Y：挂起
         k = _key(code, rel)
         st = _stack()
         # 正常情况栈顶就是自己；若因仓库外的帧打乱了顺序，就弹到自己为止
@@ -241,6 +330,29 @@ if _root and _out:
             d["title"] = " ".join(now)[:200]          # setproctitle 改过的标题
         return d
 
+    _ev_file = []
+
+    def _ev_flush():
+        # 调用方拿着 _lock。只有这个函数从 _ev 里删东西、别的线程只往尾巴上加，所以
+        # 「拷前 n 个、删前 n 个」不会丢行
+        n = len(_ev)
+        if not n:
+            return
+        data = "\\n".join(_ev[:n]) + "\\n"
+        name = os.path.join(_out, "ev-%d-%d.log" % (os.getpid(), _t0[0]))
+        try:
+            # 写成功才从缓冲里删：落盘中途被程序自己的信号处理器打断（KeyboardInterrupt），
+            # _dump 重试时这些行还在。utf-8 + backslashreplace：文件名不是 UTF-8 也不丢整块
+            with open(name, "a", encoding="utf-8", errors="backslashreplace") as f:
+                if name not in _ev_file:
+                    f.write("H %d %d %d\\n" % (os.getpid(), _t0[0], os.getppid()))
+                    _ev_file.append(name)
+                f.write(data)
+        except OSError:
+            del _ev[:n]                      # 目录没了（录制已收尾）：写不进去，丢掉
+            return
+        del _ev[:n]
+
     def _dump(why):
         # why：atexit / _exit / exec 是这个进程映像的最后一次（主线程）；periodic / phase / stop
         # 是落盘线程的。最后一次是 periodic 或 phase 的进程是被强杀的，最后几秒的数据没了；
@@ -256,6 +368,8 @@ if _root and _out:
             # 吞掉重来，不能让它把最后一次落盘打断，更不能让它从 os._exit 里逃出去
             for _ in range(3):
                 try:
+                    if _EV:
+                        _ev_flush()
                     _write(_base() + ".json", _payload(why))
                     break
                 except BaseException:
@@ -306,6 +420,11 @@ if _root and _out:
             if not stopped and os.path.exists(_stop_file):
                 stopped = True
                 _dump("stop")
+            if _EV and _ev and not _final[0] and _lock[0].acquire(blocking=False):
+                try:
+                    _ev_flush()
+                finally:
+                    _lock[0].release()
             n += 1
             if n % 10 == 0:
                 _dump("periodic")
@@ -325,6 +444,12 @@ if _root and _out:
         _st[0] = _starttime()
         _lock[0] = threading.RLock()
         _final[0] = False
+        del _ev[:]                # 事件：子进程写自己的文件，fork 之前没返回的帧不归它
+        _ev_keys.clear()
+        _xf.clear()
+        _gen[0] += 1
+        _ev_n[0] = 0
+        _ids[:] = [itertools.count(1), itertools.count(1), itertools.count(1)]
         _start_flusher()
     os.register_at_fork(after_in_child=_after_fork)
 
@@ -349,16 +474,22 @@ if _root and _out:
                 return None if _enter(code, True) else D
             def _on_resume(code, off):               # 生成器/协程恢复：入栈但不算一次调用
                 return None if _enter(code, False) else D
-            def _on_return(code, off, val):          # PY_RETURN / PY_YIELD：出栈
+            def _on_throw(code, off, exc):           # throw() / close() / asyncio 取消：也是恢复。
+                _enter(code, False)                   # 和 PY_UNWIND 一样不能 DISABLE（会在被 trace
+                                                      # 的程序里抛 ValueError），仓库外的代码每次都回调
+            def _on_return(code, off, val):          # PY_RETURN：出栈
                 return None if _leave(code) else D
+            def _on_yield(code, off, val):           # PY_YIELD：出栈（挂起）
+                return None if _leave(code, "Y") else D
             def _on_unwind(code, off, exc):          # 异常展开出帧。这个事件不能 DISABLE
                 _leave(code)
             _mon.register_callback(_TID, E.PY_START, _on_start)
             _mon.register_callback(_TID, E.PY_RESUME, _on_resume)
+            _mon.register_callback(_TID, E.PY_THROW, _on_throw)
             _mon.register_callback(_TID, E.PY_RETURN, _on_return)
-            _mon.register_callback(_TID, E.PY_YIELD, _on_return)
+            _mon.register_callback(_TID, E.PY_YIELD, _on_yield)
             _mon.register_callback(_TID, E.PY_UNWIND, _on_unwind)
-            _mon.set_events(_TID, E.PY_START | E.PY_RESUME | E.PY_RETURN
+            _mon.set_events(_TID, E.PY_START | E.PY_RESUME | E.PY_THROW | E.PY_RETURN
                             | E.PY_YIELD | E.PY_UNWIND)
     else:
         def _prof(frame, event, arg):

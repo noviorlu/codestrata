@@ -2,8 +2,11 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
-    GET  /api/graph?open=a,b&w=   一个切面上的图 + hot 叠加（open：展开着的目录，缺省是默认切面；
-                                  w：页面上图框的宽度，按它排版）
+    GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
+    GET  /api/graph?open=a,b&w=&run=
+                                  一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
+                                  默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
+                                  可加 @阶段，空 = 只看静态图）。edge / refs / pack 也接受 run=
     GET  /api/notes/<target>      解读（含 stale 判定）
     GET  /api/status?ids=a,b      一批节点的解读状态 noted / stale / todo（图上的徽标）
     PUT  /api/notes/<target>      写入解读        ← LLM agent 从这里介入
@@ -29,6 +32,7 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +40,7 @@ from pathlib import Path
 from . import cut as _cut
 from . import notes as _notes
 from . import payload as _payload
+from . import runs as _runs
 
 WEB = Path(__file__).resolve().parent / "web"
 EDITORS = ("code", "cursor", "codium", "code-insiders", "subl")
@@ -76,10 +81,12 @@ td.n a{{color:inherit;text-decoration:none}}td.c{{padding:0 14px;white-space:pre
 class Handler(BaseHTTPRequestHandler):
     repo: Path
     idx: dict
-    hot: dict | None = None
-    hot_meta: dict | None = None
-    _graphs: dict = {}          # 切面（open 的规范化字符串）→ 已算好的 /api/graph 结果
+    default_run: str | None = None   # serve --hot 解析成的「完整 id@阶段」：页面没指定时先选它
+    _graphs: dict = {}          # (切面, 宽度, run) → 已算好的 /api/graph 结果
     _search: bytes | None = None  # /api/search-index，算一次
+    _hots: dict = {}            # (run id, 阶段, (counts、run.json 的 mtime)) → (hot, meta)；最近 8 个
+    _stale: dict = {}           # (run id, detail 的 mtime) → 录制后改过几个文件（下拉列表用）
+    _lock = threading.Lock()
 
     def log_message(self, fmt, *a):
         if os.environ.get("CODESTRATA_VERBOSE"):
@@ -106,6 +113,69 @@ class Handler(BaseHTTPRequestHandler):
         root = self.repo.resolve()
         return p if str(p).startswith(str(root) + os.sep) and p.is_file() else None
 
+    def _hot(self, q: dict):
+        """请求里的 run=（完整 id 或 case 名，可加 @阶段；没有 / 空 = 静态图）→ (hot, meta, 缓存键)。
+        按 (run id, 阶段, counts.json.gz 和 run.json 的 mtime) 缓存：counts 只在 runs merge 时才会变，
+        run.json 在改 tag / 备注时变（meta 里带着它们）。找不到这个 run 抛 LookupError。"""
+        ref = (q.get("run") or [""])[0].strip()
+        if not ref:
+            return None, None, None
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+        except SystemExit as e:
+            raise LookupError(str(e)) from None
+        try:
+            # counts 变了（runs merge）要重算；run.json 变了（改 tag / 备注）meta 也要换
+            mt = ((rd / "counts.json.gz").stat().st_mtime_ns, (rd / "run.json").stat().st_mtime_ns)
+        except OSError:
+            raise LookupError(f"run {run['id']} 还没有计数（还在录，或录制中断了要 runs merge）") from None
+        key = (run["id"], phase, mt)
+        with Handler._lock:
+            hit = Handler._hots.get(key)
+        if hit is None:
+            try:
+                hot, meta = _runs.load(self.repo, self.idx, run["id"] + (f"@{phase}" if phase else ""))
+            except SystemExit as e:
+                raise LookupError(str(e)) from None
+            hit = (hot, meta)
+            with Handler._lock:
+                Handler._hots[key] = hit
+                while len(Handler._hots) > 8:
+                    Handler._hots.pop(next(iter(Handler._hots)))
+        return hit[0], hit[1], key
+
+    def _runs(self) -> dict:
+        """/api/runs：下拉列表要的摘要，新的在前。「录制后改过几个文件」要读 detail.json 和当前
+        index 比，按 (run id, detail 的 mtime) 缓存。"""
+        out = []
+        for r in _runs.catalog(self.repo):
+            rd = _runs.runs_dir(self.repo) / r["id"]
+            changed = None
+            try:
+                mt = (rd / "detail.json").stat().st_mtime_ns
+                key = (r["id"], mt)
+                with Handler._lock:
+                    changed = Handler._stale.get(key)
+                if changed is None:
+                    fs = _runs.file_state(self.repo, self.idx, _runs._read(rd / "detail.json"))
+                    changed = {"changed": sum(1 for v in fs.values() if v in ("changed", "gone")),
+                               "mismatch": sum(1 for v in fs.values() if v == "mismatch")}
+                    with Handler._lock:
+                        Handler._stale[key] = changed
+            except (OSError, ValueError):
+                pass
+            sm = r.get("summary") or {}
+            ev = r.get("events")
+            out.append({"id": r["id"], "case": r.get("case"), "status": r.get("status_shown") or r.get("status"),
+                        "problems": r.get("problems") or [], "created": r.get("created"),
+                        "duration_s": r.get("duration_s"), "git": (r.get("git") or {}).get("commit"),
+                        "tags": r.get("tags") or [], "note": r.get("note") or "",
+                        "phases": [{"name": p["name"], "n_funcs": p.get("n_funcs")} for p in r.get("phases") or []],
+                        "n_procs_active": sm.get("n_procs_active"), "n_funcs": sm.get("n_funcs"),
+                        "events": bool(ev and not ev.get("error")), "stale": changed,
+                        "loadable": (rd / "counts.json.gz").is_file(), "migrated": bool(r.get("migrated_from"))})
+        return {"default": Handler.default_run, "runs": out}
+
     def _target(self, prefix: str, path: str) -> str | None:
         t = urllib.parse.unquote(path[len(prefix):])
         # 只接受目录树上真实存在的节点（和总览这个保留名），防止借 target 写出仓库外的文件
@@ -117,6 +187,21 @@ class Handler(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query, keep_blank_values=True)   # ?open= 是「什么都不展开」，不是缺省
         path = u.path
 
+        if path == "/api/runs":
+            try:
+                return self._json(self._runs())
+            except SystemExit as e:                  # runs/ 是软链、指向的盘没挂上
+                return self._json({"error": str(e)}, 503)
+
+        hot = hot_meta = hot_key = None
+        if path in ("/api/graph", "/api/edge", "/api/refs") or path.startswith("/api/pack/"):
+            try:
+                hot, hot_meta, hot_key = self._hot(q)
+            except LookupError as e:
+                if path.startswith("/api/pack/"):   # 输入包是纯文本，错误也给纯文本
+                    return self._send(404, str(e).encode(), "text/plain; charset=utf-8")
+                return self._json({"error": str(e)}, 404)
+
         if path == "/api/graph":
             raw = (q.get("open") or [None])[0]
             open_ = None if raw is None else [o for o in raw.split(",") if o]
@@ -125,14 +210,19 @@ class Handler(BaseHTTPRequestHandler):
                 width = max(700, min(4000, round(float((q.get("w") or ["1180"])[0]) / 40) * 40))
             except (ValueError, OverflowError):       # w=abc / w=inf / w=1e999：按默认宽度
                 width = 1180
-            key = ("\u0000" if open_ is None else ",".join(sorted(open_))) + f"@{width}"
-            if key not in Handler._graphs:
-                if len(Handler._graphs) > 32:          # 切面可以任意组合，缓存只留最近的一些
-                    Handler._graphs.pop(next(iter(Handler._graphs)))
-                Handler._graphs[key] = json.dumps(_payload.graph_payload(
-                    self.repo, self.idx, hot=self.hot, hot_meta=self.hot_meta, open_=open_, width=width),
+            # run 也进缓存键：同一个切面，换一个 run 叠加就不一样（hot_key 里有 counts 的 mtime，
+            # runs merge 重算之后自然换一份）
+            key = (("\u0000" if open_ is None else ",".join(sorted(open_))) + f"@{width}", hot_key)
+            body = Handler._graphs.get(key)
+            if body is None:
+                body = json.dumps(_payload.graph_payload(
+                    self.repo, self.idx, hot=hot, hot_meta=hot_meta, open_=open_, width=width),
                     ensure_ascii=False).encode()
-            return self._send(200, Handler._graphs[key], "application/json; charset=utf-8")
+                with Handler._lock:
+                    Handler._graphs[key] = body
+                    while len(Handler._graphs) > 32:   # 切面可以任意组合，缓存只留最近的一些
+                        Handler._graphs.pop(next(iter(Handler._graphs)))
+            return self._send(200, body, "application/json; charset=utf-8")
 
         if path.startswith("/api/notes/"):
             t = self._target("/api/notes/", path)
@@ -154,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
             t = self._target("/api/pack/", path)
             if not t:
                 return self._send(404, b"unknown target", "text/plain; charset=utf-8")
-            txt = _notes.prompt_pack(self.repo, self.idx, t, hot=self.hot)
+            txt = _notes.prompt_pack(self.repo, self.idx, t, hot=hot)
             return self._send(200, txt.encode(), "text/markdown; charset=utf-8")
 
         if path.startswith("/api/symbol/"):
@@ -166,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
             if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
                 return self._json({"error": "unknown node"}, 404)
-            return self._json(_payload.edge_detail(self.repo, self.idx, a, b, self.hot))
+            return self._json(_payload.edge_detail(self.repo, self.idx, a, b, hot))
 
         if path == "/api/search-index":
             if Handler._search is None:
@@ -181,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"open": r}) if r is not None else self._json({"error": "unknown node"}, 404)
 
         if path == "/api/refs":
-            r = _payload.refs(self.repo, (q.get("t") or [""])[0], self.hot)
+            r = _payload.refs(self.repo, (q.get("t") or [""])[0], hot)
             return self._json(r) if r else self._json({"error": "unknown target"}, 404)
 
         if path == "/api/outline":
@@ -256,10 +346,34 @@ class Handler(BaseHTTPRequestHandler):
 
 def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
     idx = _payload.load_index(repo)
-    h, hm = _payload.load_hot(repo, idx, hot)
-    Handler.repo, Handler.idx, Handler.hot, Handler.hot_meta = repo, idx, h, hm
-    Handler._graphs = {}
+    Handler.repo, Handler.idx = repo, idx
+    Handler._graphs, Handler._hots, Handler._stale = {}, {}, {}
     Handler._search = None
+    # --hot 只决定页面打开时先选哪个 run（页面上随时能换）；启动时先加载一遍：写错了当场报出来
+    h = hm = None
+    if hot:
+        h, hm = _payload.load_hot(repo, idx, hot)
+        Handler.default_run = hm["run_id"] + (f"@{hm['phase']}" if hm.get("phase") else "")
+    else:
+        Handler.default_run = None
+    try:
+        n_runs = len(_runs.catalog(repo)) if (repo / ".codestrata").is_dir() else 0
+    except SystemExit as e:                   # runs/ 是软链、盘没挂上：静态图照样能看
+        print(f"  ⚠ {e}")
+        n_runs = 0
+    # index 落后多少：scan 之后改过的文件（按 xref 记的 fp 比）。图和搜索用的是启动时的 index，
+    # 落后了就说一声（Ctrl+点击的交叉引用逐个文件核对，不受影响）
+    lag = 0
+    try:
+        fp = ((_payload.load_xref(repo) or {}).get("x") or {}).get("fp") or {}
+        for rel, (size, mt) in fp.items():
+            try:
+                st = (repo / rel).stat()
+                lag += (st.st_size, st.st_mtime_ns) != (size, mt)
+            except OSError:
+                lag += 1
+    except Exception:                         # noqa: BLE001 —— 只是提示，算不出来就不说
+        lag = 0
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     ed = _editor()
     todo = _notes.tasks(repo, idx)
@@ -270,8 +384,11 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
     print(f"  图     默认切面 {n_default} 个节点（{len(idx['packages'])} 个文件级模块，点节点可展开 / 收起）")
     print(f"  解读   {_notes.notes_root(repo)}  （待写 {len(todo)}）")
     print(f"  编辑器 {' '.join(ed) if ed else '没找到，跳转按钮会返回 501'}")
+    print(f"  run    录下的 {n_runs} 个，页面上方「运行」里切换（serve 开着时新录的也看得到）")
+    if lag:
+        print(f"  注意   scan 之后改过 {lag} 个文件：图和搜索还是 scan 时的样子，重新 scan 后重启 serve")
     if h:
-        print(f"  hot    run {hm['run_id']}" + (f" @{hm['phase']}" if hm.get("phase") else "")
+        print(f"  默认   run {hm['run_id']}" + (f" @{hm['phase']}" if hm.get("phase") else "")
               + f"（case {hm['case']}，{hm['status']}），{len(h['packages'])} 个模块跑到")
     print("  Ctrl+C 停止", flush=True)
     try:

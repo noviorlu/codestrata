@@ -65,6 +65,18 @@ def no_live(rd: Path) -> None:
     assert not left, f"还有进程带着这个 run 的环境：{left}"
 
 
+def wait_phase(repo: Path, name: str, timeout: float = 60) -> Path:
+    """等录制中的 run 的 PHASE 变成 name，返回 run 目录。"""
+    end = time.monotonic() + timeout
+    runs_d = repo / ".codestrata" / "runs"
+    while time.monotonic() < end:
+        ds = list(runs_d.glob("2*")) if runs_d.is_dir() else []
+        if ds and (ds[0] / "parts" / "PHASE").is_file() and (ds[0] / "parts" / "PHASE").read_text().strip() == name:
+            return ds[0]
+        time.sleep(0.1)
+    raise AssertionError(f"等不到阶段 {name}")
+
+
 def by_argv(detail: dict, needle: str) -> list[dict]:
     return [p for p in detail["procs"] if needle in " ".join(p["argv"] or [])]
 
@@ -160,16 +172,7 @@ def _interrupt(sig):
     p = subprocess.Popen([PY, "-m", "codestrata", "trace", str(repo), "--case", "fake", "--env", f"PY={PY}",
                           "--", "bash", "fake_service.sh"], env=e, cwd=HERE.parent,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    phase = None
-    for _ in range(200):
-        ds = [d for d in (repo / ".codestrata" / "runs").glob("2*")] if (repo / ".codestrata" / "runs").is_dir() else []
-        if ds and (ds[0] / "parts" / "PHASE").is_file():
-            phase = (ds[0] / "parts" / "PHASE").read_text().strip()
-            if phase == "serving":
-                break
-        time.sleep(0.1)
-    assert phase == "serving", "等不到 serving 阶段"
-    time.sleep(3)
+    wait_phase(repo, "hang")
     p.send_signal(sig)
     out, err = p.communicate(timeout=120)
     run, det, rd = latest(repo)
@@ -210,15 +213,7 @@ def test_driver_killed_then_merge():
     p = subprocess.Popen([PY, "-m", "codestrata", "trace", str(repo), "--case", "fake", "--env", f"PY={PY}",
                           "--", "bash", "fake_service.sh"], env=e, cwd=HERE.parent,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    rd = None
-    for _ in range(200):
-        ds = list((repo / ".codestrata" / "runs").glob("2*")) if (repo / ".codestrata" / "runs").is_dir() else []
-        if ds and (ds[0] / "parts" / "PHASE").is_file():
-            rd = ds[0]
-            break
-        time.sleep(0.1)
-    assert rd is not None
-    time.sleep(3)
+    rd = wait_phase(repo, "hang")
     p.kill()
     p.wait()
     r = cs("runs", repo, "ls")
@@ -405,14 +400,7 @@ def test_sigquit():
     p = subprocess.Popen([PY, "-m", "codestrata", "trace", str(repo), "--case", "q", "--env", f"PY={PY}",
                           "--", "bash", "fake_service.sh"], env=e, cwd=HERE.parent,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    rd = None
-    for _ in range(200):
-        ds = list((repo / ".codestrata" / "runs").glob("2*")) if (repo / ".codestrata" / "runs").is_dir() else []
-        if ds and (ds[0] / "parts" / "PHASE").is_file():
-            rd = ds[0]
-            break
-        time.sleep(0.1)
-    time.sleep(2)
+    rd = wait_phase(repo, "hang")
     t = time.monotonic()
     p.send_signal(signal.SIGQUIT)
     p.wait(timeout=60)
@@ -524,6 +512,201 @@ def test_edit_during_recording():
     idx = payload.load_index(repo)
     _, meta = payload.load_hot(repo, idx, "ed")
     assert meta["file_state"].get("fakesvc/work.py") == "changed", meta["file_state"]
+
+
+# ---------------------------------------------------------------- 时序事件（M3）
+
+def _spans(rd: Path):
+    from codestrata import events
+    keys = json.loads((rd / "events" / "spans" / "keys.json").read_text())
+    out = []
+    for t0, dur, tid, depth, a, b, rep, ns in events.read_spans(rd / "events" / "spans"):
+        out.append({"t0": t0, "dur": dur, "tid": tid, "depth": depth, "a": keys["keys"][a], "b": keys["keys"][b],
+                    "rep": rep, "susp": ns})
+    return out, keys
+
+
+def _line(repo: Path, rel: str, needle: str) -> str:
+    """函数在文件里的首行号 → 键 rel:行"""
+    for i, ln in enumerate((repo / rel).read_text().splitlines(), 1):
+        if ln.startswith(needle):
+            return f"{rel}:{i}"
+    raise AssertionError(f"{rel} 里没有 {needle}")
+
+
+def test_events_truth():
+    """7.1 的真值：同步嵌套、返回后再调、生成器、异常、asyncio 交错、多线程、fork、exec 都配对正确；
+    span 的调用次数之和 = 计数里跨文件的 func_edges 之和。"""
+    repo = fresh()
+    cs("trace", repo, "--case", "truth", "--events", "--", PY, "-m", "fakesvc.truth")
+    run, det, rd = latest(repo)
+    assert run["status"] == "ok" and run["events"]["n_spans"] > 0, run
+    sp, keys = _spans(rd)
+    T, C, O = "fakesvc/truth.py", "fakesvc/callee.py", "fakesvc/other.py"
+    k = lambda rel, fn: _line(repo, rel, f"def {fn}(") if not fn.startswith("async ") else _line(repo, rel, fn + "(")
+    def one(a, b):
+        got = [s for s in sp if s["a"] == a and s["b"] == b]
+        assert len(got) >= 1, (a, b, [(s["a"], s["b"]) for s in sp])
+        return got
+    # 半路丢掉的生成器：只挂起过一次、没返回；之后同文件生成器里的调用深度是 0（不挂在死掉的 span 下）
+    dropped = one(k(T, "s_drop"), k(C, "gen")) + one(k(T, "_started_gen"), k(C, "gen"))
+    assert len(dropped) == 25 and all(s["susp"] == 1 and s["dur"] == -1 for s in dropped), dropped
+    assert all(s["depth"] == 0 for s in one(k(T, "local_gen"), k(C, "one"))), one(k(T, "local_gen"), k(C, "one"))
+    # close() / 取消：清理代码里的调用，调用方是生成器 / 协程自己，深一层
+    gc = one(k(T, "s_close"), k(C, "gen_cleanup"))[0]
+    fin = one(k(C, "gen_cleanup"), k(O, "deep"))[0]
+    assert fin["depth"] == gc["depth"] + 1, (gc, fin)
+    one(k(C, "async def serve_cancel"), k(O, "deep"))
+    # 两个协程交错：各自的子调用各合各的（每条最多 2 次），总数 4
+    h = one(k(C, "async def handle2"), k(O, "deep"))
+    assert all(s["rep"] <= 2 for s in h) and sum(s["rep"] for s in h) == 4, h
+    # 先后起的四个线程（glibc 会复用 ident）：各有各的名字
+    names = {n for ts in keys["threads"].values() for n in ts.values()}
+    assert {"req-0", "req-1", "req-2", "req-3"} <= names, names
+    # 第一级折叠：50 次叶子调用合成一条；有跨文件子调用的 mid 不合
+    lp = one(k(T, "s_loop"), k(C, "one"))
+    assert len(lp) == 1 and lp[0]["rep"] == 50 and lp[0]["dur"] >= 0, lp
+    assert len(one(k(T, "s_loop"), k(C, "mid"))) == 3
+    # 同步嵌套：deep 在 mid 里面，深一层
+    mid = one(k(T, "s_nest"), k(C, "mid"))[0]
+    deep = [d for d in one(k(C, "mid"), k(O, "deep"))
+            if mid["t0"] <= d["t0"] and d["t0"] + d["dur"] <= mid["t0"] + mid["dur"]]
+    assert len(deep) == 1 and deep[0]["depth"] == mid["depth"] + 1, (mid, deep)
+    # 返回后再调用：two 的调用方是 s_seq，不是 one
+    one(k(T, "s_seq"), k(C, "one"))
+    one(k(T, "s_seq"), k(C, "two"))
+    assert not [s for s in sp if s["a"] == k(C, "one")]
+    # 生成器：挂起 3 次，最后返回
+    g = one(k(T, "s_gen"), k(C, "gen"))[0]
+    assert g["susp"] == 3 and g["dur"] >= 0
+    # 异常展开也算返回
+    assert one(k(T, "s_exc"), k(C, "boom"))[0]["dur"] >= 0
+    # asyncio 交错：先开始的 a（20ms）先结束，后开始的 b（60ms）——按栈配对会配反
+    w = sorted(one(k(T, "async def runner"), k(C, "async def work")), key=lambda s: s["t0"])
+    assert len(w) == 2 and all(s["susp"] >= 1 for s in w), w
+    assert 15_000 <= w[0]["dur"] <= 45_000 and w[1]["dur"] >= 55_000, w
+    # 多线程：s_threads 的两个线程同时跑（时间重叠）、s_threads2 的四个先后跑，六个不同的号
+    th = sorted(one(k(T, "in_thread"), k(C, "slow")), key=lambda s: s["t0"])
+    assert len(th) == 6 and len({s["tid"] for s in th}) == 6, th
+    assert any(a["t0"] < b["t0"] < a["t0"] + a["dur"] for a, b in zip(th, th[1:])), th
+    names = {n for ts in keys["threads"].values() for n in ts.values()}
+    assert {"worker-0", "worker-1"} <= names, names
+    # fork：子进程自己一份，fork 之前的调用不归它
+    idx = json.loads((rd / "events" / "spans" / "index.json").read_text())
+    main_pid = next(p["pid"] for p in idx["procs"] if p["n_spans"] >= 8)
+    fk = one(k(T, "s_fork"), k(C, "child_work"))[0]
+    assert fk is not None
+    kids = [p for p in idx["procs"] if p["ppid"] == main_pid]
+    assert len(kids) >= 3, idx["procs"]           # fork 的子进程 + exec 前后各一份
+    # exec：exec_child 没返回（-1），exec 之后的新程序单独一份，线程号接着编（不互相覆盖名字）
+    ex = one(k(T, "s_exec"), k(C, "exec_child"))[0]
+    assert ex["dur"] == -1
+    post = one("fakesvc/execd.py:0", k("fakesvc/work.py", "after_exec"))[0]
+    assert post["tid"] != ex["tid"], (ex, post)
+    # 次数对得上：Σrep = 跨文件的 func_edges
+    counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
+    xf = sum(v for ph in counts.values() for e, v in ph["func_edges"].items()
+             if e.split("|")[0].rpartition(":")[0] != e.split("|")[1].rpartition(":")[0])
+    assert run["events"]["n_calls"] == xf, (run["events"], xf)
+
+
+def test_events_fake_service():
+    """真的服务形状（setsid 服务、multiprocessing、asyncio、分阶段）：事件和计数对得上，
+    runs merge 重建出一样的 span，rm --events-only 只删事件。"""
+    repo = fresh()
+    trace_fake(repo, "fake", "--events")
+    run, det, rd = latest(repo)
+    assert run["status"] == "ok" and run["events"] and not run["events"]["truncated"], run
+    counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
+    xf = sum(v for ph in counts.values() for e, v in ph["func_edges"].items()
+             if e.split("|")[0].rpartition(":")[0] != e.split("|")[1].rpartition(":")[0])
+    assert run["events"]["n_calls"] == xf, (run["events"], xf)
+    # serving 阶段的时间窗里有请求处理（handle → work 的调用）
+    ph = {p["name"]: p["t_us"] for p in run["phases"]}
+    sp, _ = _spans(rd)
+    hs = [s for s in sp if s["b"].startswith("fakesvc/work.py") and ph["serving"] <= s["t0"] < ph["shutdown"]]
+    assert hs, "serving 阶段应当有跨文件调用"
+    with tarfile.open(rd / "events" / "raw.tar.gz", "r:gz") as tf:
+        assert all(m.name.startswith("ev-") for m in tf.getmembers())
+    with tarfile.open(rd / "parts.tar.gz", "r:gz") as tf:
+        assert not any(m.name.startswith("ev-") for m in tf.getmembers())
+    before = sorted(map(tuple, (list(s.values()) for s in sp)))
+    cs("runs", repo, "merge", run["id"])
+    after, _ = _spans(rd)
+    assert sorted(map(tuple, (list(s.values()) for s in after))) == before
+    assert json.loads((rd / "run.json").read_text())["events"]["bytes"] == run["events"]["bytes"] \
+        == (rd / "events" / "raw.tar.gz").stat().st_size      # 一律是压缩包的大小
+    r = cs("runs", repo, "show", run["id"])
+    assert "时序" in r.stdout and "--events" in r.stdout, r.stdout
+    cs("runs", repo, "rm", run["id"], "--events-only", "--yes")
+    assert not (rd / "events").exists() and (rd / "counts.json.gz").is_file()
+    assert json.loads((rd / "run.json").read_text())["events"] is None
+
+
+def test_events_cap():
+    """每个进程的行数上限：到了就不再记新的调用，标 truncated；计数完整，所以 run 仍是 ok
+    （case 名不会因此跳到更早的一次）。上限之前开始、之后才返回的调用照样有返回时刻。
+    上限写成 3e6 这种、甚至写错了，都不能让 hook 整个失效。"""
+    repo = fresh()
+    cs("trace", repo, "--case", "cap", "--events", "--env", "CODESTRATA_EV_MAX=1", "--", PY, "-m", "fakesvc.truth")
+    run, _, rd = latest(repo)
+    assert run["events"]["truncated"] and run["status"] == "ok", run
+    counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
+    assert sum(len(ph["funcs"]) for ph in counts.values()) > 10
+    sp, _ = _spans(rd)
+    first = min((s for s in sp if s["a"].startswith("fakesvc/truth.py")), key=lambda s: s["t0"])
+    assert first["dur"] >= 0, first               # truth 导入 callee：之后才返回，也要有返回
+    # 从 shell 继承来的上限也记进 run（重录命令里带上）
+    cs("trace", repo, "--case", "cap3", "--events", "--", PY, "-m", "fakesvc.truth", env={"CODESTRATA_EV_MAX": "2"})
+    run, _, _ = latest(repo)
+    assert run["env"].get("CODESTRATA_EV_MAX") == "2" and run["events"]["truncated"], run
+    assert "CODESTRATA_EV_MAX=2" in cs("runs", repo, "show", run["id"]).stdout
+    for bad in ("3e6", "abc"):
+        cs("trace", repo, "--case", "cap2", "--events", "--env", f"CODESTRATA_EV_MAX={bad}", "--",
+           PY, "-m", "fakesvc.truth")
+        run, _, _ = latest(repo)
+        assert run["status"] == "ok" and run["events"]["n_calls"] > 10 and not run["events"]["truncated"], run
+
+
+def test_events_parse_partial_line():
+    """进程被杀时最后一行可能只写了一半：字段正好够数也不要。"""
+    from codestrata import events
+    d = Path(tempfile.mkdtemp(prefix="cs-runs-"))
+    _TMP.append(d)
+    f = d / "ev-300-1000.log"
+    f.write_text("H 300 1000 1\nN 1 MainThread\nK 1 a.py:1\nK 2 b.py:1\nC 10 1 5 1 2\nR 20 1 5\nC 30 1 57 1 2\nR 900 1 5")
+    log = events.parse(f)
+    assert [e[0] for e in log["ev"]] == ["C", "R", "C"], log["ev"]
+    sp = events.pair(log)
+    assert sp[0][1] == 20 and sp[1][1] is None, sp
+
+
+def test_events_pair_duplicates():
+    """落盘重试可能把一批行写两遍：重复的调用、再挂起、再恢复都不算，深度和父亲不乱。"""
+    from codestrata import events
+    log = {"ev": [("C", 1, 1, 1, 1, 2), ("Y", 2, 1, 1, 0, 0), ("S", 3, 1, 1, 0, 0), ("S", 3, 1, 1, 0, 0),
+                  ("Y", 4, 1, 1, 0, 0), ("Y", 4, 1, 1, 0, 0), ("S", 5, 1, 1, 0, 0), ("R", 6, 1, 1, 0, 0),
+                  ("C", 7, 1, 2, 1, 2), ("C", 7, 1, 2, 1, 2), ("R", 8, 1, 2, 0, 0)], "keys": {}, "threads": {}}
+    sp = events.pair(log)
+    assert len(sp) == 2 and sp[0][6] == 2 and sp[0][7] == 0, sp        # 挂起 2 次，没有孩子
+    assert sp[1][3] == 0 and sp[1][8] == 0, sp                           # 深度 0、没有父亲
+
+
+def test_events_rm_unmerged():
+    """录制中断、还没 merge 的 run：rm --events-only 之后再 merge，事件不会又整理出来。"""
+    repo = fresh()
+    e = dict(os.environ, FAKE_HANG="1")
+    p = subprocess.Popen([PY, "-m", "codestrata", "trace", str(repo), "--case", "u", "--events", "--env", f"PY={PY}",
+                          "--", "bash", "fake_service.sh"], env=e, cwd=HERE.parent,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rd = wait_phase(repo, "hang")
+    p.kill()
+    p.wait()
+    trace.stop_leftovers(rd / "parts", 5)
+    cs("runs", repo, "rm", rd.name, "--events-only", "--yes")
+    cs("runs", repo, "merge", rd.name)
+    run = json.loads((rd / "run.json").read_text())
+    assert run.get("events") is None and not (rd / "events").exists(), run
 
 
 def main(argv):

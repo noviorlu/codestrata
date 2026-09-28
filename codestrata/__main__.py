@@ -216,8 +216,15 @@ def cmd_trace(a) -> int:
     # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
     roots = a.roots or _scan.detect_roots(repo)
     pkgs = {r.split("/")[-1]: r for r in roots}
+    # 行数上限是从 shell 继承来的：记进 run 的 env（在建 run 之前放进去，run.json 里才有、重录命令才带上）
+    if a.events and os.environ.get("CODESTRATA_EV_MAX") and "CODESTRATA_EV_MAX" not in env:
+        env["CODESTRATA_EV_MAX"] = os.environ["CODESTRATA_EV_MAX"]
     rd = _runs.new_run(repo, case=a.case, cmd=a.cmd, cwd=repo, env=env, tags=a.tag, note=a.note or "",
-                       rec={"timeout": a.timeout, "stop_grace": a.stop_grace, "attach": attach})
+                       rec={"timeout": a.timeout, "stop_grace": a.stop_grace, "attach": attach,
+                            "events": bool(a.events)})
+    # 时序事件（时序图的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
+    # 明确写 0：shell 里恰好 export 了 CODESTRATA_EVENTS=1 也不录——以命令行为准，重录命令才对得上
+    env_run = {**env, "CODESTRATA_EVENTS": "1" if a.events else "0"}
     print(f"[codestrata] run {rd.name}（{rd.resolve()}）", file=sys.stderr)
     mono0 = _runs._read(rd / "run.json")["clock"]["mono0_ns"]
 
@@ -227,7 +234,7 @@ def cmd_trace(a) -> int:
                                   phase_times=info["phase_times"], duration_s=info["duration_s"],
                                   leftovers=info["leftovers"], attach=attach)
     tr, run = _trace.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
-                         env_extra=env, stop_grace=a.stop_grace, after=after)
+                         env_extra=env_run, stop_grace=a.stop_grace, after=after)
     detail = _runs._read(rd / "detail.json")
     sm = run["summary"]
     print(f"→ run {run['id']}：{_STATUS.get(run['status'], run['status'])}"
@@ -244,6 +251,17 @@ def cmd_trace(a) -> int:
               + (f"其中 {len(bad)} 个和仓库内容不一致——这些文件的行号不可信" if bad
                  else "内容与仓库逐文件一致")
               + (f"（另有 {len(extra)} 个只在安装包里：{', '.join(extra[:3])}）" if extra else ""))
+    ev = run.get("events")
+    if ev and ev.get("error"):
+        print(f"  ⚠ 时序事件整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
+    elif ev:
+        print(f"  时序事件 {ev['n_lines']} 行 → {ev['n_spans']} 段（{ev['n_calls']} 次跨文件调用），"
+              f"原始日志 {_size(ev['bytes'] or 0)}"
+              + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限，之后的调用没记时序（计数完整）"
+                 if ev["truncated"] else ""))
+    elif a.events:
+        print("  ⚠ 要了 --events 但没有录到事件：命令没起来、被 trace 的 Python 低于 3.12（没有 sys.monitoring），"
+              "或者这次根本没有跨文件的调用")
     if detail["leftovers"]:
         print(f"  命令退出后停掉了 {len(detail['leftovers'])} 个残留进程："
               + "，".join(f"{x['pid']}（{x['signal']}）" for x in detail["leftovers"]))
@@ -331,7 +349,7 @@ def cmd_runs(a) -> int:
                 st = r.get("status_shown") or r.get("status")
                 dur = f"{r['duration_s']:.0f}s" if r.get("duration_s") is not None else "-"
                 print(f"  {r['id']:<40} {st:<9} {dur:>6}  进程 {sm.get('n_procs_active', '-'):>3}  "
-                      f"git {git:<8}  改过 {changed:>3}  {_size(sz):>7}  "
+                      f"git {git:<8}  改过 {changed:>3}  {_size(sz):>7}  {('时序' if not r['events'].get('error') else '时序!') if r.get('events') else '    '}  "
                       + " ".join(r.get("tags") or []) + (f"  「{r['note']}」" if r.get("note") else ""))
         print(f"\n共 {len(runs)} 个 run，{_size(total)}")
         if total > 1 << 30:
@@ -374,6 +392,17 @@ def cmd_runs(a) -> int:
             print(f"  GPU{gpu['index']}  {gpu['name']}，驱动 {gpu['driver']}，{gpu['mem_mib']} MiB")
         for f in detail.get("files") or []:
             print(f"  存下  {f['stored']:<32} ← {f['path']}（{f['why']}）")
+        if run.get("events"):
+            ev = run["events"]
+            if ev.get("error"):
+                print(f"  时序  整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
+            else:
+                print(f"  时序  {ev['n_spans']} 段、{ev['n_calls']} 次跨文件调用（{ev['n_procs']} 个进程），"
+                      f"原始日志 {_size(ev['bytes'] or 0)}"
+                      + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限（pid "
+                         + "、".join(map(str, ev["truncated"][:8])) + ("…" if len(ev["truncated"]) > 8 else "")
+                         + "），之后的调用没记时序，计数完整"
+                         if ev["truncated"] else ""))
         if detail.get("leftovers"):
             print("  残留  " + "，".join(f"{x['pid']} {x['signal']}" for x in detail["leftovers"]))
         try:
@@ -419,16 +448,32 @@ def cmd_runs(a) -> int:
             if _runs.live(runs[ref]):
                 raise SystemExit(f"run {ref} 还在录制中，不能删")
             targets.append((runs[ref], base / ref))
+        if a.events_only:                          # 没有时序事件的不用问、也不用删
+            none = [run["id"] for run, rd in targets
+                    if not (rd / "events").exists() and not list((rd / "parts").glob("ev-*.log") if (rd / "parts").is_dir() else [])]
+            for i in none:
+                print(f"  {i} 没有时序事件")
+            targets = [(run, rd) for run, rd in targets if run["id"] not in none]
+            if not targets:
+                return 0
         for run, rd in targets:
-            print(f"  {run['id']}  {run.get('status_shown') or run.get('status')}  {_size(_run_size(rd))}")
+            sz = (_run_size(rd / "events") + sum(p.stat().st_size for p in (rd / "parts").glob("ev-*.log"))
+                  if a.events_only and (rd / "parts").is_dir() else
+                  _run_size(rd / "events") if a.events_only else _run_size(rd))
+            print(f"  {run['id']}  {run.get('status_shown') or run.get('status')}  {_size(sz)}"
+                  + ("（时序事件）" if a.events_only else ""))
         if not a.yes:
             if not sys.stdin.isatty():
-                raise SystemExit("删 run 要确认（run 不能重建）：加 --yes")
-            if input(f"删掉这 {len(targets)} 个 run？它们不能重建。[y/N] ").strip().lower() != "y":
+                raise SystemExit(("删时序事件" if a.events_only else "删 run") + "要确认（不能重建）：加 --yes")
+            what = " 的时序事件" if a.events_only else ""
+            if input(f"删掉这 {len(targets)} 个 run{what}？不能重建。[y/N] ").strip().lower() != "y":
                 print("没删")
                 return 1
         for run, _ in targets:
-            print(f"删了 {_runs.remove(repo, run['id'])}")
+            if a.events_only:
+                print(f"删了 {_runs.remove_events(repo, run['id'])} 的时序事件")
+            else:
+                print(f"删了 {_runs.remove(repo, run['id'])}")
         return 0
     if a.verb == "merge":
         run = _runs.merge_run(repo, a.ref)
@@ -511,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--note", default=None, help="给 run 写一句备注")
     t.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
+    t.add_argument("--events", action="store_true",
+                   help="同时记时序事件（每次跨文件调用的起止时刻，时序图用；要 Python 3.12+）")
     t.add_argument("--attach", action="append", default=[], metavar="FILE",
                    help="把这个文件的内容一起存进 run（比如被 case 脚本 source 的 common.sh）")
     t.add_argument("cmd", nargs="*", default=[],
@@ -536,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
     x = rv.add_parser("rm", help="删掉 run（不能重建，要确认；只认完整的 run id）")
     x.add_argument("refs", nargs="+", metavar="RUN_ID")
     x.add_argument("--yes", action="store_true")
+    x.add_argument("--events-only", action="store_true", help="只删时序事件（events/），计数和其余数据留着")
     x = rv.add_parser("merge", help="从原始数据重算计数；录制中断（driver 没了）时从散着的分片合并")
     x.add_argument("ref", metavar="RUN")
     r.set_defaults(fn=cmd_runs)

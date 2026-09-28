@@ -71,9 +71,15 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
 - run 里存原始数据（各进程的分片、case 脚本和命令里提到的配置文件、Python / 包版本、GPU、git）
   和由它算出的计数。计数按 `文件:首行号` 存，加载时现映射到当前的 index 上——代码改了之后老 run
   照样能用，哪些文件在录制之后改过会逐个标出来，而不是整个 run 作废。
-- `--hot` 接受完整的 run id，或 case 名（取它最新一次录完的），都可以加 `@阶段`。
+- `--hot` 接受完整的 run id，或 case 名（取它最新一次录完的），都可以加 `@阶段`。`serve` 的 `--hot`
+  只决定页面打开时先叠哪个；页面上方「运行」随时换（静态图 / 任何一个 run，分了阶段的再选阶段），
+  不用重启，serve 开着时新录的也看得到。选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、分享链接都还是它。
 - `runs/` 可以是软链（比如指到大盘）。**`.codestrata/` 里除 `runs/` 外都能删**；`runs/` 删了就没了。
 - 老版本的 `trace-<case>.json` 第一次被读到时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）。
+- `trace --events` 同时记时序事件（时序图的数据，要 Python 3.12+）：每次跨文件调用的起止时刻，
+  返回 / 挂起 / 恢复按帧配对，同一线程里交错的 asyncio 协程也配得对。原始日志永久留在
+  `events/raw.tar.gz`，整理好的 span 在 `events/spans/`（`runs merge` 可重建）；
+  不要了用 `runs <repo> rm <id> --events-only`。
 
 ```bash
 codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag model=qwen \
@@ -210,8 +216,8 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 
 ```bash
 codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描 + 交叉引用；默认切面按规模自动拆分
-codestrata serve <repo> [--hot RUN[@阶段]]     # 本地部署前端；RUN 是 run id 或 case 名
-codestrata trace <repo> --case NAME [--timeout S] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
+codestrata serve <repo> [--hot RUN[@阶段]]     # 本地部署前端；--hot 只是打开时先选哪个 run，页面上随时换
+codestrata trace <repo> --case NAME [--events] [--timeout S] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
                                               # 跑一个 case，记录真实调用（子进程一并 trace），存成新的 run
 codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   # 管理录下的 run
 codestrata tasks <repo> [--write]             # 待解读 + 输入包
