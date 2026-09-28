@@ -7,9 +7,10 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
 1. **多进程。** vLLM / vllm-omni 这类框架会 fork 出一堆工作进程（每个 stage 一个
    engine core），只 trace 父进程会丢掉最关键的部分。做法是往 PYTHONPATH 前面插一个
    临时目录、里面放 sitecustomize.py：**每个**新起的 Python 进程都会自动 import 它，
-   于是自动挂上 hook，按 pid 各写一份，最后合并。子进程不一定跑 atexit
-   （multiprocessing 的 fork 子进程以 os._exit 结束），所以另外拦截 os._exit、并每
-   10 秒落一次盘；fork 后子进程的计数清零，免得重复计入父进程的调用。
+   于是自动挂上 hook，每个进程映像（pid + 起始时刻）各写一份，最后合并。子进程不一定
+   跑 atexit（multiprocessing 的 fork 子进程以 os._exit 结束，exec 换程序时也不跑），
+   所以另外拦截 os._exit 和 os.exec*、并每 10 秒落一次盘；fork 后子进程的计数清零，
+   免得重复计入父进程的调用。
 
 2. **开销。** sys.setprofile 对每次调用都回调，跑大框架会慢到不可用。Python 3.12+ 用
    sys.monitoring：仓库外的代码第一次命中就返回 DISABLE，之后不再回调，开销低一个量级。
@@ -23,21 +24,31 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
    case 可以分阶段：往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后写 serving），
    之后用 `--hot 名字@serving` 只看那一段。
 
-产出 trace-<case>.json：
+5. **停要停干净。** 服务类的 case 会 setsid 起服务；超时或 Ctrl+C 时直接 SIGKILL 命令，
+   服务就成了孤儿、一直占着显存，最后几秒的数据也丢了。所以命令放在自己的会话里，由
+   driver 按 SIGINT → SIGTERM → SIGKILL 三级停，再扫 /proc 找出还带着本次录制环境变量的
+   残留进程同样停掉，最后才合并。
 
-    {"case": "...", "cmd": [...], "pids": [...], "file_shas": {...},
-     "funcs":      {"<relfile>:<firstlineno>": 次数},      # 模块顶层记为 <relfile>:0
-     "func_edges": {"<调用方>|<被调方>": 次数},              # 函数粒度，真正的 caller→callee
-     "file_edges": {"<relfileA>|<relfileB>": 次数}}          # 由 func_edges 派生
-叠图用的单元（文件）粒度数据由 to_package_graph() 在加载时现算，因为它依赖当前的 index。
+每次录制写进 runs.new_run 建的 run 目录（见 runs.py）。各进程的分片：
+
+    part-<pid>-<t0ns>.json    {pid, ppid, argv, t0, t, why, py, phase,
+                               funcs:      {"<relfile>:<firstlineno>": 次数},  # 模块顶层记为 <relfile>:0
+                               func_edges: {"<调用方>|<被调方>": 次数},          # 函数粒度，真正的 caller→callee
+                               names:      {"<relfile>:<firstlineno>": qualname}, mapped: {...}}
+    part-<pid>-<t0ns>@<n>-<阶段>.json    切阶段时的累计快照
+merge() 把它们合成各阶段的计数；叠图用的单元（文件）粒度数据由 to_package_graph() 在
+加载时现算，因为它依赖当前的 index。
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ENV_ROOT = "CODESTRATA_ROOT"
@@ -48,7 +59,7 @@ ENV_PKGS = "CODESTRATA_PKGS"      # "顶层包=仓库内目录;..."，把安装�
 
 _SITECUSTOMIZE = '''\
 # codestrata 自动注入。每个 Python 进程 import 它来挂上调用 hook。
-import os, sys, atexit, json, threading
+import os, sys, atexit, json, threading, time, hashlib
 
 _root = os.environ.get("CODESTRATA_ROOT")
 _out = os.environ.get("CODESTRATA_OUT")
@@ -57,6 +68,8 @@ if _root and _out:
     _funcs = {}          # "rel:firstlineno" -> 被调次数（模块顶层是 "rel:0"）
     _fedges = {}         # "调用者key|被调者key" -> 次数（函数粒度，真正的 caller→callee）
     _mapped = {}         # 从安装包映射回仓库的文件：rel -> 实际执行的路径
+    _names = {}          # "rel:firstlineno" -> co_qualname（代码改了行号之后按名字找回符号用）
+    _shas = {}           # rel -> 实际执行的那个文件的内容哈希（第一次跑到它时取；录制中途改了文件也认得出）
     _tls = threading.local()
     _relc = {}
     # 被 trace 的常常是 pip 装进 site-packages 的那份，而不是仓库里的源码。
@@ -89,6 +102,12 @@ if _root and _out:
                             r = _pkgs[top] + tail[len(top):]
                             _mapped[r] = rp
                         break
+            if r is not None and r not in _shas:
+                try:
+                    with open(rp, "rb") as f:
+                        _shas[r] = hashlib.sha256(f.read()).hexdigest()[:16]
+                except Exception:
+                    _shas[r] = ""
         _relc[fn] = r
         return r
 
@@ -109,7 +128,11 @@ if _root and _out:
         k = _key(code, rel)
         st = _stack()
         if count:
-            _funcs[k] = _funcs.get(k, 0) + 1
+            n = _funcs.get(k)
+            if n is None:
+                n = 0
+                _names[k] = getattr(code, "co_qualname", code.co_name)
+            _funcs[k] = n + 1
             if st and st[-1] != k:                 # 递归自调用不算边
                 ek = st[-1] + "|" + k
                 _fedges[ek] = _fedges.get(ek, 0) + 1
@@ -136,6 +159,7 @@ if _root and _out:
     # 每个进程在 1 秒内看到它，就给切换前的累计计数拍一张快照。合并时相邻快照相减，
     # 就能把「启动时调了什么」和「处理请求时调了什么」分开。
     _phase_file = os.path.join(_out, "PHASE")
+    _stop_file = os.path.join(_out, "STOP")
     def _read_phase():
         try:
             with open(_phase_file) as f:
@@ -144,71 +168,163 @@ if _root and _out:
             return "start"
     _phase = [_read_phase()]
     _snaps = []
+    # 进程（准确说是这个进程映像）起始的时刻。分片按 pid + 它命名：exec 之后同一个 pid 换了
+    # 程序，新程序写新文件，不会覆盖 exec 之前的数据
+    _t0 = [time.monotonic_ns()]
+
+    def _starttime():
+        # /proc/<pid>/stat 的启动时刻：driver 靠 (pid, 它) 认出还活着的本 run 进程——
+        # 光看 /proc/<pid>/environ 不够，setproctitle（vLLM 的 engine core 在用）会把它清空
+        try:
+            with open("/proc/self/stat") as f:
+                return int(f.read().rsplit(")", 1)[1].split()[19])
+        except Exception:
+            return None
+    _st = [_starttime()]
+
+    def _cmdline():
+        try:
+            with open("/proc/self/cmdline", "rb") as f:
+                raw = [a.decode("utf-8", "replace") for a in f.read().split(b"\\0") if a]
+        except OSError:
+            raw = [sys.executable] + sys.argv
+        return raw
+    # 完整的命令行（解释器 + 参数；python -c 的代码也在里面），启动时读一次：之后
+    # setproctitle 会把 /proc/self/cmdline 改成「VLLM::EngineCore_0」这样的标题
+    _argv0 = _cmdline()
+    _argv = [a[:400] for a in _argv0][:60]
+    _argv_cut = len(_argv0) > 60 or any(len(a) > 400 for a in _argv0)
+
+    # 所有落盘串行：落盘线程（periodic / phase / stop）和主线程（atexit / _exit / exec）
+    # 同时写同一个文件会把 JSON 写坏。临时文件名也带上线程，互不覆盖。
+    # 主线程的最后一次落盘开始后（_final），落盘线程不再写——否则一份更早拷贝的计数
+    # 可能最后 rename、盖掉最终的那份
+    _lock = [threading.RLock()]
+    _final = [False]
+
+    def _base():
+        return os.path.join(_out, "part-%d-%d" % (os.getpid(), _t0[0]))
+
+    def _write(p, data):
+        # 目录不在就不写（不 makedirs）：录制已经收尾、parts/ 已经打包删掉之后，
+        # 还活着的残留进程不能把它重新建出来
+        tmp = "%s.%d.tmp" % (p, threading.get_ident())
+        try:
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
 
     def _snapshot(name):
-        try:
-            p = os.path.join(_out, "part-%d@%d-%s.json" % (os.getpid(), len(_snaps), name))
-            with open(p + ".tmp", "w") as f:
-                json.dump({"funcs": dict(_funcs), "func_edges": dict(_fedges)}, f)
-            os.replace(p + ".tmp", p)
-        except Exception:
-            pass
+        _write("%s@%d-%s.json" % (_base(), len(_snaps), name),
+               {"funcs": dict(_funcs), "func_edges": dict(_fedges)})
         _snaps.append(name)
 
-    def _dump():
-        # 先拷贝再写：落盘线程和主线程并发，dict(...) 在 GIL 下是原子的。
-        # 写临时文件再 rename，读的一方永远看不到写了一半的 JSON。
+    _py = []
+    def _pyinfo():
+        if not _py:
+            _py.append({"version": sys.version.split()[0], "executable": sys.executable,
+                        "site": [p for p in sys.path if p.endswith(("site-packages", "dist-packages"))]})
+        return _py[0]
+
+    def _payload(why):
+        d = {"pid": os.getpid(), "ppid": os.getppid(), "st": _st[0], "argv": _argv, "argv_cut": _argv_cut,
+             "t0": _t0[0], "t": time.monotonic_ns(), "why": why, "py": _pyinfo(), "phase": _phase[0],
+             "funcs": dict(_funcs), "func_edges": dict(_fedges), "names": dict(_names),
+             "mapped": dict(_mapped), "shas": dict(_shas)}
+        now = _cmdline()
+        if now and now[0] != _argv0[0]:
+            d["title"] = " ".join(now)[:200]          # setproctitle 改过的标题
+        return d
+
+    def _dump(why):
+        # why：atexit / _exit / exec 是这个进程映像的最后一次（主线程）；periodic / phase / stop
+        # 是落盘线程的。最后一次是 periodic 或 phase 的进程是被强杀的，最后几秒的数据没了；
+        # stop 是 driver 升级到 SIGTERM 之前通知的那次（之后被信号停掉，数据到停之前 1 秒）
+        final = why in ("atexit", "_exit", "exec")
+        if final:
+            _final[0] = True
+            _lock[0].acquire()
+        elif _final[0] or not _lock[0].acquire(blocking=False):
+            return
         try:
-            os.makedirs(_out, exist_ok=True)
-            p = os.path.join(_out, "part-%d.json" % os.getpid())
-            # 完整的命令行（解释器 + 参数；python -c 的代码也在里面），hot 图的帮助里要列出
-            # 「这次到底跑了什么」。早先只存 sys.argv 的前 6 个，参数一长就看不全
-            try:
-                with open("/proc/self/cmdline", "rb") as f:
-                    argv = [a.decode("utf-8", "replace")[:400] for a in f.read().split(b"\\0") if a][:60]
-            except OSError:
-                argv = [sys.executable] + sys.argv[:60]
-            data = {"pid": os.getpid(), "ppid": os.getppid(), "argv": argv, "funcs": dict(_funcs),
-                    "func_edges": dict(_fedges), "mapped": dict(_mapped), "phase": _phase[0]}
-            with open(p + ".tmp", "w") as f:
-                json.dump(data, f)
-            os.replace(p + ".tmp", p)
-        except Exception:
-            pass
-    atexit.register(_dump)
+            # 被 trace 的程序自己的信号处理器可能在落盘中途抛 KeyboardInterrupt / SystemExit：
+            # 吞掉重来，不能让它把最后一次落盘打断，更不能让它从 os._exit 里逃出去
+            for _ in range(3):
+                try:
+                    _write(_base() + ".json", _payload(why))
+                    break
+                except BaseException:
+                    continue
+        finally:
+            _lock[0].release()
+    atexit.register(_dump, "atexit")
 
     # atexit 不是总会跑：multiprocessing 的 fork 子进程以 os._exit 结束，被 SIGKILL 的
-    # 进程什么都不跑。所以 (1) 拦下 os._exit 先落盘；(2) 后台线程每 10 秒落一次盘，
-    # 被强杀最多丢最后 10 秒。
+    # 进程什么都不跑，exec 换程序时也不跑。所以 (1) 拦下 os._exit 和 exec 先落盘；
+    # (2) 后台线程每 10 秒落一次盘，被强杀最多丢最后 10 秒；driver 升级到 SIGTERM 之前
+    # 会写 STOP 文件，落盘线程看到就立刻落一次。不装 SIGTERM 处理器：Python 层的处理器
+    # 要等主线程回到解释器才跑，会让卡在 C 里的进程收到 SIGTERM 也不死（改变被 trace 的程序的行为）
     _real_exit = os._exit
-    def _exit_hook(code):
-        _dump()
-        _real_exit(code)
+    def _exit_hook(*a, **k):
+        try:
+            _dump("_exit")
+        except BaseException:
+            pass
+        _real_exit(*a, **k)
     os._exit = _exit_hook
 
+    # os.exec* 全家最后都走 execv / execve（os.py 里按模块全局名字查找，所以替换得到）
+    def _wrap_exec(real):
+        def _exec(*a, **k):
+            try:
+                _dump("exec")
+            except BaseException:
+                pass
+            try:
+                return real(*a, **k)
+            finally:
+                _final[0] = False             # 只有 exec 失败才会走到这里：进程接着跑
+        return _exec
+    os.execv = _wrap_exec(os.execv)
+    os.execve = _wrap_exec(os.execve)
+
     def _flusher():
-        import time
-        n = 0
+        n, stopped = 0, False
         while True:
             time.sleep(1)
             ph = _read_phase()
-            if ph != _phase[0]:
-                _snapshot(_phase[0])
-                _phase[0] = ph
-                _dump()
+            if ph != _phase[0] and not _final[0]:
+                with _lock[0]:
+                    _snapshot(_phase[0])
+                    _phase[0] = ph
+                _dump("phase")
+            if not stopped and os.path.exists(_stop_file):
+                stopped = True
+                _dump("stop")
             n += 1
             if n % 10 == 0:
-                _dump()
+                _dump("periodic")
     def _start_flusher():
         threading.Thread(target=_flusher, name="codestrata-flush", daemon=True).start()
     _start_flusher()
 
     # fork 出来的子进程继承父进程的计数，不清零就会把父进程 fork 之前的调用再算一遍；
-    # 线程也不会跟着 fork 过来，落盘线程要重启。调用栈保留——子进程还会从这些帧里返回。
+    # 线程也不会跟着 fork 过来，落盘线程要重启；锁可能正被 fork 前的落盘线程拿着，要重建。
+    # 调用栈保留——子进程还会从这些帧里返回。
     def _after_fork():
         _funcs.clear()
         _fedges.clear()
+        _names.clear()
         del _snaps[:]             # fork 之前的阶段属于父进程
+        _t0[0] = time.monotonic_ns()
+        _st[0] = _starttime()
+        _lock[0] = threading.RLock()
+        _final[0] = False
         _start_flusher()
     os.register_at_fork(after_in_child=_after_fork)
 
@@ -263,79 +379,327 @@ def _make_bootstrap(root: Path, outdir: Path) -> Path:
 
 # ---------------------------------------------------------------- 驱动的一侧
 
-def run(root: Path, cmd: list[str], case: str,
-        outdir: Path | None = None, timeout: float | None = None,
-        pkgs: dict[str, str] | None = None) -> dict:
-    """在 hook 下跑一条命令，返回合并后的 trace。
+def _say(msg: str) -> None:
+    """driver 的提示。终端关掉之后写 stderr 会报 EIO：不能因此丢掉整个录制的收尾。"""
+    try:
+        print(msg, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def _killpg(pgid: int, sig: int) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+_LEVELS = ((signal.SIGINT, None), (signal.SIGTERM, 15.0), (signal.SIGKILL, 5.0))
+
+
+def _before_term(parts: Path | None, alive) -> None:
+    """升级到 SIGTERM 之前：写 STOP，各进程的落盘线程 1 秒内看到就落一次盘（主线程卡在
+    C 里也行），等它们写完再发信号。hook 里不装 SIGTERM 处理器，这是被强停的进程
+    最后一份数据的来源。"""
+    if parts is None or not parts.is_dir():
+        return
+    try:
+        (parts / "STOP").write_text("stop\n")
+    except OSError:
+        return
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end and alive():
+        time.sleep(0.1)
+
+
+def _stop(alive, send, grace: float, poke=None, parts: Path | None = None,
+          skip_int=lambda: False) -> str | None:
+    """三级停止：SIGINT → 等 grace 秒 → SIGTERM → 等 15 秒 → SIGKILL。
+    SIGINT 在先：Python 进程收到它会抛 KeyboardInterrupt、正常走 atexit，数据完整落盘；
+    case 脚本的 trap 也有机会收尾（停掉它 setsid 出去的服务）。返回最后发出的信号名。
+    poke() 返回 True 表示用户又按了一次 Ctrl+C（或按了 Ctrl+\\）：直接升级一级。
+    skip_int() 为真时跳过 SIGINT 这一级。"""
+    last = None
+    for sig, wait in _LEVELS:
+        if not alive():
+            break
+        if sig == signal.SIGINT and skip_int():
+            continue
+        if sig == signal.SIGTERM:
+            _before_term(parts, alive)
+            if not alive():
+                break
+        send(sig)
+        last = sig.name
+        end = time.monotonic() + (grace if wait is None else wait)
+        while time.monotonic() < end and alive():
+            if poke and poke():
+                _say("[codestrata] 再次中断：不等了，升级")
+                break
+            time.sleep(0.1)
+    return last
+
+
+def _ignores(pid: int, sig: int) -> bool:
+    """这个进程是不是忽略了 sig（/proc/<pid>/status 的 SigIgn 位图）。非交互 bash 用 & 起的
+    后台进程天生忽略 SIGINT：Python 程序若不自己装处理器（uvicorn 装了，asyncio.run 不装），
+    对它发 SIGINT 等多久都没用，直接跳到 SIGTERM。"""
+    try:
+        for ln in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if ln.startswith("SigIgn:"):
+                return bool(int(ln.split()[1], 16) >> (sig - 1) & 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def stop_pids(pids: list[int], grace: float, poke=None, parts: Path | None = None) -> dict[int, str]:
+    """按三级顺序停一组不在同一进程组里的进程（残留进程）；返回 {pid: 最后发出的信号名}。
+    忽略 SIGINT 的进程直接从 SIGTERM 开始。"""
+    sent: dict[int, str] = {}
+    starts = {p: _proc_start(p) for p in pids}
+
+    def mine(p):                               # 还是当初那个进程（pid 没被复用）
+        return _alive(p) and _proc_start(p) == starts[p]
+
+    for sig, wait in _LEVELS:
+        alive = [p for p in pids if mine(p)]
+        if not alive:
+            break
+        if sig == signal.SIGTERM:
+            _before_term(parts, lambda: any(mine(p) for p in alive))
+        targets = [p for p in alive if mine(p) and not (sig == signal.SIGINT and _ignores(p, sig))]
+        for p in targets:
+            try:
+                os.kill(p, sig)
+                sent[p] = sig.name
+            except (ProcessLookupError, PermissionError):
+                pass
+        end = time.monotonic() + (grace if wait is None else wait)
+        while targets and time.monotonic() < end and any(mine(p) for p in targets):
+            if poke and poke():
+                _say("[codestrata] 再次中断：不等了，升级")
+                break
+            time.sleep(0.1)
+    return sent
+
+
+def _proc_start(pid: int) -> int | None:
+    """/proc/<pid>/stat 的第 22 列（开机以来的启动时刻）：和 pid 一起才能认出同一个进程。"""
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _alive(pid: int) -> bool:
+    try:
+        st = Path(f"/proc/{pid}/stat").read_text()
+        return st.rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+    except IndexError:
+        return False
+
+
+def leftovers(parts: Path) -> list[int]:
+    """还属于这个 run 的活进程：命令退出后 setsid 出去、没被 case 脚本停掉的服务，或者被
+    遗弃的子进程。两种认法（只有 Linux）：
+      - /proc/<pid>/environ 里有本 run 的 CODESTRATA_OUT（环境变量一路继承下去）；
+      - 分片文件名里的 pid 还活着、启动时刻和分片里记的一样——setproctitle（vLLM 的
+        engine core 在用）会清空 environ，靠这一条兜底。"""
+    want = os.fsencode(f"{ENV_OUT}={parts}")
+    out: set[int] = set()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    me = os.getpid()
+    for d in entries:
+        if not d.isdigit() or int(d) == me:
+            continue
+        try:
+            with open(f"/proc/{d}/environ", "rb") as f:
+                env = f.read()
+        except OSError:
+            continue
+        if want in env.split(b"\0") and _alive(int(d)):
+            out.add(int(d))
+    try:
+        names = os.listdir(parts)
+    except OSError:
+        names = []
+    for n in names:
+        if not (n.startswith("part-") and n.endswith(".json")) or "@" in n:
+            continue
+        try:
+            pid = int(n[len("part-"):].split("-")[0].split(".")[0])
+        except ValueError:
+            continue
+        if pid in out or pid == me or not _alive(pid):
+            continue
+        try:
+            st = json.loads((parts / n).read_text(encoding="utf-8")).get("st")
+        except (OSError, ValueError):
+            continue
+        if st is not None and st == _proc_start(pid):
+            out.add(pid)
+    return sorted(out)
+
+
+def stop_leftovers(parts: Path, grace: float, poke=None) -> list[dict]:
+    """找出并停掉属于这个 run 的残留进程，停完再找一遍：残留的 bash 在 EXIT trap 里还会起
+    新的子进程（kill、sleep），它们同样带着本 run 的环境。最多三轮。返回 [{pid, argv, signal}]。"""
+    out: list[dict] = []
+    done: set[int] = set()
+    for _ in range(3):
+        pids = [p for p in leftovers(parts) if p not in done]
+        if not pids:
+            break
+        argvs = {p: _argv_of(p) for p in pids}
+        _say(f"[codestrata] 还有 {len(pids)} 个进程属于本次录制：{pids}，按三级停掉")
+        sent = stop_pids(pids, grace, poke, parts)
+        out += [{"pid": p, "argv": argvs[p], "signal": sent.get(p)} for p in pids]
+        done.update(pids)
+    return out
+
+
+def _argv_of(pid: int) -> list[str]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode("utf-8", "replace")[:400] for a in f.read().split(b"\0") if a][:60]
+    except OSError:
+        return []
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
+        timeout: float | None = None, pkgs: dict[str, str] | None = None,
+        env_extra: dict[str, str] | None = None, stop_grace: float = 90.0, after=None):
+    """在 hook 下跑一条命令，合并各进程的分片。返回 after(trace, 录制信息) 的结果
+    （没给 after 就返回 (trace, 录制信息)）。
 
     cmd 就是你平时怎么跑那个 case，比如
         ["python", "examples/online_serving/minicpmo/realtime_duplex_demo.py", "--input-wav", "..."]
-    子进程会一并被 trace。
+    子进程会一并被 trace。各进程往 parts/ 里写分片（parts 是 runs.new_run 建的 run 目录下的
+    parts/），这里不删任何旧数据——每次录制都有自己的目录。
+
+    停止：命令放在自己的会话里（start_new_session），终端的 Ctrl+C 只到 driver，由 driver
+    按三级顺序转发给整个进程组；超时同理。命令退出后再把还属于本 run 的残留进程也按三级
+    停掉，最后才合并——这样每个进程的最后一次落盘都在结果里。driver 自己的信号处理器
+    一直装到 after（收尾：打包、写 run.json）做完，收尾中途按 Ctrl+C 不会把 run 弄成半截。
 
     pkgs 是 {顶层包名: 它在仓库里的目录}。命令跑的若是 pip 装进 site-packages 的那份，
-    靠它把执行路径映射回仓库文件；映射过的文件会逐个比对内容，不一致就报出来——
-    那时 hot 图的行号不可信。
+    靠它把执行路径映射回仓库文件。
+
+    录制信息：{stop: exit|timeout|interrupt, returncode, phase_times: [(阶段, t_us)],
+              duration_s, leftovers: [{pid, argv, signal}]}，t_us 相对 mono0_ns。
     """
     root = root.resolve()
-    outdir = outdir or (root / ".codestrata")
-    parts = outdir / f"parts-{case}"
-    if parts.exists():
-        for f in list(parts.glob("part-*.json")) + list(parts.glob("part-*.json.tmp")):
-            f.unlink()
-        (parts / "PHASE").unlink(missing_ok=True)
-    parts.mkdir(parents=True, exist_ok=True)
-
     boot = _make_bootstrap(root, parts)
     env = dict(os.environ)
+    env.update(env_extra or {})
     env[ENV_ROOT] = str(root)
     env[ENV_OUT] = str(parts)
+    # setproctitle 默认会借用 environ 的内存写进程标题、把 /proc/<pid>/environ 清空，
+    # 残留进程就认不出来了；这个变量让它只用 argv 那块
+    env["SPT_NOENV"] = "1"
     if pkgs:
         env[ENV_PKGS] = ";".join(f"{k}={v}" for k, v in pkgs.items())
     env["PYTHONPATH"] = str(boot) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
-    print(f"[codestrata] 跑 case {case!r}: {' '.join(cmd)}", file=sys.stderr)
-    print(f"[codestrata] hook 已注入 PYTHONPATH（子进程一并 trace）", file=sys.stderr)
-    rc = -1
-    try:
-        rc = subprocess.call(cmd, cwd=str(root), env=env, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        print(f"[codestrata] 超时 {timeout}s，用已收集到的数据", file=sys.stderr)
-    except KeyboardInterrupt:
-        print("[codestrata] 被中断，用已收集到的数据", file=sys.stderr)
+    _say(f"[codestrata] 跑: {' '.join(cmd)}")
+    _say(f"[codestrata] hook 已注入 PYTHONPATH（子进程一并 trace），分片写到 {parts}")
+    us = lambda: (time.monotonic_ns() - mono0_ns) // 1000
+    phase_file = parts / "PHASE"
+    phase_times: list = [("start", us())]
+    hits: list[int] = []                         # driver 收到的信号
 
-    tr = merge(parts, case=case, cmd=cmd, returncode=rc)
-    tr["cwd"] = str(root)
-    script = case_script(root, cmd)
-    if script:
-        tr["script"] = script
-    rels = {k.rpartition(":")[0] for k in tr["funcs"]}
-    tr["file_shas"] = file_shas(root, rels)
-    if tr["mapped"]:
-        # 实际执行的安装包文件 vs 仓库里的同名文件
-        import hashlib
-        bad, extra = [], []
-        for rel, real in tr["mapped"].items():
-            if not (root / rel).is_file():
-                # 仓库里本来就没有：构建时生成的文件（setuptools_scm 的 _version.py 之类），
-                # 不是「不一致」，也不会出现在图上
-                extra.append(rel)
-                continue
+    def on_sig(signum, frame):
+        hits.append(signum)
+    # 终端关掉（SIGHUP）和 Ctrl+C 一样处理：命令在自己的会话里，driver 一死它就没人管了。
+    # Ctrl+\（SIGQUIT）是「别等了」：跳过 SIGINT 那一级。已经被忽略的信号（nohup 下的 SIGHUP、
+    # 脚本里 & 起的 driver 的 SIGINT）保持忽略
+    old = {}
+    for sg in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        if signal.getsignal(sg) is not signal.SIG_IGN:
+            old[sg] = signal.signal(sg, on_sig)
+    seen = [0]
+
+    def poke():                                  # 停的过程中又来了一个信号：升级一级
+        if len(hits) > seen[0]:
+            seen[0] = len(hits)
+            return True
+        return False
+
+    def poll_phase():
+        try:
+            ph = phase_file.read_text().strip() or "start"
+        except OSError:
+            return
+        if ph != phase_times[-1][0]:
+            phase_times.append((ph, us()))
+            _say(f"[codestrata] 阶段 → {ph}")
+
+    try:
+        stop, rc, t_start = "exit", None, time.monotonic()
+        left: list[dict] = []
+        try:
+            proc = subprocess.Popen(cmd, cwd=str(root), env=env, start_new_session=True)
+        except OSError as e:
+            _say(f"[codestrata] 命令起不来：{e}")
+            proc = None
+            rc = 127
+        deadline = t_start + timeout if timeout else None
+        while proc is not None:
             try:
-                a = hashlib.sha256(Path(real).read_bytes()).hexdigest()[:16]
-            except OSError:
-                a = "?"
-            if a != tr["file_shas"].get(rel):
-                bad.append(rel)
-        tr["mapped_mismatch"] = sorted(bad)
-        tr["mapped_only_installed"] = sorted(extra)
-        where = os.path.commonpath(list(tr["mapped"].values()))
-        tr["mapped_from"] = where
-        print(f"[codestrata] 运行的是安装包 {where}，已映射回仓库 {len(tr['mapped'])} 个文件，"
-              + (f"其中 {len(bad)} 个和仓库内容不一致——这些文件的行号不可信" if bad
-                 else "内容与仓库逐文件一致")
-              + (f"（另有 {len(extra)} 个只在安装包里：{', '.join(extra[:3])}）" if extra else ""),
-              file=sys.stderr)
-    return tr
+                rc = proc.wait(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            poll_phase()
+            why = ("interrupt" if hits else
+                   "timeout" if deadline and time.monotonic() > deadline else None)
+            if why:
+                stop = why
+                _say(f"[codestrata] {'被中断' if why == 'interrupt' else f'超时 {timeout}s'}："
+                     f"SIGINT → {stop_grace:.0f}s → SIGTERM → 15s → SIGKILL，停整个进程组")
+                seen[0] = len(hits)
+                _stop(lambda: proc.poll() is None, lambda sg: _killpg(proc.pid, sg), stop_grace, poke,
+                      parts, skip_int=lambda: signal.SIGQUIT in hits)
+                try:
+                    rc = proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    rc = None
+                break
+        poll_phase()
+        duration = time.monotonic() - t_start
+        # 残留：命令的进程组里被遗弃的成员，和 setsid 出去（不在这个组里）的服务。
+        # Linux 上扫 /proc 全能找出来；别的系统只能停进程组
+        if proc is not None and not os.path.isdir("/proc") and _group_alive(proc.pid):
+            _stop(lambda: _group_alive(proc.pid), lambda sg: _killpg(proc.pid, sg), stop_grace, poke, parts)
+        seen[0] = len(hits)
+        left = stop_leftovers(parts, stop_grace, poke)
+        shutil.rmtree(boot, ignore_errors=True)
+        tr = merge(parts)
+        info = {"stop": stop, "returncode": rc, "phase_times": phase_times,
+                "duration_s": duration, "leftovers": left}
+        return after(tr, info) if after else (tr, info)
+    finally:
+        for sg, h in old.items():
+            signal.signal(sg, h)
+        shutil.rmtree(boot, ignore_errors=True)
 
 
 def case_script(root: Path, cmd: list[str]) -> dict | None:
@@ -356,30 +720,45 @@ def case_script(root: Path, cmd: list[str]) -> dict | None:
     return None
 
 
-def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
-          returncode: int | None = None) -> dict:
-    """把各进程写的 part-*.json 合并。"""
+def merge(parts: Path) -> dict:
+    """把各进程写的分片合并。两种命名都认：
+      part-<pid>-<t0ns>.json、part-<pid>-<t0ns>@<n>-<阶段>.json   （现在的：一个进程映像一份）
+      part-<pid>.json、part-<pid>@<n>-<阶段>.json                 （老的）
+    阶段总是保留，只有一个阶段时也保留（它的名字也是信息）。
+
+    返回 {phases: {阶段: {funcs, func_edges}}, funcs, func_edges, file_edges, names, mapped,
+          shas: {rel: 进程第一次跑到它时的内容哈希}, sha_conflicts: [不同进程看到的内容不一样的文件],
+          bad_parts: [读不出来的分片],
+          procs: [{pid, ppid, argv, argv_cut, title, n_funcs, t0, t, why, py}]}；
+    funcs / func_edges 是各阶段之和。"""
     funcs: dict[str, int] = {}
     fedges: dict[str, int] = {}
+    names: dict[str, str] = {}
     mapped: dict[str, str] = {}
-    pids: list[dict] = []
+    procs: list[dict] = []
     phases: dict[str, dict] = {}
+    shas: dict[str, str] = {}
+    conflicts: set[str] = set()
+    bad: list[str] = []
     for f in sorted(parts.glob("part-*.json")):
         if "@" in f.name:                      # 阶段快照，下面按进程处理
             continue
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
+            bad.append(f.name)
             continue
         # 这个进程的各阶段 = 相邻两次累计快照之差；最后一段到进程退出为止
+        stem = f.name[:-len(".json")]
         seq = []
-        for s in sorted(parts.glob(f"part-{d.get('pid')}@*.json"),
-                        key=lambda p: int(p.name.split("@")[1].split("-")[0])):
+        for sp in sorted(parts.glob(f"{stem}@*.json"),
+                         key=lambda p: int(p.name.split("@")[1].split("-")[0])):
             try:
-                sd = json.loads(s.read_text(encoding="utf-8"))
+                sd = json.loads(sp.read_text(encoding="utf-8"))
             except Exception:
+                bad.append(sp.name)
                 continue
-            seq.append((s.name.split("@", 1)[1][:-5].split("-", 1)[1], sd["funcs"], sd["func_edges"]))
+            seq.append((sp.name.split("@", 1)[1][:-5].split("-", 1)[1], sd["funcs"], sd["func_edges"]))
         seq.append((d.get("phase") or "start", d.get("funcs") or {}, d.get("func_edges") or {}))
         pf: dict = {}
         pe: dict = {}
@@ -391,14 +770,24 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
                     if dv > 0:
                         dst[k] = dst.get(k, 0) + dv
             pf, pe = fu, fe
-        pids.append({"pid": d.get("pid"), "ppid": d.get("ppid"), "argv": d.get("argv"),
-                     "n_funcs": len(d.get("funcs") or {})})
+        procs.append({"pid": d.get("pid"), "ppid": d.get("ppid"), "argv": d.get("argv"),
+                      "argv_cut": bool(d.get("argv_cut")), "title": d.get("title"),
+                      "n_funcs": len(d.get("funcs") or {}), "t0": d.get("t0"), "t": d.get("t"),
+                      "why": d.get("why"), "py": d.get("py")})
+        for rel, h in (d.get("shas") or {}).items():
+            if h and shas.get(rel) not in (None, h):
+                conflicts.add(rel)             # 录制中途文件改了，先后起的进程跑的不是同一份
+            elif h:
+                shas.setdefault(rel, h)
         for k, v in (d.get("funcs") or {}).items():
             funcs[k] = funcs.get(k, 0) + v
         for k, v in (d.get("func_edges") or {}).items():
             fedges[k] = fedges.get(k, 0) + v
+        for k, v in (d.get("names") or {}).items():
+            names.setdefault(k, v)
         mapped.update(d.get("mapped") or {})
-    # 文件粒度的边由函数粒度派生（跨文件的才算）
+    phases = phases or {"start": {"funcs": {}, "func_edges": {}}}
+    # 文件粒度的边由函数粒度派生（跨文件的才算），只用来打印摘要
     edges: dict[str, int] = {}
     for k, v in fedges.items():
         a, _, b = k.partition("|")
@@ -406,11 +795,10 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
         if fa != fb:
             ek = f"{fa}|{fb}"
             edges[ek] = edges.get(ek, 0) + v
-    return {"case": case, "cmd": cmd or [], "returncode": returncode,
-            "pids": pids, "n_procs": len(pids),
-            "funcs": funcs, "func_edges": fedges, "file_edges": edges, "mapped": mapped,
-            # 只有一个阶段时不存：它就等于总数
-            "phases": phases if len(phases) > 1 else {}}
+    procs.sort(key=lambda p: (p["t0"] or 0, p["pid"] or 0))
+    return {"phases": phases, "funcs": funcs, "func_edges": fedges, "file_edges": edges,
+            "names": names, "mapped": mapped, "shas": shas, "sha_conflicts": sorted(conflicts),
+            "bad_parts": sorted(bad), "procs": procs, "n_procs": len(procs)}
 
 
 def file_shas(root: Path, rels) -> dict:

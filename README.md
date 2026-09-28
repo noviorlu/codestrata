@@ -40,8 +40,18 @@ codestrata 为此处理了几件事：
 
 - **跑的是安装包也能叠图。** 执行路径落在 `site-packages/<顶层包>/` 下时映射回仓库文件，
   并逐文件比对内容；不一致会警告行号不可信。
-- **子进程数据不丢。** 拦截 `os._exit`（multiprocessing 的 fork 子进程这样退出）、每 10 秒落盘
-  （被 SIGKILL 最多丢 10 秒）、fork 后清零计数（不重复计入父进程）。
+- **子进程数据不丢。** 拦截 `os._exit`（multiprocessing 的 fork 子进程这样退出）和 `os.exec*`
+  （换程序之前先落盘）、每 10 秒落盘（被 SIGKILL 最多丢 10 秒）、fork 后清零计数（不重复计入
+  父进程）。落盘全部串行，写坏的分片会记成问题，不会悄悄丢掉一个进程。hook 不装信号处理器——
+  那会改变被 trace 的程序的行为；要升级到 SIGTERM 之前，driver 写一个 STOP 文件，各进程的
+  落盘线程看到就先落一次。
+- **停要停干净。** 命令放在自己的会话里；超时、Ctrl+C、终端关掉时按 SIGINT → SIGTERM → SIGKILL
+  三级停整个进程组（`--stop-grace` 秒后才升级，默认 90；再按一次 Ctrl+C 或按 Ctrl+\ 直接升级）。
+  命令退出后再找出还属于本次录制的残留进程（比如 setsid 出去、case 脚本没停掉的服务）同样停掉，
+  记进 run 里：靠 `/proc/<pid>/environ` 里的 `CODESTRATA_OUT`，加上分片里记的 (pid, 启动时刻)——
+  vLLM 用 setproctitle 改进程标题，会清空 environ。
+- **哈希取执行时的。** 每个进程第一次跑到一个文件时就记下它的内容哈希；录制中途改了文件，
+  run 会标出来，之后叠图时这个文件也算「改过」。
 - **分阶段。** case 脚本往 `$CODESTRATA_OUT/PHASE` 写一个名字，各进程 1 秒内切换；之后
   `--hot 名字@serving` 只看处理请求的那一段，启动时的初始化不会混进来。
 
@@ -50,6 +60,28 @@ codestrata 为此处理了几件事：
 [[ -n "${CODESTRATA_OUT:-}" ]] && { echo serving > "$CODESTRATA_OUT/PHASE"; sleep 2; }
 codestrata trace <repo> --case demo -- bash case.sh
 codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得到单独排版的 hot 图
+```
+
+### 录一次，一直用：run
+
+静态分析只有一份，随时 `scan` 重建；runtime 不能重建——一次录制往往是几分钟 GPU。所以每次
+`trace` 都存成一个新的 **run**（`.codestrata/runs/<时刻>-<case>/`），同名 case 重录也不覆盖：
+今天录 MiniCPM、明天录 Qwen，两份都留着，随时叠到图上。
+
+- run 里存原始数据（各进程的分片、case 脚本和命令里提到的配置文件、Python / 包版本、GPU、git）
+  和由它算出的计数。计数按 `文件:首行号` 存，加载时现映射到当前的 index 上——代码改了之后老 run
+  照样能用，哪些文件在录制之后改过会逐个标出来，而不是整个 run 作废。
+- `--hot` 接受完整的 run id，或 case 名（取它最新一次录完的），都可以加 `@阶段`。
+- `runs/` 可以是软链（比如指到大盘）。**`.codestrata/` 里除 `runs/` 外都能删**；`runs/` 删了就没了。
+- 老版本的 `trace-<case>.json` 第一次被读到时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）。
+
+```bash
+codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag model=qwen \
+    --attach ../common.sh -- bash case.sh     # --env 传给命令、--attach 把被 source 的文件一起存下
+codestrata runs <repo> ls                     # 按 case 分组列出，状态、时长、git、录制后改过几个文件
+codestrata runs <repo> show qwen-chat         # 详情 + 文件相对当前代码的状态 + 一条能直接复制的重录命令
+codestrata runs <repo> tag|untag|note|merge …
+codestrata runs <repo> rm <run id>… [--yes]   # 只认完整的 run id；还在录的不删
 ```
 
 读 hot 图要知道两件事：「调用方」是最近的仓库内的帧，穿过仓库外代码（如 vLLM 内部）的调用
@@ -100,7 +132,7 @@ codestrata 只用标准库（Pygments 可选，用于高亮），`pip install` �
 | 层 | 谁产出 | 放哪 | 能否重建 |
 |---|---|---|---|
 | 结构：包、import 边、架构高度、符号位置 | `scan`（ast） | `.codestrata/` | 随时 |
-| 运行：哪个 case 实际调到了什么 | `trace`（runtime hook） | `.codestrata/` | 重跑即可 |
+| 运行：哪个 case 实际调到了什么 | `trace`（runtime hook） | `.codestrata/runs/` | **不能**（要重新跑一遍） |
 | **理解：为什么这样切、算法为什么这么写、按什么顺序读** | **人 / LLM agent** | **`notes/`，进版本库** | **不能** |
 
 机器能给出结构，给不出理解。codestrata 把理解那一层**留空**，并告诉 agent 该填什么：
@@ -178,13 +210,15 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 
 ```bash
 codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描 + 交叉引用；默认切面按规模自动拆分
-codestrata serve <repo> [--hot CASE[@阶段]]    # 本地部署前端
-codestrata trace <repo> --case NAME -- CMD    # 跑一个 case，记录真实调用（子进程一并 trace）
+codestrata serve <repo> [--hot RUN[@阶段]]     # 本地部署前端；RUN 是 run id 或 case 名
+codestrata trace <repo> --case NAME [--timeout S] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
+                                              # 跑一个 case，记录真实调用（子进程一并 trace），存成新的 run
+codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   # 管理录下的 run
 codestrata tasks <repo> [--write]             # 待解读 + 输入包
 codestrata note  <repo> <模块> <file.md>       # 写回解读（总览用 _overview）
 codestrata check <repo> [模块 ...] [--fix]     # 机器核对解读：过期、引用漂移、名字 / 路径不存在
                                               # --fix 把只是挪了位置的引用改到新行号（不去掉过期标记）
-codestrata graph <repo> [--hot CASE]          # 导出单文件
+codestrata graph <repo> [--hot RUN[@阶段]]     # 导出单文件
 ```
 
 ## 状态
@@ -200,6 +234,12 @@ trace 踩过的两个坑，写在这里免得重犯：
 - 只订阅 `PY_START` 不订阅返回/展开，调用者会变成「上一个开始执行的函数」。
 - 按 code 对象做缓存键是错的：code 对象**按内容**比较相等且不比 `co_filename`，
   几个空 `__init__.py`、或不同文件里同名同行同体的函数会被当成同一个。按文件名缓存。
+- 非交互 bash 用 `&` 起的后台进程天生忽略 SIGINT；Python 程序若不自己装处理器（uvicorn 装了，
+  `asyncio.run` 不装），发 SIGINT 等多久都没用。停残留进程时看 `/proc/<pid>/status` 的 SigIgn，
+  忽略 SIGINT 的直接发 SIGTERM。
+
+录制端的测试在 CPU 假服务上跑（setsid 的服务、multiprocessing、exec、asyncio、分阶段）：
+`.venv/bin/python tests/test_runs.py`。
 
 一个负面结论值得记下：**SCC 缩点不能用来分层**。Python 的循环 import 会让强连通分量退化——
 在 vllm-omni 上 30 个包有 20 个塌进同一个环，分层信息全丢。启发式在这里胜过图论正解。

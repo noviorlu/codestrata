@@ -1,18 +1,23 @@
 """codestrata 命令行。
 
     codestrata scan  <repo>                      静态扫描 → .codestrata/index.json
-    codestrata serve <repo> [--hot CASE]         本地部署前端：图 + 源码 + 解读 + 跳编辑器
-    codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用
+    codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 源码 + 解读 + 跳编辑器
+    codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
+    codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
     codestrata tasks <repo> [--write]            待解读的模块（自底向上）+ 给 agent 的输入包
     codestrata pack  <repo> <target>             打印某个模块给 agent 的输入包
     codestrata note  <repo> <target> <file.md>   写回一份解读（仓库总览的 target 是 _overview）
     codestrata check <repo> [target ...]         机器核对解读：过期、引用的 file:line / 符号是否存在
-    codestrata graph <repo> [--hot CASE]         导出单文件 HTML（只读、离线、可分享）
+    codestrata graph <repo> [--hot RUN]          导出单文件 HTML（只读、离线、可分享）
+
+RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
+后面可以加 @阶段（如 minicpmo-duplex@serving）。
 """
 from __future__ import annotations
 
 import argparse
-import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -20,14 +25,29 @@ from . import cut as _cut
 from . import notes as _notes
 from . import payload as _payload
 from . import render as _render
+from . import runs as _runs
 from . import scan as _scan
 from . import trace as _trace
 from . import xref as _xref
 
 
+_README = """codestrata 的数据目录。
+
+除 runs/ 以外都能删、都能重建（codestrata scan 重新生成索引）。
+runs/ 是 trace 录下的运行数据，不能重建：每个 run 都是一次真实的运行（可能是几分钟的 GPU），
+删了就没了。runs/ 可以是指向别处的软链，rm -rf .codestrata 只会删掉链接本身。
+管理它们用 codestrata runs <repo> ls|show|tag|note|rm。
+"""
+
+
 def _outdir(repo: Path) -> Path:
     d = repo / ".codestrata"
     d.mkdir(parents=True, exist_ok=True)
+    # 整个目录不进 git（被分析的仓库不该因为用了 codestrata 而多出一堆未跟踪文件）
+    for name, text in ((".gitignore", "*\n"), ("README.txt", _README)):
+        p = d / name
+        if not p.exists():
+            p.write_text(text, encoding="utf-8")
     return d
 
 
@@ -83,7 +103,7 @@ def cmd_graph(a) -> int:
     pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg)
     html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
                           fragment=a.fragment)
-    name = f"overview{'-' + a.hot if a.hot else ''}.html"
+    name = f"overview{'-' + re.sub(r'[^A-Za-z0-9@._-]', '_', a.hot) if a.hot else ''}.html"
     out = Path(a.out) if a.out else (_outdir(repo) / name)
     out.write_text(html, encoding="utf-8")
     g = pl["graph"]
@@ -165,31 +185,261 @@ def cmd_check(a) -> int:
     return 1 if bad else 0
 
 
+_TAG_RE = re.compile(r"^[A-Za-z0-9._:=/+-]+$")
+
+
 def cmd_trace(a) -> int:
     repo = Path(a.repo).resolve()
     if not a.cmd:
         raise SystemExit("要在 -- 之后给出命令，例如：\n"
                          "  codestrata trace . --case demo -- python examples/foo.py")
+    env = {}
+    for kv in a.env:
+        k, sep, v = kv.partition("=")
+        if not sep or not k:
+            raise SystemExit(f"--env 要写成 K=V：{kv!r}")
+        env[k] = v
+    for t in a.tag:
+        if not _TAG_RE.match(t):
+            raise SystemExit(f"tag 只能用字母、数字和 . _ : = / + -：{t!r}")
+    # --attach 的相对路径和命令一样按仓库根目录算（命令在那里跑）；那里没有再按当前目录
+    attach = []
+    for f in a.attach:
+        p = Path(f)
+        cand = [p] if p.is_absolute() else [repo / p, Path.cwd() / p]
+        hit = next((c for c in cand if c.is_file()), None)
+        if hit is None:
+            raise SystemExit(f"--attach 的文件不存在：{f}")
+        attach.append(str(hit.resolve()))
+    _outdir(repo)
+    _runs.catalog(repo)                      # 先把老格式的 trace 迁进 runs/
     # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
     roots = a.roots or _scan.detect_roots(repo)
     pkgs = {r.split("/")[-1]: r for r in roots}
-    tr = _trace.run(repo, a.cmd, case=a.case, outdir=_outdir(repo), timeout=a.timeout, pkgs=pkgs)
-    p = _outdir(repo) / f"trace-{a.case}.json"
-    p.write_text(json.dumps(tr, ensure_ascii=False), encoding="utf-8")
-    print(f"→ {p}")
-    print(f"  进程 {tr['n_procs']} 个，函数 {len(tr['funcs'])} 个被调到，"
-          f"文件间调用边 {len(tr['file_edges'])} 条，退出码 {tr['returncode']}")
+    rd = _runs.new_run(repo, case=a.case, cmd=a.cmd, cwd=repo, env=env, tags=a.tag, note=a.note or "",
+                       rec={"timeout": a.timeout, "stop_grace": a.stop_grace, "attach": attach})
+    print(f"[codestrata] run {rd.name}（{rd.resolve()}）", file=sys.stderr)
+    mono0 = _runs._read(rd / "run.json")["clock"]["mono0_ns"]
+
+    def after(tr, info):
+        # 在 driver 的信号处理器还装着的时候收尾：这时按 Ctrl+C 不会把打包打断
+        return tr, _runs.finalize(repo, rd, tr, stop=info["stop"], returncode=info["returncode"],
+                                  phase_times=info["phase_times"], duration_s=info["duration_s"],
+                                  leftovers=info["leftovers"], attach=attach)
+    tr, run = _trace.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
+                         env_extra=env, stop_grace=a.stop_grace, after=after)
+    detail = _runs._read(rd / "detail.json")
+    sm = run["summary"]
+    print(f"→ run {run['id']}：{_STATUS.get(run['status'], run['status'])}"
+          + (f"（{'；'.join(run['problems'])}）" if run["problems"] else ""))
+    print(f"  {rd.resolve()}")
+    print(f"  进程 {sm['n_procs']} 个（跑到仓库代码的 {sm['n_procs_active']} 个），"
+          f"函数 {sm['n_funcs']} 个被调到，文件间调用边 {len(tr['file_edges'])} 条，"
+          f"退出码 {run['returncode']}，用时 {run['duration_s']}s")
+    if len(run["phases"]) > 1:
+        print("  阶段：" + " / ".join(f"{p['name']} {p['n_funcs']} 个函数" for p in run["phases"]))
+    if tr["mapped"]:
+        bad, extra = detail["mapped_mismatch"], detail["mapped_only_installed"]
+        print(f"  运行的是安装包 {detail['mapped_from']}，已映射回仓库 {len(tr['mapped'])} 个文件，"
+              + (f"其中 {len(bad)} 个和仓库内容不一致——这些文件的行号不可信" if bad
+                 else "内容与仓库逐文件一致")
+              + (f"（另有 {len(extra)} 个只在安装包里：{', '.join(extra[:3])}）" if extra else ""))
+    if detail["leftovers"]:
+        print(f"  命令退出后停掉了 {len(detail['leftovers'])} 个残留进程："
+              + "，".join(f"{x['pid']}（{x['signal']}）" for x in detail["leftovers"]))
+    if detail["files"]:
+        print("  存下的文件：" + "，".join(f"{f['path']}" for f in detail["files"]))
+    if detail.get("attach_missing"):
+        print("  ⚠ 这些 --attach 的文件没存下来：" + "，".join(detail["attach_missing"]))
     try:
         idx = _load_index(repo)
     except SystemExit:
         print("  （还没 scan，跑 codestrata scan 之后再 graph --hot 就能叠图）")
-        return 0
+        return 0 if run["status"] != "failed" else 1
     hp = _trace.to_package_graph(tr, idx)
     print(f"  映射到 {len(hp['packages'])} 个包 / {len(hp['symbols'])} 个符号"
           f"（未映射调用 {hp['unmapped']}）")
     for k, v in sorted(hp["packages"].items(), key=lambda kv: -kv[1])[:12]:
         print(f"    {v:8d}  {k}")
-    return 0
+    # 分了阶段、有 serving 的，默认建议只看 serving（启动时的初始化会淹没请求本身）
+    serving = any(p["name"] == "serving" for p in run["phases"])
+    print(f"  叠到图上：codestrata serve {a.repo} --hot {run['id']}" + ("@serving" if serving else ""))
+    return 0 if run["status"] != "failed" else 1
+
+
+_STATUS = {"ok": "完整录完", "partial": "录到了但不完整", "failed": "失败（一个函数都没录到）",
+           "recording": "录制中"}
+
+
+def _size(n: int) -> str:
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024 or u == "GB":
+            return f"{n:.0f}{u}" if u == "B" else f"{n:.1f}{u}"
+        n /= 1024
+    return str(n)
+
+
+def _run_size(rd: Path) -> int:
+    tot = 0
+    for dp, _, fs in os.walk(rd):
+        for f in fs:
+            try:
+                tot += os.path.getsize(os.path.join(dp, f))
+            except OSError:
+                pass
+    return tot
+
+
+def cmd_runs(a) -> int:
+    """管理录下的 run：列出、看详情、打标签、写备注、删除、从原始数据重算。"""
+    repo = Path(a.repo).resolve()
+    # 只读查询不建目录：路径写错了（比如少了 src/vllm-omni）要报出来，而不是悄悄建一个空的
+    if not repo.is_dir():
+        raise SystemExit(f"没有这个目录：{repo}")
+    if not (repo / ".codestrata").is_dir():
+        raise SystemExit(f"{repo} 下没有 .codestrata：还没 scan / trace 过？")
+    base = _runs.runs_dir(repo)
+    if a.verb == "ls":
+        runs = _runs.catalog(repo)
+        print(f"runs 在 {base.resolve()}" + (f"（{base} 是软链）" if base.is_symlink() else ""))
+        try:
+            idx = _load_index(repo)
+        except SystemExit:
+            idx = None
+        if a.case:
+            runs = [r for r in runs if r.get("case") == a.case]
+        if not runs:
+            print("  （还没有 run）录一个：codestrata trace <repo> --case NAME -- <命令>")
+            return 0
+        total = 0
+        for case in sorted({r["case"] for r in runs}, key=lambda c: min(
+                i for i, r in enumerate(runs) if r["case"] == c)):
+            print(f"\n{case}")
+            for r in (x for x in runs if x["case"] == case):
+                rd = base / r["id"]
+                sz = _run_size(rd)
+                total += sz
+                changed = "-"
+                if idx is not None:
+                    try:
+                        fs = _runs.file_state(repo, idx, _runs._read(rd / "detail.json"))
+                        changed = str(sum(1 for v in fs.values() if v in ("changed", "mismatch")))
+                    except (OSError, ValueError):
+                        pass
+                sm = r.get("summary") or {}
+                git = (r.get("git") or {}).get("commit", "")[:8] or "-"
+                st = r.get("status_shown") or r.get("status")
+                dur = f"{r['duration_s']:.0f}s" if r.get("duration_s") is not None else "-"
+                print(f"  {r['id']:<40} {st:<9} {dur:>6}  进程 {sm.get('n_procs_active', '-'):>3}  "
+                      f"git {git:<8}  改过 {changed:>3}  {_size(sz):>7}  "
+                      + " ".join(r.get("tags") or []) + (f"  「{r['note']}」" if r.get("note") else ""))
+        print(f"\n共 {len(runs)} 个 run，{_size(total)}")
+        if total > 1 << 30:
+            print("注意：runs/ 超过 1 GB；不要的可以 codestrata runs <repo> rm <id>")
+        return 0
+
+    if a.verb == "show":
+        run, rd, phase = _runs.resolve(repo, a.ref)
+        detail = _runs._read(rd / "detail.json") if (rd / "detail.json").is_file() else {}
+        print(f"run {run['id']}  {rd.resolve()}")
+        print(f"  状态  {run.get('status_shown') or run.get('status')}"
+              + (f"（{'；'.join(run.get('problems') or [])}）" if run.get("problems") else ""))
+        for k, label in (("created", "录制于"), ("duration_s", "用时（秒）"), ("returncode", "退出码"),
+                         ("stop", "怎么停的"), ("host", "机器"), ("cwd", "目录"), ("migrated_from", "迁移自")):
+            if run.get(k) is not None:
+                print(f"  {label:<6}{run[k]}")
+        print(f"  命令  {' '.join(run.get('cmd') or [])}")
+        if run.get("env"):
+            print("  环境  " + " ".join(f"{k}={v}" for k, v in run["env"].items()))
+        if run.get("git"):
+            g = run["git"]
+            print(f"  git   {g['commit'][:12]}" + (f" ({g['branch']})" if g.get("branch") else "")
+                  + (f"，{g['n_dirty']} 个文件有未提交的改动" if g.get("n_dirty") else ""))
+        if run.get("tags") or run.get("note"):
+            print(f"  标签  {' '.join(run.get('tags') or []) or '-'}　备注  {run.get('note') or '-'}")
+        for p in run.get("phases") or []:
+            t = f"{p['t_us'] / 1e6:7.1f}s 起" if p.get("t_us") is not None else ""
+            print(f"  阶段  {p['name']:<12} {t:<11} {p['n_funcs']} 个函数，{p['n_calls']} 次调用")
+        procs = detail.get("procs") or []
+        if procs:
+            print(f"  进程  {len(procs)} 个，跑到仓库代码的 {sum(1 for p in procs if p.get('n_funcs'))} 个：")
+            for g in _runs.procs_grouped(procs)[:8]:
+                print(f"        {g['n']}× {g['funcs']:>5} 个函数  {' '.join(g['argv'])[:110]}"
+                      + ("  …（老版本只存了前 6 个参数）" if g["cut"] else ""))
+        for exe, py in (detail.get("pythons") or {}).items():
+            ds = py.get("dists") or {}
+            key = [f"{k} {ds[k]}" for k in ("torch", "vllm", "vllm-omni", "transformers") if k in ds]
+            print(f"  python {py.get('version')}  {exe}" + (f"（{'，'.join(key)}…共 {len(ds)} 个包）" if ds else ""))
+        for gpu in detail.get("gpu") or []:
+            print(f"  GPU{gpu['index']}  {gpu['name']}，驱动 {gpu['driver']}，{gpu['mem_mib']} MiB")
+        for f in detail.get("files") or []:
+            print(f"  存下  {f['stored']:<32} ← {f['path']}（{f['why']}）")
+        if detail.get("leftovers"):
+            print("  残留  " + "，".join(f"{x['pid']} {x['signal']}" for x in detail["leftovers"]))
+        try:
+            idx = _load_index(repo)
+        except SystemExit:
+            idx = None
+        if idx is not None:
+            fs = _runs.file_state(repo, idx, detail)
+            n = len(detail.get("file_shas") or {})
+            by: dict = {}
+            for rel, st in fs.items():
+                by.setdefault(st, []).append(rel)
+            print(f"  文件  这次跑到 {n} 个文件，相对当前的 index："
+                  + ("全部没变" if not fs else "，".join(f"{_FS[k]} {len(v)}" for k, v in sorted(by.items()))))
+            for st in ("changed", "mismatch", "gone", "outside", "unknown"):
+                for rel in sorted(by.get(st, []))[:12]:
+                    print(f"        {_FS[st]:<10} {rel}")
+                if len(by.get(st, [])) > 12:
+                    print(f"        …还有 {len(by[st]) - 12} 个")
+        print(f"  重录  {_runs.rerun_command(run, Path(a.repo))}")
+        return 0
+
+    if a.verb in ("tag", "untag"):
+        for t in a.tags:
+            if not _TAG_RE.match(t):
+                raise SystemExit(f"tag 只能用字母、数字和 . _ : = / + -：{t!r}")
+        run = _runs.set_tags(repo, a.ref, a.tags, remove=a.verb == "untag")
+        print(f"run {run['id']}：标签 {' '.join(run['tags']) or '（无）'}")
+        return 0
+    if a.verb == "note":
+        run = _runs.set_note(repo, a.ref, a.text)
+        print(f"run {run['id']}：备注「{run['note']}」")
+        return 0
+    if a.verb == "rm":
+        runs = {r["id"]: r for r in _runs.catalog(repo)}
+        targets = []
+        for ref in dict.fromkeys(a.refs):
+            if ref not in runs:
+                same = [i for i, r in runs.items() if r.get("case") == ref]
+                raise SystemExit(f"rm 只认完整的 run id：{ref!r} 不是" + (
+                    "。这个 case 的 run 有：\n  " + "\n  ".join(f"{i}  {runs[i].get('status')}" for i in same)
+                    if same else ""))
+            if _runs.live(runs[ref]):
+                raise SystemExit(f"run {ref} 还在录制中，不能删")
+            targets.append((runs[ref], base / ref))
+        for run, rd in targets:
+            print(f"  {run['id']}  {run.get('status_shown') or run.get('status')}  {_size(_run_size(rd))}")
+        if not a.yes:
+            if not sys.stdin.isatty():
+                raise SystemExit("删 run 要确认（run 不能重建）：加 --yes")
+            if input(f"删掉这 {len(targets)} 个 run？它们不能重建。[y/N] ").strip().lower() != "y":
+                print("没删")
+                return 1
+        for run, _ in targets:
+            print(f"删了 {_runs.remove(repo, run['id'])}")
+        return 0
+    if a.verb == "merge":
+        run = _runs.merge_run(repo, a.ref)
+        print(f"run {run['id']}：从原始数据重算完，状态 {run['status']}"
+              + (f"（{'；'.join(run.get('problems') or [])}）" if run.get("problems") else ""))
+        return 0
+    raise SystemExit(f"不认识的动作 {a.verb}")
+
+
+_FS = {"changed": "录制后改过", "mismatch": "录制时就和仓库不一致", "gone": "已删除",
+       "outside": "不在 index 里", "unknown": "没存哈希"}
 
 
 def cmd_serve(a) -> int:
@@ -218,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
 
     g = sub.add_parser("graph", help="导出单文件 HTML（只读、可分享）")
     common(g)
-    g.add_argument("--hot", default=None, metavar="CASE", help="叠加某个 case 的 runtime 结果")
+    g.add_argument("--hot", default=None, metavar="RUN", help="叠加某个 run 的 runtime 结果（run id 或 case 名，可加 @阶段）")
     g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
     g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
     g.add_argument("--out", default=None)
@@ -226,14 +476,14 @@ def main(argv: list[str] | None = None) -> int:
 
     k = sub.add_parser("tasks", help="列出待解读的模块，可把输入包写出来交给 agent")
     common(k)
-    k.add_argument("--hot", default=None, metavar="CASE")
+    k.add_argument("--hot", default=None, metavar="RUN")
     k.add_argument("--write", action="store_true", help="把输入包写到 .codestrata/tasks/")
     k.set_defaults(fn=cmd_tasks)
 
     pk = sub.add_parser("pack", help="打印某个模块给 agent 的输入包")
     pk.add_argument("repo")
     pk.add_argument("target")
-    pk.add_argument("--hot", default=None, metavar="CASE")
+    pk.add_argument("--hot", default=None, metavar="RUN")
     pk.set_defaults(fn=cmd_pack)
 
     nn = sub.add_parser("note", help="把一份 Markdown 写成某个模块的解读")
@@ -252,20 +502,58 @@ def main(argv: list[str] | None = None) -> int:
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")
     common(t)
-    t.add_argument("--case", required=True, help="给这次运行起个名字")
-    t.add_argument("--timeout", type=float, default=None)
+    t.add_argument("--case", required=True,
+                   help="这个 case 的名字（字母、数字和 . _ -）。同名 case 重录不覆盖，每次都是新的 run")
+    t.add_argument("--timeout", type=float, default=None, help="超过这么多秒就按三级顺序停掉命令")
+    t.add_argument("--stop-grace", type=float, default=90.0,
+                   help="停的时候发 SIGINT 之后等多久再发 SIGTERM（默认 90 秒）")
+    t.add_argument("--tag", action="append", default=[], help="给 run 打标签，比如 model=Qwen2.5-Omni-7B（可重复）")
+    t.add_argument("--note", default=None, help="给 run 写一句备注")
+    t.add_argument("--env", action="append", default=[], metavar="K=V",
+                   help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
+    t.add_argument("--attach", action="append", default=[], metavar="FILE",
+                   help="把这个文件的内容一起存进 run（比如被 case 脚本 source 的 common.sh）")
     t.add_argument("cmd", nargs="*", default=[],
                    help="-- 之后是要跑的命令")
     t.set_defaults(fn=cmd_trace)
 
+    r = sub.add_parser("runs", help="管理录下的 run（ls / show / tag / untag / note / rm / merge）")
+    r.add_argument("repo")
+    rv = r.add_subparsers(dest="verb", required=True)
+    x = rv.add_parser("ls", help="列出所有 run，按 case 分组，新的在前")
+    x.add_argument("--case", default=None)
+    x = rv.add_parser("show", help="一个 run 的详情、文件相对当前代码的状态、重录命令")
+    x.add_argument("ref", metavar="RUN")
+    x = rv.add_parser("tag", help="加标签")
+    x.add_argument("ref", metavar="RUN")
+    x.add_argument("tags", nargs="+")
+    x = rv.add_parser("untag", help="去掉标签")
+    x.add_argument("ref", metavar="RUN")
+    x.add_argument("tags", nargs="+")
+    x = rv.add_parser("note", help="写备注（覆盖原来的）")
+    x.add_argument("ref", metavar="RUN")
+    x.add_argument("text")
+    x = rv.add_parser("rm", help="删掉 run（不能重建，要确认；只认完整的 run id）")
+    x.add_argument("refs", nargs="+", metavar="RUN_ID")
+    x.add_argument("--yes", action="store_true")
+    x = rv.add_parser("merge", help="从原始数据重算计数；录制中断（driver 没了）时从散着的分片合并")
+    x.add_argument("ref", metavar="RUN")
+    r.set_defaults(fn=cmd_runs)
+
     v = sub.add_parser("serve", help="本地服务：图 + 源码 + 跳编辑器")
     common(v)
     v.add_argument("--port", type=int, default=8900)
-    v.add_argument("--hot", default=None, metavar="CASE")
+    v.add_argument("--hot", default=None, metavar="RUN")
     v.set_defaults(fn=cmd_serve)
 
     # 自己先按第一个 "--" 切开：argparse 的 REMAINDER 和可选位置参数放在一起时
     # 会互相抢参数（`trace . --case X -- cmd` 会报 --case 缺失）。
+    # 命令行、路径里可能有不是 UTF-8 的字节（Python 里是孤立的代理字符）：打印成转义，别崩
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
     raw = list(sys.argv[1:] if argv is None else argv)
     tail: list[str] = []
     if "--" in raw:

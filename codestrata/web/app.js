@@ -215,7 +215,10 @@ window.CS = window.CS || {};
         var m = d.hotMeta;
         document.getElementById('hotbanner').innerHTML =
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
+          + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
           + (m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
+          + (m.status && m.status !== 'ok' ? '<span style="color:var(--stale)">⚠ 这次录制不完整'
+             + (m.problems && m.problems.length ? '：' + esc(m.problems.join('；')) : '') + '</span>　' : '')
           + (m.phases && Object.keys(m.phases).length
              ? '<span class="lab">（这次 trace 分了阶段：' + Object.keys(m.phases).map(function (k) {
                  return esc(k) + ' ' + m.phases[k] + ' 个函数'; }).join(' / ')
@@ -228,8 +231,9 @@ window.CS = window.CS || {};
              + (m.mapped_mismatch && m.mapped_mismatch.length
                 ? '，<span style="color:var(--stale)">其中 ' + m.mapped_mismatch.length + ' 个与仓库内容不一致，行号不可信</span>'
                 : '（逐文件与仓库一致 ✓）') + '　' : '')
-          + (m.stale_files && m.stale_files.length ? '<span style="color:var(--stale)">⚠ 录制后有 '
-             + m.stale_files.length + ' 个文件改动过，叠加可能不准，重跑 trace 即可</span>　' : '')
+          + (m.stale_files && m.stale_files.length ? '<span style="color:var(--stale)" title="'
+             + esc(m.stale_files.slice(0, 30).join('\n')) + '">⚠ 录制后有 '
+             + m.stale_files.length + ' 个文件改过或删掉了，这些文件上的叠加可能偏</span>　' : '')
           + '</div></div>' + self.runHtml(m);
         self.wireRun();
       }

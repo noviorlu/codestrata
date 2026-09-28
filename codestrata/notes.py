@@ -312,7 +312,8 @@ def prompt_pack(repo: Path, index: dict, target: str, *,
     L.append(f"- 依赖 → {', '.join(dep) or '（无内部依赖，是叶子）'}")
     L.append(f"- 被依赖 ← {', '.join(rdep) or '（无人依赖，是入口）'}")
     if hot_hits:
-        L.append(f"- runtime：这个节点在记录的 case 里被调用 {hot_hits} 次")
+        L.append(f"- runtime：这个节点在记录的 case 里被调用 {hot_hits} 次"
+                 + (f"（run {hot['run']}）" if hot.get("run") else ""))
     L.append("")
     docs, seen = [], set()
     dirs = {_cut.unit_dir(u) for u in units}

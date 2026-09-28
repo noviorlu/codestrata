@@ -4,7 +4,7 @@ target: codestrata.render
 kind: package
 code_sha: ac7b762ee1c97dda
 status: draft
-refs: render.py:1@1b5c0234,render.py:17@d0eeb0d0,render.py:20@5e4e1cfc,render.py:26@70185c58,render.py:36@b0254794,payload.py:456@556fb9ff,payload.py:616@e6c4cb43,payload.py:579@52abe3fa,payload.py:595@c7e2ec1e,render.py:30@3c13f3a9
+refs: render.py:1@1b5c0234,render.py:17@d0eeb0d0,render.py:20@5e4e1cfc,render.py:26@70185c58,render.py:36@b0254794,payload.py:420@556fb9ff,payload.py:580@e6c4cb43,payload.py:543@52abe3fa,payload.py:559@c7e2ec1e,render.py:30@3c13f3a9
 ---
 
 ## 是什么
@@ -38,13 +38,13 @@ refs: render.py:1@1b5c0234,render.py:17@d0eeb0d0,render.py:20@5e4e1cfc,render.py
 `fragment=True` 去掉 doctype 和 meta 外壳（render.py:36），给自己会包外壳的宿主（比如 artifact 页面）用。也因为这种宿主会在 DOMContentLoaded 之后才执行内联脚本，`web/app.js` 的启动写成了「已经加载完就直接启动」。
 
 ### 过期文件
-Ctrl+点击的行列号是 scan 时的快照。文件在 scan 之后改过（大小或修改时间变了，payload.py:456），链接会落在别的字上，所以宁可不给：全文窗口标一句「重新 scan 才能 Ctrl+点击」，引用列表里来自改过文件的行标「改过」。hot 图另有一套判断（和录制时记下的文件哈希比）：录制后有文件改过时，hot 标记和帮助里都提示叠加可能不准。
+Ctrl+点击的行列号是 scan 时的快照。文件在 scan 之后改过（大小或修改时间变了，payload.py:420），链接会落在别的字上，所以宁可不给：全文窗口标一句「重新 scan 才能 Ctrl+点击」，引用列表里来自改过文件的行标「改过」。hot 图另有一套判断（和录制时记下的文件哈希比）：录制后有文件改过时，hot 标记和帮助里都提示叠加可能不准。
 
 ## 局限
 导出版是固定的一个切面加一份有限的数据：
 - 不能展开 / 收起（「＋ / −」不画）；排版宽度是导出时定的，窗口变宽只按比例放大（最多 1.25 倍），不像 serve 按图框宽度重排
-- 搜索能用（名字索引内嵌了，payload.py:616），但点一个被收着的模块只能选中装着它的节点
-- 整个文件控制在 14 MB 以内（`total_budget`，payload.py:579；单文件宿主上限 16 MB）：先算好其余部分，剩下的额度才给全文，这次跑到过的文件和解读里引用过的文件优先。xref 目标全文件共用一张表（payload.py:595），省下的额度能多带一两百个文件
+- 搜索能用（名字索引内嵌了，payload.py:580），但点一个被收着的模块只能选中装着它的节点
+- 整个文件控制在 14 MB 以内（`total_budget`，payload.py:543；单文件宿主上限 16 MB）：先算好其余部分，剩下的额度才给全文，这次跑到过的文件和解读里引用过的文件优先。xref 目标全文件共用一张表（payload.py:559），省下的额度能多带一两百个文件
 - 没带全文的文件只能看顶层符号；Ctrl+点击跳向这种文件时只提示、留在原地；「谁引用了它」只在内嵌了全文的文件里找，会标明结果不全
 - 不能写解读、不能跳编辑器；要这些用 serve
 

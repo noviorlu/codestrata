@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -262,6 +263,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     edge_uses: dict[tuple[str, str], dict] = {}
     edge_dead: dict[tuple[str, str], list] = {}
     file_loc: dict[str, int] = {}          # 文件 → 行数（含 C/C++/CUDA）
+    file_sha: dict[str, str] = {}          # .py 文件 → 内容哈希
     n_files = n_err = 0
 
     # 最细的粒度：每个 .py 文件是一个「单元」，依赖边、符号、调用明细都记在单元之间。
@@ -288,8 +290,10 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             rel = path.relative_to(root)
             n_files += 1
             try:
-                # utf-8-sig：开头带 BOM 的文件（Windows 编辑器存的）照样能解析，早先整个文件被当成解析失败
-                src = path.read_text(encoding="utf-8-sig", errors="replace")
+                raw = path.read_bytes()
+                # utf-8-sig：开头带 BOM 的文件（Windows 编辑器存的）照样能解析，早先整个文件被当成解析失败。
+                # 换行和 read_text 一样统一成 \n
+                src = raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
                 tree = ast.parse(src)
             except (SyntaxError, ValueError, OSError):
                 n_err += 1
@@ -298,6 +302,9 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             pkg = unit_of_module[module]           # 这个文件自己的单元
             files[str(rel)] = pkg
             file_loc[str(rel)] = src.count("\n") + 1
+            # 内容哈希：和 trace 录制时记下的哈希同一种（runs.sha16），用来判断某个 run
+            # 录制之后这个文件改过没有——叠加用的行号来自这份 index
+            file_sha[str(rel)] = hashlib.sha256(raw).hexdigest()[:16]
             pkg_files[pkg] = pkg_files.get(pkg, 0) + 1
             pkg_loc[pkg] = pkg_loc.get(pkg, 0) + src.count("\n") + 1
 
@@ -547,6 +554,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
         "symbols": {k: s.as_json() for k, s in symbols.items()},
         "files": files,
+        "file_sha": file_sha,
         "dirs": _cut.dir_tree(packages, roots),
     }
     # 图上默认显示哪一层：按规模自动拆分，或按用户给的 depth / expand
@@ -567,8 +575,10 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     dead = index.pop("edge_dead", {})
     docs = index.pop("docs", {})
     file_loc = index.pop("file_loc", {})
+    file_sha = index.pop("file_sha", {})
     (outdir / "symbols.json").write_text(
         json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs, "file_loc": file_loc,
+                    "file_sha": file_sha,
                     "edge_sites": sites, "edge_uses": uses, "edge_dead": dead},
                    ensure_ascii=False),
         encoding="utf-8")
@@ -579,4 +589,5 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     index["edge_sites"], index["edge_uses"], index["edge_dead"] = sites, uses, dead
     index["docs"] = docs
     index["file_loc"] = file_loc
+    index["file_sha"] = file_sha
     return p

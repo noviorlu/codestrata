@@ -271,7 +271,8 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
     print(f"  解读   {_notes.notes_root(repo)}  （待写 {len(todo)}）")
     print(f"  编辑器 {' '.join(ed) if ed else '没找到，跳转按钮会返回 501'}")
     if h:
-        print(f"  hot    case={hm['case']}，{len(h['packages'])} 个模块跑到")
+        print(f"  hot    run {hm['run_id']}" + (f" @{hm['phase']}" if hm.get("phase") else "")
+              + f"（case {hm['case']}，{hm['status']}），{len(h['packages'])} 个模块跑到")
     print("  Ctrl+C 停止", flush=True)
     try:
         srv.serve_forever()

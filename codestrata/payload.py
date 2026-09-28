@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -10,7 +11,7 @@ from . import cut as _cut
 from . import highlight as _hl
 from . import layout as _layout
 from . import notes as _notes
-from . import trace as _trace
+from . import runs as _runs
 from . import xref as _xref
 
 
@@ -31,56 +32,19 @@ def load_index(repo: Path) -> dict:
         idx["edge_dead"] = extra.get("edge_dead", {})
         idx["docs"] = extra.get("docs", {})
         idx["file_loc"] = extra.get("file_loc", {})
+        idx["file_sha"] = extra.get("file_sha")      # 老的 symbols.json 没有：None
     return idx
 
 
-def load_hot(repo: Path, idx: dict, case: str | None) -> tuple[dict | None, dict | None]:
-    """case 可以写成 名字@阶段，只叠加那个阶段的调用（见 trace 的 PHASE 约定）。"""
-    if not case:
+def load_hot(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | None]:
+    """ref 是一个 run：完整的 run id，或 case 名（取它最新一次录完的），后面可以加 @阶段，
+    只叠加那个阶段的调用（见 trace 的 PHASE 约定）。run 的存储和解析见 runs.py。"""
+    if not ref:
         return None, None
-    case, _, phase = case.partition("@")
-    tp = repo / ".codestrata" / f"trace-{case}.json"
-    if not tp.exists():
-        raise SystemExit(f"没有 {tp}；先跑 codestrata trace {repo} --case {case} -- <命令>")
-    tr = json.loads(tp.read_text(encoding="utf-8"))
-    phases = tr.get("phases") or {}
-    if phase:
-        if phase not in phases:
-            raise SystemExit(f"trace {case} 里没有阶段 {phase!r}；有的是：{', '.join(phases) or '（没分阶段）'}")
-        tr = {**tr, "funcs": phases[phase]["funcs"], "func_edges": phases[phase]["func_edges"]}
-    hot = _trace.to_package_graph(tr, idx)
-    meta = {"case": tr.get("case"), "cmd": tr.get("cmd"), "phase": phase or None,
-            "phases": {k: len(v["funcs"]) for k, v in phases.items()},
-            "n_procs": tr.get("n_procs"), "unmapped": hot.get("unmapped"),
-            # 老 trace 没存哈希时拿不到这个信息，就不报（而不是误报全部过期）
-            "stale_files": _trace.stale_files(repo, tr) if tr.get("file_shas") else [],
-            # 跑的是安装包时：从哪映射来的、有没有和仓库对不上的文件
-            "mapped_from": tr.get("mapped_from"), "n_mapped": len(tr.get("mapped") or {}),
-            "mapped_mismatch": tr.get("mapped_mismatch") or [],
-            "procs": _procs(tr), "script": _script(repo, tr)}
+    hot, meta = _runs.load(repo, idx, ref)
+    print(f"[codestrata] hot 图用的 run：{meta['run_id']}" + (f" @{meta['phase']}" if meta["phase"] else ""),
+          file=sys.stderr)
     return hot, meta
-
-
-def _procs(tr: dict) -> list[dict]:
-    """被 trace 的进程按命令合并：[{argv, n: 几个进程, funcs: 一共跑到几个仓库里的函数}]。
-    跑到仓库代码多的排前面——服务、demo 在前，健康检查之类的一次性小进程在后。"""
-    by: dict[tuple, dict] = {}
-    for p in tr.get("pids") or []:
-        k = tuple(p.get("argv") or [])
-        # 老的 trace（没有 ppid 的那一版）只存了 sys.argv 的前 6 个：标出来，免得以为命令就这么长
-        d = by.setdefault(k, {"argv": list(k), "n": 0, "funcs": 0,
-                              "cut": "ppid" not in p and len(k) >= 6})
-        d["n"] += 1
-        d["funcs"] += p.get("n_funcs") or 0
-    return sorted(by.values(), key=lambda d: (-d["funcs"], -d["n"]))
-
-
-def _script(repo: Path, tr: dict) -> dict | None:
-    """case 脚本的内容。新的 trace 录制时就存下了；老的 trace 没存，就读现在的文件（标明是现在的）。"""
-    if tr.get("script"):
-        return {**tr["script"], "saved": True}
-    s = _trace.case_script(repo, tr.get("cmd") or [])
-    return {**s, "saved": False} if s else None
 
 
 def _unit_syms(idx: dict) -> dict:
