@@ -4,7 +4,7 @@ target: _overview
 kind: repo
 code_sha: a7550a553d8778bc
 status: draft
-refs: __main__.py:80@d89a80ca,__main__.py:227@8ac31b40,__main__.py:220@e57ae09a,__main__.py:233@b87faf5c,runs.py:425@1c2edb45,runs.py:426@fe850b3d,payload.py:44@792c7b2a,serve.py:122@fed8d85f,serve.py:410@eae1c1a1,serve.py:153@cd0d48b0,serve.py:167@4317bbc0,seq.py:124@4430b676,codestrata/web/ds.js:47@454a9417,trace.py:829@6831bb9a,__main__.py:34@22ae2662,scan.py:112@e3529493,events.py:230@e0f60905,seq.py:85@43f9c39a
+refs: __main__.py:80@d89a80ca,__main__.py:227@8ac31b40,__main__.py:220@e57ae09a,__main__.py:233@b87faf5c,runs.py:425@1c2edb45,runs.py:426@fe850b3d,payload.py:44@792c7b2a,serve.py:122@fed8d85f,serve.py:410@eae1c1a1,serve.py:153@cd0d48b0,serve.py:167@4317bbc0,seq.py:124@4430b676,codestrata/web/ds.js:47@454a9417,trace.py:831@6831bb9a,__main__.py:34@22ae2662,scan.py:112@e3529493,events.py:230@e0f60905,seq.py:85@43f9c39a
 ---
 
 ## 这个仓库做什么
@@ -36,7 +36,7 @@ events/spans/ 只有 `seq` 读（经 serve），`payload` 不读它。导出版�
 - **叶子**（−1）：`cut`、`trace`、`events`、`layout`、`highlight`、`render`、`xref`，每个只做一件事，彼此不 import。「叶子」的意思是被依赖、不依赖别人，不是「不重要」：数据的生产者 `trace`、`events`、`xref`，决定图上显示哪一层的 `cut` 都在这一层。`cut` 被 6 个模块依赖，全仓最多。`xref` 是全仓最大的模块（近 1400 行），它只吃 scan 给的 index 这个 dict，不 import `scan`，所以也是叶子；`events` 同理，只吃一串日志文件、run 的起点时刻和一个输出目录，不 import `trace` 也不 import `runs`。
 
 最值得注意的几条边界：
-- **录 vs 存。** `trace` 不 import `runs`，所以仍是叶子。`trace.run` 只接收一个 parts 目录和一个 `after` 回调，不知道 run.json 长什么样。之所以用回调，而不是返回之后再收尾，是因为 driver 的信号处理器要一直装到收尾做完：`after` 在 `run` 的 try 里面调用（trace.py:829），打包中途按 Ctrl+C 才不会留下半截的 run。反过来，写 run、删 run 的代码全在 `runs` 里（`events` 只往 `runs` 交给它的 events/spans/ 里写派生的 span）：除了 `runs.remove` 和 `runs.remove_events`，没有代码会删 run 里的原始数据，审这一个文件就能确认。`seq` 只读不写。
+- **录 vs 存。** `trace` 不 import `runs`，所以仍是叶子。`trace.run` 只接收一个 parts 目录和一个 `after` 回调，不知道 run.json 长什么样。之所以用回调，而不是返回之后再收尾，是因为 driver 的信号处理器要一直装到收尾做完：`after` 在 `run` 的 try 里面调用（trace.py:831），打包中途按 Ctrl+C 才不会留下半截的 run。反过来，写 run、删 run 的代码全在 `runs` 里（`events` 只往 `runs` 交给它的 events/spans/ 里写派生的 span）：除了 `runs.remove` 和 `runs.remove_events`，没有代码会删 run 里的原始数据，审这一个文件就能确认。`seq` 只读不写。
 - **可重建 vs 不可重建。** 以前整个 `.codestrata/` 都是缓存；M1 之后分成两半，index / symbols / xref 随时删了重建，runs/ 删了就没了。误删有几道防线：`_outdir` 往 .codestrata/ 里写一份 README.txt（`_README`，__main__.py:34），写明除 runs/ 以外都能删；runs/ 可以是指到别的盘的软链，rm -rf .codestrata 只删链接本身；scan 跳过以点开头的目录（scan.py:112），不碰 runs/。解读放在 notes/，进版本库，靠 `code_sha`（整份是否过期）和引用指纹（哪一处 file:line 漂了）和代码绑在一起。
 - **原始 vs 派生**（run 内部）。合并逻辑还不成熟，以后还会改，所以原始分片（parts.tar.gz）永久保留，计数（counts.json.gz）只算派生数据，runs merge 能重算。时序事件照同一个办法：原始日志（events/raw.tar.gz）永久保留，span 是派生的。收尾时先落包、再整理（runs.py:425 在 runs.py:426 之前），整理抛了异常只在 run.json 的 events 摘要里记一个 error；事件到了行数上限也只标 truncated。两种情况都不改 status，因为计数是完整的，拿 case 名解析时不该因此跳到更早的一次。录制时才拿得到的东西（执行时的文件哈希、脚本和配置的副本、GPU、git 改动）只写一次，重算时不拿「现在的样子」去盖。
 - **录制时只记 → 收尾时整理一次 → 看的时候现算**（时序事件分三段）。hook 跑在被 trace 的程序里，每次跨文件调用都要付它的开销，所以它只做最少的事：调用时给一个 span 号，返回、挂起、恢复时按帧找回同一个号写出去。配对、深度、父子关系、第一级折叠都放在 `events` 里事后做（落盘被打断时 hook 只保证不丢，重试写重的行也由 `events.pair` 跳过），算法改了不用重录，runs merge 从原始日志重建即可（`events.build` 的输出是确定的，重建结果和收尾时一样）。按 span 号而不是按栈配对，是因为同一线程上交错执行的 asyncio 协程，先开始的不一定先结束。这一段的产出和切面无关，所以只做一次、写盘。映射到节点、画不画、折不折循环都和切面有关（展开一个包，同一个 span 可能从「节点内部」变成一条消息），所以放在 `seq` 里每次请求现算、不写盘，只在内存里缓存和切面无关的解压块、概览，以及 (index, 切面) → 映射表。

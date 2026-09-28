@@ -679,7 +679,9 @@ T                                        达到上限，之后不再记（计数
 - **M5b：`seq.js` 和两张图的切换（2 天）**
   - 验收：两张图之间的选中和切面同步；「在时序图里看」能定位到对应的时刻。
 
-### M6　qualname 回退（约 0.5 天）
+### M6　qualname 回退（约 0.5 天）　✅ 已完成
+
+> 实现：`runs.remap`，在 `runs.load` 里、`to_package_graph` 之前调。和设计的差别：嵌套函数也能对上——录制时的 qualname 是 `outer.<locals>.inner`，scan 的符号表记的是 `outer.inner`，去掉 `.<locals>` 就是；lambda、生成器表达式这类没名字的、老 run 没存 qualname 的、改了名的计入 `hotMeta.unmatched`，横幅上会说。测试 test_remap_moved_functions：包的 `__init__.py` 里的函数、装饰过的函数（键是第一个装饰器那一行）、嵌套函数下移几行后重新 scan，`hot.symbols` 的次数和移动前相同。
 
 - **做什么**：实现 `runs.remap`（见 3.5 第 3 条），在 `hotMeta` 里报 `unmatched`。
 - **验收**：在 codestrata 自己的 case 跑到的文件里，把一个函数下移 5 行后重新 scan：这个函数的 `hot.symbols` 次数和移动前相同；包 `__init__.py` 里的函数也能对上。

@@ -544,11 +544,13 @@ window.CS = window.CS || {};
              + m.unmapped + '</span>　' : '')
           + (m.mapped_from ? '运行的是安装包 <code>' + esc(m.mapped_from) + '</code>，已映射回仓库 ' + m.n_mapped + ' 个文件'
              + (m.mapped_mismatch && m.mapped_mismatch.length
-                ? '，<span style="color:var(--stale)">其中 ' + m.mapped_mismatch.length + ' 个与仓库内容不一致，行号不可信</span>'
+                ? '，<span style="color:var(--stale)">其中 ' + m.mapped_mismatch.length + ' 个与仓库内容不一致（已按函数名对到仓库里的位置）</span>'
                 : '（逐文件与仓库一致 ✓）') + '　' : '')
           + (m.stale_files && m.stale_files.length ? '<span style="color:var(--stale)" title="'
              + esc(m.stale_files.slice(0, 30).join('\n')) + '">⚠ 录制后有 '
-             + m.stale_files.length + ' 个文件改过或删掉了，这些文件上的叠加可能偏</span>　' : '')
+             + m.stale_files.length + ' 个文件改过或删掉了；改过的已按函数名把次数挪到函数现在的位置</span>　' : '')
+          + (m.unmatched ? '<span style="color:var(--stale)" title="lambda、生成器表达式没有名字；改了名、删了的函数找不到；'
+             + '老的 run 没存函数名">⚠ ' + m.unmatched + ' 处按函数名对不上：这些调用只算到文件上，不算到函数上</span>　' : '')
           + '</div></div>' + self.runHtml(m);
         self.wireRun();
       }

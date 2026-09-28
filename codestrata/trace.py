@@ -209,7 +209,9 @@ if _root and _out:
             n = _funcs.get(k)
             if n is None:
                 n = 0
-                _names[k] = getattr(code, "co_qualname", code.co_name)
+                q = getattr(code, "co_qualname", None)      # 3.10 没有：不记（拿短名字去对会对到同名的别的函数上）
+                if q:
+                    _names[k] = q
             _funcs[k] = n + 1
             if st and st[-1] != k:                 # 递归自调用不算边
                 ek = st[-1] + "|" + k
@@ -984,10 +986,10 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         except ValueError:
             continue
         pkg = files.get(rel)
-        sk = None if lineno == 0 else loc2sym.get((rel, lineno))
+        sk = None if lineno <= 0 else loc2sym.get((rel, lineno))
         if sk:
             sym_hits[sk] = sym_hits.get(sk, 0) + n
-        elif lineno <= 1:
+        elif 0 <= lineno <= 1:
             module_frames += n
             continue                    # 只被 import 过的包不算「跑到了」
         else:
@@ -1003,6 +1005,8 @@ def to_package_graph(trace: dict, index: dict) -> dict:
             spans.setdefault(s["f"], []).append((s.get("dl", s["l"]), s["e"], key))
 
     def label(rel: str, ln: int) -> tuple[str, int]:
+        if ln < 0:                      # runs.remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
+            return f"{rel}:<改过、对不上>", 1
         sk = None if ln == 0 else loc2sym.get((rel, ln))
         if sk:
             return sk, symbols[sk]["l"]

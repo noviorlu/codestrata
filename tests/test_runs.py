@@ -874,6 +874,56 @@ def test_seq_estimate_and_fit():
         seq.ESTIMATE_X = old
 
 
+def test_remap_moved_functions():
+    """M6：录制之后把函数下移几行、重新 scan：按 qualname 挪回来，hot.symbols 的次数不变；
+    包的 __init__.py 里的函数、嵌套函数、装饰过的函数也对得上；lambda 算 unmatched。"""
+    repo = fresh()
+    init = repo / "fakesvc" / "__init__.py"
+    init.write_text(init.read_text() + "\n\ndef helper():\n    return 1\n")
+    w = repo / "fakesvc" / "work.py"
+    w.write_text(w.read_text() + """
+
+def deco(f):
+    return f
+
+
+@deco
+def decorated():
+    def inner():
+        return 2
+    return inner() + (lambda: 3)()
+""")
+    cs("scan", repo)
+    cs("trace", repo, "--case", "mv", "--", PY, "-c",
+       "import fakesvc; from fakesvc import work; fakesvc.helper(); work.init_model(); work.decorated()")
+    idx = payload.load_index(repo)
+    before, _ = payload.load_hot(repo, idx, "mv")
+    want = {k: before["symbols"].get(k) for k in ("fakesvc:helper", "fakesvc.work:init_model", "fakesvc.work:load_weight",
+                                                    "fakesvc.work:decorated", "fakesvc.work:decorated.inner")}
+    assert all(want.values()), want
+    # 每个函数都下移几行（插空行 / 注释），重新 scan
+    init.write_text("# moved\n\n\n\n\n" + init.read_text())
+    src = w.read_text().replace("def init_model", "# a\n# b\n# c\n\ndef init_model").replace("@deco", "# x\n# y\n@deco")
+    w.write_text(src)
+    cs("scan", repo)
+    idx = payload.load_index(repo)
+    after, meta = payload.load_hot(repo, idx, "mv")
+    got = {k: after["symbols"].get(k) for k in want}
+    assert got == want, (got, want)
+    assert meta["file_state"].get("fakesvc/work.py") == "changed" and meta["unmatched"] >= 1, meta["unmatched"]
+    # 对不上的（这里改了名）不能落到原来那一行上现在的别的函数头上；次数还算在文件上
+    src = w.read_text()
+    old_line = next(i for i, ln in enumerate(src.splitlines(), 1) if ln.startswith("def load_weight"))
+    w.write_text(src.replace("def load_weight(", "def other_fn(i):\n    return i\n\n\ndef load_weight_renamed(", 1)
+                 .replace("load_weight(i)", "load_weight_renamed(i)"))
+    assert w.read_text().splitlines()[old_line - 1].startswith("def other_fn")
+    cs("scan", repo)
+    idx = payload.load_index(repo)
+    h3, m3 = payload.load_hot(repo, idx, "mv")
+    assert not h3["symbols"].get("fakesvc.work:other_fn"), h3["symbols"]
+    assert h3["files"]["fakesvc/work.py"] >= before["files"]["fakesvc/work.py"] - 1, (h3["files"], before["files"])
+
+
 def main(argv):
     tests = [(n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)]
     if argv:

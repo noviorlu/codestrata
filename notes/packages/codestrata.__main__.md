@@ -4,7 +4,7 @@ target: codestrata.__main__
 kind: package
 code_sha: 55d3a79f8524de28
 status: draft
-refs: __main__.py:233@b87faf5c,__main__.py:227@8ac31b40,__main__.py:196@30b1fec8,__main__.py:209@c90a9ebb,__main__.py:215@059c6e94,__main__.py:228@6109ee57,__main__.py:284@fea936cf,__main__.py:285@80bacee0,__main__.py:217@a241b857,trace.py:743@ea5dcb7a,__main__.py:224@90ff2a42,runs.py:829@af308051,__main__.py:254@a7c090eb,__main__.py:262@f7dc7f40,__main__.py:260@8b67ac5a,runs.py:377@33e517e7,__main__.py:403@dc6fc688,__main__.py:220@e57ae09a,__main__.py:315@b67404aa,__main__.py:317@b09cd715,__main__.py:568@72d37402,__main__.py:333@09bf7a10,__main__.py:352@49ae8d76,serve.py:226@d751bac7,__main__.py:395@c4688ddf,__main__.py:425@8569ebbe,__main__.py:448@b11d1384,__main__.py:466@1d7387f6,__main__.py:586@78ac2d86,__main__.py:451@a52cc99e,__main__.py:460@499fe1b3,__main__.py:469@cab0d66d,__main__.py:474@03b2082a,__main__.py:47@8964b0de,__main__.py:34@22ae2662,__main__.py:106@4f52f731,__main__.py:602@9c6178dc,__main__.py:607@ec9fb5ef,__main__.py:498@d41c8ef6,__main__.py:64@04903107,__main__.py:80@d89a80ca,__main__.py:344@9371b1a0,runs.py:706@bbf3acab,__main__.py:85@0c3e9807,__main__.py:491@4c85e081
+refs: __main__.py:233@b87faf5c,__main__.py:227@8ac31b40,__main__.py:196@30b1fec8,__main__.py:209@c90a9ebb,__main__.py:215@059c6e94,__main__.py:228@6109ee57,__main__.py:284@fea936cf,__main__.py:285@80bacee0,__main__.py:217@a241b857,trace.py:745@ea5dcb7a,__main__.py:224@90ff2a42,runs.py:893@af308051,__main__.py:254@a7c090eb,__main__.py:262@f7dc7f40,__main__.py:260@8b67ac5a,runs.py:377@33e517e7,__main__.py:403@dc6fc688,__main__.py:220@e57ae09a,__main__.py:315@b67404aa,__main__.py:317@b09cd715,__main__.py:568@72d37402,__main__.py:333@09bf7a10,__main__.py:352@49ae8d76,serve.py:226@d751bac7,__main__.py:395@c4688ddf,__main__.py:425@8569ebbe,__main__.py:448@b11d1384,__main__.py:466@1d7387f6,__main__.py:586@78ac2d86,__main__.py:451@a52cc99e,__main__.py:460@499fe1b3,__main__.py:469@cab0d66d,__main__.py:474@03b2082a,__main__.py:47@8964b0de,__main__.py:34@22ae2662,__main__.py:106@4f52f731,__main__.py:602@9c6178dc,__main__.py:607@ec9fb5ef,__main__.py:498@d41c8ef6,__main__.py:64@04903107,__main__.py:80@d89a80ca,__main__.py:344@9371b1a0,runs.py:768@bbf3acab,__main__.py:85@0c3e9807,__main__.py:491@4c85e081
 ---
 
 ## 是什么
@@ -46,8 +46,8 @@ refs: __main__.py:233@b87faf5c,__main__.py:227@8ac31b40,__main__.py:196@30b1fec8
 ### --events：以命令行为准，run 里记的是「要了事件」
 - **变量只给命令，而且总是写明**：`env_run` = 用户的 `env` 加上 `CODESTRATA_EVENTS`（"1" 或 "0"，__main__.py:227），传给 `trace.run` 的是它，传给 `runs.new_run` 的仍是用户的 `env`。
   - 为什么不记进 run 的 env：那里的语义是「用户给命令加的变量」，重录命令会逐个写成 `--env K=V`；把内部开关混进去，重录命令就会变成 `--env CODESTRATA_EVENTS=1` 而不是 `--events`。
-  - 为什么不带 `--events` 也要写 "0"：`trace.run` 给命令的环境是整份 `os.environ` 再叠 `env_extra`（trace.py:743）。shell 里恰好 export 了 `CODESTRATA_EVENTS=1` 的话，不写 0 就会悄悄录事件，而 rec 里记的是没要、重录命令里也没有 `--events`——录出来的 run 和它的重录命令对不上。写明之后开关只有 `--events` 一个：`env_run` 里它写在后面，`--env CODESTRATA_EVENTS=1` 也会被盖掉。
-- **意图记在 rec 里**：`"events": bool(a.events)`（__main__.py:224），`runs.rerun_command` 看到它就加 `--events`（runs.py:829）。记的是「要了」，不是「录到了」：录空了、或之后被 rm --events-only 删了，重录命令照样带 `--events`。
+  - 为什么不带 `--events` 也要写 "0"：`trace.run` 给命令的环境是整份 `os.environ` 再叠 `env_extra`（trace.py:745）。shell 里恰好 export 了 `CODESTRATA_EVENTS=1` 的话，不写 0 就会悄悄录事件，而 rec 里记的是没要、重录命令里也没有 `--events`——录出来的 run 和它的重录命令对不上。写明之后开关只有 `--events` 一个：`env_run` 里它写在后面，`--env CODESTRATA_EVENTS=1` 也会被盖掉。
+- **意图记在 rec 里**：`"events": bool(a.events)`（__main__.py:224），`runs.rerun_command` 看到它就加 `--events`（runs.py:893）。记的是「要了」，不是「录到了」：录空了、或之后被 rm --events-only 删了，重录命令照样带 `--events`。
 - **三种结果三种说法**（__main__.py:254 起），数据都是 `runs.finalize` 写进 run.json 的 `events` 摘要：
   - 有 `error`：整理成 span 失败。原始日志已经先落进 events/raw.tar.gz，所以提示可以 `runs merge` 重来；
   - 正常：事件行数 → span 数（第一级折叠之后，连续的同类叶子调用合成一条，所以不多于调用次数）、跨文件调用次数（各 span 的 rep 之和）、原始日志压缩后的大小；
@@ -82,7 +82,7 @@ refs: __main__.py:233@b87faf5c,__main__.py:227@8ac31b40,__main__.py:196@30b1fec8
 ## 局限
 - 「只读的动词不建目录」只是不建 .codestrata、不写 .gitignore / README.txt：`runs.runs_dir` 在 .codestrata 存在、runs/ 不在时会建 runs/，`catalog` 第一次调用时会做迁移（搬动老的 trace 文件）。
 - ls 为了「改过」一列逐个读 detail.json、为了大小逐个走 run 目录，不像设计 3.2 说的「列表只读 run.json」（run.json 里的 `sizes` 只记顶层文件，不含 files/、events/ 和中断的 run 散着的 parts/）。run 多了 ls 会变慢。
-- ls 的「改过」= changed + mismatch（__main__.py:344），而前端 hot 叠加的 `stale_files` = changed + gone（runs.py:706），两处口径不一样。
+- ls 的「改过」= changed + mismatch（__main__.py:344），而前端 hot 叠加的 `stale_files` = changed + gone（runs.py:768），两处口径不一样。
 - ls 的「时序!」比「时序」和空白多一列（✗ 是半角），整理失败的那行 tag 列会错一格。
 - `runs show X@阶段` 会校验阶段存在，但打印的内容不分阶段（`phase` 没用上）。
 - 直接用 `runs` 的私有函数 `_read` 读 run.json / detail.json，跨模块依赖了私有名字。

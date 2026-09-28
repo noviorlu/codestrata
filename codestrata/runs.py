@@ -619,10 +619,70 @@ def _sum(phases: dict) -> dict:
     return {"funcs": funcs, "func_edges": edges}
 
 
-def load_counts(rd: Path, phase: str | None) -> dict:
-    """{funcs, func_edges}：某个阶段的，或全部阶段相加（和老 trace 的 funcs 同义）。"""
-    phases = _read(rd / "counts.json.gz", gz=True)["phases"]
-    return dict(phases[phase]) if phase else _sum(phases)
+def load_counts(rd: Path, phase: str | None, with_names: bool = False):
+    """{funcs, func_edges}：某个阶段的，或全部阶段相加（和老 trace 的 funcs 同义）。
+    with_names=True 时返回 (计数, names)：names 是录制时记下的 键 → qualname（remap 用）。"""
+    c = _read(rd / "counts.json.gz", gz=True)
+    phases = c["phases"]
+    out = dict(phases[phase]) if phase else _sum(phases)
+    return (out, c.get("names") or {}) if with_names else out
+
+
+def remap(counts: dict, names: dict, fs: dict, idx: dict) -> tuple[dict, list[str]]:
+    """录制之后改过的文件（changed / mismatch）里，按录制时记下的 qualname 把键改到函数现在的行号上。
+
+    计数的键是「文件:首行号」，代码一改行号就变，叠加会落到别的函数上、或者落空。录制时 hook 给
+    每个键记了 co_qualname（counts.json.gz 的 names）；这里用当前 index 的符号表（文件, 名字）→
+    现在的行号（装饰过的函数，trace 记的是第一个装饰器那一行，所以有 dl 用 dl）把键改过来：
+      - 嵌套函数的 qualname 是「outer.<locals>.inner」，符号表里记的是「outer.inner」：去掉 .<locals> 就对上；
+      - lambda、生成器表达式这类没有名字的、老 run 没存 qualname 的、名字在现在的代码里找不到的
+        （改名了、删了），计入 unmatched，键改成「文件:-1」：次数还算在这个文件（和它的模块）上，
+        但不算到任何函数上——原来那一行现在可能是别的函数的定义，留着会把次数记到它头上；
+      - 改写后撞到同一个键的，次数相加。
+    只动这些文件；没改过的文件原样返回，模块顶层（第 0 行）也不动。返回 (新的计数, unmatched 的键)。"""
+    # 只管 index 里有的文件：scan 排除了的（examples 之类）本来就不叠加，不该算进 unmatched
+    files = idx.get("files") or {}
+    todo = {rel for rel, st in fs.items() if st in ("changed", "mismatch") and rel in files}
+    if not todo:
+        return counts, []
+    by: dict[tuple, int] = {}
+    for s in (idx.get("symbols") or {}).values():
+        if s["f"] in todo:
+            by.setdefault((s["f"], s["n"]), s.get("dl", s["l"]))
+    memo: dict[str, str] = {}
+    unmatched: set[str] = set()
+
+    def new(key: str) -> str:
+        hit = memo.get(key)
+        if hit is not None:
+            return hit
+        rel, _, ln = key.rpartition(":")
+        nk = key
+        q = names.get(key)
+        # 模块顶层（第 0 行；老 trace 记成第 1 行、没有名字）不动
+        if rel in todo and ln != "0" and not (ln == "1" and not q):
+            if q and "<" not in q.replace(".<locals>", ""):
+                line = by.get((rel, q.replace(".<locals>", "")))
+                if line is not None:
+                    nk = f"{rel}:{line}"
+                else:
+                    nk = f"{rel}:-1"
+                    unmatched.add(key)
+            else:
+                nk = f"{rel}:-1"
+                unmatched.add(key)
+        memo[key] = nk
+        return nk
+    funcs: dict[str, int] = {}
+    for k, v in counts["funcs"].items():
+        nk = new(k)
+        funcs[nk] = funcs.get(nk, 0) + v
+    edges: dict[str, int] = {}
+    for k, v in counts["func_edges"].items():
+        a, _, b = k.partition("|")
+        nk = new(a) + "|" + new(b)
+        edges[nk] = edges.get(nk, 0) + v
+    return {"funcs": funcs, "func_edges": edges}, sorted(unmatched)
 
 
 def file_state(repo: Path, idx: dict, detail: dict) -> dict[str, str]:
@@ -680,14 +740,16 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         raise SystemExit(f"run {run['id']} 还没有计数：" + (
             "还在录制中" if _alive(run.get("driver")) else
             f"录制中断了，先 codestrata runs {repo} merge {run['id']}"))
-    counts = load_counts(rd, phase)
-    hot = _trace.to_package_graph(counts, idx)
-    hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 输入包里写明数字来自哪个 run
+    counts, names = load_counts(rd, phase, with_names=True)
     try:
         detail = _read(rd / "detail.json")
     except (OSError, ValueError):
         detail = {}
     fs = file_state(repo, idx, detail)
+    # 录制之后改过的文件：按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上
+    counts, unmatched = remap(counts, names, fs, idx)
+    hot = _trace.to_package_graph(counts, idx)
+    hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 输入包里写明数字来自哪个 run
     script = None
     sc = detail.get("script")
     if sc and sc.get("stored") and (rd / sc["stored"]).is_file():
@@ -710,7 +772,9 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             "procs": procs_grouped(detail.get("procs")), "script": script,
             "run_id": run["id"], "status": run.get("status"), "problems": run.get("problems") or [],
             "git": run.get("git"), "tags": run.get("tags") or [], "note": run.get("note") or "",
-            "created": run.get("created"), "migrated_from": run.get("migrated_from")}
+            "created": run.get("created"), "migrated_from": run.get("migrated_from"),
+            # 改过的文件里按名字对不上的键（lambda、改了名的、老 run 没存名字的）：这些调用的叠加可能偏
+            "unmatched": len(unmatched), "events": run.get("events")}
     return hot, meta
 
 
