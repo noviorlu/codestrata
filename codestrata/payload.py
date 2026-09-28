@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from functools import lru_cache
@@ -585,6 +586,132 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
         res["maybe"] = {"name": name, "same": same, "total": len(maybe), "lines": len(mrows),
                         "refs": mrows[:limit]}
     return res
+
+
+_PATHLIST = ("PATH", "LD_LIBRARY_PATH", "PYTHONPATH")
+
+
+def publicize(pl: dict, home: str, keep: list[str]) -> dict:
+    """公开导出（graph --public）：要发到公网上的页面里不带本机的个人信息。
+      - 所有字符串（路径、命令、argv、解读正文、源码都算）里的主目录写成 ~；源码行里换了的，这一行上
+        Ctrl+点击的列号跟着挪（xref.toks 是按原文算的列）；
+      - run 元数据里的命令（rerun / rerun_env / cmd / 各进程 argv）和 env_inherited 中 PATH / LD_LIBRARY_PATH /
+        PYTHONPATH 这种目录列表，不在 keep（仓库、各 run 录制时所在的目录；主目录本身、它的上级、/ 不算）
+        下面的连续几段合成一个 …——剩下的只是本机装了哪些工具。命令先按 shell 规则切成参数再收、再重新
+        加引号，带空格被引号包起来的 PATH 也收得到；case 脚本原文、备注这些内容不动。
+    复刻命令因此不能原样执行了：pl["public"] 为真，页面上会说明，原样的在录制的机器上 runs show 里。"""
+    import copy
+    import html as _html
+    from .runs import _q
+    home = home.rstrip("/")
+    # 后面跟着 .字母 的是另一个名字（/home/yc.bak），句末的 . 不是
+    home_re = re.compile(re.escape(home) + r"(?![\w-]|\.[\w-])") if home and home != "/" else None
+    keep_abs = []
+    for k in keep:
+        k = (k or "").rstrip("/")
+        if not k or (home and (k == home or home.startswith(k + "/"))):
+            continue                                 # 空、/、主目录本身和它的上级：会把整条 PATH 都留下
+        keep_abs.append(k)
+
+    def plist(v: str) -> str:
+        out: list[str] = []
+        for part in v.split(":"):
+            if part and any(part == k or part.startswith(k + "/") for k in keep_abs):
+                out.append(part)
+            elif not out or out[-1] != "…":
+                out.append("…")
+        return ":".join(out)
+
+    def tok(t: str) -> str:                          # 一个参数：PATH=… / --env=PATH=…
+        pre = "--env=" if t.startswith("--env=") else ""
+        k, sep, v = t[len(pre):].partition("=")
+        return pre + k + "=" + plist(v) if sep and k in _PATHLIST and v else t
+
+    def cmd_str(c: str) -> str:                      # rerun_command 拼出来的一整条 shell 命令
+        if not any(n + "=" in c for n in _PATHLIST):
+            return c
+        import shlex
+        try:
+            parts = shlex.split(c)
+        except ValueError:
+            return re.sub(r"\b(" + "|".join(_PATHLIST) + r")=\S+", r"\1=…", c)   # 切不开：整个值都不要
+        return " ".join(t if t == "&&" else _q(tok(t)) for t in parts)
+
+    def meta_fix(m):
+        if not isinstance(m, dict):
+            return m
+        m = dict(m)
+        for k in ("rerun", "rerun_env"):
+            if isinstance(m.get(k), str):
+                m[k] = cmd_str(m[k])
+        if isinstance(m.get("cmd"), list):
+            m["cmd"] = [tok(t) if isinstance(t, str) else t for t in m["cmd"]]
+        if isinstance(m.get("procs"), list):
+            m["procs"] = [{**p, "argv": [tok(t) if isinstance(t, str) else t for t in p.get("argv") or []]}
+                          if isinstance(p, dict) else p for p in m["procs"]]
+        if isinstance(m.get("env_inherited"), dict):
+            m["env_inherited"] = {k: plist(v) if k in _PATHLIST and isinstance(v, str) else v
+                                  for k, v in m["env_inherited"].items()}
+        return m
+
+    out = copy.copy(pl)
+    if "hotMeta" in out:
+        out["hotMeta"] = meta_fix(out["hotMeta"])
+    if isinstance(out.get("hotBy"), dict):
+        out["hotBy"] = {r: {**v, "meta": meta_fix(v.get("meta"))} if isinstance(v, dict) else v
+                        for r, v in out["hotBy"].items()}
+    if isinstance(out.get("cmp"), dict) and "meta_b" in out["cmp"]:
+        out["cmp"] = {**out["cmp"], "meta_b": meta_fix(out["cmp"]["meta_b"])}
+
+    def u16(x: str) -> int:
+        return len(x.encode("utf-16-le")) // 2
+
+    def code(e: dict) -> dict:                       # 一份高亮过的源码（files / sources 的条目）
+        lines, base = e.get("lines") or [], e.get("line") or 1
+        toks = ((e.get("xref") or {}).get("toks") or [])
+        shift: dict[int, list] = {}
+        new_lines = []
+        for i, ln in enumerate(lines):
+            if not isinstance(ln, str) or not home_re.search(ln):
+                new_lines.append(ln)
+                continue
+            text = _html.unescape(re.sub(r"<[^>]+>", "", ln))
+            shift[base + i] = [(u16(text[:m.start()]), u16(m.group())) for m in home_re.finditer(text)]
+            new_lines.append(home_re.sub("~", ln))
+        if not shift:
+            return {k: fix(v) for k, v in e.items()}
+        nt = []
+        for t in toks:
+            occ = shift.get(t[0])
+            if occ:
+                if any(t[1] < p + n and t[2] > p for p, n in occ):
+                    continue                         # 名字跨着主目录：不再能点
+                d = sum(n - 1 for p, n in occ if p + n <= t[1])
+                t = [t[0], t[1] - d, t[2] - d, *t[3:]]
+            nt.append(t)
+        e2 = {k: fix(v) for k, v in e.items() if k not in ("lines", "xref")}
+        e2["lines"] = new_lines
+        if "xref" in e:
+            e2["xref"] = {**{k: fix(v) for k, v in e["xref"].items()}, "toks": nt}
+        return e2
+
+    def fix(x):
+        if isinstance(x, str):
+            return home_re.sub("~", x) if home_re and "/" in x else x
+        if isinstance(x, list):
+            return [fix(v) for v in x]
+        if isinstance(x, dict):
+            if home_re and isinstance(x.get("lines"), list) and "xref" in x:
+                return code(x)
+            return {fix(k): fix(v) for k, v in x.items()}
+        return x
+    out = fix(out)
+    out["public"] = True
+    if home_re:                                      # 最后兜一道：还有主目录就不写出公开页
+        left = home_re.search(json.dumps(out, ensure_ascii=False))
+        if left:
+            raise SystemExit(f"--public：导出里还有主目录 {home}（…{left.string[max(0, left.start() - 60):left.end() + 20]}…），不写出")
+    return out
 
 
 def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,

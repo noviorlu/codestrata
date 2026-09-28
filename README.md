@@ -97,6 +97,10 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
   都带 B 的次数。比如 MiniCPM@serving 对比 Qwen@serving，一眼看出两个模型各走了哪些代码。
 - **导出带多个 run**：`graph <repo> --hot A --hot B [--compare]`——单文件里能在这几个 run 之间切换
   （别的 run 只带图上的次数，调用明细只有第一个的），`--compare` 带上 A、B 的对比。
+- **放到公网上**：`graph … --public`——主目录写成 `~`（源码行里的也换，Ctrl+点击的列号跟着挪）；
+  run 元数据里 PATH / LD_LIBRARY_PATH / PYTHONPATH 这种目录列表，仓库和录制目录以外的部分省略成 `…`
+  （那些只是本机装了哪些工具）；还剩主目录就拒绝写出。页面上注明命令因此不能原样执行，原样的在录制的
+  机器上 `runs show` 里。导出的单文件没有时序图（它要 serve 现算）。
 - **复刻**：每个 run 存下录制时原样的 codestrata 命令和所在目录（`cd <目录> && <命令>`，照抄就能再录一次），
   以及 shell 里和跑模型有关的环境变量（CUDA_* / VLLM_* / HF_* / PATH…，名字像密钥的不存）——命令会继承它们，
   光看命令复刻不出来。网页上 run 按钮旁边的「复刻」、或「?」帮助里「这次跑了什么」都能一键复制；

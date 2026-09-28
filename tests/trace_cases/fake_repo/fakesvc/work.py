@@ -55,3 +55,6 @@ async def handle(text: str, submit) -> str:
         outs.append(await submit(len(t)))
         await asyncio.sleep(0.005)
     return " ".join(map(str, outs))
+
+
+# 示例：env PATH=/usr/bin:/bin python -m fakesvc.server（graph --public 不能改源码里这种写法）

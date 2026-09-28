@@ -4,7 +4,7 @@ target: codestrata.scan
 kind: package
 code_sha: d25bd82c694a4c9c
 status: draft
-refs: scan.py:112@e3529493,scan.py:561@f74f5b17,scan.py:579@2a8f89e3,scan.py:581@c176b6f0,payload.py:35@d6513e46,scan.py:588@ae396e12,codestrata/__main__.py:81@d89a80ca,scan.py:1@5f7a6e1c,scan.py:272@255e30bf,scan.py:293@2fd7b37d,scan.py:304@e7e68c0d,scan.py:296@1920e340,scan.py:307@5e10daf1,runs.py:78@fb413b11,trace.py:111@0685df0e,scan.py:298@c8d01747,runs.py:697@2e266090,scan.py:514@2373040a,scan.py:51@b93afa5e,scan.py:400@b2d3284a,scan.py:422@22a9f949,scan.py:391@74e4ca0b,scan.py:63@04872629,scan.py:344@0ee68e12,scan.py:361@5898f2be,scan.py:449@b9696986,scan.py:496@6f938f80,scan.py:433@8526611d,scan.py:192@a99d3e2d
+refs: scan.py:112@e3529493,scan.py:561@f74f5b17,scan.py:579@2a8f89e3,scan.py:581@c176b6f0,payload.py:36@d6513e46,scan.py:588@ae396e12,codestrata/__main__.py:81@d89a80ca,scan.py:1@5f7a6e1c,scan.py:272@255e30bf,scan.py:293@2fd7b37d,scan.py:304@e7e68c0d,scan.py:296@1920e340,scan.py:307@5e10daf1,runs.py:78@fb413b11,trace.py:111@0685df0e,scan.py:298@c8d01747,runs.py:697@2e266090,scan.py:514@2373040a,scan.py:51@b93afa5e,scan.py:400@b2d3284a,scan.py:422@22a9f949,scan.py:391@74e4ca0b,scan.py:63@04872629,scan.py:344@0ee68e12,scan.py:361@5898f2be,scan.py:449@b9696986,scan.py:496@6f938f80,scan.py:433@8526611d,scan.py:192@a99d3e2d
 ---
 
 ## 是什么
@@ -15,7 +15,7 @@ refs: scan.py:112@e3529493,scan.py:561@f74f5b17,scan.py:579@2a8f89e3,scan.py:581
 
 它只记**最细的粒度**：每个 `.py` 文件一个单元（包的 `__init__.py` 记成 `<包>.__init__`，把目录本身的名字留给图上「整个目录收起来」的那个节点）。图上显示哪一层不是它的事——它只把目录树（`dirs`）和默认切面（`default_open`，由 `cut.default_open` 按规模算，scan.py:561）写进 index；展开 / 收起时由 `cut` 在单元数据上重新汇总，不用重扫。早先它在扫描时就按「二级包」聚合，粒度一旦定下来，图上就没法再往里看。
 
-`write_index` 把结果拆成 index.json（单元、边、目录树，画图用，小）和 symbols.json（符号、文件映射、行数、哈希、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:579）。`file_sha` 和 `files`、`file_loc` 一样是按文件的数据，放进 symbols.json（scan.py:581）；`payload.load_index` 读回来时，老的 symbols.json 没有这个键就是 None（payload.py:35），`runs.file_state` 据此决定怎么比。写完它会把拆出去的键塞回 index（scan.py:588 的「调用方还要用」），因为调用方接着还要在同一个字典上算切面、建交叉引用。
+`write_index` 把结果拆成 index.json（单元、边、目录树，画图用，小）和 symbols.json（符号、文件映射、行数、哈希、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:579）。`file_sha` 和 `files`、`file_loc` 一样是按文件的数据，放进 symbols.json（scan.py:581）；`payload.load_index` 读回来时，老的 symbols.json 没有这个键就是 None（payload.py:36），`runs.file_state` 据此决定怎么比。写完它会把拆出去的键塞回 index（scan.py:588 的「调用方还要用」），因为调用方接着还要在同一个字典上算切面、建交叉引用。
 
 交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用的 xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:81）。放在同一条命令里、紧跟着写 index，是为了让 xref 和符号表是同一时刻的快照，两边的行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」，xref 那套带作用域的第二遍解析不拖进来。
 

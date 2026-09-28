@@ -23,6 +23,8 @@ window.CS = window.CS || {};
 
   CS.ds = EMB ? {
     mode: 'embedded',
+    // graph --public 导出的：主目录写成了 ~、PATH 里项目以外的目录省略成了 …（帮助里的复刻命令旁边会说明）
+    public: !!EMB.public,
     canWrite: false,
     canOpenEditor: false,
     // 和 /api/graph 同形：整份 payload。导出版只有导出时的那个切面，展开 / 收起要靠 serve

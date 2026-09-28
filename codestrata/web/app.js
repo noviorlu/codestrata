@@ -223,6 +223,9 @@ window.CS = window.CS || {};
           + '<pre class="rerun-cmd">' + esc(m.rerun) + '</pre>'
           + (m.rerun_exact ? '' : '<div class="lab warn">这个 run 录的时候还没存原始命令：上面是按 run 里存的参数拼的，'
              + 'codestrata 按 PATH 找，仓库路径是录制时的绝对路径</div>')
+          + (CS.ds.public ? '<div class="lab warn">这是公开页：路径里的主目录写成了 ~，PATH 这类目录列表里项目以外的部分'
+             + '省略成了 …，所以命令不能原样执行；原样的在录制的机器上用 <code>codestrata runs &lt;repo&gt; show '
+             + esc(m.run_id) + '</code> 看</div>' : '')
           + (m.rerun_redacted ? '<div class="lab warn">命令里像密钥的值（--env 里的、--api-key 这类选项的）和 URL 里的账号密码'
              + '已隐去，写成 &lt;已隐去&gt;；下面的 case 命令和进程表也一样。完整的命令用 <code>codestrata runs &lt;repo&gt; show '
              + esc(m.run_id) + '</code> 看</div>' : '')

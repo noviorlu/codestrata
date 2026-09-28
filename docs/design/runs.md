@@ -761,6 +761,17 @@ python 命令）只有一个 start 阶段——shell 看不到加载什么时候
   表达式；另用 Python 3.10 跑一遍）共 16 个新测试 + 两轮变异检查；浏览器 `rerun.mjs`（复刻按钮、复制内容、环境、阶段表、老 run、390 px、导出的单文件）；
   复刻命令照抄在别的目录执行能再录出同样分段的 run（`test_rerun_command_reproduces`）。
 
+### M8.1　公开导出 `graph --public`（2026-09-28，用户要把页面放到 GitHub Pages）　✅ 已完成
+
+`payload.publicize` 在导出的 payload 上做：所有字符串里的主目录写成 `~`（`(?![\w-]|\.[\w-])` 结尾：
+句末的 . 也换、`/home/x.bak` 不换；源码行（files / sources 的 lines）换了的，同一行 xref.toks 的列号
+按 UTF-16 挪、跨着主目录的去掉）；run 元数据（hotMeta、hotBy[*].meta、cmp.meta_b）里的命令
+（rerun / rerun_env 先 shlex 切开再收再用 `_q` 重新加引号；cmd、各进程 argv 按参数）和 env_inherited 中
+PATH 类目录列表，只留仓库和各 run 录制目录下面的段，其余连续几段合成 `…`（keep 里空的、/、主目录本身和
+它的上级都剔掉——否则整条 PATH 原样留下）；case 脚本原文、备注这些内容不动。最后把整个 payload dump
+成 JSON 再查一遍主目录，还有就 SystemExit 不写出。`pl["public"]` 为真时帮助里的复刻块注明「这是公开页」。
+隐私评审（找真实页面里的一切个人信息 + 审 publicize）确认的问题都修了、带测试和变异检查。
+
 **合计约 11 天。**
 - M1 做完：「今天 MiniCPM、明天 Qwen，两份都留着」就成立了，而且都能用 `--hot` 选（换 run 要重启 serve）。
 - M3 做完：之后录的每个 run 都自带时序数据。

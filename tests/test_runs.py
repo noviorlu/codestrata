@@ -666,6 +666,60 @@ def test_rerun_secrets_and_bytes():
     assert r.stdout == b"caf\xe9\n", r.stdout
 
 
+def test_publicize_rules():
+    """publicize 的细则：带空格被引号包起来的 PATH 也收；keep 里的主目录、/ 不算（否则整条 PATH 都留下）；
+    case 脚本原文里的 PATH=… 不动；源码行换了主目录，这一行上 Ctrl+点击的列号跟着挪、跨着主目录的去掉；
+    句末的 /home/x. 也换，/home/x.bak、/home/xa 是别的名字不换；还剩主目录就不写出。"""
+    H = "/home/zz"
+    argv = ["codestrata", "trace", ".", "--env", f"PATH={H}/p/venv/bin:/opt/My Tools/bin:{H}/.secret/bin:/usr/bin", "--", "x"]
+    run = {"case": "c", "invocation": {"argv": argv, "cwd": f"{H}/p"}, "env_inherited": {"PATH": f"{H}/.kimi/bin:{H}/p/b"}}
+    pl = {"hotMeta": {"rerun": runs.rerun_command(run, "."), "rerun_env": runs.rerun_command(run, ".", with_env=True),
+                      "cmd": ["env", f"PATH={H}/.k/bin:/x", "run"], "procs": [{"argv": ["a", f"PATH={H}/p/x:/opt/y"]}],
+                      "env_inherited": {"PATH": f"{H}/.kimi/bin:{H}/p/b"}, "script": {"text": "export PATH=/opt/cuda/bin:$PATH"}},
+          "files": {"f.py": {"lines": [f'<span class="s">&quot;{H}/models&quot;</span>, <span class="n">NAME</span>'],
+                             "xref": {"toks": [[1, 19, 23, 5, 0], [1, 2, 6, 3, 0]]}}},
+          "sources": {"k": {"line": 10, "lines": ["x = 1", f'p = "{H}/a" ; NAME2'], "xref": {"toks": [[11, 19, 24, 1, 0]]}}},
+          "notes": {"n": {"md": f"weights in {H}. and {H}.bak and {H}a"}}}
+    for keep in ([f"{H}/p"], [f"{H}/p", H, "/", ""]):
+        o = payload.publicize(pl, H, keep)
+        m = o["hotMeta"]
+        assert m["rerun"] == "cd ~/p && codestrata trace . --env 'PATH=~/p/venv/bin:…' -- x", m["rerun"]
+        assert "'PATH=…:~/p/b'" in m["rerun_env"] and ".secret" not in m["rerun_env"], m["rerun_env"]
+        assert m["cmd"] == ["env", "PATH=…", "run"] and m["procs"][0]["argv"] == ["a", "PATH=~/p/x:…"], m
+        assert m["env_inherited"] == {"PATH": "…:~/p/b"} and m["script"]["text"] == "export PATH=/opt/cuda/bin:$PATH"
+    assert o["files"]["f.py"]["lines"][0].count("~/models") == 1 and o["files"]["f.py"]["xref"]["toks"] == [[1, 12, 16, 5, 0]]
+    assert o["sources"]["k"]["xref"]["toks"] == [[11, 12, 17, 1, 0]], o["sources"]
+    assert o["notes"]["n"]["md"] == f"weights in ~. and {H}.bak and {H}a", o["notes"]
+    try:                                            # 漏网的（比如非字符串里带着）：拒绝写出
+        payload.publicize({"x": [1, {"y": ("tuple " + H + "/q",)}]}, H, [])
+    except SystemExit as e:
+        assert "还有主目录" in str(e)
+    else:
+        raise AssertionError("还剩主目录也写出了")
+
+
+def test_public_export():
+    """graph --public（要放到公网上的页面）：主目录写成 ~，run 元数据里 PATH 这类目录列表中仓库和
+    录制目录以外的部分省略成 …；源码里写的 PATH=… 不动；页面上知道这是公开页。"""
+    repo = fresh()
+    home = str(Path.home())
+    tool = os.path.join(home, ".fake-tool-xyz", "bin")
+    cs("trace", repo, "--case", "pub", "--env", f"PATH={repo}/bin:/usr/bin:{tool}", "--",
+       PY, "-m", "fakesvc.offline", f"{home}/data/in.wav")
+    run, _, _ = latest(repo)
+    out = repo.parent / "pub.html"
+    cs("graph", repo, "--public", "--hot", run["id"], "--out", out)
+    html = out.read_text()
+    assert home + "/" not in html and ".fake-tool-xyz" not in html, "主目录 / 本机工具目录漏出去了"
+    assert f"PATH={repo}/bin:…" in html and "~/data/in.wav" in html, "仓库下的留着、主目录写成 ~"
+    assert '"public": true' in html
+    assert "PATH=/usr/bin:/bin python -m fakesvc.server" in html, "源码里的 PATH=… 被改了"
+    # 不带 --public 的导出照旧是原样的（本机自己看）
+    out2 = repo.parent / "priv.html"
+    cs("graph", repo, "--hot", run["id"], "--out", out2)
+    assert ".fake-tool-xyz" in out2.read_text() and '"public": true' not in out2.read_text()
+
+
 def test_manage():
     """tag / untag / note / rm；.codestrata 带 .gitignore 和 README.txt。"""
     repo = fresh()

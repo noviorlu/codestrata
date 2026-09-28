@@ -120,6 +120,18 @@ def cmd_graph(a) -> int:
         raise SystemExit("--compare：几个 --hot 解析到的是同一个 run（同一阶段），没有可以对比的")
     pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg,
                                  others=others, compare=a.compare)
+    if a.public:
+        # 要保留的目录：仓库，和各 run 录制时所在的目录（PATH 里的 venv 往往在那下面）
+        keep = [str(repo)]
+        for r in refs:
+            try:
+                run = _runs.resolve(repo, r)[0]
+            except SystemExit:
+                continue
+            cwd = (run.get("invocation") or {}).get("cwd") or run.get("cwd")
+            if cwd:
+                keep.append(cwd)
+        pl = _payload.publicize(pl, str(Path.home()), keep)
     html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
                           fragment=a.fragment)
     tag = "+".join(refs) + ("-vs" if a.compare else "")
@@ -572,6 +584,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--compare", action="store_true", help="主 run 和第二个 --hot 对比（三种颜色）")
     g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
     g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
+    g.add_argument("--public", action="store_true",
+                   help="要放到公网上：主目录写成 ~，PATH 这类目录列表里仓库和录制目录以外的部分省略成 …（页面上会注明）")
     g.add_argument("--out", default=None)
     g.set_defaults(fn=cmd_graph)
 
