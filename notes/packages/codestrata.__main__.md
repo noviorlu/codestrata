@@ -4,7 +4,7 @@ target: codestrata.__main__
 kind: package
 code_sha: 3aedd60da3fa151d
 status: draft
-refs: __main__.py:256@b87faf5c,__main__.py:250@8ac31b40,__main__.py:219@30b1fec8,__main__.py:232@c90a9ebb,__main__.py:238@059c6e94,__main__.py:251@6109ee57,__main__.py:307@fea936cf,__main__.py:308@80bacee0,__main__.py:299@80bacee0,__main__.py:240@a241b857,trace.py:745@ea5dcb7a,__main__.py:247@90ff2a42,runs.py:893@af308051,__main__.py:277@a7c090eb,__main__.py:285@f7dc7f40,__main__.py:283@8b67ac5a,runs.py:377@33e517e7,__main__.py:426@dc6fc688,__main__.py:243@e57ae09a,__main__.py:338@b67404aa,__main__.py:340@b09cd715,__main__.py:593@72d37402,__main__.py:356@09bf7a10,__main__.py:375@49ae8d76,serve.py:227@d751bac7,__main__.py:418@c4688ddf,__main__.py:448@8569ebbe,__main__.py:471@b11d1384,__main__.py:489@1d7387f6,__main__.py:611@78ac2d86,__main__.py:474@a52cc99e,__main__.py:483@499fe1b3,__main__.py:492@cab0d66d,__main__.py:497@03b2082a,__main__.py:48@8964b0de,__main__.py:35@22ae2662,__main__.py:539@f63b232a,__main__.py:541@18d874a4,__main__.py:103@c408ea25,__main__.py:104@9b58cee4,__main__.py:106@77bed867,__main__.py:107@c224cee8,__main__.py:112@7fb1a314,__main__.py:119@739253ed,__main__.py:125@5e4008de,__main__.py:132@a647a88e,__main__.py:136@d4def5e0,__main__.py:126@ea1a2f4a,__main__.py:627@9c6178dc,__main__.py:632@ec9fb5ef,__main__.py:521@d41c8ef6,__main__.py:65@04903107,__main__.py:81@d89a80ca,__main__.py:367@9371b1a0,runs.py:768@bbf3acab,__main__.py:86@0c3e9807,__main__.py:514@4c85e081
+refs: __main__.py:256@b87faf5c,__main__.py:250@8ac31b40,__main__.py:219@30b1fec8,__main__.py:232@c90a9ebb,__main__.py:238@059c6e94,__main__.py:251@6109ee57,__main__.py:307@fea936cf,__main__.py:308@80bacee0,__main__.py:299@80bacee0,__main__.py:240@a241b857,trace.py:745@ea5dcb7a,__main__.py:247@90ff2a42,runs.py:898@af308051,__main__.py:277@a7c090eb,__main__.py:285@f7dc7f40,__main__.py:283@8b67ac5a,runs.py:382@33e517e7,__main__.py:426@dc6fc688,__main__.py:243@e57ae09a,__main__.py:338@b67404aa,__main__.py:340@b09cd715,__main__.py:593@72d37402,__main__.py:356@09bf7a10,__main__.py:375@49ae8d76,serve.py:227@d751bac7,__main__.py:418@c4688ddf,__main__.py:448@8569ebbe,__main__.py:471@b11d1384,__main__.py:489@1d7387f6,__main__.py:611@78ac2d86,__main__.py:474@a52cc99e,__main__.py:483@499fe1b3,__main__.py:492@cab0d66d,__main__.py:497@03b2082a,__main__.py:48@8964b0de,__main__.py:35@22ae2662,__main__.py:539@f63b232a,__main__.py:541@18d874a4,__main__.py:103@c408ea25,__main__.py:104@9b58cee4,__main__.py:106@77bed867,__main__.py:107@c224cee8,__main__.py:112@7fb1a314,__main__.py:119@739253ed,__main__.py:125@5e4008de,__main__.py:132@a647a88e,__main__.py:136@d4def5e0,__main__.py:126@ea1a2f4a,__main__.py:627@9c6178dc,__main__.py:632@ec9fb5ef,__main__.py:521@d41c8ef6,__main__.py:65@04903107,__main__.py:81@d89a80ca,__main__.py:367@9371b1a0,runs.py:773@bbf3acab,__main__.py:86@0c3e9807,__main__.py:514@4c85e081
 ---
 
 ## 是什么
@@ -48,12 +48,12 @@ refs: __main__.py:256@b87faf5c,__main__.py:250@8ac31b40,__main__.py:219@30b1fec8
 - **变量只给命令，而且总是写明**：`env_run` = 用户的 `env` 加上 `CODESTRATA_EVENTS`（"1" 或 "0"，__main__.py:250），传给 `trace.run` 的是它，传给 `runs.new_run` 的仍是用户的 `env`。
   - 为什么不记进 run 的 env：那里的语义是「用户给命令加的变量」，重录命令会逐个写成 `--env K=V`；把内部开关混进去，重录命令就会变成 `--env CODESTRATA_EVENTS=1` 而不是 `--events`。
   - 为什么不带 `--events` 也要写 "0"：`trace.run` 给命令的环境是整份 `os.environ` 再叠 `env_extra`（trace.py:745）。shell 里恰好 export 了 `CODESTRATA_EVENTS=1` 的话，不写 0 就会悄悄录事件，而 rec 里记的是没要、重录命令里也没有 `--events`——录出来的 run 和它的重录命令对不上。写明之后开关只有 `--events` 一个：`env_run` 里它写在后面，`--env CODESTRATA_EVENTS=1` 也会被盖掉。
-- **意图记在 rec 里**：`"events": bool(a.events)`（__main__.py:247），`runs.rerun_command` 看到它就加 `--events`（runs.py:893）。记的是「要了」，不是「录到了」：录空了、或之后被 rm --events-only 删了，重录命令照样带 `--events`。
+- **意图记在 rec 里**：`"events": bool(a.events)`（__main__.py:247），`runs.rerun_command` 看到它就加 `--events`（runs.py:898）。记的是「要了」，不是「录到了」：录空了、或之后被 rm --events-only 删了，重录命令照样带 `--events`。
 - **三种结果三种说法**（__main__.py:277 起），数据都是 `runs.finalize` 写进 run.json 的 `events` 摘要：
   - 有 `error`：整理成 span 失败。原始日志已经先落进 events/raw.tar.gz，所以提示可以 `runs merge` 重来；
   - 正常：事件行数 → span 数（第一级折叠之后，连续的同类叶子调用合成一条，所以不多于调用次数）、跨文件调用次数（各 span 的 rep 之和）、原始日志压缩后的大小；
   - 要了 `--events` 却没有摘要（__main__.py:285）：`runs` 在没有任何事件日志时不写摘要。原因列了三种——命令没起来；被 trace 的 Python 低于 3.12（hook 只在有 `sys.monitoring` 时录）；或者这次根本没有跨文件的调用（缓冲是空的，hook 就不建日志文件）。最后一种是正常结果，不是故障，所以提示里不能只怪 Python 版本。这里明说出来，免得以为录到了。
-- **到了行数上限是 ⚠，不是状态**（__main__.py:283）：上限只管新的调用行，计数是完整的；`runs.derive` 故意不把它算进 status（runs.py:377）——算进去 run 会变成 partial，拿 case 名解析时就跳到更早的一次 ok。所以 CLI 这边只在摘要后面挂一句「N 个进程到了行数上限，之后的调用没记时序（计数完整）」；`runs show` 用同样的说法，另把 pid 列出来——多于 8 个只列前 8 个、后面加「…」（__main__.py:426），好让人知道列表不全。
+- **到了行数上限是 ⚠，不是状态**（__main__.py:283）：上限只管新的调用行，计数是完整的；`runs.derive` 故意不把它算进 status（runs.py:382）——算进去 run 会变成 partial，拿 case 名解析时就跳到更早的一次 ok。所以 CLI 这边只在摘要后面挂一句「N 个进程到了行数上限，之后的调用没记时序（计数完整）」；`runs show` 用同样的说法，另把 pid 列出来——多于 8 个只列前 8 个、后面加「…」（__main__.py:426），好让人知道列表不全。
 - **行数上限从 shell 继承时，要记进 run 的 env**（__main__.py:243）：hook 同样读 `CODESTRATA_EV_MAX`。带了 `--events`、shell 里 export 了它、`--env` 里又没给时，CLI 把 shell 的值抄进 `env`——意图是让它记进 run、出现在重录命令里（`--env CODESTRATA_EV_MAX=…`），这次录制的上限才复现得出来。和开关的处理正好相反：`CODESTRATA_EVENTS` 以命令行为准、主动盖掉 shell；上限不盖，只把 shell 里悄悄生效的值写明。只在 `--events` 时抄（不录事件时上限没有意义，不该混进 run 的 env）；`--env` 给了的以 `--env` 为准。这一步放在 `runs.new_run` 之前：`new_run` 当场把 `env` 写进 run.json，之后不再改它，放在后面就只给了命令、没记下来（早先就是这样错的，test_events_cap 里有从 shell 继承的用例）。
 
 ### runs：只读的动词不建 .codestrata，rm 只认完整 id
@@ -97,7 +97,7 @@ graph 的 `--hot` 改成可重复（__main__.py:539）。第一个是主 run，�
 ## 局限
 - 「只读的动词不建目录」只是不建 .codestrata、不写 .gitignore / README.txt：`runs.runs_dir` 在 .codestrata 存在、runs/ 不在时会建 runs/，`catalog` 第一次调用时会做迁移（搬动老的 trace 文件）。
 - ls 为了「改过」一列逐个读 detail.json、为了大小逐个走 run 目录，不像设计 3.2 说的「列表只读 run.json」（run.json 里的 `sizes` 只记顶层文件，不含 files/、events/ 和中断的 run 散着的 parts/）。run 多了 ls 会变慢。
-- ls 的「改过」= changed + mismatch（__main__.py:367），而前端 hot 叠加的 `stale_files` = changed + gone（runs.py:768），两处口径不一样。
+- ls 的「改过」= changed + mismatch（__main__.py:367），而前端 hot 叠加的 `stale_files` = changed + gone（runs.py:773），两处口径不一样。
 - ls 的「时序!」比「时序」和空白多一列（多出来的「!」是半角），整理失败的那行 tag 列会错一格。
 - 默认文件名会把所有 REF 连起来，而完整 id 是 16 位时间戳加 case 名，可能还带 @阶段。`--hot` 给多了，文件名会超过常见文件系统 255 字节的上限；代码没有截断。另外文件名用的是字面去重后的 REF，不是第 4 道之后的：`--hot demo --hot <demo 最新那次的完整 id>` 只嵌了一个 run，文件名里仍是两个。
 - `runs show X@阶段` 会校验阶段存在，但打印的内容不分阶段（`phase` 没用上）。

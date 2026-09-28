@@ -270,6 +270,24 @@ def test_file_state():
     assert "fakesvc/work.py" in meta["stale_files"]
 
 
+def test_collect_files_skips_installed_py():
+    """命令行里安装包中的 .py（py-cpuinfo 自己起自己）不存；安装包里的 yaml 配置、仓库里的脚本照存。"""
+    t = fresh()
+    sp = t / "venv" / "lib" / "python3.12" / "site-packages"
+    (sp / "cpuinfo").mkdir(parents=True)
+    (sp / "cpuinfo" / "cpuinfo.py").write_text("print(1)\n")
+    (sp / "pkg" / "deploy").mkdir(parents=True)
+    (sp / "pkg" / "deploy" / "x.yaml").write_text("a: 1\n")
+    (t / "demo.py").write_text("print(2)\n")
+    procs = [{"argv": ["python", str(sp / "cpuinfo" / "cpuinfo.py"), "--json"]},
+             {"argv": ["python", "demo.py", f"--deploy-config={sp / 'pkg' / 'deploy' / 'x.yaml'}"]}]
+    got = {Path(f["abs"]).name: f["why"] for f in runs._collect_files(t, t, procs, None, [])}
+    assert got == {"demo.py": "argv", "x.yaml": "argv"}, got
+    # --attach 点名要的不受这条限制
+    got = {Path(f["abs"]).name for f in runs._collect_files(t, t, [], None, [str(sp / "cpuinfo" / "cpuinfo.py")])}
+    assert got == {"cpuinfo.py"}, got
+
+
 def test_manage():
     """tag / untag / note / rm；.codestrata 带 .gitignore 和 README.txt。"""
     repo = fresh()

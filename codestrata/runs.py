@@ -201,6 +201,11 @@ def _collect_files(repo: Path, cwd: Path, procs: list[dict], script: dict | None
                 return
         except OSError:
             return
+        # 命令行里安装包中的 .py 不存：那是被当程序起的第三方代码（py-cpuinfo 会
+        # python .../site-packages/cpuinfo/cpuinfo.py 自己起自己），版本已经记在 dists 里。
+        # 安装包里的配置（非 editable 安装时 --deploy-config 指的 yaml）照存
+        if why == "argv" and p.suffix == ".py" and any(sp in str(p) for sp in ("/site-packages/", "/dist-packages/")):
+            return
         key = str(p)
         if key in seen or (why != "attach" and len(seen) >= 40):
             return
