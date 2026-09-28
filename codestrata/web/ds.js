@@ -44,6 +44,9 @@ window.CS = window.CS || {};
                      loadable: true }] : [] });
     },
     note: function (t) { return Promise.resolve((EMB.notes || {})[t] || blank(t)); },
+    seq: function () { return Promise.reject(new Error('导出的单文件没有带时序图；请用 codestrata serve')); },
+    seqOverview: function () { return Promise.reject(new Error('导出版没有时序图')); },
+    seqFind: function () { return Promise.reject(new Error('导出版没有时序图')); },
     status: function (ids) {
       var out = {};
       ids.forEach(function (t) { var nt = (EMB.notes || {})[t]; out[t] = !nt || !nt.present ? 'todo' : (nt.stale ? 'stale' : 'noted'); });
@@ -103,6 +106,18 @@ window.CS = window.CS || {};
     run: '',
     canSwitchRun: true,
     runs: function () { return j('/api/runs'); },
+    // 时序图：p = {open, t0, t1, max}；run 用当前的
+    seq: function (p) {
+      var q = ['run=' + encodeURIComponent(this.run)];
+      if (p.open) q.push('open=' + encodeURIComponent(p.open.join(',')));
+      ['t0', 't1', 'max', 'fold'].forEach(function (k) { if (p[k] != null) q.push(k + '=' + Math.round(+p[k])); });
+      return j('/api/seq?' + q.join('&'));
+    },
+    seqOverview: function () { return j('/api/seq/overview?run=' + encodeURIComponent(this.run)); },
+    seqFind: function (a, b, after, open) {
+      return j('/api/seq/find?run=' + encodeURIComponent(this.run) + '&a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
+               + '&after=' + (after == null ? -1 : Math.round(after)) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
+    },
     note: function (t) { return j('/api/notes/' + encodeURIComponent(t)); },
     // 一批节点的解读状态（noted / stale / todo），不核对内容，给图上的徽标用
     status: function (ids) { return j('/api/status?ids=' + encodeURIComponent(ids.join(','))); },

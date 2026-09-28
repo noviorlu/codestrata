@@ -709,6 +709,171 @@ def test_events_rm_unmerged():
     assert run.get("events") is None and not (rd / "events").exists(), run
 
 
+# ---------------------------------------------------------------- 时序图（M5）
+
+def _truth_run():
+    repo = fresh()
+    cs("trace", repo, "--case", "truth", "--events", "--", PY, "-m", "fakesvc.truth")
+    run, det, rd = latest(repo)
+    return repo, run, det, rd
+
+
+def test_seq_build():
+    """切面上的消息：两端落在不同节点；节点内部的只计数；画得下就不折；生命线按进程分组；
+    fork / exec 的子进程有派生行。"""
+    from codestrata import seq
+    repo, run, det, rd = _truth_run()
+    idx = payload.load_index(repo)
+    r = seq.build(repo, idx, rd, run, det)
+    ms = [x for x in r["rows"] if x["k"] == "m"]
+    assert ms and all(x["a"] != x["b"] for x in ms)
+    assert not [x for x in r["rows"] if x["k"] == "loop"], "画得下就不折"
+    spans, _ = _spans(rd)
+    assert sum(x["rep"] for x in ms) + r["stat"]["internal"] + r["stat"]["unmapped"] + r["stat"]["imports"] \
+        == sum(s["rep"] for s in spans)
+    lanes = r["lifelines"]
+    pids = [l["pid"] for l in lanes]
+    assert pids == sorted(pids, key=lambda p: [q["pid"] for q in r["procs"]].index(p)), "生命线按进程分组"
+    assert all(0 <= x["from"] < len(lanes) and 0 <= x["to"] < len(lanes) for x in ms)
+    assert any(x["k"] == "spawn" for x in r["rows"]), "fork 出来的子进程要有派生行"
+    ts = [x["t"] for x in r["rows"]]
+    assert ts == sorted(ts)
+    # 只看一个阶段 / 从某个时刻起
+    r2 = seq.build(repo, idx, rd, run, det, t0=r["rows"][5]["t"])
+    assert r2["rows"][0]["t"] >= r["rows"][5]["t"]
+
+
+def test_seq_fold_and_budget():
+    """画不下才折循环（第一级折叠后的 50 次叶子调用已经是一条）；给定窗口太密不截断，给建议窗口；
+    自动收窄的窗口折叠后不超过上限。"""
+    from codestrata import seq
+    repo, run, det, rd = _truth_run()
+    idx = payload.load_index(repo)
+    full = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=2000)
+    n = len(full["rows"])
+    small = seq.build(repo, idx, rd, run, det, max_rows=20)
+    assert len(small["rows"]) <= 20 and small["window"][1] < full["window"][1], (len(small["rows"]), small["window"])
+    assert n > 40, n
+    loops = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=n - 10)
+    assert loops["too_dense"] is None and any(x["k"] == "loop" for x in loops["rows"]) \
+        and len(loops["rows"]) <= n - 10, (n, len(loops["rows"]))
+    dense = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=20)
+    assert dense["too_dense"] and dense["rows"] == [] and dense["too_dense"]["suggest"][1] > 0, dense["too_dense"]
+
+
+def test_seq_find_and_api():
+    """/api/seq、/api/seq/overview、/api/seq/find 经真的 serve 走一遍；没录事件的 run 给 404 说明。"""
+    import socket
+    import urllib.request
+    repo, run, det, rd = _truth_run()
+    cs("trace", repo, "--case", "plain", "--", PY, "-m", "fakesvc.truth")
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        def get(path):
+            for _ in range(50):
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+                        return r.status, json.loads(r.read())
+                except urllib.error.HTTPError as e:
+                    return e.code, json.loads(e.read())
+                except OSError:
+                    time.sleep(0.1)
+            raise AssertionError("serve 没起来")
+        st, r = get(f"/api/seq?run={run['id']}")
+        assert st == 200 and r["rows"] and r["lifelines"], r
+        st, o = get(f"/api/seq/overview?run={run['id']}")
+        assert st == 200 and o["procs"] and len(o["procs"][0]["density"]) == 400
+        m = next(x for x in r["rows"] if x["k"] == "m")
+        st, f = get(f"/api/seq/find?run={run['id']}&a={m['a']}&b={m['b']}&after=-1")
+        assert st == 200 and f["t"] <= m["t"], (f, m)
+        st, e = get("/api/seq?run=plain")
+        assert st == 404 and "--events" in e["error"], e
+        st, e = get("/api/seq")
+        assert st == 400
+        st, rl = get("/api/runs")
+        assert {x["case"]: x["events"] for x in rl["runs"]} == {"truth": True, "plain": False}
+    finally:
+        srv.kill()
+        srv.wait()
+
+
+def test_seq_cuts_and_find():
+    """同一微秒的几次调用不拆到两屏；不折叠时分屏、next_t0 接得上；find 先在阶段里找、不算 import；
+    fork+exec 的子进程的派生行在 fork 的时刻（exec 之前的调用之前）；统计只数显示的那一段。"""
+    from codestrata import seq
+    mk = lambda t, pid=1: {"t": t, "d": 1, "pid": pid, "tid": 1, "a": "x", "b": "y", "f": "f.py", "l": t % 7 + 1, "rep": 1}
+    msgs = [mk(1000 + 10 * i, 1) for i in range(30)] + [mk(1000 + 10 * i, 2) for i in range(30)]
+    msgs.sort(key=lambda m: m["t"])
+    n = seq._fit(msgs, 21, fold=False)
+    assert 0 < n < len(msgs) and msgs[n]["t"] != msgs[n - 1]["t"], n            # 退到时刻的边界上
+    ties = [mk(5, p) for p in range(50)]
+    assert seq._fit(ties, 20, fold=False) == 50                                  # 一个时刻放不下也整组放进来
+    repo, run, det, rd = _truth_run()
+    idx = payload.load_index(repo)
+    # 不折叠分屏：前后两屏接得上、不重不漏
+    a = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, fold=False, max_rows=20)
+    b = seq.build(repo, idx, rd, run, det, t0=a["next_t0"], t1=10 ** 12, fold=False, max_rows=20)
+    ma = [x for x in a["rows"] if x["k"] == "m"]
+    mb = [x for x in b["rows"] if x["k"] == "m"]
+    assert ma and mb and not [x for x in a["rows"] + b["rows"] if x["k"] == "loop"]
+    assert a["next_t0"] == ma[-1]["t"] + 1 and mb[0]["t"] >= a["next_t0"]
+    full = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, fold=False, max_rows=2000)
+    fm = [x["t"] for x in full["rows"] if x["k"] == "m"]
+    assert [x["t"] for x in ma + mb] == fm[:len(ma) + len(mb)]
+    # 统计只数显示的那一段
+    assert a["stat"]["imports"] <= full["stat"]["imports"]
+    # 不画 import 触发的模块顶层执行
+    assert not [x for x in full["rows"] if x["k"] == "m" and x["l"] == 0]
+    # fork+exec 的子进程：派生行在它 exec 之前的调用之前
+    sp = [x for x in full["rows"] if x["k"] == "spawn"]
+    for s_ in sp:
+        first = min((x["t"] for x in full["rows"] if x["k"] == "m" and x["pid"] == s_["pid"]), default=None)
+        assert first is None or s_["t"] <= first, (s_, first)
+    # find：跳过 <module>，先在给的阶段里找
+    hit = seq.find(idx, rd, open_=None, a="fakesvc.truth", b="fakesvc.callee")
+    assert hit and hit["t"] > 0
+    tr_ = [x for x in full["rows"] if x["k"] == "m" and x["a"] == "fakesvc.truth" and x["b"] == "fakesvc.callee"]
+    assert hit["t"] == tr_[0]["t"], (hit, tr_[0]["t"])
+    later = seq.find(idx, rd, open_=None, a="fakesvc.truth", b="fakesvc.callee", window=(tr_[5]["t"], 10 ** 12))
+    assert later["t"] >= tr_[5]["t"]
+
+
+def test_seq_estimate_and_fit():
+    """画不下时估出来的建议窗口，再请求它不能又是「画不下」（原先会原地打转）；贪心折叠的行数不单调时，
+    _fit 退到时刻边界后也不超过上限；不折叠的分屏一屏接一屏，拼起来就是整段。"""
+    from codestrata import seq
+    mk = lambda i, tok: {"t": 1000 + i, "d": 1, "pid": 1, "tid": 1, "a": tok, "b": "z", "f": "f.py", "l": 1, "rep": 1}
+    msgs = [mk(i, t) for i, t in enumerate("AAABAAABAAAB")]
+    for lim in range(1, 7):
+        n = seq._fit(msgs, lim)
+        assert n == 0 or len(seq._with_idle(seq._fold_loops(msgs[:n]))) <= max(lim, 1) or n == 1, (lim, n)
+    repo, run, det, rd = _truth_run()
+    idx = payload.load_index(repo)
+    old = seq.ESTIMATE_X
+    try:
+        seq.ESTIMATE_X = 0                           # 什么窗口都走估算的那条路
+        r = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=20)
+        assert r["too_dense"] and r["too_dense"]["estimate"], r["too_dense"]
+        s0, s1 = r["too_dense"]["suggest"]
+        r2 = seq.build(repo, idx, rd, run, det, t0=s0, t1=s1, max_rows=20)
+        assert r2["too_dense"] is None and r2["rows"], r2["too_dense"]
+        # 不折叠的分屏：一屏接一屏走到头，拼起来和一次取全的一样
+        full = [x["t"] for x in seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, fold=False,
+                                          max_rows=2000)["rows"] if x["k"] == "m"]
+        got, t = [], 0
+        for _ in range(50):
+            p = seq.build(repo, idx, rd, run, det, t0=t, t1=10 ** 12, fold=False, max_rows=20)
+            got += [x["t"] for x in p["rows"] if x["k"] == "m"]
+            if p["next_t0"] is None:
+                break
+            t = p["next_t0"]
+        assert got == full, (len(got), len(full))
+    finally:
+        seq.ESTIMATE_X = old
+
+
 def main(argv):
     tests = [(n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)]
     if argv:

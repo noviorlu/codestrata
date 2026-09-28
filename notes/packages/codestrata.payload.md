@@ -4,7 +4,7 @@ target: codestrata.payload
 kind: package
 code_sha: c2bef4114fc24508
 status: draft
-refs: payload.py:1@eae6f6c4,payload.py:44@792c7b2a,payload.py:67@cdbac5e5,payload.py:258@c36f173a,payload.py:196@dfc3e98b,payload.py:395@939c9802,runs.py:586@5028c052,serve.py:355@eae1c1a1,notes.py:316@a5ce0618,payload.py:45@17be1534,runs.py:661@b2d6757f,runs.py:693@47fcd1f8,payload.py:35@d6513e46,runs.py:650@47887e94,payload.py:131@5b622921,payload.py:154@bf6ecf7f,payload.py:162@b41f714c,serve.py:210@12773134,payload.py:75@213a94e3,payload.py:88@90fe571f,payload.py:235@b3119dbf,payload.py:357@e6dabe0a,payload.py:374@65f7556a,payload.py:415@539a480b,payload.py:430@5e093a3b,payload.py:441@08d14eee,payload.py:491@8b3d5b0c,payload.py:459@70082336,payload.py:518@5b368878,payload.py:543@52abe3fa,payload.py:612@61e30aeb,serve.py:215@7f242479
+refs: payload.py:1@eae6f6c4,payload.py:44@792c7b2a,payload.py:67@cdbac5e5,payload.py:258@c36f173a,payload.py:196@dfc3e98b,payload.py:395@939c9802,runs.py:586@5028c052,serve.py:410@eae1c1a1,notes.py:316@a5ce0618,payload.py:45@17be1534,runs.py:661@b2d6757f,runs.py:693@47fcd1f8,payload.py:35@d6513e46,runs.py:650@47887e94,payload.py:131@5b622921,payload.py:154@bf6ecf7f,payload.py:162@b41f714c,payload.py:63@1d41b21d,serve.py:167@4317bbc0,serve.py:265@12773134,payload.py:75@213a94e3,payload.py:88@90fe571f,payload.py:235@b3119dbf,payload.py:357@e6dabe0a,payload.py:374@65f7556a,payload.py:415@539a480b,payload.py:430@5e093a3b,payload.py:441@08d14eee,payload.py:491@8b3d5b0c,payload.py:459@70082336,payload.py:518@5b368878,payload.py:543@52abe3fa,payload.py:612@61e30aeb,serve.py:270@7f242479,serve.py:278@2b2b2aed
 ---
 
 ## 是什么
@@ -28,7 +28,7 @@ serve（live）和 export（单文件）要给前端**完全相同**的数据，
 ### `load_hot`：一个名字、一行提示，别的都在 `runs`
 以前每个 case 只有一份 `trace-<case>.json`，同名重录就覆盖，`load_hot` 自己读文件、切阶段、比过期、合并进程、找脚本。M1 起每次 trace 都是 `.codestrata/runs/` 下一个新目录（录一次、永久复用，见 `docs/design/runs.md` 第 1、3 节），「REF 指的是哪个 run、它的计数和清单怎么读、哪些文件录制后改过」都成了 `runs` 的事，所以这里整个换成一句 `runs.load`（payload.py:44）：
 - **ref 语法**（`runs.resolve`，runs.py:586）：完整 run id，或 case 名（取它最新一次 ok 的，没有就退到最新的 partial 并提示），后面可以加 `@阶段`；不写阶段就是各阶段相加——老的 `--hot 名字@阶段` 写法原样能用。第一次解析时 `catalog` 还会顺带把老的 `trace-<case>.json` 迁进 runs/，老 case 名不必手动搬
-- **名字和调用方式不变**（第三个参数由 case 改叫 ref，调用方都按位置传）：`__main__` 的 graph / tasks / pack、`tests/test_runs.py` 照旧调 `load_hot`。serve 只在启动时调一次，用来当场校验 `--hot` 写没写错、并把它解析成页面默认选中的完整 id（serve.py:355）；之后每个请求自带 `run=`，由 `serve.Handler._hot` 直接调 `runs.resolve` / `runs.load`，按 run 和计数文件的 mtime 缓存——所以页面上换 run、换阶段不用重启（M4）。`runs.load` 返回的 meta 保留老的全部键（`procs`、`script`、`stale_files`、`phases`……，`web/app.js` 的 hot 横幅和帮助认它们），再加上 `run_id`、`status`、`problems`、`file_state`、`git`、`tags` 等。hot 本身还带上 `run`，`notes.prompt_pack` 的 runtime 那一行据此写明数字来自哪个 run（notes.py:316）
+- **名字和调用方式不变**（第三个参数由 case 改叫 ref，调用方都按位置传）：`__main__` 的 graph / tasks / pack、`tests/test_runs.py` 照旧调 `load_hot`。serve 只在启动时调一次，用来当场校验 `--hot` 写没写错、并把它解析成页面默认选中的完整 id（serve.py:410）；之后每个请求自带 `run=`，由 `serve.Handler._hot` 直接调 `runs.resolve` / `runs.load`，按 run 和计数文件的 mtime 缓存——所以页面上换 run、换阶段不用重启（M4）。`runs.load` 返回的 meta 保留老的全部键（`procs`、`script`、`stale_files`、`phases`……，`web/app.js` 的 hot 横幅和帮助认它们），再加上 `run_id`、`status`、`problems`、`file_state`、`git`、`tags` 等。hot 本身还带上 `run`，`notes.prompt_pack` 的 runtime 那一行据此写明数字来自哪个 run（notes.py:316）
 - **打印用了哪个 run**（payload.py:45）：case 名解析到的是「最新一次录完的」，每录一次新的，同一个 `--hot 名字` 指的 run 就变了——不打印出来，用户分不清图上的数字来自哪一次（设计 4.5：每条命令都打印解析到的完整 id）。打到 stderr，因为 `pack` 的 stdout 是整个输入包，常被重定向给 agent。serve 按请求换 run 不经过这里、不打印：页面的 hot 横幅直接显示 meta 里的 `run_id`
 - 原先也在这里的两件事一并搬走了。进程按命令合并成了 `runs.procs_grouped`（runs.py:661），「argv 被截断」改读每个进程记下的 `argv_cut`（新 run 由 hook 在 import 时记，迁移来的老 trace 在迁移时按「没有 ppid」补上），不再在读的时候现猜，另外带上被 setproctitle 改过的 `title`。case 脚本改为优先读 run 目录 `files/` 里录制时存下的副本（runs.py:693），老 run 没存才读现在的文件、标 `saved` 为假
 
@@ -44,8 +44,10 @@ scan 的数据全在单元（文件）之间；图上的节点是切面上的目
 
 返回里还有 `open` / `defaultOpen` / `autoSplit`，前端用它们判断当前是不是默认切面；`hotMeta` 原样透传 `runs.load` 给的 meta（CLI 经 `load_hot`，serve 经 `serve.Handler._hot`）。
 
+切面先过一道 `_norm_open`（payload.py:63）：没给就换成 scan 的默认切面，给了就只留 `cut.is_node` 认得的名字（重新 scan 之后 URL 里残留的旧目录名被悄悄丢掉，而不是传给下层）。M5 起 serve 的时序图接口（`serve.Handler._seq`）也调它（serve.py:167），所以时序图的生命线和模块图的节点落在同一个切面上，两张图切换时选中的东西对得上。
+
 ### 按图框的宽度排版
-`width` 原样交给 `layout.build`，总图和 hot 图都用它：宽屏上图铺满、一行多放几个节点、少折行，而不是把按 1180 排好的图整体放大。serve 把浏览器报来的宽度按 40px 取整、夹在 700–4000 之间，并把它放进缓存键（serve.py:210）：窗口拖一点点不必重排，不同宽度的排版也不会混用。
+`width` 原样交给 `layout.build`，总图和 hot 图都用它：宽屏上图铺满、一行多放几个节点、少折行，而不是把按 1180 排好的图整体放大。serve 把浏览器报来的宽度按 40px 取整、夹在 700–4000 之间，并把它放进缓存键（serve.py:265）：窗口拖一点点不必重排，不同宽度的排版也不会混用。
 
 ### 框：谁套着谁
 展开着的目录在图上画成一个框。一个节点直接被哪个框套着，就是 `cut.parent_of` 给出的那个展开着的目录（或展开着的本层文件节点）；框的外层框再往上问 `parent_of`，一直到根（payload.py:75 起）。只有一个根时不画根的框——它就是整张图；多个根时每个根一个框，也能收起。`collapsible` 就是「有没有套着它的框」：顶层节点没有，详情面板也就不给「收起到上一级」。
@@ -90,7 +92,7 @@ xref 的 token 是「行 + UTF-16 列」，文件在 scan 之后改过，行列�
 xref 的目标全导出共用一张表 `xrefTargets`：片段和文件只带 token，目标挪进共用表（`share`），前端取出时再补回（`web/ds.js`）。早先每个文件各带一份，同一个目标重复几百遍，占掉的额度够再内嵌一两百个文件。挑全文时一个文件的代价 = 它自己 + 它带来的**新**目标的字节数，放得下才把新目标并进表（payload.py:612）。
 
 ## 局限
-- 导出的页面是固定切面：不能展开（其他切面的边详情没有预先算）、没有 `reveal`；不传 `width`，按默认 1180 排版；引用列表只能在内嵌了全文的文件里找，也没有「同名的 .xxx」。导出里只有一个 run（多 run 导出排在 M7）。
+- 导出的页面是固定切面：不能展开（其他切面的边详情没有预先算）、没有 `reveal`；不传 `width`，按默认 1180 排版；引用列表只能在内嵌了全文的文件里找，也没有「同名的 .xxx」。导出里只有一个 run（多 run 导出排在 M7），也不带时序图：`export_payload` 不算时序，`web/ds.js` 的导出版对时序图请求直接报「请用 codestrata serve」（设计 M5 状态里记为 §8 / M7 再说）。
 - ref 找不到、阶段不存在、run 还没有计数（还在录，或录制中断、要先 `runs merge`）时，`runs` 直接以 `SystemExit` 报错，这里不兜底——CLI（和 serve 启动时校验 `--hot`）上退出并给出下一步该跑的命令；serve 按请求解析时由 `serve.Handler._hot` 转成 `LookupError`，回 404 并带上这句提示，页面照常可用。
-- 每个切面的 payload 都带全部顶层符号，vllm-omni 上一份约 2.5 MB；serve 的缓存键是（切面, 宽度, run），只留最近的一批（serve.py:215）——换着看几个 run 时，同一个切面会各存一份。
+- 每个切面的 payload 都带全部顶层符号，vllm-omni 上一份约 2.5 MB；serve 的缓存键是（切面, 宽度, run）（serve.py:270），只留最近的 32 份（serve.py:278）——换着看几个 run 时，同一个切面会各存一份。
 - `_XREF` 是进程级的单槽缓存：同一进程里交替查两个仓库会互相顶掉，每次重新解析整份 xref.json（serve 一个进程只服务一个仓库，所以实际碰不到）。

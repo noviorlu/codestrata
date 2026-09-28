@@ -273,7 +273,7 @@ window.CS = window.CS || {};
     /* 缩放到 z 倍，(cx, cy) 这个屏幕上的点缩放前后指着图上同一个地方 */
     setZoom: function (z, cx, cy) {
       var svg = this.svg, box = svg && svg.parentNode;
-      if (!box) return;
+      if (!box || this.hidden()) return;
       z = Math.max(0.3, Math.min(4, z));
       var r0 = svg.getBoundingClientRect(), rb = box.getBoundingClientRect();
       if (cx == null) { cx = rb.left + rb.width / 2; cy = rb.top + rb.height / 2; }
@@ -308,13 +308,18 @@ window.CS = window.CS || {};
       if (hint) hint.hidden = !more;
     },
 
+    /* 图藏着（时序图在前面）：量出来的位置全是 0，滚动、缩放都不能做——会把时序图滚走 */
+    hidden: function () { return !this.svg || this.svg.style.display === 'none'; },
+
     focus: function (id) {
+      if (this.hidden()) return;
       var el = this.heads && this.heads[id] ? this.heads[id].querySelector('.xp') : this.nodes[id];
       if (el && el.focus) el.focus({ preventScroll: true });
     },
 
     /* 把刚展开的框 / 刚收回的节点横向滚进图框里（只横向：纵向交给页面，框可能比屏幕还高） */
     reveal: function (id) {
+      if (this.hidden()) return;
       var box = this.svg && this.svg.parentNode, el = (this.frames || {})[id] || this.nodes[id];
       if (!el || !box || box.scrollWidth <= box.clientWidth) return;
       var r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
@@ -428,6 +433,7 @@ window.CS = window.CS || {};
 
     /* 把图上的一个元素滚到看得见的区域中间（不会滚到详情栏底下去） */
     showEl: function (el, smooth) {
+      if (this.hidden()) return;
       var box = this.svg && this.svg.parentNode, v = this.viewRect();
       if (!el || !box || !v) return;
       var r = el.getBoundingClientRect();

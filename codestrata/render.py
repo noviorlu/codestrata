@@ -14,7 +14,7 @@ from pathlib import Path
 
 WEB = Path(__file__).resolve().parent / "web"
 # 顺序即依赖顺序：ds 被所有人用，app 最后启动
-SCRIPTS = ("ds.js", "graph.js", "viewer.js", "panel.js", "search.js", "app.js")
+SCRIPTS = ("ds.js", "graph.js", "viewer.js", "panel.js", "search.js", "seq.js", "app.js")
 
 
 def export(payload: dict, *, title: str | None = None, fragment: bool = False) -> str:

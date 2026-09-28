@@ -43,6 +43,7 @@
         <div class="runpop" id="runpop" role="menu" aria-label="选择 run" hidden></div>
       </span>
       <span id="phasechips" style="display:contents"></span>
+      <span id="viewchips" class="viewchips" style="display:contents"></span>
       <span class="lbl">边</span>
       <span id="edgechips" style="display:contents"></span>
       <span class="lbl">视图</span>
@@ -56,7 +57,7 @@
   </div>
 
   <div class="gwrap" id="gwrap">
-    <div class="gbox"><svg class="g" id="g"></svg></div><div class="gfade l"></div><div class="gfade r"></div>
+    <div class="gbox"><svg class="g" id="g"></svg><div class="seqv" id="seqv" hidden></div></div><div class="gfade l"></div><div class="gfade r"></div>
     <div class="gctl" role="toolbar" aria-label="缩放和移动">
       <button class="gz" data-z="in" title="放大（也可以按住 Ctrl 滚滚轮）" aria-label="放大">＋</button>
       <button class="gz" data-z="out" title="缩小（也可以按住 Ctrl 滚滚轮）" aria-label="缩小">－</button>
@@ -102,4 +103,5 @@
 <script src="viewer.js"></script>
 <script src="panel.js"></script>
 <script src="search.js"></script>
+<script src="seq.js"></script>
 <script src="app.js"></script>
