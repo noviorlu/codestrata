@@ -234,6 +234,18 @@ def cmd_trace(a) -> int:
         if hit is None:
             raise SystemExit(f"--attach 的文件不存在：{f}")
         attach.append(str(hit.resolve()))
+    # --phase 名字=函数：录之前就解析好（写错了现在报，不要等模型加载完才发现）。
+    # 模块:qualname 的写法查静态索引；没 scan 过的仓库只能用 文件路径:qualname
+    phase_at = []
+    if a.phase:
+        try:
+            symbols = _load_index(repo).get("symbols")
+        except SystemExit:
+            symbols = None
+        phase_at = _trace.resolve_phase_at(repo, a.phase, symbols)
+        for t in phase_at:
+            print(f"[codestrata] 阶段 {t['name']}：第一次进入 {t['qualname']}（{t['file']}:{t['line']}）时切过去"
+                  + (f"——{t['func']} 是继承来的，定义在 {t['via']}" if t.get("via") else ""), file=sys.stderr)
     _outdir(repo)
     _runs.catalog(repo)                      # 先把老格式的 trace 迁进 runs/
     # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
@@ -244,7 +256,11 @@ def cmd_trace(a) -> int:
         env["CODESTRATA_EV_MAX"] = os.environ["CODESTRATA_EV_MAX"]
     rd = _runs.new_run(repo, case=a.case, cmd=a.cmd, cwd=repo, env=env, tags=a.tag, note=a.note or "",
                        rec={"timeout": a.timeout, "stop_grace": a.stop_grace, "attach": attach,
-                            "events": bool(a.events)})
+                            "events": bool(a.events), "roots": a.roots,
+                            "phase_at": [{k: t[k] for k in ("name", "func", "file", "qualname", "line")}
+                                         for t in phase_at]},
+                       invocation=getattr(a, "invocation", None),
+                       env_inherited=_runs.inherited_env(os.environ, skip=env))
     # 时序事件（时序图的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
     # 明确写 0：shell 里恰好 export 了 CODESTRATA_EVENTS=1 也不录——以命令行为准，重录命令才对得上
     env_run = {**env, "CODESTRATA_EVENTS": "1" if a.events else "0"}
@@ -257,7 +273,7 @@ def cmd_trace(a) -> int:
                                   phase_times=info["phase_times"], duration_s=info["duration_s"],
                                   leftovers=info["leftovers"], attach=attach)
     tr, run = _trace.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
-                         env_extra=env_run, stop_grace=a.stop_grace, after=after)
+                         env_extra=env_run, stop_grace=a.stop_grace, after=after, phase_at=phase_at)
     detail = _runs._read(rd / "detail.json")
     sm = run["summary"]
     print(f"→ run {run['id']}：{_STATUS.get(run['status'], run['status'])}"
@@ -268,6 +284,15 @@ def cmd_trace(a) -> int:
           f"退出码 {run['returncode']}，用时 {run['duration_s']}s")
     if len(run["phases"]) > 1:
         print("  阶段：" + " / ".join(f"{p['name']} {p['n_funcs']} 个函数" for p in run["phases"]))
+    log = run.get("phase_log") or []
+    by_hook = {e[0] for e in log if len(e) > 2 and e[2] == "hook"}
+    by_sh = {e[0] for e in log if len(e) > 2 and e[2] == "sh"}
+    missed = [t["name"] for t in phase_at if t["name"] not in by_hook | by_sh]
+    if missed:
+        print(f"  ⚠ 这些 --phase 没切到（对应的函数这次没被调用）：{'、'.join(missed)}")
+    shadow = [t["name"] for t in phase_at if t["name"] in by_sh and t["name"] not in by_hook]
+    if shadow:
+        print(f"  ⚠ 这些阶段是 case 脚本写 PHASE 切的，同名的 --phase 没起作用：{'、'.join(shadow)}")
     if tr["mapped"]:
         bad, extra = detail["mapped_mismatch"], detail["mapped_only_installed"]
         print(f"  运行的是安装包 {detail['mapped_from']}，已映射回仓库 {len(tr['mapped'])} 个文件，"
@@ -445,7 +470,13 @@ def cmd_runs(a) -> int:
                     print(f"        {_FS[st]:<10} {rel}")
                 if len(by.get(st, [])) > 12:
                     print(f"        …还有 {len(by[st]) - 12} 个")
-        print(f"  重录  {_runs.rerun_command(run, Path(a.repo))}")
+        print(f"  复刻  {_runs.rerun_command(run, Path(a.repo))}")
+        if not run.get("invocation"):
+            print("        （这个 run 录的时候还没存原始命令，上面是按 run 里存的参数拼的）")
+        if run.get("env_inherited"):
+            print("  录制时 shell 里的相关环境变量（不在命令里，复刻时要一样）：")
+            for k, v in run["env_inherited"].items():
+                print(f"        {k}={v}")
         return 0
 
     if a.verb in ("tag", "untag"):
@@ -585,6 +616,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="同时记时序事件（每次跨文件调用的起止时刻，时序图用；要 Python 3.12+）")
     t.add_argument("--attach", action="append", default=[], metavar="FILE",
                    help="把这个文件的内容一起存进 run（比如被 case 脚本 source 的 common.sh）")
+    t.add_argument("--phase", action="append", default=[], metavar="NAME=FUNC",
+                   help="哪个进程第一次进入 FUNC 就切到阶段 NAME（可重复；每个阶段只切一次）。FUNC 写成 "
+                        "模块:qualname（查静态索引，继承来的方法也认）或 文件路径:qualname，比如 "
+                        "generate=vllm_omni.entrypoints.omni:Omni.generate。不用改被 trace 的脚本")
     t.add_argument("cmd", nargs="*", default=[],
                    help="-- 之后是要跑的命令")
     t.set_defaults(fn=cmd_trace)
@@ -594,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     rv = r.add_subparsers(dest="verb", required=True)
     x = rv.add_parser("ls", help="列出所有 run，按 case 分组，新的在前")
     x.add_argument("--case", default=None)
-    x = rv.add_parser("show", help="一个 run 的详情、文件相对当前代码的状态、重录命令")
+    x = rv.add_parser("show", help="一个 run 的详情、文件相对当前代码的状态、复刻命令")
     x.add_argument("ref", metavar="RUN")
     x = rv.add_parser("tag", help="加标签")
     x.add_argument("ref", metavar="RUN")
@@ -628,14 +663,31 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
     raw = list(sys.argv[1:] if argv is None else argv)
+    invocation = {"argv": _prog(argv is None) + raw, "cwd": _cwd()}
     tail: list[str] = []
     if "--" in raw:
         i = raw.index("--")
         raw, tail = raw[:i], raw[i + 1:]
     a = ap.parse_args(raw)
+    a.invocation = invocation               # trace 存进 run：原样的命令 + 在哪个目录跑的，复刻用
     if a.which == "trace":
         a.cmd = tail or a.cmd
     return a.fn(a)
+
+
+def _prog(from_argv: bool) -> list[str]:
+    """怎么叫起的 codestrata：装好的入口脚本是它的绝对路径；python -m codestrata 是解释器 + -m。"""
+    a0 = sys.argv[0] if from_argv and sys.argv else ""
+    if a0 and not a0.endswith(("__main__.py", "-c")) and os.path.basename(a0) != "-m":
+        return [os.path.abspath(a0)]
+    return [sys.executable, "-m", "codestrata"]
+
+
+def _cwd() -> str | None:
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
 
 
 if __name__ == "__main__":

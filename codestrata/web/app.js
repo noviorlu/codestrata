@@ -5,6 +5,26 @@ window.CS = window.CS || {};
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   // 「2026-09-27T15:34:10-0400」→「09-27 15:34」
+  /* 复制到剪贴板：serve 在 127.0.0.1 上是安全上下文，用 Clipboard API；导出的单文件（file://）
+     或被拒绝时退回选中一个临时 textarea 再 execCommand('copy')。结果是 Promise<是否成功> */
+  function copyText(t) {
+    function legacy() {
+      var ta = document.createElement('textarea');
+      ta.value = t;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(t).then(function () { return true; }, function () { return legacy(); });
+    }
+    return Promise.resolve(legacy());
+  }
   function shortTime(t) { var m = /^\d{4}-(\d\d-\d\d)T(\d\d:\d\d)/.exec(t || ''); return m ? m[1] + ' ' + m[2] : (t || ''); }
 
   CS.app = {
@@ -191,9 +211,30 @@ window.CS = window.CS || {};
       document.getElementById('helpBtn').setAttribute('aria-expanded', on);
     },
 
-    /* 帮助里「这次跑了什么」：case 命令、脚本内容、被 trace 的进程（按命令合并，跑到仓库代码多的在前） */
+    /* 帮助里「这次跑了什么」：复刻命令、阶段怎么切的、case 命令、脚本内容、被 trace 的进程
+       （按命令合并，跑到仓库代码多的在前） */
     runHtml: function (m) {
-      var h = '<h3>这次跑了什么</h3><div class="run"><div class="cmdline"><span class="lab">case 命令</span><code>'
+      this._runMeta = m;
+      var h = '<h3>这次跑了什么</h3><div class="run">';
+      if (m.rerun) {
+        var ev = m.env_inherited || {}, ks = Object.keys(ev);
+        h += '<div class="rerun" id="rerun"><div class="rerun-h"><span class="lab">复刻这次录制</span>'
+          + '<button class="chip copy" data-copy="rerun" title="复制这条命令（在终端里粘贴就能重录一次）">复制</button></div>'
+          + '<pre class="rerun-cmd">' + esc(m.rerun) + '</pre>'
+          + (m.rerun_exact ? '' : '<div class="lab warn">这个 run 录的时候还没存原始命令：上面是按 run 里存的参数拼的，'
+             + 'codestrata 按 PATH 找，仓库路径是录制时的绝对路径</div>')
+          + (m.rerun_redacted ? '<div class="lab warn">命令里像密钥的值（--env 里的、--api-key 这类选项的）和 URL 里的账号密码'
+             + '已隐去，写成 &lt;已隐去&gt;；下面的 case 命令和进程表也一样。完整的命令用 <code>codestrata runs &lt;repo&gt; show '
+             + esc(m.run_id) + '</code> 看</div>' : '')
+          + (ks.length ? '<details class="envinh"><summary><span class="lab">录制时 shell 里还有 ' + ks.length
+             + ' 个相关的环境变量（不在命令里；被 trace 的命令会继承它们，复刻时要一样）</span></summary>'
+             + '<div class="rerun-h"><span class="lab">连环境变量一起</span>'
+             + (m.rerun_env ? '<button class="chip copy" data-copy="rerun_env" title="前面用 env 带上这些变量">复制</button>' : '')
+             + '</div><pre>' + esc(ks.map(function (k) { return k + '=' + ev[k]; }).join('\n')) + '</pre></details>' : '')
+          + '</div>';
+      }
+      h += this.phaseHtml(m);
+      h += '<div class="cmdline"><span class="lab">case 命令</span><code>'
         + esc((m.cmd || []).join(' ')) + '</code></div>';
       var P = m.procs || [];
       if (P.length) {
@@ -214,7 +255,56 @@ window.CS = window.CS || {};
       return h + '</div>';
     },
 
-    wireRun: function () { /* 目前只是静态内容；留个口子给以后的交互 */ },
+    /* 各阶段从什么时候开始、怎么切的：--phase 的写「第一次进入某函数」，其余是 case 脚本写 PHASE 切的 */
+    phaseHtml: function (m) {
+      // 每一条是 [名字, t_us, 来源]：start / hook（--phase，第一次进入某个函数）/ sh（case 脚本写 PHASE）；
+      // 老的 run 没有来源，一律当 case 脚本写的。表用 Object.create(null)：阶段名可能叫 constructor
+      var log = m.phase_log || [], at = Object.create(null), fired = Object.create(null), byHook = Object.create(null);
+      (m.phase_at || []).forEach(function (t) { at[t.name] = t; });
+      log.forEach(function (x) { if (x[2] === 'hook') byHook[x[0]] = 1; });
+      if (log.length < 2 && !(m.phase_at || []).length) return '';
+      var rows = log.map(function (x) {
+        var src = x[2] || (x[0] === 'start' ? 'start' : 'sh'), t = src === 'hook' ? at[x[0]] : null;
+        fired[x[0]] = 1;
+        return '<tr><td><b>' + esc(x[0]) + '</b></td><td class="pn">' + (x[1] == null ? '—' : (x[1] / 1e6).toFixed(2) + ' s')
+          + '</td><td>' + (src === 'start' ? '<span class="lab">录制开始</span>'
+             : t ? '第一次进入 <code>' + esc(t.qualname) + '</code> <span class="lab">' + esc(t.file) + ':' + esc(t.line) + '</span>'
+             : src === 'hook' ? '<span class="lab">--phase</span>'
+             : '<span class="lab">case 脚本写 PHASE</span>'
+               + (at[x[0]] && !byHook[x[0]] ? '<span class="lab warn">（同名的 --phase 没起作用）</span>' : ''))
+          + '</td></tr>';
+      });
+      (m.phase_at || []).forEach(function (t) {
+        if (!fired[t.name]) rows.push('<tr class="idle"><td><b>' + esc(t.name) + '</b></td><td class="pn">—</td><td>没切到：<code>'
+          + esc(t.qualname) + '</code> 这次没被调用</td></tr>');
+      });
+      return '<div class="lab">阶段（每段从这个时刻开始，直到下一段）</div><table class="procs phases">' + rows.join('') + '</table>';
+    },
+
+    wireRun: function () {
+      var hb = document.getElementById('hotbanner'), self = this;
+      if (!hb || hb._wiredCopy) return;
+      hb._wiredCopy = 1;
+      hb.addEventListener('click', function (ev) {
+        var b = ev.target.closest('[data-copy]'), m = self._runMeta;
+        if (!b || !m) return;
+        copyText(m[b.dataset.copy] || '').then(function (ok) {
+          b.textContent = ok ? '已复制' : '复制不了，请手动选中';
+          setTimeout(function () { b.textContent = '复制'; }, 1600);
+        });
+      });
+    },
+
+    /* 「复刻」按钮：打开帮助、滚到复刻命令那里 */
+    showRerun: function () {
+      this.help(true);
+      var r = document.getElementById('rerun');
+      if (!r) return;
+      r.scrollIntoView({ block: 'nearest' });
+      r.classList.remove('flash');
+      void r.offsetWidth;
+      r.classList.add('flash');
+    },
 
     /* ---- 叠哪个 run：静态图 / 某一次录下的运行，分了阶段的再选阶段。
        选中的是「完整 id@阶段」，放在 CS.ds.run（叠加相关的请求都带上它）和 URL hash 里 ---- */
@@ -492,6 +582,11 @@ window.CS = window.CS || {};
       }
       b.classList.toggle('on', !!m);
       b.textContent = m ? m.case + ' · ' + shortTime(m.created) : '静态图';
+      var rb = document.getElementById('rerunbtn');
+      if (rb) {
+        rb.hidden = !(m && m.rerun);
+        rb.onclick = function () { self.showRerun(); };
+      }
       b.title = !CS.ds.canSwitchRun ? '导出的单文件固定叠这一个（或不叠）；要换请用 codestrata serve'
         : m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
       var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
@@ -499,9 +594,13 @@ window.CS = window.CS || {};
       this.viewBar();
       this.cmpBar();
       if (!m || phases.length < 2 || !CS.ds.canSwitchRun || this.runListEmbedded) { pc.innerHTML = ''; return; }
+      var at = Object.create(null), hook = Object.create(null);
+      (m.phase_at || []).forEach(function (t) { at[t.name] = t; });
+      (m.phase_log || []).forEach(function (x) { if (x[2] === 'hook') hook[x[0]] = 1; });
       pc.innerHTML = '<span class="lbl">阶段</span>' + [{ name: '' }].concat(phases).map(function (p) {
         return '<button class="chip" data-ph="' + esc(p.name) + '" aria-pressed="' + ((m.phase || '') === p.name) + '" title="'
-          + (p.name ? '只看 ' + esc(p.name) + ' 这一段' + (p.n_funcs != null ? '（' + p.n_funcs + ' 个函数）' : '') : '各阶段加在一起')
+          + (p.name ? '只看 ' + esc(p.name) + ' 这一段' + (p.n_funcs != null ? '（' + p.n_funcs + ' 个函数）' : '')
+             + (at[p.name] && hook[p.name] ? '；从第一次进入 ' + esc(at[p.name].qualname) + ' 开始' : '') : '各阶段加在一起')
           + '">' + (p.name ? esc(p.name) : '全部') + '</button>';
       }).join('');
       [].forEach.call(pc.querySelectorAll('[data-ph]'), function (x) {

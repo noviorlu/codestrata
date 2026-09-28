@@ -288,6 +288,384 @@ def test_collect_files_skips_installed_py():
     assert got == {"cpuinfo.py"}, got
 
 
+def trace_offline(repo: Path, case="off", *extra, env=None, check=True):
+    return cs("trace", repo, "--case", case, *extra, "--", PY, "-m", "fakesvc.offline", env=env, check=check)
+
+
+def phase_counts(rd: Path) -> dict:
+    """{阶段: {文件:qualname: 次数}}（按名字，不按行号：fake_repo 的文件改了行号测试照样对）"""
+    c = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))
+    nm = c.get("names") or {}
+    return {ph: {k.rpartition(":")[0] + ":" + nm.get(k, k.rpartition(":")[2]): n for k, n in d["funcs"].items()}
+            for ph, d in c["phases"].items()}
+
+
+def test_hook_template_parses():
+    """注入的 sitecustomize 本身是合法的 Python（模板里的 \n 要写成 \\n，少一层就是语法错误，
+    所有进程都静默不录）。"""
+    import ast
+    ast.parse(trace._SITECUSTOMIZE)
+
+
+def test_phase_at():
+    """--phase 名字=函数：一条阻塞的 python 命令也能分段。模块:qualname 查索引，继承来的方法
+    （Engine.close → BaseEngine.close）也认；别的进程（fork 出来的工作进程）跟着切，
+    generate 期间它干的活算进 generate；阶段时刻是切换那一刻的精确时间。"""
+    repo = fresh()
+    r = trace_offline(repo, "off", "--phase", "generate=fakesvc.offline:Engine.generate",
+                      "--phase", "shutdown=fakesvc.offline:Engine.close")
+    assert "继承来的" in r.stderr and "BaseEngine.close" in r.stderr, r.stderr
+    run, _, rd = latest(repo)
+    assert [p[0] for p in run["phase_log"]] == ["start", "generate", "shutdown"], run["phase_log"]
+    ts = [p[1] for p in run["phase_log"]]
+    assert ts == sorted(ts) and ts[1] > ts[0], ts
+    assert [t["qualname"] for t in run["rec"]["phase_at"]] == ["Engine.generate", "BaseEngine.close"]
+    # 时刻是 hook 切换那一刻（PHASE 第二行 / 标记文件里的 monotonic_ns），不是 driver 轮询看到的时刻
+    with tarfile.open(rd / "parts.tar.gz") as tf:
+        fired = tf.extractfile("PHASE-generate.fired").read().decode().split()
+    assert fired[0] == "hook" and ts[1] == (int(fired[2]) - run["clock"]["mono0_ns"]) // 1000, (ts, fired)
+    pc = phase_counts(rd)
+    gen, close, compute, load = ("fakesvc/offline.py:Engine.generate", "fakesvc/offline.py:BaseEngine.close",
+                                 "fakesvc/work.py:compute", "fakesvc/work.py:load_weight")
+    assert pc["generate"].get(gen) == 1 and gen not in pc["start"], pc   # 触发的这次调用算进新阶段
+    assert pc["generate"].get(compute) == 3 and compute not in pc["start"], pc   # 工作进程跟着切了
+    assert pc["start"].get(load) == 3 and load not in pc["generate"], pc
+    assert pc["shutdown"].get(close) == 1 and close not in pc["generate"], pc
+    # 没有触发的阶段在 CLI 里报出来；这里都切到了
+    assert "没切到" not in r.stdout, r.stdout
+
+
+def test_phase_at_once_and_order():
+    """每个阶段整个 run 只切一次，顺序按实际发生：写 --phase 的先后不影响。work 由工作进程第一次进
+    compute 切出来；close 之后主进程才第一次进 compute，不会把阶段切回 work。
+    文件路径:qualname 的写法不查索引。没被调用的 --phase 报「没切到」。"""
+    repo = fresh()
+    r = trace_offline(repo, "off2", "--phase", "shutdown=fakesvc/offline.py:BaseEngine.close",
+                      "--phase", "work=fakesvc/work.py:compute", "--phase", "never=fakesvc/work.py:pre_exec",
+                      env={"OFFLINE_LATE": "1"}, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    run, _, rd = latest(repo)
+    assert [p[0] for p in run["phase_log"]] == ["start", "work", "shutdown"], run["phase_log"]
+    pc = phase_counts(rd)
+    compute = "fakesvc/work.py:compute"
+    assert pc["work"].get(compute) == 3, pc
+    assert pc["shutdown"].get(compute) == 1, pc                 # 主进程后来的那次：还在 shutdown
+    assert "never" in r.stdout and "没切到" in r.stdout, r.stdout
+    # 文件路径写法：Engine.close 在这个文件里没定义（是继承的），按源码核对要报错并给出同名的
+    r = trace_offline(repo, "off3", "--phase", "x=fakesvc/offline.py:Engine.close", check=False)
+    assert r.returncode != 0 and "BaseEngine.close" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_phase_at_errors():
+    """写错的 --phase 在跑命令之前就报（不等模型加载完）。"""
+    repo = fresh()
+    for spec, want in [("start=fakesvc.offline:Engine.generate", "不能叫 start"),
+                       ("generate", "名字=函数"),
+                       ("a b=fakesvc.offline:Engine.generate", "字母、数字"),
+                       ("g=fakesvc.offline:Engin.generate", "fakesvc.offline:Engine.generate"),
+                       ("g=fakesvc/nope.py:f", "没有这个文件"),
+                       ("g=../outside.py:f", "不在仓库"),
+                       ("g=Engine.generate", "模块:qualname")]:
+        r = trace_offline(repo, "bad", "--phase", spec, check=False)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0 and want in out, (spec, out)
+    r = trace_offline(repo, "bad", "--phase", "a=fakesvc/work.py:compute", "--phase", "a=fakesvc/work.py:compute",
+                      check=False)
+    assert r.returncode != 0 and "重复" in r.stdout + r.stderr
+    rs = repo / ".codestrata" / "runs"
+    assert not (rs.is_dir() and any(p.name.endswith("-bad") for p in rs.iterdir()))   # 一个 run 都没建
+    # 没 scan 过的仓库：模块写法要先 scan，文件路径写法照样能用
+    t = Path(tempfile.mkdtemp(prefix="cs-runs-"))
+    _TMP.append(t)
+    bare = t / "repo"
+    shutil.copytree(FAKE, bare)
+    r = trace_offline(bare, "bare", "--phase", "g=fakesvc.offline:Engine.generate", check=False)
+    assert r.returncode != 0 and "scan" in r.stdout + r.stderr
+    trace_offline(bare, "bare", "--phase", "g=fakesvc/offline.py:Engine.generate")
+    run, _, _ = latest(bare)
+    assert [p[0] for p in run["phase_log"]] == ["start", "g"], run["phase_log"]
+
+
+def test_rerun_command_reproduces():
+    """run 里存了原样的命令和当时的目录：runs show 打印的复刻命令照抄就能再录一次（同样的阶段）；
+    UI 的元数据里也有。录制时 shell 里相关的环境变量另存（像密钥的不存，--env 写明的不重复）。"""
+    repo = fresh()
+    trace_offline(repo, "rr", "--events", "--phase", "generate=fakesvc.offline:Engine.generate",
+                  "--env", "CUDA_VISIBLE_DEVICES=0",
+                  env={"VLLM_FAKE_KNOB": "7", "HF_TOKEN": "hf_secret", "MY_API_KEY": "x", "CUDA_VISIBLE_DEVICES": "5"})
+    run, _, rd = latest(repo)
+    inv = run["invocation"]
+    assert inv["argv"][:3] == [PY, "-m", "codestrata"] and inv["cwd"] == str(HERE.parent), inv
+    ei = run["env_inherited"]
+    assert ei.get("VLLM_FAKE_KNOB") == "7" and "HF_TOKEN" not in ei and "MY_API_KEY" not in ei, ei
+    assert "CUDA_VISIBLE_DEVICES" not in ei, ei                  # --env 已经写明了
+    show = cs("runs", repo, "show", run["id"]).stdout
+    line = next(ln for ln in show.splitlines() if ln.strip().startswith("复刻"))
+    cmd = line.split("复刻", 1)[1].strip()
+    assert cmd.startswith("cd ") and "--phase generate=fakesvc.offline:Engine.generate" in cmd, cmd
+    assert "VLLM_FAKE_KNOB=7" in show and "hf_secret" not in show, show
+    idx = payload.load_index(repo)
+    _, meta = payload.load_hot(repo, idx, run["id"])
+    assert meta["rerun"] == cmd and meta["rerun_exact"] is True, meta["rerun"]
+    assert meta["rerun_env"].startswith("cd ") and "env " in meta["rerun_env"] and "VLLM_FAKE_KNOB=7" in meta["rerun_env"]
+    assert [t["name"] for t in meta["phase_at"]] == ["generate"] and meta["phase_log"][1][0] == "generate"
+    brief = payload._meta_brief(meta)
+    assert brief["rerun"] == cmd and brief["phase_at"] and brief["env_inherited"]
+    # 照抄复刻命令（从别的目录起的 shell 里）：又录出一个同 case、同样分段的 run
+    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=180, cwd="/")
+    assert r.returncode == 0, r.stdout + r.stderr
+    run2, _, rd2 = latest(repo)
+    assert rd2 != rd and run2["case"] == "rr" and run2["rec"]["events"] is True
+    assert [p[0] for p in run2["phase_log"]] == ["start", "generate"], run2["phase_log"]
+    assert run2["env"] == {"CUDA_VISIBLE_DEVICES": "0"}, run2["env"]
+
+
+def test_rerun_command_legacy():
+    """老 run 没存原始命令：按 run 里的参数拼（仓库写绝对路径，--phase / --events / --roots 都带上），
+    并注明是拼的。"""
+    repo = fresh()
+    trace_offline(repo, "old", "--events", "--roots", "fakesvc", "--phase", "g=fakesvc/offline.py:Engine.generate",
+                  "--timeout", "60", "--attach", "fake_service.sh")
+    run, _, rd = latest(repo)
+    run.pop("invocation")
+    run.pop("env_inherited")
+    (rd / "run.json").write_text(json.dumps(run))
+    cmd = runs.rerun_command(run, Path("relative/somewhere"))
+    assert cmd.startswith("codestrata trace " + str(repo.resolve()) + " --case=old"), cmd
+    for x in ("--events", "--phase=g=fakesvc/offline.py:Engine.generate", "--roots fakesvc", "--timeout=60",
+              f"--attach={repo.resolve() / 'fake_service.sh'}", f"-- {PY} -m fakesvc.offline"):
+        assert x in cmd, (x, cmd)
+    show = cs("runs", repo, "show", run["id"]).stdout
+    assert "按 run 里存的参数拼的" in show, show
+    _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
+    assert meta["rerun_exact"] is False and meta["rerun_env"] is None
+    # 拼出来的那条给网页时也整条隐去：case 命令里的 --api-key 值、--env 里像密钥的值
+    old = {**run, "cmd": [PY, "-m", "fakesvc.offline", "--api-key", "sk-555"], "env": {"HF_TOKEN": "hf_x"}}
+    red = runs.rerun_command(old, repo, redact=True)
+    assert "sk-555" not in red and "hf_x" not in red and red.count("<已隐去>") == 2, red
+    assert "sk-555" in runs.rerun_command(old, repo)
+
+
+def test_phase_at_race():
+    """两个进程同时第一次进触发函数：没抢到标记的那个也跟着切（它这次调用算进新阶段）；
+    4 个线程同时进：切阶段的那 0.1 s 里别的线程的调用不丢、也不算进旧阶段；
+    fork 出来的子进程以 os._exit 结束，拍在内存里的快照也写出去了。"""
+    repo = fresh()
+    cs("trace", repo, "--case", "race", "--phase", "gen=fakesvc/work.py:compute",
+       "--phase", "load=fakesvc/work.py:load_weight", "--", PY, "-m", "fakesvc.race")
+    run, _, rd = latest(repo)
+    pc = phase_counts(rd)
+    assert pc["gen"].get("fakesvc/work.py:compute") == 2, pc
+    assert "fakesvc/work.py:compute" not in pc["start"], pc
+    assert pc["load"].get("fakesvc/work.py:load_weight") == 4, pc
+    assert all("fakesvc/work.py:load_weight" not in pc[p] for p in ("start", "gen")), pc
+    assert [e[0] for e in run["phase_log"]] == ["start", "gen", "load"], run["phase_log"]
+
+
+def test_phase_log_from_markers():
+    """两个阶段隔了不到 driver 一次轮询（0.1 s）也都在 phase_log 里、时刻精确、来源是 hook；
+    driver 死了之后 runs merge 也能从包里的标记把 phase_log 补回来；嵌套函数用 模块:outer.inner
+    （索引里的名字）也认得出 .<locals>.。"""
+    repo = fresh()
+    r = trace_offline(repo, "fast", "--phase", "init=fakesvc.offline:Engine.__init__",
+                      "--phase", "load=fakesvc.work:init_model", "--phase", "nest=fakesvc.offline:make_hook.hooked")
+    assert "make_hook.<locals>.hooked" in r.stderr, r.stderr
+    run, _, rd = latest(repo)
+    log = run["phase_log"]
+    assert [e[0] for e in log] == ["start", "init", "load", "nest"], log
+    assert [e[2] for e in log] == ["start", "hook", "hook", "hook"], log
+    assert log[1][1] < log[2][1] < log[3][1], log
+    with tarfile.open(rd / "parts.tar.gz") as tf:
+        marks = {m.name: tf.extractfile(m).read().decode().split() for m in tf.getmembers() if m.name.endswith(".fired")}
+    assert log[1][1] == (int(marks["PHASE-init.fired"][2]) - run["clock"]["mono0_ns"]) // 1000, (log, marks)
+    # 模拟 driver 死在收尾之前：phase_log 没了，runs merge 从标记补回来
+    run.pop("phase_log")
+    (rd / "run.json").write_text(json.dumps(run))
+    cs("runs", repo, "merge", run["id"])
+    run2 = json.loads((rd / "run.json").read_text())
+    assert [e[0] for e in run2["phase_log"]] == ["start", "init", "load", "nest"], run2["phase_log"]
+    assert [p["name"] for p in run2["phases"]] == ["start", "init", "load", "nest"], run2["phases"]
+    # 写成解释器里的名字也行
+    trace_offline(repo, "fast2", "--phase", "nest=fakesvc.offline:make_hook.<locals>.hooked")
+    run3, _, _ = latest(repo)
+    assert [e[0] for e in run3["phase_log"]] == ["start", "nest"], run3["phase_log"]
+
+
+def test_merge_recovers_sh_phase_times():
+    """driver 死在收尾之前（run.json 里没有轮询记下的 phase_log）：runs merge 靠 driver 替 case 脚本
+    建的标记把 serving / shutdown 的时刻补回来，不止 --phase 切的。"""
+    repo = fresh()
+    trace_fake(repo, "shrec")
+    run, _, rd = latest(repo)
+    want = [e[0] for e in run["phase_log"]]
+    assert want == ["start", "serving", "shutdown"], run["phase_log"]
+    run.pop("phase_log")
+    (rd / "run.json").write_text(json.dumps(run))
+    cs("runs", repo, "merge", run["id"])
+    run2 = json.loads((rd / "run.json").read_text())
+    assert [e[0] for e in run2["phase_log"]] == want, run2["phase_log"]
+    assert all(e[1] is not None for e in run2["phase_log"]) and run2["phase_log"][1][2] == "sh", run2["phase_log"]
+    assert [p["t_us"] is not None for p in run2["phases"]] == [True, True, True], run2["phases"]
+
+
+def test_phase_at_same_target_and_sh_name():
+    """两个 --phase 指到同一个函数（子类继承来的是同一份代码）直接报错；case 脚本写的阶段和
+    --phase 同名：标成 case 脚本切的、提醒同名的 --phase 没起作用，driver 替它建了标记。"""
+    repo = fresh()
+    r = trace_offline(repo, "dup", "--phase", "a=fakesvc.offline:Engine.close",
+                      "--phase", "b=fakesvc.offline:BaseEngine.close", check=False)
+    assert r.returncode != 0 and "指向同一个函数" in r.stdout + r.stderr, r.stdout + r.stderr
+    r = trace_fake(repo, "shname", "--phase", "serving=fakesvc/work.py:handle")
+    assert "同名的 --phase 没起作用" in r.stdout and "serving" in r.stdout, r.stdout
+    run, _, rd = latest(repo)
+    src = {e[0]: e[2] for e in run["phase_log"]}
+    assert src.get("serving") == "sh", run["phase_log"]
+    with tarfile.open(rd / "parts.tar.gz") as tf:
+        assert tf.extractfile("PHASE-serving.fired").read().decode().startswith("sh "), "driver 替 case 脚本建的标记"
+
+
+def test_qualnames_and_mro():
+    """文件路径写法按编译器的规则得 co_qualname（match / async for / try-except* 里的 def、global
+    声明过的嵌套 def）；继承的方法按 C3 MRO 找，Base[T] 去下标，MRO 里先碰到仓库外的基类就不猜。"""
+    t = Path(tempfile.mkdtemp(prefix="cs-runs-"))
+    _TMP.append(t)
+    src = (
+        "import sys\n"
+        "match sys.platform:\n"
+        "    case 'linux':\n"
+        "        def in_match(): pass\n"
+        "    case _:\n"
+        "        def in_match(): pass\n"
+        "async def agen():\n"
+        "    async for x in y:\n"
+        "        def in_afor(): pass\n"
+        "try:\n"
+        "    pass\n"
+        "except* ValueError:\n"
+        "    def in_star(): pass\n"
+        "def g_outer():\n"
+        "    global gdecl\n"
+        "    def gdecl(): pass\n"
+        "    def plain(): pass\n"
+        "class K:\n"
+        "    def m(self):\n"
+        "        class Inner:\n"
+        "            def im(self): pass\n"
+    )
+    (t / "x.py").write_text(src)
+    qs = trace._qualnames(t / "x.py")
+    ns = {}
+    exec(compile(src.replace("async for x in y", "async for x in []"), str(t / "x.py"), "exec"), ns)
+    real = {ns["in_match"].__code__.co_qualname, ns["gdecl"].__code__.co_qualname} if "gdecl" in ns else set()
+    for q in ("in_match", "agen.<locals>.in_afor", "in_star", "gdecl", "g_outer.<locals>.plain",
+              "K.m.<locals>.Inner.im"):
+        assert q in qs, (q, sorted(qs))
+    assert "g_outer.<locals>.gdecl" not in qs, sorted(qs)
+    ns["g_outer"]()
+    assert ns["gdecl"].__code__.co_qualname == "gdecl"                    # 和解释器对得上
+    C = lambda n, bases=(), **kw: {"k": "class", "n": n, "f": "m.py", "l": 1, "b": list(bases), **kw}
+    F = lambda n: {"k": "func", "n": n, "f": "m.py", "l": 2}
+    sy = {"m:Core": C("Core"), "m:Core.close": F("Core.close"), "m:Mixin": C("Mixin"), "m:Mixin.close": F("Mixin.close"),
+          "m:BaseEngine": C("BaseEngine", ["Core"]), "m:Engine": C("Engine", ["BaseEngine", "Mixin"]),
+          "m:GBase": C("GBase", ["Generic[T]"]), "m:GBase.generate": F("GBase.generate"),
+          "m:GEngine": C("GEngine", ["GBase[int]"]),
+          "m:Ext1": C("Ext1", ["torch.nn.Module", "Core"]), "m:Ext2": C("Ext2", ["Core", "torch.nn.Module"])}
+    s, via = trace._inherited(sy, "m", "Engine.close")
+    assert via == "m:Core.close", via                                   # MRO：Engine, BaseEngine, Core, Mixin
+    s, via = trace._inherited(sy, "m", "GEngine.generate")
+    assert via == "m:GBase.generate", via
+    s, _ = trace._inherited(sy, "m", "Ext1.close")
+    assert isinstance(s, str) and "Module" in s, s                       # 先碰到仓库外的基类：不猜
+    s, via = trace._inherited(sy, "m", "Ext2.close")
+    assert via == "m:Core.close", via
+
+
+def test_phase_at_py310_fallback():
+    """没有 co_qualname 的 Python 3.10：按 co_firstlineno + 短名字认。默认参数里的生成器表达式和
+    函数在同一行、import 时就跑，不能当成它。（机器上没有 3.10 就跳过）"""
+    py310 = next((p for p in [os.path.expanduser("~/miniconda3/envs/ttt/bin/python"), shutil.which("python3.10")]
+                  if p and os.path.exists(p)), None)
+    if not py310:
+        print("    （没有 Python 3.10，跳过）")
+        return
+    repo = fresh()
+    cs("trace", repo, "--case", "p310", "--phase", "t=fakesvc/py310.py:target", "--", py310, "-m", "fakesvc.py310")
+    run, _, rd = latest(repo)
+    c = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
+    lines = (repo / "fakesvc/py310.py").read_text().splitlines()
+    main_l = next(i for i, ln in enumerate(lines, 1) if ln.startswith("def main"))
+    tgt_l = next(i for i, ln in enumerate(lines, 1) if ln.startswith("def target"))
+    assert [e[0] for e in run["phase_log"]] == ["start", "t"], run["phase_log"]
+    # 键「文件:首行」上生成器表达式（import 时）在 start、target 那一次在 t；main 在 start
+    assert c["t"]["funcs"].get(f"fakesvc/py310.py:{tgt_l}") == 1, c
+    assert c["start"]["funcs"].get(f"fakesvc/py310.py:{tgt_l}", 0) >= 1, c
+    assert f"fakesvc/py310.py:{main_l}" in c["start"]["funcs"], c
+
+
+def test_phase_at_same_line_genexpr():
+    """同一行上的生成器表达式先占了「文件:首行」这个键（3.12 也会）：target 真被调用时照样切。"""
+    repo = fresh()
+    cs("trace", repo, "--case", "gx", "--phase", "t=fakesvc/py310.py:target", "--", PY, "-m", "fakesvc.py310")
+    run, _, _ = latest(repo)
+    assert [e[0] for e in run["phase_log"]] == ["start", "t"], run["phase_log"]
+
+
+def test_fire_does_not_dump_on_traced_thread():
+    """_fire 在被 trace 的程序的线程里跑：不能在那里落盘（_dump 会吞掉程序的信号处理器抛的
+    KeyboardInterrupt / SystemExit），只拍内存快照、交给落盘线程写。"""
+    src = trace._SITECUSTOMIZE
+    body = src[src.index("    def _fire(name):"):src.index("    _py = []")]
+    assert "_dump(" not in body and "_want_dump[0] = True" in body and "defer=True" in body, body
+
+
+def test_rerun_secrets_and_bytes():
+    """网页 / 导出里的复刻命令：--env 里像密钥的值、URL 里的账号密码隐去，runs show 给完整的；
+    TOKENIZERS_* 这种不是密钥；shell 里继承来的 CODESTRATA_EV_MAX 补进命令；不是 UTF-8 的参数
+    写成 $'…'，bash 还原出原来的字节。"""
+    repo = fresh()
+    trace_offline(repo, "sec", "--events", "--env", "HF_TOKEN=hf_secret123",
+                  "--env", "HF_ENDPOINT=https://me:pw9@mirror.example/x",
+                  env={"CODESTRATA_EV_MAX": "500", "TOKENIZERS_PARALLELISM": "false", "VLLM_API_KEY": "k"})
+    run, _, rd = latest(repo)
+    assert run["env_inherited"].get("TOKENIZERS_PARALLELISM") == "false" and "VLLM_API_KEY" not in run["env_inherited"]
+    _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
+    for k in ("rerun", "rerun_env"):
+        assert "hf_secret123" not in meta[k] and "pw9" not in meta[k] and "<已隐去>" in meta[k], meta[k]
+    assert "--env=CODESTRATA_EV_MAX=500" in meta["rerun"] and meta["rerun_redacted"] is True, meta["rerun"]
+    show = cs("runs", repo, "show", run["id"]).stdout
+    assert "hf_secret123" in show and "CODESTRATA_EV_MAX=500" in show, show
+    out = rd.parent.parent / "sec-export.html"
+    cs("graph", repo, "--hot", run["id"], "--out", out)
+    html = out.read_text()
+    assert "hf_secret123" not in html and "pw9" not in html and "&lt;已隐去&gt;" in html or "<已隐去>" in html
+    # 网页 / 导出里显示的 case 命令、进程命令行：--api-key 的值、URL 里的密码也隐去（runs show 给完整的）
+    cs("trace", repo, "--case", "sec2", "--", PY, "-m", "fakesvc.offline", "--api-key", "sk-999", "--hf-token=tok-888", "https://u:pw7@h.example/")
+    run, _, rd = latest(repo)
+    _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
+    shown = json.dumps([meta["cmd"], meta["procs"], meta["rerun"]], ensure_ascii=False)
+    assert "sk-999" not in shown and "tok-888" not in shown and "pw7" not in shown and "<已隐去>" in shown, shown
+    assert "sk-999" in cs("runs", repo, "show", run["id"]).stdout
+    out2 = rd.parent.parent / "sec2-export.html"
+    cs("graph", repo, "--hot", run["id"], "--out", out2)
+    assert "sk-999" not in out2.read_text() and "pw7" not in out2.read_text()
+    # 时序图（serve 页面）上的进程命令行也隐去；--no-auth 这种后面紧跟选项的是开关，不吃掉下一个选项
+    from codestrata import seq
+    cs("trace", repo, "--case", "sec3", "--events", "--", PY, "-m", "fakesvc.offline", "--api-key", "sk-777")
+    run, det, rd = latest(repo)
+    sq = seq.build(repo, payload.load_index(repo), rd, run, det)
+    shown = json.dumps(sq["procs"], ensure_ascii=False)
+    assert sq["procs"] and "sk-777" not in shown and "<已隐去>" in shown, shown
+    assert runs._redact_argv(["x", "--no-auth", "--port", "80", "--api-key", "k"]) == \
+        ["x", "--no-auth", "--port", "80", "--api-key", "<已隐去>"]
+    # 不是 UTF-8 的参数
+    fake = {"case": "x", "invocation": {"argv": ["codestrata", "trace", ".", "--", "echo", "caf\udce9"], "cwd": "/tmp"}}
+    cmd = runs.rerun_command(fake, repo)
+    assert "$'caf\\xe9'" in cmd, cmd
+    r = subprocess.run(["bash", "-c", cmd.split("&& ", 1)[1].replace("codestrata trace . -- ", "")],
+                       capture_output=True, timeout=10)
+    assert r.stdout == b"caf\xe9\n", r.stdout
+
+
 def test_manage():
     """tag / untag / note / rm；.codestrata 带 .gitignore 和 README.txt。"""
     repo = fresh()
@@ -498,7 +876,7 @@ def test_legacy_unicode_case():
 
 def test_single_phase_and_extras():
     """没写 PHASE 的 run：meta.phases 为空（前端不说「分了阶段」）；大的 --attach 也存；
-    非 UTF-8 的参数不崩；超长 argv 标 argv_cut；重录命令带上 --timeout 和 --attach。"""
+    非 UTF-8 的参数不崩；超长 argv 标 argv_cut；复刻命令（原样的）带上 --timeout 和 --attach。"""
     repo = fresh()
     big = repo / "big.yaml"
     big.write_text("x: " + "a" * 300_000 + "\n")
@@ -513,7 +891,8 @@ def test_single_phase_and_extras():
     _, meta = payload.load_hot(repo, idx, "one")
     assert meta["phases"] == {}, meta["phases"]
     r = cs("runs", repo, "show", "one")
-    assert "--timeout=60" in r.stdout and "--attach=" in r.stdout, r.stdout
+    line = next(ln for ln in r.stdout.splitlines() if ln.strip().startswith("复刻"))
+    assert "--timeout 60" in line and "--attach big.yaml" in line and " cd " in " " + line, line
 
 
 def test_nonexistent_repo():

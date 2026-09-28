@@ -507,6 +507,17 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .procs .pn{white-space:nowrap;color:var(--muted);width:3em;text-align:right}
 .procs .pf{white-space:nowrap;color:var(--hot);text-align:right}
 .procs tr.idle code,.procs tr.idle .pf{color:var(--faint)}
+.rerun{margin:2px 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.rerun.flash{animation:rerunflash 1.4s ease-out}
+@keyframes rerunflash{0%{border-color:var(--sel);box-shadow:0 0 0 3px var(--sel-bg)}100%{border-color:var(--line);box-shadow:none}}
+.rerun-h{display:flex;align-items:center;gap:8px;margin:0 0 4px}
+.rerun-h .copy{padding:3px 9px}
+.rerun pre{margin:0;padding:8px 10px;background:var(--sunk);border-radius:6px;max-height:220px;overflow:auto;
+  font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--ink)}
+.rerun .warn{color:var(--stale);margin-top:4px}
+.envinh{margin-top:6px}
+.envinh summary{cursor:pointer;margin:2px 0 4px}
+.phases td:first-child{white-space:nowrap}
 .script summary{cursor:pointer;margin:4px 0}
 .script pre{margin:6px 0 0;max-height:320px;overflow:auto;padding:10px;background:var(--sunk);border-radius:8px;
   font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}

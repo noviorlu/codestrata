@@ -696,6 +696,71 @@ T                                        达到上限，之后不再记（计数
   - 导出两个 run 的 HTML 不超过 16 MB，离线能打开，能切换 run；
   - 在明暗两种主题下核对配色。
 
+### M8　按函数切阶段 + 复刻命令（计划外，2026-09-28 用户提出）　✅ 已完成
+
+起因：第一次录真 GPU 的离线示例（`examples/offline_inference/minicpmo/run_single_prompt.sh`，一条阻塞的
+python 命令）只有一个 start 阶段——shell 看不到加载什么时候完，没法写 PHASE。事件数据显示 74 s 里
+`Omni(...)` 占 60.5 s、`generate` 只有 1.84 s，而且启动和推理跑到的函数几乎不重叠（跨文件被调方只在
+启动 215 个、只在推理 202 个、共有 23 个），混成一段就分不清。用户要求：分段写在 codestrata 的命令上，
+不改 sh；录 runtime 时把执行的命令存进 UI，让人能复刻。
+
+- **`trace --phase 名字=函数`**：hook 在某个进程第一次进入这个函数时（`_enter` 里第一次见到这个键的分支，
+  热路径零开销）切阶段。按 (文件, co_qualname) 认，没有 co_qualname 的退回行号。
+  - 每个阶段整个 run 只切一次：`parts/PHASE-<名字>.fired` 用 O_EXCL 建，建不成就是别的进程已经切过——
+    后来才第一次进这个函数的进程不会把阶段切回去。顺序按实际发生，和命令行里写的先后无关。
+  - 切的那一刻：原子地写 PHASE（第一行名字、第二行 monotonic_ns）、给旧阶段拍快照、落一次盘，然后触发的
+    线程停 0.1 s。别的进程的落盘线程改成每 50 ms stat 一次 PHASE（变了才读，另外每秒兜底读一次），
+    所以停这 0.1 s 足够它们先切过去——工作进程在 generate 期间干的活都算进 generate（测试
+    `test_phase_at` 盯着这一条；去掉停顿或把轮询改回 1 s 都会失败）。
+  - driver 用 PHASE 第二行的时刻记 phase_log，比它 0.1 s 一次的轮询准；case 脚本 echo 进来的只有一行，
+    按看到的时刻记。两种办法可以一起用。
+  - 函数的写法：`模块:qualname` 查静态索引（类上没有的方法顺着基类找，基类名在索引里唯一才认）；
+    `文件路径:qualname` 用 ast 按解释器的规则（`.<locals>.`）核对，不在索引里的文件（examples/）也能用。
+    解析在建 run 之前做，写错了立刻报、给出同名的候选，不等模型加载完。没切到的阶段录完后报出来。
+- **复刻命令**：`main()` 把原样的 argv（装好的入口脚本取绝对路径；`python -m codestrata` 记成解释器 + -m）
+  和当前目录记成 run.json 的 `invocation`；`cmd_trace` 另记 `env_inherited`（CUDA_* / VLLM_* / PYTORCH_* /
+  HF_* / PATH / VIRTUAL_ENV…白名单，名字含 TOKEN/KEY/SECRET/PASS/CRED/AUTH 的不记，`--env` 写明的不重复）。
+  `runs.rerun_command` 优先 `cd <目录> && <原样命令>`，`with_env=True` 前面加 `env K=V…`；老 run 按参数拼
+  （仓库写绝对路径，带上 --events / --phase / --roots）。`runs show` 打印「复刻」；meta 带
+  `rerun / rerun_exact / rerun_env / env_inherited / phase_at / phase_log`（导出的其它 run 也带）。
+- **界面**：run 按钮旁边的「复刻」打开帮助并滚到复刻那一块；「这次跑了什么」最上面是命令 + 复制
+  （Clipboard API，不行就退回 execCommand）、继承的环境（可连环境一起复制）、阶段表（每段的起始时刻、
+  是第一次进入哪个函数切的还是 case 脚本写的、没切到的）；阶段 chip 的提示写明从哪个函数开始。
+- **评审后补上的**（对抗式评审确认 19 条，全部修了、各带回归测试，变异检查 15 处都抓得到）：
+  - phase_log 不再只靠 driver 0.1 s 一次的轮询：收尾时（stop_leftovers 之后）和 `runs merge` 都读
+    `PHASE-*.fired` 标记（内容「hook pid monotonic_ns」），hook 切的阶段用标记里的精确时刻，轮询整个
+    错过的（两段隔不到 0.1 s、残留进程在被停的路上才切、driver 死了）也补上。每条是 `[名字, t_us, 来源]`，
+    来源 start / hook / sh；「没切到」按有没有 hook 条目判断，不再按阶段名。
+  - 赢家先写好临时 PHASE、再 O_EXCL 建标记、再把 PHASE 换过去；没抢到的（别的进程 / 线程同时进来）
+    等 PHASE 变成这一段（最多约 2 ms）就跟着切，自己这次调用算进新阶段；已经切到后面的不跟。
+  - `_fire` 在被 trace 的线程上只拍内存快照（`_pending`），写快照和落盘交给落盘线程——在程序的线程里
+    json.dump 时它的信号处理器可能抛 KeyboardInterrupt，`_dump` 会吞掉重来，Ctrl+C 就丢了。`_fire`
+    之后重读一次计数（停顿的 0.1 s 里别的线程的调用不能被旧值盖掉）。
+  - 键「文件:首行」可能先被同一行上的生成器表达式 / lambda 占了（默认参数、装饰器参数）：那之后这个键
+    每次调用都再认一下（`_trig_watch`，平常是空的）。3.10 没有 co_qualname：只按真正的 co_firstlineno
+    （装饰器行）认，并且短名字要对得上。
+  - 模块写法：嵌套函数在索引里是 `outer.inner`，换成解释器里的 `outer.<locals>.inner`（也接受直接写
+    `.<locals>.`）；继承的方法按 C3 MRO 找，`Base[T]` 去下标，MRO 里先碰到仓库外的基类就报错不猜；
+    两个阶段指到同一个函数（子类继承的是同一份代码）直接报错。文件路径写法和 scan 下潜同一批语句
+    （match / async for / try-except*），外层函数里 `global` 声明过的嵌套 def 不带前缀；同名的取最后一个
+    （@overload 的空壳在前）。
+  - case 脚本写的阶段 driver 替它建标记（内容 sh 开头）：同名的 --phase 之后不会把各进程切回去；
+    CLI 和网页都标明「case 脚本写的、同名的 --phase 没起作用」。
+  - 复刻命令：网页和导出里 `--env` 像密钥的值、URL 里的账号密码写成 `<已隐去>`（`runs show` 给完整的，
+    网页上注明）；密钥名按 `_` 分段匹配（TOKENIZERS_PARALLELISM 不是密钥）；从 shell 继承来、codestrata
+    自己加进 run 的 CODESTRATA_EV_MAX 补成 `--env`；不是 UTF-8 的参数写成 `$'…'`。
+  - 前端的查找表用 `Object.create(null)`（阶段名可能叫 constructor / toString）。
+- **解读核对时又发现、一并修了的**：driver 死在收尾之前的 run，`runs merge` 连 case 脚本切的阶段时刻也从
+  driver 替它建的标记（「sh pid monotonic_ns」，每个名字第一次的时刻）补回来；网页 / 导出里的「case 命令」和
+  进程表也隐去密钥（`--api-key X`、`--hf-token=X` 这种选项名按同一套规则认，URL 里的账号密码），`runs show`
+  照旧给完整的；「同名的 --phase 没起作用」网页和 CLI 用同一个条件（这个名字没有 hook 条目）。时序图上的进程
+  命令行同样隐去；名字像密钥、后面紧跟着 - 开头参数的（`--no-auth --port 80`）当开关，不吃掉下一个选项；
+  老 run 按参数拼的复刻命令给网页时也整条隐去（case 命令里的 `--api-key X` 不再漏出来）。
+- **验收**：CPU 假 case `fakesvc/offline.py`（主进程加载 → generate 交给 fork 的工作进程 → 继承来的 close）
+  、`fakesvc/race.py`（两个进程 / 4 个线程同时第一次进触发函数）、`fakesvc/py310.py`（同一行上的生成器
+  表达式；另用 Python 3.10 跑一遍）共 16 个新测试 + 两轮变异检查；浏览器 `rerun.mjs`（复刻按钮、复制内容、环境、阶段表、老 run、390 px、导出的单文件）；
+  复刻命令照抄在别的目录执行能再录出同样分段的 run（`test_rerun_command_reproduces`）。
+
 **合计约 11 天。**
 - M1 做完：「今天 MiniCPM、明天 Qwen，两份都留着」就成立了，而且都能用 `--hot` 选（换 run 要重启 serve）。
 - M3 做完：之后录的每个 run 都自带时序数据。

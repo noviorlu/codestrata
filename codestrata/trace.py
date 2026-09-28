@@ -21,7 +21,9 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
    「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
 
 4. **启动和请求要分开。** 起一个服务再发请求时，启动阶段的初始化会淹没请求本身。
-   case 可以分阶段：往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后写 serving），
+   两种分阶段的办法，可以一起用：case 脚本往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后
+   写 serving）；或者 `trace --phase 名字=函数`，哪个进程第一次进入这个函数就在那一刻切过去
+   （离线脚本只有一条阻塞的 python 命令，shell 看不到加载什么时候完，只能这样切）。
    之后用 `--hot 名字@serving` 只看那一段。
 
 5. **停要停干净。** 服务类的 case 会 setsid 起服务；超时或 Ctrl+C 时直接 SIGKILL 命令，
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -212,6 +215,10 @@ if _root and _out:
                 q = getattr(code, "co_qualname", None)      # 3.10 没有：不记（拿短名字去对会对到同名的别的函数上）
                 if q:
                     _names[k] = q
+                if _trig_q:                                 # 在计数之前切：触发的这次调用算进新阶段
+                    n = _trig_check(code, rel, q, k, n)
+            elif _trig_watch and k in _trig_watch:
+                n = _trig_check(code, rel, getattr(code, "co_qualname", None), k, n)
             _funcs[k] = n + 1
             if st and st[-1] != k:                 # 递归自调用不算边
                 ek = st[-1] + "|" + k
@@ -230,6 +237,24 @@ if _root and _out:
             del st[:1000]
         return True
 
+    def _trig_check(code, rel, q, k, n):
+        # 是不是 --phase 的函数：是就切阶段，返回切完之后的计数（停顿的那 0.1 s 里别的线程可能也调过
+        # 它，不能拿旧值盖掉）。键是「文件:首行」，同一行上别的代码对象（默认参数里的生成器表达式、
+        # 装饰器参数里的 lambda）可能先占了这个键——那之后这个键每次调用都再认一下（_trig_watch；
+        # 平常是空的，热路径上只多一次空集合的判断）
+        if q:
+            t = _trig_q.get((rel, q))
+        else:
+            t = _trig_l.get((rel, code.co_firstlineno))
+            t = t[0] if t and code.co_name == t[1] else None
+        if t is None:
+            if (rel, code.co_firstlineno) in _trig_l:
+                _trig_watch.add(k)
+            return n
+        _trig_watch.discard(k)
+        _fire(t)
+        return _funcs.get(k, 0)
+
     def _leave(code, tag="R"):
         rel = _rel(code)
         if rel is None:
@@ -247,17 +272,33 @@ if _root and _out:
         return True
 
     # 阶段：被 trace 的命令往 $CODESTRATA_OUT/PHASE 写一个名字（比如服务就绪后写 serving），
-    # 每个进程在 1 秒内看到它，就给切换前的累计计数拍一张快照。合并时相邻快照相减，
-    # 就能把「启动时调了什么」和「处理请求时调了什么」分开。
+    # 每个进程在 50 ms 内看到它，就给切换前的累计计数拍一张快照。合并时相邻快照相减，
+    # 就能把「启动时调了什么」和「处理请求时调了什么」分开。文件只认第一行；hook 自己切的
+    # （--phase）第二行是切换那一刻的 monotonic_ns，driver 拿它记阶段的时刻
     _phase_file = os.path.join(_out, "PHASE")
     _stop_file = os.path.join(_out, "STOP")
     def _read_phase():
         try:
             with open(_phase_file) as f:
-                return f.read().strip() or "start"
+                return f.readline().strip() or "start"
         except OSError:
             return "start"
     _phase = [_read_phase()]
+    _POLL = 0.05             # 落盘线程多久看一次 PHASE
+    _PAUSE = 0.1             # --phase 切换之后触发的线程停这么久：别的进程（每 _POLL 看一次）先切过去
+
+    # --phase 名字=函数：[[名字, rel, qualname, 行号, 装饰器行号], ...]。某个进程第一次进入这个
+    # 函数时切到这个阶段。按 qualname 认（录制时的安装包和仓库行号对不上也认得出）；没有
+    # co_qualname 的 3.10 退回按 co_firstlineno——它是第一个装饰器的行（没装饰器就是 def 行），
+    # 只登记这一行，并且短名字要对得上：同一行上默认参数里的生成器表达式、第 1 行的模块代码
+    # （co_firstlineno 也是 1）都不算
+    _trig_q, _trig_l, _trig_watch = {}, {}, set()
+    try:
+        for _t in json.loads(os.environ.get("CODESTRATA_PHASE_AT") or "[]"):
+            _trig_q[(_t[1], _t[2])] = _t[0]
+            _trig_l[(_t[1], _t[4] or _t[3])] = (_t[0], _t[2].rsplit(".", 1)[-1])
+    except (ValueError, TypeError, IndexError, AttributeError):
+        _trig_q, _trig_l = {}, {}
     _snaps = []
     # 进程（准确说是这个进程映像）起始的时刻。分片按 pid + 它命名：exec 之后同一个 pid 换了
     # 程序，新程序写新文件，不会覆盖 exec 之前的数据
@@ -310,10 +351,79 @@ if _root and _out:
             except Exception:
                 pass
 
-    def _snapshot(name):
-        _write("%s@%d-%s.json" % (_base(), len(_snaps), name),
-               {"funcs": dict(_funcs), "func_edges": dict(_fedges)})
+    # 切阶段时拍下、还没写出去的快照 [(文件名, 数据)]：_fire 在被 trace 的线程里只拍（dict 拷贝，
+    # 不跑 Python 字节码），写文件交给落盘线程——被 trace 的程序的信号处理器可能在 json.dump 中途
+    # 抛 KeyboardInterrupt，不能在它的线程里写（更不能像 _dump 那样吞掉重来）
+    _pending = []
+    _want_dump = [False]
+
+    def _flush_pending():
+        # 调用方拿着 _lock
+        while _pending:
+            _write(*_pending[0])
+            del _pending[0]
+
+    def _snapshot(name, defer=False):
+        d = ("%s@%d-%s.json" % (_base(), len(_snaps), name), {"funcs": dict(_funcs), "func_edges": dict(_fedges)})
         _snaps.append(name)
+        if defer:
+            _pending.append(d)
+        else:
+            _flush_pending()
+            _write(*d)
+
+    def _fire(name):
+        # 每个阶段整个 run 只切一次。先把新的 PHASE 写进临时文件，再 O_EXCL 建标记：建成的（赢家）
+        # 把 PHASE 换过去；建不成的是别的进程 / 线程刚切了这个阶段（或 case 脚本写过同名的阶段，
+        # driver 替它建了标记）——PHASE 已经是它就跟着切，自己这次触发的调用也算进新阶段；已经切到
+        # 后面去了的不跟，不会被切回去。只在内存里拍快照，落盘交给落盘线程（见 _pending）
+        t = time.monotonic_ns()
+        tmp = "%s.%d.%d.tmp" % (_phase_file, os.getpid(), threading.get_ident())
+        try:
+            with open(tmp, "w") as f:
+                f.write("%s\\n%d\\n" % (name, t))
+        except OSError:
+            return                                   # parts/ 没了：录制已经收尾
+        try:
+            fd = os.open(os.path.join(_out, "PHASE-%s.fired" % name), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            won = True
+        except FileExistsError:
+            won = False
+        except OSError:
+            fd, won = None, None
+        if won:
+            try:
+                os.replace(tmp, _phase_file)
+            except OSError:
+                pass
+            try:
+                os.write(fd, ("hook %d %d\\n" % (os.getpid(), t)).encode())
+                os.close(fd)
+            except OSError:
+                pass
+        else:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            if won is None:
+                return
+            for _ in range(20):                      # 赢家在「建标记」和「换 PHASE」之间：最多等它约 2 ms
+                if _read_phase() == name:
+                    break
+                time.sleep(0.0001)
+            else:
+                return
+        switched = False
+        with _lock[0]:
+            if not _final[0] and _phase[0] != name:
+                _snapshot(_phase[0], defer=True)
+                _phase[0] = name
+                switched = True
+        if switched:
+            _want_dump[0] = True
+        if won:
+            time.sleep(_PAUSE)
 
     _py = []
     def _pyinfo():
@@ -364,12 +474,14 @@ if _root and _out:
             _final[0] = True
             _lock[0].acquire()
         elif _final[0] or not _lock[0].acquire(blocking=False):
-            return
+            return False
         try:
             # 被 trace 的程序自己的信号处理器可能在落盘中途抛 KeyboardInterrupt / SystemExit：
-            # 吞掉重来，不能让它把最后一次落盘打断，更不能让它从 os._exit 里逃出去
+            # 吞掉重来，不能让它把最后一次落盘打断，更不能让它从 os._exit 里逃出去。
+            # 非最后一次的落盘只在落盘线程上跑（信号处理器只在主线程跑），吞不到程序的信号
             for _ in range(3):
                 try:
+                    _flush_pending()
                     if _EV:
                         _ev_flush()
                     _write(_base() + ".json", _payload(why))
@@ -378,6 +490,7 @@ if _root and _out:
                     continue
         finally:
             _lock[0].release()
+        return True
     atexit.register(_dump, "atexit")
 
     # atexit 不是总会跑：multiprocessing 的 fork 子进程以 os._exit 结束，被 SIGKILL 的
@@ -410,15 +523,33 @@ if _root and _out:
     os.execve = _wrap_exec(os.execve)
 
     def _flusher():
-        n, stopped = 0, False
+        # 每 _POLL 看一次 PHASE（只 stat；变了才读，另外每秒兜底读一次——同一个 inode 上
+        # 同样长度的改写可能 mtime 没变），别的事照旧按秒：STOP、事件落盘，每 10 秒整份落盘
+        tick, stopped, last = 0, False, None
+        per_s = max(1, int(round(1 / _POLL)))
         while True:
-            time.sleep(1)
-            ph = _read_phase()
-            if ph != _phase[0] and not _final[0]:
-                with _lock[0]:
-                    _snapshot(_phase[0])
-                    _phase[0] = ph
-                _dump("phase")
+            time.sleep(_POLL)
+            tick += 1
+            try:
+                st = os.stat(_phase_file)
+                sig = (st.st_ino, st.st_mtime_ns, st.st_size)
+            except OSError:
+                sig = None
+            if _want_dump[0] and not _final[0]:
+                _want_dump[0] = not _dump("phase")    # 锁被占着就下一轮再来
+            if sig != last or tick % per_s == 0:
+                last = sig
+                ph = _read_phase()
+                if ph != _phase[0] and not _final[0]:
+                    with _lock[0]:
+                        switched = ph != _phase[0] and not _final[0]   # _fire 可能刚在别的线程切过
+                        if switched:
+                            _snapshot(_phase[0])
+                            _phase[0] = ph
+                    if switched:
+                        _dump("phase")
+            if tick % per_s:
+                continue
             if not stopped and os.path.exists(_stop_file):
                 stopped = True
                 _dump("stop")
@@ -427,8 +558,7 @@ if _root and _out:
                     _ev_flush()
                 finally:
                     _lock[0].release()
-            n += 1
-            if n % 10 == 0:
+            if tick % (10 * per_s) == 0:
                 _dump("periodic")
     def _start_flusher():
         threading.Thread(target=_flusher, name="codestrata-flush", daemon=True).start()
@@ -442,6 +572,9 @@ if _root and _out:
         _fedges.clear()
         _names.clear()
         del _snaps[:]             # fork 之前的阶段属于父进程
+        del _pending[:]
+        _want_dump[0] = False
+        _trig_watch.clear()
         _t0[0] = time.monotonic_ns()
         _st[0] = _starttime()
         _lock[0] = threading.RLock()
@@ -719,7 +852,8 @@ def _group_alive(pgid: int) -> bool:
 
 def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         timeout: float | None = None, pkgs: dict[str, str] | None = None,
-        env_extra: dict[str, str] | None = None, stop_grace: float = 90.0, after=None):
+        env_extra: dict[str, str] | None = None, stop_grace: float = 90.0, after=None,
+        phase_at: list[dict] | None = None):
     """在 hook 下跑一条命令，合并各进程的分片。返回 after(trace, 录制信息) 的结果
     （没给 after 就返回 (trace, 录制信息)）。
 
@@ -736,6 +870,8 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
     pkgs 是 {顶层包名: 它在仓库里的目录}。命令跑的若是 pip 装进 site-packages 的那份，
     靠它把执行路径映射回仓库文件。
 
+    phase_at 是 resolve_phase_at 解析好的 --phase：[{name, file, qualname, line, dl}]。
+
     录制信息：{stop: exit|timeout|interrupt, returncode, phase_times: [(阶段, t_us)],
               duration_s, leftovers: [{pid, argv, signal}]}，t_us 相对 mono0_ns。
     """
@@ -748,6 +884,9 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
     # setproctitle 默认会借用 environ 的内存写进程标题、把 /proc/<pid>/environ 清空，
     # 残留进程就认不出来了；这个变量让它只用 argv 那块
     env["SPT_NOENV"] = "1"
+    # 明确写上（没有就是 []）：shell 里继承来的旧值不能生效
+    env["CODESTRATA_PHASE_AT"] = json.dumps([[t["name"], t["file"], t["qualname"], t.get("line"), t.get("dl")]
+                                             for t in phase_at or []])
     if pkgs:
         env[ENV_PKGS] = ";".join(f"{k}={v}" for k, v in pkgs.items())
     env["PYTHONPATH"] = str(boot) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -756,7 +895,7 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
     _say(f"[codestrata] hook 已注入 PYTHONPATH（子进程一并 trace），分片写到 {parts}")
     us = lambda: (time.monotonic_ns() - mono0_ns) // 1000
     phase_file = parts / "PHASE"
-    phase_times: list = [("start", us())]
+    phase_times: list = [("start", us(), "start")]
     hits: list[int] = []                         # driver 收到的信号
 
     def on_sig(signum, frame):
@@ -777,12 +916,25 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         return False
 
     def poll_phase():
+        # 第一行是阶段名；hook 按 --phase 切的有第二行（切换那一刻的 monotonic_ns），准确的时刻
+        # 收尾时从 PHASE-<名字>.fired 标记里拿（这里 0.1 秒一次的轮询可能整个错过一段）。
+        # case 脚本 echo 进来的只有一行，按看到的时刻记，并替它建标记：之后同名的 --phase
+        # 不会再把各进程切回这一段
         try:
-            ph = phase_file.read_text().strip() or "start"
+            lines = phase_file.read_text().splitlines()
         except OSError:
             return
+        ph = (lines[0].strip() if lines else "") or "start"
         if ph != phase_times[-1][0]:
-            phase_times.append((ph, us()))
+            src = "hook" if len(lines) > 1 else "sh"
+            phase_times.append((ph, us(), src))
+            if src == "sh" and PHASE_NAME_RE.match(ph):
+                try:
+                    fd = os.open(parts / f"PHASE-{ph}.fired", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, f"sh {os.getpid()} {time.monotonic_ns()}\n".encode())
+                    os.close(fd)
+                except OSError:
+                    pass
             _say(f"[codestrata] 阶段 → {ph}")
 
     try:
@@ -824,6 +976,10 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
             _stop(lambda: _group_alive(proc.pid), lambda sg: _killpg(proc.pid, sg), stop_grace, poke, parts)
         seen[0] = len(hits)
         left = stop_leftovers(parts, stop_grace, poke)
+        poll_phase()
+        # hook 切的阶段用标记里的精确时刻：轮询可能整个错过一段（两个阶段隔了不到 0.1 秒、
+        # 或者残留进程在被停的路上才切）
+        phase_times = merge_phase_log(phase_times, fired_phases(parts, mono0_ns))
         shutil.rmtree(boot, ignore_errors=True)
         tr = merge(parts)
         info = {"stop": stop, "returncode": rc, "phase_times": phase_times,
@@ -833,6 +989,253 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         for sg, h in old.items():
             signal.signal(sg, h)
         shutil.rmtree(boot, ignore_errors=True)
+
+
+PHASE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def fired_phases(parts: Path, mono0_ns: int | None, files: dict[str, bytes] | None = None,
+                 sh: bool = False) -> list[tuple]:
+    """hook 按 --phase 切的阶段：parts/PHASE-<名字>.fired 里的「hook pid monotonic_ns」→
+    [(名字, t_us, "hook")]，t_us 相对 mono0_ns。sh=True 时 driver 替 case 脚本建的（「sh pid
+    monotonic_ns」，每个名字第一次出现的时刻）也要，来源记 sh——driver 死在收尾之前、run.json 里
+    没有轮询记下的 phase_log 时，runs merge 靠它把 case 脚本切的阶段时刻补回来。
+    files 给了就从它读（{文件名: 内容}）。"""
+    if files is None:
+        files = {}
+        try:
+            for f in parts.iterdir():
+                if f.name.startswith("PHASE-") and f.name.endswith(".fired"):
+                    try:
+                        files[f.name] = f.read_bytes()
+                    except OSError:
+                        pass
+        except OSError:
+            return []
+    out = []
+    for fn, raw in files.items():
+        name = fn[len("PHASE-"):-len(".fired")]
+        w = raw.decode("utf-8", "replace").split()
+        src = w[0] if w and w[0] in ("hook", "sh") else "hook"
+        if not PHASE_NAME_RE.match(name) or (w and w[0] not in ("hook", "sh")) or (src == "sh" and not sh):
+            continue
+        try:
+            t = (int(w[2]) - mono0_ns) // 1000 if mono0_ns is not None else None
+        except (IndexError, ValueError):
+            t = None                                 # 赢家建了标记还没写进内容就死了：时刻不知道
+        out.append((name, None if t is None else max(0, t), src))
+    return sorted(out, key=lambda x: (x[1] is None, x[1] or 0))
+
+
+def merge_phase_log(polled: list, fired: list) -> list[list]:
+    """driver 轮询到的 [(名字, t_us[, 来源])] 和标记里的阶段合成 phase_log：
+    [[名字, t_us, 来源]]，来源 start / sh（case 脚本写的）/ hook（--phase）。hook 的以标记为准
+    （时刻精确，轮询漏掉的也补上）；标记里的 sh 只补轮询记录里没有的名字；按时刻排，时刻不知道的排最后。"""
+    hook = {n: t for n, t, src in fired if src == "hook"}
+    out = []
+    for e in polled or []:
+        name, t = e[0], e[1]
+        src = e[2] if len(e) > 2 else ("start" if not out and name == "start" else "sh")
+        if src == "hook" and name in hook:
+            continue
+        out.append([name, t, src])
+    out += [[n, t, "hook"] for n, t in hook.items()]
+    have = {e[0] for e in out}
+    out += [[n, t, "sh"] for n, t, src in fired if src == "sh" and n not in have]
+    return sorted(out, key=lambda e: (e[1] is None, e[1] if e[1] is not None else 0))
+
+
+def _globals_in(fn) -> set[str]:
+    """函数体里 global 声明的名字（不算嵌套的 def / class / lambda 里的）。"""
+    import ast
+    out: set[str] = set()
+    todo = list(fn.body)
+    while todo:
+        n = todo.pop()
+        if isinstance(n, ast.Global):
+            out.update(n.names)
+        elif not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            todo.extend(ast.iter_child_nodes(n))
+    return out
+
+
+def _qualnames(path: Path) -> dict[str, tuple[int, int]]:
+    """一个 .py 文件里所有函数的 co_qualname → (def 行, 第一个装饰器的行)，同名的取最后一个
+    （@overload 的空壳在前、真正执行的在后）。和编译器的规则一致：
+    函数里定义的东西带 .<locals>.；外层函数里 global 声明过的名字不带前缀；if / for / while / with /
+    try / match 这些语句体里的 def 也算（和 scan 下潜的是同一批语句）。"""
+    import ast
+    from .scan import _STMT_CONTAINERS
+    tree = ast.parse(path.read_bytes())
+    out: dict[str, tuple[int, int]] = {}
+
+    def walk(body, prefix, globs):
+        for n in body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                q = n.name if n.name in globs else prefix + n.name
+                dl = min([d.lineno for d in n.decorator_list] + [n.lineno])
+                out[q] = (n.lineno, dl)
+                walk(n.body, q + ".<locals>.", _globals_in(n))
+            elif isinstance(n, ast.ClassDef):
+                walk(n.body, (n.name if n.name in globs else prefix + n.name) + ".", set())
+            elif isinstance(n, _STMT_CONTAINERS) or type(n).__name__ == "Match":
+                for f in ("body", "orelse", "finalbody", "handlers", "cases"):
+                    walk(getattr(n, f, None) or [], prefix, globs)
+    walk(tree.body, "", set())
+    return out
+
+
+def resolve_phase_at(root: Path, specs: list[str], symbols: dict | None) -> list[dict]:
+    """--phase 名字=函数 → [{name, func, file, qualname, line, dl, via}]。函数两种写法：
+      模块:qualname         vllm_omni.entrypoints.omni:Omni.generate（查静态索引；类上没有的
+                            方法按 MRO 顺着基类找，找到的是 OmniBase.close 就按它认；嵌套函数
+                            写 outer.inner 或 outer.<locals>.inner 都行）
+      文件路径:qualname      examples/offline_inference/minicpmo/end2end.py:main（不在索引里的
+                            文件也行，直接读源码核对；要写定义它的那个类）
+    qualname 一律换成解释器里的 co_qualname（hook 按它认）。解析不了就 SystemExit，给出可能想写的。"""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for spec in specs:
+        name, sep, func = spec.partition("=")
+        name, func = name.strip(), func.strip()
+        if not sep or not name or not func:
+            raise SystemExit(f"--phase 要写成 名字=函数：{spec!r}")
+        if not PHASE_NAME_RE.match(name) or name == "start":
+            raise SystemExit(f"--phase 的阶段名只能用字母、数字和 . _ -，也不能叫 start（那是第一段的名字）：{name!r}")
+        if name in seen:
+            raise SystemExit(f"--phase 的阶段名重复了：{name}")
+        seen.add(name)
+        where, sep, q = func.rpartition(":")
+        if not sep or not where or not q:
+            raise SystemExit(f"--phase {name}= 后面要写成 模块:qualname 或 文件路径:qualname：{func!r}")
+        via = None
+        if where.endswith(".py") or "/" in where:
+            p = Path(where) if Path(where).is_absolute() else root / where
+            try:
+                p = p.resolve()
+                rel = str(p.relative_to(root.resolve()))
+            except (OSError, ValueError):
+                raise SystemExit(f"--phase {name}：{where} 不在仓库 {root} 里")
+            if not p.is_file():
+                raise SystemExit(f"--phase {name}：没有这个文件 {where}")
+            try:
+                qs = _qualnames(p)
+            except SyntaxError as e:
+                raise SystemExit(f"--phase {name}：{where} 解析不了（{e}）")
+            if q not in qs:
+                near = [x for x in qs if x.rsplit(".", 1)[-1] == q.rsplit(".", 1)[-1]][:5]
+                raise SystemExit(f"--phase {name}：{where} 里没有 {q}" + (f"；是不是 {'、'.join(near)}" if near else ""))
+            line, dl = qs[q]
+        else:
+            if symbols is None:
+                raise SystemExit(f"--phase {name}：模块:qualname 的写法要查静态索引，先 codestrata scan；"
+                                 f"或者写成 文件路径:qualname")
+            key = f"{where}:{q.replace('.<locals>', '')}"     # 索引里嵌套的名字不带 .<locals>
+            s = symbols.get(key)
+            if s is None or s.get("k") != "func":
+                s, via = _inherited(symbols, where, q.replace(".<locals>", ""))
+            if s is None:
+                last = q.rsplit(".", 1)[-1]
+                near = [k for k, v in symbols.items() if v.get("k") == "func"
+                        and k.split(":", 1)[1].rsplit(".", 1)[-1] == last][:6]
+                raise SystemExit(f"--phase {name}：静态索引里没有函数 {key}"
+                                 + (f"；同名的有：{'、'.join(near)}" if near else ""))
+            if isinstance(s, str):                   # _inherited 说不准（基类不在仓库里）：给出原因
+                raise SystemExit(f"--phase {name}：{s}")
+            rel, q, line, dl = s["f"], s["n"], s["l"], s.get("dl") or s["l"]
+            try:                                     # 换成解释器里的名字：嵌套的要带 .<locals>.
+                qs = _qualnames(root / rel)
+                cand = [x for x in qs if x.replace(".<locals>", "") == q]
+                if cand:                             # 行号用索引的（它指着真正的定义）
+                    q = cand[0]
+            except (OSError, SyntaxError, ValueError):
+                pass
+        out.append({"name": name, "func": func, "file": rel, "qualname": q, "line": line, "dl": dl, "via": via})
+    by: dict = {}
+    for t in out:                                    # hook 按 (文件, qualname) 认：两个阶段指到同一个函数只有一个会切
+        other = by.setdefault((t["file"], t["qualname"]), t)
+        if other is not t:
+            raise SystemExit(f"--phase {other['name']} 和 {t['name']} 指向同一个函数 {t['qualname']}（{t['file']}；"
+                             "子类继承来的方法也是同一份代码）——一个函数只能用来切一个阶段")
+    return out
+
+
+# 基类里这些不会定义仓库里的方法：MRO 里碰到它们可以跳过，不算「不在仓库里、说不准」
+_OPAQUE_OK = {"object", "Generic", "ABC", "Protocol"}
+
+
+def _inherited(symbols: dict, mod: str, q: str) -> tuple[dict | str | None, str | None]:
+    """模块:类.方法 在这个类上没定义的，按 C3 MRO 顺着基类（静态索引里记的名字）找。基类先在同一个
+    模块里找，再按名字在整个索引里找（唯一才认），Base[T] 去掉下标。MRO 里先碰到仓库外的基类
+    （除了 object / Generic / ABC / Protocol）就不猜，返回说明原因的字符串。
+    返回 (符号, 实际定义它的键)；找不到返回 (None, None)。"""
+    cls, dot, meth = q.rpartition(".")
+    if not dot:
+        return None, None
+    classes = {k: v for k, v in symbols.items() if v.get("k") == "class"}
+    by_name: dict[str, list[str]] = {}
+    for k in classes:
+        by_name.setdefault(k.split(":", 1)[1].rsplit(".", 1)[-1], []).append(k)
+
+    def base_key(ck: str, b: str) -> str:
+        b = re.sub(r"\[.*$", "", b).strip()
+        last = b.rsplit(".", 1)[-1]
+        same = f"{ck.split(':', 1)[0]}:{last}"
+        if same in classes:
+            return same
+        cand = by_name.get(last) or []
+        return cand[0] if len(cand) == 1 else "?" + last     # ? 开头：仓库外的，或者对不上唯一的
+
+    memo: dict[str, list[str] | None] = {}
+
+    def mro(ck: str, stack: tuple = ()) -> list[str] | None:
+        if ck.startswith("?"):
+            return [ck]
+        if ck in memo:
+            return memo[ck]
+        if ck in stack:
+            return None
+        bases = [base_key(ck, b) for b in classes[ck].get("b") or []]
+        seqs = []
+        for b in bases:
+            m = mro(b, stack + (ck,))
+            if m is None:
+                return None
+            seqs.append(list(m))
+        seqs.append(list(bases))
+        res = [ck]
+        while any(seqs):                              # C3 merge
+            for sq in seqs:
+                if not sq:
+                    continue
+                h = sq[0]
+                if not any(h in other[1:] for other in seqs):
+                    break
+            else:
+                return None                           # 不一致的继承关系（Python 自己也会报错）
+            res.append(h)
+            for sq in seqs:
+                if sq and sq[0] == h:
+                    del sq[0]
+        memo[ck] = res
+        return res
+
+    start = f"{mod}:{cls}"
+    if start not in classes:
+        return None, None
+    order = mro(start)
+    if order is None:
+        return f"{start} 的继承关系解析不了（有环或者不一致）", None
+    for ck in order[1:]:
+        if ck.startswith("?"):
+            if ck[1:] in _OPAQUE_OK:
+                continue
+            return (f"{q} 不在 {cls} 上定义，MRO 里先碰到了仓库外（或名字对不上唯一）的基类 {ck[1:]}，"
+                    f"说不准实际调的是哪个；写成定义它的那个类的 模块:qualname"), None
+        s = symbols.get(f"{ck}.{meth}")
+        if s and s.get("k") == "func":
+            return s, f"{ck}.{meth}"
+    return None, None
 
 
 def case_script(root: Path, cmd: list[str]) -> dict | None:

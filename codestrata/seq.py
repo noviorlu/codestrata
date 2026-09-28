@@ -425,13 +425,15 @@ def build(repo: Path, idx: dict, rd: Path, run: dict, detail: dict, *, open_=Non
     pinfo = []
     lane_pids = sorted({pid for pid, _ in used}, key=lambda pid: (procs.get(pid, {}).get("t0_us") or 0, pid))
     pos = {pid: i for i, pid in enumerate(lane_pids)}
+    from .runs import _redact_argv           # 页面上显示的命令行：--api-key 的值、URL 里的密码隐去（同 runs.load）
     for pid in lane_pids:
         p = procs.get(pid, {})
-        lab = _proc_label(p.get("argv"), p.get("title"))
+        argv = _redact_argv(p.get("argv") or [])
+        lab = _proc_label(argv, p.get("title"))
         same = argv_seen.get(_proc_label(p.get("argv"), None), [])
         pinfo.append({"pid": pid, "ppid": p.get("ppid"),
                       "label": lab + (f" #{same.index(pid) + 1}" if len(same) > 1 and pid in same else ""),
-                      "argv": p.get("argv"), "t0_us": p.get("t0_us"), "t1_us": p.get("t1_us")})
+                      "argv": argv, "t0_us": p.get("t0_us"), "t1_us": p.get("t1_us")})
     order = sorted(used, key=lambda k: (pos[k[0]], -alt.get(k[1], 0), k[1]))
     remap = {used[k]: i for i, k in enumerate(order)}
     for r in rows:

@@ -151,9 +151,12 @@ def _dists(site_dirs) -> dict:
 # ---------------------------------------------------------------- 录制：建目录、收尾
 
 def new_run(repo: Path, *, case: str, cmd: list[str], cwd: Path, env: dict | None = None,
-            tags: list[str] | None = None, note: str = "", rec: dict | None = None) -> Path:
+            tags: list[str] | None = None, note: str = "", rec: dict | None = None,
+            invocation: dict | None = None, env_inherited: dict | None = None) -> Path:
     """建一个新的 run 目录（状态 recording）并返回它；各进程往 <run>/parts 里写。
-    rec 是录制参数（timeout、stop_grace、attach），`runs show` 拼重录命令用。"""
+    rec 是录制参数（timeout、stop_grace、attach、events、phase_at），老 run 没存原始命令时拼复刻命令用。
+    invocation 是原样的 codestrata 命令 {argv, cwd}；env_inherited 是录制时 shell 里的相关环境变量
+    （见 inherited_env）——两者合起来才能复刻：命令里的 --env 只是一部分，命令也会继承 shell 的环境。"""
     if not CASE_RE.match(case or ""):
         raise SystemExit(f"case 名只能用字母、数字和 . _ -：{case!r}")
     base = runs_dir(repo)
@@ -175,7 +178,8 @@ def new_run(repo: Path, *, case: str, cmd: list[str], cwd: Path, env: dict | Non
             "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname(),
             "cmd": list(cmd), "cwd": str(cwd), "env": dict(env or {}), "git": git,
             "clock": {"mono0_ns": time.monotonic_ns(), "wall0": time.time()},
-            "rec": dict(rec or {}), "tags": list(tags or []), "note": note or ""})
+            "rec": dict(rec or {}), "tags": list(tags or []), "note": note or "",
+            "invocation": invocation, "env_inherited": dict(env_inherited or {})})
         (rd / "parts").mkdir()
     except BaseException:
         shutil.rmtree(rd, ignore_errors=True)      # 还什么都没录：不留一个 ls 看不见的空目录
@@ -388,8 +392,8 @@ def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: b
         problems.append("parts 没打包成功，用 codestrata runs <repo> merge <id> 重来")
 
     t_of: dict = {}
-    for name, t in run.get("phase_log") or []:   # 同一个阶段名出现多次（切回去了）：取第一次的时刻
-        t_of.setdefault(name, t)
+    for e in run.get("phase_log") or []:         # 同一个阶段名出现多次（切回去了）：取第一次的时刻
+        t_of.setdefault(e[0], e[1])
     order = list(dict.fromkeys([*t_of, *phases]))
     run.pop("status_shown", None)
     if events is not None:
@@ -764,7 +768,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         s = _trace.case_script(Path(repo), run.get("cmd") or [])
         script = {**s, "saved": False} if s else None
     phases = run.get("phases") or []
-    meta = {"case": run.get("case"), "cmd": run.get("cmd"), "phase": phase,
+    meta = {"case": run.get("case"), "cmd": _redact_argv(run.get("cmd") or []), "phase": phase,
             # 和老的 trace 一样：只有一个阶段时是空的（前端据此判断「分没分阶段」）
             "phases": {p["name"]: p["n_funcs"] for p in phases} if len(phases) > 1 else {},
             "n_procs": (run.get("summary") or {}).get("n_procs"), "unmapped": hot.get("unmapped"),
@@ -774,12 +778,22 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             "file_state": fs,
             "mapped_from": detail.get("mapped_from"), "n_mapped": len(detail.get("mapped") or {}),
             "mapped_mismatch": detail.get("mapped_mismatch") or [],
-            "procs": procs_grouped(detail.get("procs")), "script": script,
+            "procs": [{**p, "argv": _redact_argv(p.get("argv") or [])} for p in procs_grouped(detail.get("procs"))],
+            "script": script,
             "run_id": run["id"], "status": run.get("status"), "problems": run.get("problems") or [],
             "git": run.get("git"), "tags": run.get("tags") or [], "note": run.get("note") or "",
             "created": run.get("created"), "migrated_from": run.get("migrated_from"),
             # 改过的文件里按名字对不上的键（lambda、改了名的、老 run 没存名字的）：这些调用的叠加可能偏
-            "unmatched": len(unmatched), "events": run.get("events")}
+            "unmatched": len(unmatched), "events": run.get("events"),
+            # 复刻：命令（原样的，或老 run 按参数拼的）、录制时继承的环境、--phase 怎么切的、各阶段的时刻
+            # 网页和导出（会发给别人）里的：--env 里像密钥的值隐去，完整的在 runs show
+            "rerun": rerun_command(run, Path(repo), redact=True),
+            "rerun_exact": bool((run.get("invocation") or {}).get("argv")),
+            "rerun_redacted": rerun_command(run, Path(repo), redact=True) != rerun_command(run, Path(repo)),
+            "rerun_env": rerun_command(run, Path(repo), with_env=True, redact=True) if run.get("env_inherited") else None,
+            "env_inherited": {k: _scrub(v) for k, v in (run.get("env_inherited") or {}).items()},
+            "phase_at": (run.get("rec") or {}).get("phase_at") or [],
+            "phase_log": run.get("phase_log") or []}
     return hot, meta
 
 
@@ -874,6 +888,10 @@ def merge_run(repo: Path, ref: str) -> dict:
         tr = _trace.merge(tmp)
         if run.get("status") == "recording" and not run.get("stop"):
             run["stop"] = "driver-lost"
+        # --phase 切的阶段：标记在包里，driver 死在收尾之前的 run 也能把时刻补回来
+        run["phase_log"] = _trace.merge_phase_log(
+            run.get("phase_log") or [["start", 0, "start"]],
+            _trace.fired_phases(tmp, (run.get("clock") or {}).get("mono0_ns"), sh=True))
         detail = (_read(rd / "detail.json") if (rd / "detail.json").is_file() else
                   capture(repo, rd, tr, run, attach=(run.get("rec") or {}).get("attach"), late=True))
         packed = True
@@ -887,12 +905,103 @@ def merge_run(repo: Path, ref: str) -> dict:
     return derive(repo, rd, tr, run, detail, packed=packed, events=events)
 
 
-def rerun_command(run: dict, repo: Path) -> str:
-    """一条可以直接复制的重录命令（从 run 里存的命令、--env、tag、备注、录制参数拼出来）。
-    值一律写成 --x=值，以 - 开头的值也不会被当成选项。"""
+# 复刻时要一样、但不会出现在命令行里的环境变量：被 trace 的命令继承 shell 的整个环境。
+# 只记和跑模型、找解释器有关的这些；名字像密钥的一律不记（HF_TOKEN 之类）
+_ENV_PREFIX = ("CUDA_", "VLLM_", "PYTORCH_", "TORCH_", "NCCL_", "HF_", "TRANSFORMERS_", "TOKENIZERS_",
+               "OMP_", "MKL_", "NVIDIA_", "TRITON_", "XLA_")
+_ENV_EXACT = ("PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV",
+              "PYTHONHASHSEED", "CODESTRATA_EV_MAX")
+# 名字里按 _ 分开的某一段是这些词的，当密钥（HF_TOKEN、VLLM_API_KEY、HF_HUB_TOKEN…）；
+# TOKENIZERS_PARALLELISM、NCCL_IB_PKEY 这种只是含着这几个字母的不算
+_ENV_SECRET = re.compile(r"(^|_)(TOKENS?|API_?KEYS?|KEYS?|SECRETS?|PASS|PASSWD|PASSWORD|PASSPHRASE|"
+                         r"CREDS?|CREDENTIALS?|AUTH|COOKIES?|SESSION|PRIVATE)(_|$)", re.I)
+_URL_USER = re.compile(r"(://)[^/@\s]+@")          # https://user:pw@host → https://<已隐去>@host
+REDACTED = "<已隐去>"
+
+
+def _scrub(v: str) -> str:
+    return _URL_USER.sub(r"\1" + REDACTED + "@", v)
+
+
+def inherited_env(environ, skip=()) -> dict:
+    """录制时 shell 里和复刻有关的环境变量（skip 里的——命令行 --env 已经写明的——不重复记）。
+    名字像密钥的不记；值里 URL 带的账号密码隐去。"""
+    out = {}
+    for k in sorted(environ):
+        if k in skip or _ENV_SECRET.search(k):
+            continue
+        if k in _ENV_EXACT or k.startswith(_ENV_PREFIX):
+            out[k] = _scrub(environ[k])
+    return out
+
+
+def _q(x: str) -> str:
+    """给 shell 的引号：一般的用 shlex.quote；带着不是 UTF-8 的字节（Python 里是孤立的代理字符）的，
+    写成 bash / zsh 的 $'…'，按原来的字节还原，复制粘贴也不会变样。"""
     import shlex
+    try:
+        x.encode("utf-8")
+        return shlex.quote(x)
+    except UnicodeEncodeError:
+        b = os.fsencode(x)
+        return "$'" + "".join(chr(c) if 32 <= c < 127 and chr(c) not in "\\'" else f"\\x{c:02x}" for c in b) + "'"
+
+
+def _secret_flag(a: str) -> bool:
+    """--api-key、--hf-token 这种选项名（- 换成 _ 之后按段认，和环境变量同一套规则）。"""
+    return a.startswith("-") and bool(_ENV_SECRET.search(a.lstrip("-").partition("=")[0].replace("-", "_")))
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    """给网页 / 导出看的命令行：--env K=V / --env=K=V 里 K 像密钥的，值换成 <已隐去>；--api-key X、
+    --token=X 这种选项的值也是（后面紧跟着 - 开头的就当它是开关，不吃掉下一个选项）；所有参数里 URL
+    带的账号密码隐去。"""
+    out, env_next, secret_next = [], False, False
+    for a in argv:
+        if secret_next and not a.startswith("-"):   # 后面紧跟着别的选项的（--no-auth --port 80）是开关，没有值
+            a = REDACTED
+        elif env_next or a.startswith("--env="):
+            pre, kv = ("", a) if env_next else ("--env=", a[len("--env="):])
+            k, sep, v = kv.partition("=")
+            if sep and _ENV_SECRET.search(k):
+                kv = f"{k}={REDACTED}"
+            a = pre + kv
+        elif _secret_flag(a) and "=" in a:
+            a = a.partition("=")[0] + "=" + REDACTED
+        out.append(_scrub(a))
+        secret_next = _secret_flag(a) and "=" not in a and not env_next
+        env_next = a == "--env" and not env_next
+    return out
+
+
+def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = False) -> str:
+    """一条可以直接复制的复刻命令。录制时存了原样的命令（invocation）就用它：cd 到当时的目录再原样
+    执行，相对路径、codestrata 装在哪都和当时一样。老 run 没存的，从 run 里存的命令、--env、tag、
+    备注、录制参数拼出来（值一律写成 --x=值，以 - 开头的值也不会被当成选项）。
+    with_env：前面用 env 带上录制时 shell 里的相关环境变量（env_inherited），同一台机器上照抄就一样。
+    redact：给网页、导出用——--env 里像密钥的值、URL 里的账号密码换成 <已隐去>（runs show 给完整的）。
+    codestrata 自己加进 run 的环境变量（从 shell 继承来的 CODESTRATA_EV_MAX）命令行上没有，补成 --env。"""
+    pre = ""
+    if with_env and run.get("env_inherited"):
+        pre = "env " + " ".join(_q(f"{k}={v}") for k, v in run["env_inherited"].items()) + " "
+    inv = run.get("invocation") or {}
+    if inv.get("argv"):
+        argv = list(inv["argv"])
+        given, nxt = set(), False
+        for a in argv:
+            if nxt or a.startswith("--env="):
+                given.add((a if nxt else a[len("--env="):]).partition("=")[0])
+            nxt = a == "--env" and not nxt
+        extra = [f"--env={k}={v}" for k, v in (run.get("env") or {}).items() if k not in given]
+        if extra:
+            i = argv.index("--") if "--" in argv else len(argv)
+            argv[i:i] = extra
+        if redact:
+            argv = _redact_argv(argv)
+        cmd = pre + " ".join(_q(x) for x in argv)
+        return (f"cd {_q(inv['cwd'])} && " if inv.get("cwd") else "") + cmd
     rec = run.get("rec") or {}
-    parts = ["codestrata", "trace", str(repo), f"--case={run['case']}"]
+    parts = ["codestrata", "trace", str(Path(run.get("cwd") or repo).resolve()), f"--case={run['case']}"]
     if rec.get("timeout"):
         parts.append(f"--timeout={rec['timeout']:g}")
     if rec.get("events"):
@@ -900,11 +1009,19 @@ def rerun_command(run: dict, repo: Path) -> str:
     if rec.get("stop_grace") not in (None, 90.0):
         parts.append(f"--stop-grace={rec['stop_grace']:g}")
     for k, v in (run.get("env") or {}).items():
-        parts.append(f"--env={k}={v}")
+        parts.append(f"--env={k}={REDACTED if redact and _ENV_SECRET.search(k) else v}")
     for f in rec.get("attach") or []:
         parts.append(f"--attach={f}")
+    if rec.get("roots"):
+        parts.append("--roots")
+        parts.extend(rec["roots"])
+    for t in rec.get("phase_at") or []:
+        parts.append(f"--phase={t['name']}={t['func']}")
     for t in run.get("tags") or []:
         parts.append(f"--tag={t}")
     if run.get("note"):
         parts.append(f"--note={run['note']}")
-    return " ".join(shlex.quote(p) for p in parts) + " -- " + " ".join(shlex.quote(c) for c in run.get("cmd") or [])
+    cmd = list(run.get("cmd") or [])
+    if redact:
+        parts, cmd = _redact_argv(parts), _redact_argv(cmd)
+    return pre + " ".join(_q(p) for p in parts) + " -- " + " ".join(_q(c) for c in cmd)

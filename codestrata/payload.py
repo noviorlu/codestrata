@@ -87,7 +87,8 @@ def _meta_brief(m: dict | None) -> dict | None:
     return {k: m.get(k) for k in ("run_id", "case", "phase", "phases", "status", "problems", "created",
                                     "tags", "note", "git", "n_procs", "stale_files", "unmatched", "events",
                                     "mapped_from", "n_mapped", "mapped_mismatch", "unmapped", "cmd", "procs",
-                                    "script", "file_state")}
+                                    "script", "file_state", "rerun", "rerun_exact", "rerun_redacted", "rerun_env", "env_inherited",
+                                    "phase_at", "phase_log")}
 
 
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,

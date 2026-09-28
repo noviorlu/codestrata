@@ -2,9 +2,9 @@
 written_by: claude-opus-5-5
 target: codestrata.seq
 kind: package
-code_sha: 1038bfe273b97aaa
+code_sha: f43205a6fb510196
 status: draft
-refs: serve.py:154@cd0d48b0,seq.py:30@d2fe4395,seq.py:31@f165eef3,seq.py:1@304d1b5d,seq.py:85@43f9c39a,seq.py:120@34dd7026,seq.py:167@61ce1067,seq.py:256@fd849997,seq.py:197@611c8331,seq.py:240@a038f312,seq.py:263@68d56e72,seq.py:321@cdc2e97a,seq.py:333@e12f9208,seq.py:456@9d9e6eae,seq.py:477@be801626,seq.py:91@0672036a,seq.py:80@67bd13ba,seq.py:44@1d1d28f5,seq.py:96@1bee3588,seq.py:109@c37e9e0b,seq.py:132@b06c4d35,seq.py:159@39442eb4,seq.py:176@cb1fc72f,seq.py:499@e84b4c7d,seq.py:260@f4212c28,seq.py:207@7e1453a5,seq.py:217@be625d98,codestrata/web/seq.js:248@407f576e,seq.py:247@3830fda0,seq.py:276@fc7d4dd0,seq.py:282@9a554aeb,seq.py:286@8926a1d8,seq.py:324@7d78a787,seq.py:330@ccaa9583,seq.py:328@b47beb03,seq.py:345@a888ad0a,seq.py:356@86170292,seq.py:394@ce625da7,seq.py:36@e9373c14,seq.py:375@511d3e8e,seq.py:377@054bf37f,seq.py:380@5ecfc7ae,seq.py:384@196dce40,seq.py:401@a6ba8106,seq.py:307@ea17d85f,seq.py:317@f3e51ce3,seq.py:426@bfa9e50c,seq.py:435@881709d7,cut.py:171@577ac73b,seq.py:422@4b935c97,seq.py:446@79fd9e84,seq.py:471@545713f1,seq.py:460@78c02b35,seq.py:470@03679a05,serve.py:181@6c4aa61f,seq.py:505@93d0dc85,codestrata/web/app.js:478@6a135785,seq.py:396@675c27cf
+refs: serve.py:154@cd0d48b0,seq.py:30@d2fe4395,seq.py:31@f165eef3,seq.py:1@304d1b5d,seq.py:85@43f9c39a,seq.py:120@34dd7026,seq.py:167@61ce1067,seq.py:256@fd849997,seq.py:197@611c8331,seq.py:240@a038f312,seq.py:263@68d56e72,seq.py:321@cdc2e97a,seq.py:333@e12f9208,seq.py:458@9d9e6eae,seq.py:479@be801626,seq.py:91@0672036a,seq.py:80@67bd13ba,seq.py:44@1d1d28f5,seq.py:96@1bee3588,seq.py:109@c37e9e0b,seq.py:132@b06c4d35,seq.py:159@39442eb4,seq.py:176@cb1fc72f,seq.py:501@e84b4c7d,seq.py:260@f4212c28,seq.py:207@7e1453a5,seq.py:217@be625d98,codestrata/web/seq.js:248@407f576e,seq.py:247@3830fda0,seq.py:276@fc7d4dd0,seq.py:282@9a554aeb,seq.py:286@8926a1d8,seq.py:324@7d78a787,seq.py:330@ccaa9583,seq.py:328@b47beb03,seq.py:345@a888ad0a,seq.py:356@86170292,seq.py:394@ce625da7,seq.py:36@e9373c14,seq.py:375@511d3e8e,seq.py:377@054bf37f,seq.py:380@5ecfc7ae,seq.py:384@196dce40,seq.py:401@a6ba8106,seq.py:307@ea17d85f,seq.py:317@f3e51ce3,seq.py:426@bfa9e50c,seq.py:437@881709d7,cut.py:171@577ac73b,seq.py:422@4b935c97,seq.py:431@7488f4bc,codestrata/web/seq.js:174@04b2edcd,seq.py:433@14e2e6b6,seq.py:448@79fd9e84,seq.py:473@545713f1,seq.py:462@78c02b35,seq.py:472@03679a05,serve.py:181@6c4aa61f,seq.py:507@93d0dc85,codestrata/web/app.js:568@6a135785,seq.py:396@675c27cf
 ---
 
 ## 是什么
@@ -30,7 +30,7 @@ M5 时序图的服务端。它把一个 run 录下的 span（`codestrata.events`
 2. `spans_in`（seq.py:85）→ `_Map`（seq.py:120）→ `_messages`（seq.py:167）：从 span 到消息。
 3. `_rows`（seq.py:256）、`_fold_loops`（seq.py:197）、`_with_idle`（seq.py:240）、`_fit`（seq.py:263）、`_grow`（seq.py:321）：决定一屏放什么。
 4. `build`（seq.py:333）：看三种模式怎么组合上面这些函数。后半段处理生命线和进程。
-5. `overview`（seq.py:456）、`find`（seq.py:477）。
+5. `overview`（seq.py:458）、`find`（seq.py:479）。
 6. `tests/test_runs.py` 里的 test_seq_*：test_seq_fold_and_budget 测上限和 too_dense，test_seq_cuts_and_find 测分屏的边界和 find，test_seq_estimate_and_fit 测估算那条路给的建议窗口能画出来、`_fit` 在行数不单调时也不超上限、不折叠的分屏拼起来等于整段。
 
 ## 关键算法
@@ -48,7 +48,7 @@ M5 时序图的服务端。它把一个 run 录下的 span（`codestrata.events`
 ### _messages：哪些调用不画
 从 seq.py:176 起按下面的顺序判断：每个 span 要么落进三类不画的之一，要么成为一条消息。
 - **unmapped**：有一端落在 index 之外的文件上（比如 scan 排除掉的 examples），或者键是 "?"。
-- **imports**：被调方是 rel:0，也就是 import 触发的模块顶层执行。模块图不把它算作调用，时序图也跟着不画；`find` 同样跳过它（seq.py:499），两边口径一致。
+- **imports**：被调方是 rel:0，也就是 import 触发的模块顶层执行。模块图不把它算作调用，时序图也跟着不画；`find` 同样跳过它（seq.py:501），两边口径一致。
 - **internal**：两端落在同一个节点。把那个节点展开，它们才会变成消息。
 
 不画的调用不是只累加一个总数，而是逐条记成 (时刻, 原因, rep)。等窗口定下来，`_stat` 只数显示出来的那一段。自动收窄会把窗口往回收，要是先数再收，就会多算。
@@ -84,15 +84,16 @@ next_t0 由服务端给出（seq.py:401）：截过的，是最后一条的时�
 
 ### 生命线和进程
 - `_procs`（seq.py:307）把 detail.json 里同一个 pid 的几个映像合成一条：起始时刻和 ppid 取最早的那个（fork 的时刻）；argv、标题、结束时刻取最后一个里不为空的（exec 之后真正在跑的程序，seq.py:317）。这样，fork+exec 出来的子进程，派生行就画在 fork 的时刻，排在它 exec 之前的那些调用前面（test_seq_cuts_and_find 测了这一点）。
-- 只给窗口里出现过的 (pid, 节点) 画生命线。进程之间按起始时刻排（seq.py:426）；同一进程内按架构高度从高到低排，高度相同再按节点名排（seq.py:435）。高度来自 `cut.view`，算法是 (出边 − 入边) / 总数（cut.py:171），和模块图从上到下的方向一致：出边多的、偏调用方的节点排在左边。
+- 只给窗口里出现过的 (pid, 节点) 画生命线。进程之间按起始时刻排（seq.py:426）；同一进程内按架构高度从高到低排，高度相同再按节点名排（seq.py:437）。高度来自 `cut.view`，算法是 (出边 − 入边) / 总数（cut.py:171），和模块图从上到下的方向一致：出边多的、偏调用方的节点排在左边。
 - 标签：有标题就用标题，否则用 argv 摘要（去掉 python 和 -m，最长 80 个字符）。argv 摘要相同的进程按启动先后加上 #1…#n。编号按整个 run 的全部进程算（seq.py:422），不是只算这一屏的，所以翻屏时同一个进程的编号不会变。
-- 派生：窗口里有子进程起来、而且它的父进程也在图上时，在它的起始时刻插一行 spawn（seq.py:446）。
+- 隐去密钥：发给页面的 argv 先过一遍 `runs._redact_argv`（seq.py:431），和 `runs.load` 给网页的 case 命令、进程表用的是同一个函数：--env 里名字像密钥的值、--api-key 这类选项的值、URL 里的账号密码都换成 <已隐去>。像密钥的选项后面紧跟着 - 开头的参数时，当它是开关，不隐去下一个（--no-auth --port 80 保留 --port 80）；代价是本身以 - 开头的密钥值不会隐去。进程标签由隐去后的 argv 生成，悬停提示显示的也是它（codestrata/web/seq.js:174），所以按这套规则认得出的密钥不会出现在时序图上。标题不经过这一步，原样显示。编号分组用的仍是原始 argv（seq.py:433），所以两个进程只差在密钥值上时，标签看起来一样，却不会加编号（这一点是按代码推的，没跑过）。test_rerun_secrets_and_bytes 测了 `build` 返回的 procs 里不含 --api-key 的值，还直接调 `_redact_argv` 测了 --no-auth 后面的 --port 80 原样保留。
+- 派生：窗口里有子进程起来、而且它的父进程也在图上时，在它的起始时刻插一行 spawn（seq.py:448）。
 
 ### overview：时间刷上的密度
-把整个 run 分成 400 格，每个进程每格累加 Σrep（seq.py:471）。它不看切面、不分阶段，数的是全部跨文件调用（不画的那三类也算在内），所以按 (spans 目录, index 的 mtime, 格数) 缓存一次就够了（seq.py:460）。设计稿里写的是按 (run, phase) 缓存。它要把所有块扫一遍，所以读块时带 cache=False（seq.py:470），不经过那个 16 块的 LRU：块数超过 16 时，一次概览就会把正在看的那几块全挤出去。
+把整个 run 分成 400 格，每个进程每格累加 Σrep（seq.py:473）。它不看切面、不分阶段，数的是全部跨文件调用（不画的那三类也算在内），所以按 (spans 目录, index 的 mtime, 格数) 缓存一次就够了（seq.py:462）。设计稿里写的是按 (run, phase) 缓存。它要把所有块扫一遍，所以读块时带 cache=False（seq.py:472），不经过那个 16 块的 LRU：块数超过 16 时，一次概览就会把正在看的那几块全挤出去。
 
 ### find：先在当前阶段里找
-在切面上找 a → b 这条边在 after 之后第一次出现的时刻。块按时间窗和当前找到的最早结果剪枝；块内有序，一超出范围就停；被调方是 rel:0 的跳过。serve 把 run 引用里的阶段换算成一个窗口（serve.py:181），这里先在这个窗口里找（seq.py:505），找不到再搜整个 run。serve 的注释写了原因：这条边在 serving 里叠成了橙色，就应该跳到 serving 里的那一次，而不是启动时的第一次。前端拿到时刻后，从 t−1 起按自动模式取一屏（codestrata/web/app.js:478），再滚到那条消息。
+在切面上找 a → b 这条边在 after 之后第一次出现的时刻。块按时间窗和当前找到的最早结果剪枝；块内有序，一超出范围就停；被调方是 rel:0 的跳过。serve 把 run 引用里的阶段换算成一个窗口（serve.py:181），这里先在这个窗口里找（seq.py:507），找不到再搜整个 run。serve 的注释写了原因：这条边在 serving 里叠成了橙色，就应该跳到 serving 里的那一次，而不是启动时的第一次。前端拿到时刻后，从 t−1 起按自动模式取一屏（codestrata/web/app.js:568），再滚到那条消息。
 
 ## 局限
 - 只取**在窗口里开始**的 span：窗口开始之前就已经开始、还没返回的调用不画。消息只是某个时刻的一根箭头；async span 没有激活条，dur 和挂起次数只在详情里给（设计稿 7.4 说的第一版就是这样）。

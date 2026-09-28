@@ -4,7 +4,7 @@ target: codestrata.events
 kind: package
 code_sha: a767f0b4997792d5
 status: draft
-refs: runs.py:333@dcfcecf7,events.py:1@d55ae9b7,trace.py:178@1d353c75,trace.py:190@b260cb52,runs.py:430@1c2edb45,runs.py:431@fe850b3d,runs.py:863@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:146@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:195@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:188@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,events.py:166@9e27b77d
+refs: runs.py:337@dcfcecf7,events.py:1@d55ae9b7,trace.py:181@1d353c75,trace.py:193@b260cb52,runs.py:434@1c2edb45,runs.py:435@fe850b3d,runs.py:877@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:149@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:198@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:191@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,events.py:166@9e27b77d
 ---
 
 ## 是什么
@@ -18,14 +18,14 @@ refs: runs.py:333@dcfcecf7,events.py:1@d55ae9b7,trace.py:178@1d353c75,trace.py:1
 - a / b 是调用方 / 被调方在 keys.json 里的下标，键的形式是 rel:firstlineno（模块顶层是 rel:0）；登记行丢了的键指到 "?"。
 - rep 是第一级折叠合了几次；n_susp 是挂起了几次，大于 0 就是 async 的 span。
 
-整个模块是一条流水线：`parse`（读一个日志）→ `pair`（配成 span）→ `fold`（第一级折叠）→ `build`（把整个 run 拼起来并写出），`read_spans` 再把写出的 span 读回来。调用方只有 runs：`finalize` 和 `merge_run` 都经 `_build_events`（runs.py:333）进来。
+整个模块是一条流水线：`parse`（读一个日志）→ `pair`（配成 span）→ `fold`（第一级折叠）→ `build`（把整个 run 拼起来并写出），`read_spans` 再把写出的 span 读回来。调用方只有 runs：`finalize` 和 `merge_run` 都经 `_build_events`（runs.py:337）进来。
 
 日志的行格式写在模块 docstring 里（events.py:1）。H 是文件头（pid、t0_ns、ppid），N 登记线程，K 登记键，C 是调用，R 是返回或异常展开，Y 是挂起，S 是恢复，T 表示到了行数上限。C/R/Y/S 的时间是相对这个映像 t0 的微秒，第三个数是 span 号。
 
 ## 为什么这样切
-**录制端只管记，配对放到事后做。** hook 跑在被 trace 的程序里，每一次跨文件调用都要付它的开销，所以它只做最少的事：C 时分配 span 号，按 id(帧) 记进 `_xf`；R / Y / S 时按帧找回同一个 span 号写出去（`_ev_call` 在 trace.py:178，`_ev_mark` 在 trace.py:190）。depth、父子关系、折叠都在这里算，算法以后要改，也不用重录。
+**录制端只管记，配对放到事后做。** hook 跑在被 trace 的程序里，每一次跨文件调用都要付它的开销，所以它只做最少的事：C 时分配 span 号，按 id(帧) 记进 `_xf`；R / Y / S 时按帧找回同一个 span 号写出去（`_ev_call` 在 trace.py:181，`_ev_mark` 在 trace.py:193）。depth、父子关系、折叠都在这里算，算法以后要改，也不用重录。
 
-**span 是派生数据，原始日志才是原件。** 收尾时 `_pack_all` 先把 ev-*.log 单独打进 events/raw.tar.gz（runs.py:430），不和 parts.tar.gz 混在一起，然后才调这里整理（runs.py:431）。整理抛了异常，只在 run.json 的 events 摘要里记一个 error，计数和 status 都不受影响。`runs merge` 从 raw.tar.gz 和散着的 parts/ev-*.log 的并集重建（runs.py:863）。重建出来的必须和收尾时一样（`tests/test_runs.py` 里的 test_events_fake_service 会比对），所以 `build` 的输出是确定的：文件按名字排序处理，键表按第一次出现的顺序编号，gzip 写 mtime=0（events.py:212）。
+**span 是派生数据，原始日志才是原件。** 收尾时 `_pack_all` 先把 ev-*.log 单独打进 events/raw.tar.gz（runs.py:434），不和 parts.tar.gz 混在一起，然后才调这里整理（runs.py:435）。整理抛了异常，只在 run.json 的 events 摘要里记一个 error，计数和 status 都不受影响。`runs merge` 从 raw.tar.gz 和散着的 parts/ev-*.log 的并集重建（runs.py:877）。重建出来的必须和收尾时一样（`tests/test_runs.py` 里的 test_events_fake_service 会比对），所以 `build` 的输出是确定的：文件按名字排序处理，键表按第一次出现的顺序编号，gzip 写 mtime=0（events.py:212）。
 
 **配对按 span 号，不按栈。** 同一线程里两个 asyncio 协程交错执行时，先开始的不一定先结束，按栈顶配会配反（truth.py 的 s_async 就是这个场景）。hook 已经把 R / Y / S 对到了 span 号上，`pair` 里的栈（active）只用来算 depth 和父 span，不参与配对。
 
@@ -40,7 +40,7 @@ refs: runs.py:333@dcfcecf7,events.py:1@d55ae9b7,trace.py:178@1d353c75,trace.py:1
 
 ## 关键算法
 ### parse：只信以换行结尾的行
-- 只按 \n 分行（events.py:59）。默认的通用换行会把 \r 也当成行尾，名字里带 \r 的 K/N 行就会被劈开。hook 写之前已经替换掉名字里的换行（trace.py:146 的 `_clean`），这里是再防一层。
+- 只按 \n 分行（events.py:59）。默认的通用换行会把 \r 也当成行尾，名字里带 \r 的 K/N 行就会被劈开。hook 写之前已经替换掉名字里的换行（trace.py:149 的 `_clean`），这里是再防一层。
 - 没有换行结尾的最后一行整行不要（events.py:61）。进程被强杀时，最后一行可能只写了一半：字段数可能正好够，值却是截断的（R 900 1 5 其实是 R 900 1 57）。按字段数来判断行是否完整，就会把返回记到错的 span 上。test_events_parse_partial_line 专门测这个。
 - 其余坏行（字段不是整数、个数不够）跳过。没有 H 行时，pid 和 t0 从文件名取，ppid 留 None。
 
@@ -54,7 +54,7 @@ refs: runs.py:333@dcfcecf7,events.py:1@d55ae9b7,trace.py:178@1d353c75,trace.py:1
 
 「段」（epoch）按线程计：这个线程上每发生一次挂起或恢复就加一（events.py:125、events.py:129）。每个 span 记下自己开始时所在的段，给 `fold` 判断「是否连续」用。
 
-半路被丢掉的生成器在 3.12 上关闭时不发事件。hook 靠 `_xf` 里一起存的 code 发现帧地址已被复用，于是作废旧账（trace.py:195）。所以这种 span 只有 C 和一次 Y，t1 一直是 None，最后写成 dur -1。它挂起时已经出栈，后面的调用不会挂到它下面（truth.py 的 s_drop / local_gen 场景）。
+半路被丢掉的生成器在 3.12 上关闭时不发事件。hook 靠 `_xf` 里一起存的 code 发现帧地址已被复用，于是作废旧账（trace.py:198）。所以这种 span 只有 C 和一次 Y，t1 一直是 None，最后写成 dur -1。它挂起时已经出栈，后面的调用不会挂到它下面（truth.py 的 s_drop / local_gen 场景）。
 
 ### fold：按 (父 span, 段) 认兄弟
 `fold` 对一个线程上按 t0 排好的 span 做第一级折叠：同一个父 span 下、同一段里紧挨着的、a→b 相同的**同步叶子**（没挂起过、没有跨文件子调用、返回了），合成一条，rep 计数，t1 取最后一个的（events.py:148）。`cand` 按 (父 span, 段)（events.py:141）记着最近的一个孩子，来了一个非叶子、或者一个 a→b 不同的孩子，连续就断了。
@@ -67,7 +67,7 @@ refs: runs.py:333@dcfcecf7,events.py:1@d55ae9b7,trace.py:178@1d353c75,trace.py:1
 
 ### build：把各个映像拼到 run 的时间轴上
 - **时间**：每个映像的 H 行带着自己的 t0_ns（monotonic 时钟，全机共享），`(t0 - mono0) // 1000` 就是它相对 run 起点的偏移（events.py:171），加到它每个 span 的 t0 上。mono0 缺了就按 0 算，这时各进程之间对不齐。
-- **键表**：K 号是进程内的小整数。按键字符串合成一张全局表，a / b 换成全局下标。没登记过的键指到表里的一个 "?"（events.py:189），这一项只在真的缺键时才加。以前写 -1，Python 里 keys[-1] 会静默取到最后一个键，读的一方不注意就指到别的函数上。正常录制里 K 行总在用到它的 C 行之前（trace.py:188 先求值 `_ev_kid`），只有日志坏了才会出现 "?"。
+- **键表**：K 号是进程内的小整数。按键字符串合成一张全局表，a / b 换成全局下标。没登记过的键指到表里的一个 "?"（events.py:189），这一项只在真的缺键时才加。以前写 -1，Python 里 keys[-1] 会静默取到最后一个键，读的一方不注意就指到别的函数上。正常录制里 K 行总在用到它的 C 行之前（trace.py:191 先求值 `_ev_kid`），只有日志坏了才会出现 "?"。
 - **线程号**：同一个 pid 的多个映像（exec 前后）线程号都从 1 起，直接合并会互相覆盖名字。所以后一个映像的 tid 要加上前面各映像的最大 tid（events.py:179）。fork 出来的子进程 pid 不同，不受影响。keys.json 的 threads 是 {pid: {tid: 线程名}}，用的是换过之后的号。
 - **按线程折叠**：`pair` 的输出按 C 时的 tid 分组，按 t0 排好，再交给 `fold`。
 - **procs**：每个映像一条 {pid, ppid, t0_us, n_events, n_spans, truncated}，exec 过的 pid 会出现两次。

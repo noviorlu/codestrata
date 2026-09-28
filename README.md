@@ -52,11 +52,20 @@ codestrata 为此处理了几件事：
   vLLM 用 setproctitle 改进程标题，会清空 environ。
 - **哈希取执行时的。** 每个进程第一次跑到一个文件时就记下它的内容哈希；录制中途改了文件，
   run 会标出来，之后叠图时这个文件也算「改过」。
-- **分阶段。** case 脚本往 `$CODESTRATA_OUT/PHASE` 写一个名字，各进程 1 秒内切换；之后
-  `--hot 名字@serving` 只看处理请求的那一段，启动时的初始化不会混进来。
+- **分阶段。** 两种办法，可以一起用。① 按函数切：`--phase 名字=函数`，哪个进程第一次进入这个
+  函数，就在那一刻切过去（每个阶段整个 run 只切一次，别的进程 50 ms 内跟上）——不用改被 trace
+  的脚本，离线示例那种「一条阻塞的 python 命令」也能分出加载 / 推理 / 关闭。函数写成
+  `模块:qualname`（查静态索引，继承来的方法也认，`Omni.close` 会认成 `OmniBase.close`）或
+  `文件路径:qualname`（不在索引里的文件也行，比如 examples/ 下的入口）。② case 脚本往
+  `$CODESTRATA_OUT/PHASE` 写一个名字（服务类的 case：健康检查通过后写 serving）。之后
+  `--hot 名字@serving` 只看那一段，启动时的初始化不会混进来。
 
 ```bash
-# case 脚本里（服务就绪后）：
+# 离线脚本：不改脚本，按函数切
+codestrata trace <repo> --case offline \
+    --phase generate=vllm_omni.entrypoints.omni:Omni.generate \
+    --phase shutdown=vllm_omni.entrypoints.omni:Omni.close -- bash run_single_prompt.sh
+# 服务：case 脚本里（服务就绪后）写 PHASE
 [[ -n "${CODESTRATA_OUT:-}" ]] && { echo serving > "$CODESTRATA_OUT/PHASE"; sleep 2; }
 codestrata trace <repo> --case demo -- bash case.sh
 codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得到单独排版的 hot 图
@@ -88,6 +97,10 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
   都带 B 的次数。比如 MiniCPM@serving 对比 Qwen@serving，一眼看出两个模型各走了哪些代码。
 - **导出带多个 run**：`graph <repo> --hot A --hot B [--compare]`——单文件里能在这几个 run 之间切换
   （别的 run 只带图上的次数，调用明细只有第一个的），`--compare` 带上 A、B 的对比。
+- **复刻**：每个 run 存下录制时原样的 codestrata 命令和所在目录（`cd <目录> && <命令>`，照抄就能再录一次），
+  以及 shell 里和跑模型有关的环境变量（CUDA_* / VLLM_* / HF_* / PATH…，名字像密钥的不存）——命令会继承它们，
+  光看命令复刻不出来。网页上 run 按钮旁边的「复刻」、或「?」帮助里「这次跑了什么」都能一键复制；
+  `runs show` 也打印。老 run 没存原始命令的，按 run 里存的参数拼一条并注明。
 - `trace --events` 同时记时序事件（时序图的数据，要 Python 3.12+）：每次跨文件调用的起止时刻，
   返回 / 挂起 / 恢复按帧配对，同一线程里交错的 asyncio 协程也配得对。原始日志永久留在
   `events/raw.tar.gz`，整理好的 span 在 `events/spans/`（`runs merge` 可重建）；
@@ -97,7 +110,7 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
 codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag model=qwen \
     --attach ../common.sh -- bash case.sh     # --env 传给命令、--attach 把被 source 的文件一起存下
 codestrata runs <repo> ls                     # 按 case 分组列出，状态、时长、git、录制后改过几个文件
-codestrata runs <repo> show qwen-chat         # 详情 + 文件相对当前代码的状态 + 一条能直接复制的重录命令
+codestrata runs <repo> show qwen-chat         # 详情 + 文件相对当前代码的状态 + 复刻命令
 codestrata runs <repo> tag|untag|note|merge …
 codestrata runs <repo> rm <run id>… [--yes]   # 只认完整的 run id；还在录的不删
 ```
