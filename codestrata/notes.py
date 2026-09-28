@@ -560,7 +560,12 @@ def fix_refs(repo: Path, index: dict, target: str) -> int:
     body = _REF_RE.sub(lambda m: (f"{m.group(1)}:{moved[m.group(0)]}" if m.group(0) in moved
                                   else m.group(0)), st["md"])
     meta = dict(st["meta"])
-    refs = _ref_snapshot(repo, index, body, target)
+    # 指纹只给挪了的引用重算；没挪的（包括「那一行改掉了」的）留着原来的指纹——
+    # 全部重算会把改掉了的那行的新内容记成「对的」，下次 check 就不再报它了
+    old = dict(x.rsplit("@", 1) for x in str(meta.get("refs") or "").split(",") if "@" in x)
+    new_moved = {f"{t.rsplit(':', 1)[0]}:{ln}" for t, ln in moved.items()}
+    fresh = [x.rsplit("@", 1) for x in _ref_snapshot(repo, index, body, target).split(",") if "@" in x]
+    refs = ",".join(dict.fromkeys(f"{t}@{h if t in new_moved or t not in old else old[t]}" for t, h in fresh))
     if refs:
         meta["refs"] = refs
     note_path(repo, target).write_text(dump(meta, body), encoding="utf-8")

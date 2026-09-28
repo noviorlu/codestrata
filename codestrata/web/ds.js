@@ -28,20 +28,33 @@ window.CS = window.CS || {};
     // 和 /api/graph 同形：整份 payload。导出版只有导出时的那个切面，展开 / 收起要靠 serve
     graph: function (open) {
       var same = !open || open.slice().sort().join(',') === (EMB.open || []).slice().sort().join(',');
-      return same ? Promise.resolve(EMB)
-                  : Promise.reject(new Error('导出的单文件是固定的切面，不能展开 / 收起；要交互请用 codestrata serve'));
+      if (!same) return Promise.reject(new Error('导出的单文件是固定的切面，不能展开 / 收起；要交互请用 codestrata serve'));
+      // 导出时带了别的 run（graph --hot A --hot B）：换成它只换叠加的次数，边详情里的调用明细只有主 run 的
+      var alt = this.run && EMB.hotBy && EMB.hotBy[this.run];
+      // 在导出里选了「静态图」：不叠任何 run
+      if (!this.run && EMB.hot && this.canSwitchRun)
+        return Promise.resolve(Object.assign({}, EMB, { hot: null, hotMeta: null, graphHot: null, runtimeOnlyEdges: [], cmp: null }));
+      if (!alt) return Promise.resolve(EMB);
+      return Promise.resolve(Object.assign({}, EMB, {
+        hot: { packages: alt.packages, edges: alt.edges, symbols: {}, files: {}, unmapped: alt.unmapped },
+        hotMeta: alt.meta, graphHot: null, runtimeOnlyEdges: alt.runtimeOnlyEdges, cmp: null, _alt: true }));
     },
     canCut: false,
-    // 导出版只带导出时叠的那一个 run（或者没有），不能换
     run: '',
-    canSwitchRun: false,
+    cmp: '',
+    // 导出版能换的只有导出时带上的那几个 run
+    canSwitchRun: !!(EMB.hotBy && Object.keys(EMB.hotBy).length),
     runs: function () {
       var m = EMB.hotMeta;
-      return Promise.resolve({ default: m ? m.run_id + (m.phase ? '@' + m.phase : '') : null,
-        runs: m ? [{ id: m.run_id, case: m.case, status: m.status, problems: m.problems || [], created: m.created,
-                     tags: m.tags || [], note: m.note || '', git: (m.git || {}).commit,
-                     phases: Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }),
-                     loadable: true }] : [] });
+      function row(m) {
+        return { id: m.run_id, ref: m.run_id + (m.phase ? '@' + m.phase : ''), case: m.case, status: m.status,
+                 problems: m.problems || [], created: m.created, tags: m.tags || [], note: m.note || '',
+                 git: (m.git || {}).commit, loadable: true,
+                 phases: Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) };
+      }
+      var rows = m ? [row(m)] : [];
+      Object.keys(EMB.hotBy || {}).forEach(function (k) { rows.push(row(EMB.hotBy[k].meta)); });
+      return Promise.resolve({ default: m ? m.run_id + (m.phase ? '@' + m.phase : '') : null, runs: rows, embedded: true });
     },
     note: function (t) { return Promise.resolve((EMB.notes || {})[t] || blank(t)); },
     seq: function () { return Promise.reject(new Error('导出的单文件没有带时序图；请用 codestrata serve')); },
@@ -61,7 +74,18 @@ window.CS = window.CS || {};
     hasFile: function (f) { return !!(EMB.files || {})[f]; },
     // 导出版：内嵌了全文的文件带着完整大纲；没内嵌的返回 null，前端退回只列顶层符号
     outline: function (f) { var x = (EMB.files || {})[f]; return Promise.resolve(x ? { file: f, symbols: x.symbols } : null); },
-    edge: function (a, b) { return Promise.resolve((EMB.edges || {})[a + '|' + b] || null); },
+    edge: function (a, b) {
+      var E = (EMB.edges || {})[a + '|' + b] || null;
+      var isStatic = !this.run && EMB.hot && this.canSwitchRun;       // 选了「静态图」：边详情里也不该有调用次数
+      if (!E || !(isStatic || (this.run && EMB.hotBy && EMB.hotBy[this.run]))) return Promise.resolve(E);
+      // 换成了导出时带上的别的 run：它的调用明细没带，只留静态的部分，说清楚
+      var items = E.items.filter(function (x) { return x.n_uses; }).map(function (x) {
+        return Object.assign({}, x, { runtime: [], calls: 0, calls_b: undefined, runtime_b: undefined, status: 'static' }); });
+      return Promise.resolve(Object.assign({}, E, { has_runtime: false, has_runtime_b: false, import_exec: 0,
+        note: isStatic ? '现在只看静态图，这里只列静态引用'
+          : '导出的单文件只带了第一个 run 的调用明细：这个 run 在图上的次数是对的，这里只列静态引用',
+        items: items, counts: { confirmed: 0, dynamic: 0, static: items.length, import_only: (E.import_only || []).length, calls: 0 } }));
+    },
     searchIndex: function () { return Promise.resolve(EMB.search || null); },
     reveal: function () { return Promise.reject(new Error('导出的单文件是固定切面')); },
     // 谁引用了这个定义：导出版没有全仓的引用表，只在内嵌了全文的文件里找
@@ -98,6 +122,7 @@ window.CS = window.CS || {};
       if (open) q.push('open=' + encodeURIComponent(open.join(',')));
       if (w) q.push('w=' + Math.round(w));
       if (this.run) q.push('run=' + encodeURIComponent(this.run));
+      if (this.run && this.cmp) q.push('cmp=' + encodeURIComponent(this.cmp));
       return j('/api/graph' + (q.length ? '?' + q.join('&') : ''));
     },
     canCut: true,
@@ -136,8 +161,10 @@ window.CS = window.CS || {};
     outline: function (f) { return j('/api/outline?f=' + encodeURIComponent(f)); },
     edge: function (a, b) {
       return j('/api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
-               + (this.run ? '&run=' + encodeURIComponent(this.run) : ''));
+               + (this.run ? '&run=' + encodeURIComponent(this.run) : '')
+               + (this.run && this.cmp ? '&cmp=' + encodeURIComponent(this.cmp) : ''));
     },
+    cmp: '',
     refs: function (t) { return j('/api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     hasFile: function () { return true; },
     searchIndex: function () { return j('/api/search-index'); },

@@ -64,9 +64,35 @@ def _norm_open(idx: dict, open_) -> set:
     return set(idx.get("default_open") or []) if open_ is None else {o for o in open_ if _cut.is_node(idx, o)}
 
 
+def _hot_on_cut(hot: dict, node_of: dict) -> tuple[dict, dict]:
+    """一个 run 的 hot（单元粒度）按切面汇总：(节点 → 次数, "a|b" 节点间的边 → 次数)。"""
+    hp: dict[str, int] = {}
+    for u, n in hot["packages"].items():
+        if u in node_of:
+            hp[node_of[u]] = hp.get(node_of[u], 0) + n
+    he: dict[str, int] = {}
+    for k, n in hot["edges"].items():
+        a, _, b = k.partition("|")
+        if a in node_of and b in node_of and node_of[a] != node_of[b]:
+            kk = f"{node_of[a]}|{node_of[b]}"
+            he[kk] = he.get(kk, 0) + n
+    return hp, he
+
+
+def _meta_brief(m: dict | None) -> dict | None:
+    """对比 / 导出里别的 run 只带这些：够横幅和下拉用"""
+    if not m:
+        return None
+    # 横幅和帮助里要读的都带上（都不大）：换到导出里别的 run 时，安装包映射、命令、进程这些说明不能没了
+    return {k: m.get(k) for k in ("run_id", "case", "phase", "phases", "status", "problems", "created",
+                                    "tags", "note", "git", "n_procs", "stale_files", "unmatched", "events",
+                                    "mapped_from", "n_mapped", "mapped_mismatch", "unmapped", "cmd", "procs",
+                                    "script", "file_state")}
+
+
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
                   hot_meta: dict | None = None, open_=None, lanes="auto", min_files: int = 1,
-                  width: float = 1180.0) -> dict:
+                  width: float = 1180.0, hot_b: dict | None = None, hot_meta_b: dict | None = None) -> dict:
     """一个切面上的全部前端数据。open_ 是展开着的目录（不给就用 scan 算出的默认切面）；
     图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。
     width：页面上图框有多宽——按它排版，宽屏上图铺满、少折行，而不是把 1180 宽的图放大"""
@@ -135,27 +161,26 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
         kinds[k]["uses"] = len(ss)
     # hot 叠加也按切面汇总；只在 runtime 出现、静态 import 图里根本没有的节点间调用——插件、
     # importlib、注册表——是静态分析的盲区，必须单独画出来，否则图会说谎。
-    hot_view, rt_only = None, []
+    # 对比（hot_b，另一个 run）：两边各自按切面汇总，节点和边上都带 [A, B] 两个次数；
+    # 只在 runtime 出现的边、「只看跑到的」都取两边的并集
+    hot_view, rt_only, cmp = None, [], None
     if hot:
-        hp: dict[str, int] = {}
-        for u, n in hot["packages"].items():
-            if u in node_of:
-                hp[node_of[u]] = hp.get(node_of[u], 0) + n
-        he: dict[str, int] = {}
-        for k, n in hot["edges"].items():
-            a, _, b = k.partition("|")
-            if a in node_of and b in node_of and node_of[a] != node_of[b]:
-                kk = f"{node_of[a]}|{node_of[b]}"
-                he[kk] = he.get(kk, 0) + n
+        hp, he = _hot_on_cut(hot, node_of)
         hot_view = {**hot, "packages": hp, "edges": he}
+        hpb, heb = _hot_on_cut(hot_b, node_of) if hot_b else ({}, {})
+        if hot_b:
+            ref_b = (hot_meta_b or {}).get("run_id", "?") + (f"@{hot_meta_b['phase']}" if (hot_meta_b or {}).get("phase") else "")
+            cmp = {"ref_b": ref_b, "meta_b": _meta_brief(hot_meta_b),
+                   "nodes": {n: [hp.get(n, 0), hpb.get(n, 0)] for n in set(hp) | set(hpb) if hp.get(n) or hpb.get(n)},
+                   "edges": {k: [he.get(k, 0), heb.get(k, 0)] for k in set(he) | set(heb) if he.get(k) or heb.get(k)}}
         shown = {n["id"] for n in g["nodes"]}
-        for k, n in he.items():
+        for k in sorted(set(he) | set(heb)):
             a, _, b = k.partition("|")
             if k not in kinds and a in shown and b in shown:
-                rt_only.append([a, b, n])
-    # hot 视图单独排版：只放跑到的节点，泳道数沿用总图，纵坐标含义不变、横向更紧凑
+                rt_only.append([a, b, max(he.get(k, 0), heb.get(k, 0))])
+    # hot 视图单独排版：只放跑到的节点（对比时两边任一跑到的），泳道数沿用总图，纵坐标含义不变、横向更紧凑
     g_hot = (_layout.build(syn, lanes=g["lanes"], min_files=min_files, width=width,
-                           only={p for p, n in hot_view["packages"].items() if n})
+                           only={p for p, n in hot_view["packages"].items() if n} | set((cmp or {}).get("nodes") or {}))
              if hot_view else None)
     for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里
         x = v["nodes"][nd["id"]]
@@ -165,7 +190,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
             "edgeKinds": kinds, "runtimeOnlyEdges": rt_only,
-            "hot": hot_view, "hotMeta": hot_meta,
+            "hot": hot_view, "hotMeta": hot_meta, "cmp": cmp,
             "open": sorted(open_), "defaultOpen": idx.get("default_open") or [],
             "autoSplit": idx["repo"].get("auto_split") or []}
 
@@ -253,6 +278,29 @@ def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None)
             "items": items, "import_only": imp_only,
             "counts": {**cnt, "import_only": len(imp_only),
                        "calls": sum(x["calls"] for x in items)}}
+
+
+def edge_compare(repo: Path, idx: dict, a: str, b: str, hot: dict | None, hot_b: dict | None) -> dict:
+    """对比时的边详情：A 的明细，每一项再带上 B 调了几次（calls_b）；只有 B 调到的符号补在后面
+    （calls 为 0）。两个 run 各算一遍 edge_detail 再按符号合，静态的部分两边一样。"""
+    d = edge_detail(repo, idx, a, b, hot)
+    if not hot_b:
+        return d
+    db = edge_detail(repo, idx, a, b, hot_b)
+    by = {it["sym"]: it for it in db["items"]}
+    for it in d["items"]:
+        itb = by.pop(it["sym"], None)
+        it["calls_b"] = itb["calls"] if itb else 0
+        it["runtime_b"] = itb["runtime"] if itb else []
+    # 只有 B 调到的：单独一组（only_b），计数也单独记——放进 A 的「动态分派」会说成「这次调到了」
+    for sym, itb in by.items():
+        if itb["calls"]:
+            d["items"].append({**itb, "status": "only_b", "calls": 0, "calls_b": itb["calls"], "runtime": [],
+                               "runtime_b": itb["runtime"]})
+    d["counts"]["calls_b"] = db["counts"]["calls"]
+    d["counts"]["only_b"] = sum(1 for it in d["items"] if it["status"] == "only_b")
+    d["has_runtime_b"] = True
+    return d
 
 
 def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
@@ -540,12 +588,37 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
 
 def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                    per_pkg: int = 10, lines: int = 30,
-                   total_budget: int = 14_000_000) -> dict:
+                   total_budget: int = 14_000_000, others: list | None = None, compare: bool = False) -> dict:
     """单文件导出要的全部数据：图 + 已有解读 + 待办输入包 + 代表符号的源码 + 尽量多的全文。
 
     整个 HTML 要装得进一个单文件（artifact 之类的宿主上限 16 MB），所以先算好其余部分，
-    剩下的额度才留给全文；这次 case 实际跑到的文件优先。"""
-    p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta)
+    剩下的额度才留给全文；这次 case 实际跑到的文件优先。
+
+    others：别的 run [(hot, meta), …]——只带它们在导出切面上的节点、边次数和简要的 meta
+    （EMB.hotBy），页面上能在它们之间切换，但边详情里的调用明细只有主 run 的。
+    compare：主 run 和 others 的第一个做对比（EMB.cmp，边详情带 calls_b）。"""
+    # 同一个 run 给了两遍、或者和主 run 一样：只留一份（主 run 的那份是全的）
+    main_ref = (hot_meta or {}).get("run_id", "") + (f"@{hot_meta['phase']}" if (hot_meta or {}).get("phase") else "")
+    seen, uniq = {main_ref}, []
+    for h, m in others or []:
+        ref = m["run_id"] + (f"@{m['phase']}" if m.get("phase") else "")
+        if h is not None and ref not in seen:
+            seen.add(ref)
+            uniq.append((h, m))
+    others = uniq
+    hb, mb = (others[0] if (compare and others) else (None, None))
+    p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta, hot_b=hb, hot_meta_b=mb)
+    hot_by = {}
+    if others:
+        v = _cut.view(idx, _norm_open(idx, None))
+        shown = {n["id"] for n in p["graph"]["nodes"]}
+        for h, m in others:
+            hp, he = _hot_on_cut(h, v["node_of"])
+            ref = m["run_id"] + (f"@{m['phase']}" if m.get("phase") else "")
+            rt = [[k.split("|")[0], k.split("|")[1], n] for k, n in sorted(he.items())
+                  if k not in p["edgeKinds"] and k.split("|")[0] in shown and k.split("|")[1] in shown]
+            hot_by[ref] = {"packages": hp, "edges": he, "unmapped": h.get("unmapped"),
+                           "runtimeOnlyEdges": rt, "meta": _meta_brief(m)}
     nts = {n["id"]: _notes.load(repo, idx, n["id"]) for n in p["graph"]["nodes"]}
     nts[_notes.OVERVIEW] = _notes.load(repo, idx, _notes.OVERVIEW)
     for name, nt in nts.items():
@@ -573,11 +646,11 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                 sources[s["key"]] = src
     edges = {}
     for a, b, _ in p["graph"]["edges"]:
-        edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
+        edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
     for a, b, _ in p["runtimeOnlyEdges"]:
-        edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
+        edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
     p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources, "edges": edges,
-              "search": search_index(idx), "xrefTargets": xtargets})
+              "search": search_index(idx), "xrefTargets": xtargets, "hotBy": hot_by})
 
     # 全文：用剩下的额度。跑到过的文件优先，其次按体积从小到大（同样额度能带上更多文件）。
     # 先用原始字节数估算（高亮 + JSON 转义后约 3 倍），明显放不下的不去高亮，省掉大部分时间。

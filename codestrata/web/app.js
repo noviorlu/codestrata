@@ -33,13 +33,14 @@ window.CS = window.CS || {};
           self.expand(id);
         };
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
-                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges });
+                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, cmp: d.cmp });
         self.edgeChips();
         self.controls();
         self.cutBar();
         self.refreshStatus();
         self.footer(d);
-        if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);   // 进度栏会被解读统计盖掉，用浮层提示
+        if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);
+        else if (self._cmpMissing && CS.viewer) { CS.viewer.toast(self._cmpMissing); self._writeHash(); }   // 进度栏会被解读统计盖掉，用浮层提示
         // 选中从别处变了（Esc、点空白、搜索、抽屉里的链接、切面变了之后的保留选中）：时序图上的高亮跟着变
         ['onClear', 'onPick', 'onPickEdge', 'onSelectFrame'].forEach(function (h) {
           var orig = CS.graph[h];
@@ -223,8 +224,9 @@ window.CS = window.CS || {};
     },
 
     _writeHash: function () {
-      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view)=/.test(x); });
+      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view|cmp)=/.test(x); });
       if (this.view === 'seq') rest.unshift('view=seq');
+      if (CS.ds.cmp && CS.ds.run) rest.unshift('cmp=' + encodeURIComponent(CS.ds.cmp).replace(/%40/g, '@'));
       if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
       history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
     },
@@ -233,6 +235,7 @@ window.CS = window.CS || {};
       var self = this;
       return CS.ds.runs().then(function (r) {
         self.runList = r.runs || [];
+        self.runListEmbedded = !!r.embedded;
         self._known = {};
         self.runList.forEach(function (x) { self._known[x.id] = 1; });
         var want = self._hashRun();
@@ -247,6 +250,16 @@ window.CS = window.CS || {};
           }
         }
         if (CS.ds.canSwitchRun) CS.ds.run = want;
+        var c = /(?:^#|&)cmp=([^&]*)/.exec(location.hash || '');
+        if (c && want && CS.ds.canSwitchRun && !r.embedded) {
+          // 地址里的对比 run 也要核一遍：找不到、还没有计数、和主 run 是同一个，都不带上（否则整张图出不来）
+          var cr = decodeURIComponent(c[1]), cid = cr.split('@')[0], aid = want.split('@')[0];
+          var ch = self.runList.filter(function (x) { return x.id === cid || x.case === cid; });
+          var ah = self.runList.filter(function (x) { return x.id === aid || x.case === aid; })[0];
+          var okc = ch.length && ch[0].loadable && !(ah && ch[0].id === ah.id && (cr.split('@')[1] || '') === (want.split('@')[1] || ''));
+          if (okc) CS.ds.cmp = cr;
+          else self._cmpMissing = '地址里对比的 run ' + cr + (ch.length ? ' 不能用来对比' : ' 找不到了') + '，只看 ' + want;
+        }
         self.wireRunSel();
       }).catch(function () { self.runList = []; self._known = {}; self.wireRunSel(); });
     },
@@ -259,7 +272,13 @@ window.CS = window.CS || {};
     selectRun: function (id, phase) {
       var self = this, prev = CS.ds.run;
       if (CS.seq) CS.seq.reset();                     // 换了 run：时序图的窗口从新 run 的阶段起点重来
+      var prevCmp = CS.ds.cmp;
       CS.ds.run = id ? id + (phase ? '@' + phase : '') : '';
+      if (!id || (CS.ds.cmp && CS.ds.cmp.split('@')[0] === id)) CS.ds.cmp = '';   // 不能和自己比
+      else if (CS.ds.cmp) {                          // 换了 A 的阶段：B 跟着换成同名的阶段（没有就全部）
+        var bx = (this.runList || []).filter(function (x) { return x.id === CS.ds.cmp.split('@')[0]; })[0];
+        if (bx) CS.ds.cmp = bx.id + this._cmpPhase(bx, phase || '');
+      }
       this._writeHash();
       this.closeRunPop();
       var p = this.setCut(this.curOpen()), mine = this._cutSeq;
@@ -268,10 +287,91 @@ window.CS = window.CS || {};
         // 换不过去（run 被删了、还没有计数）：退回原来那个，免得之后取边、引用、输入包用的是另一个 run
         if (!ok && self._cutSeq === mine) {
           CS.ds.run = prev;
+          CS.ds.cmp = prevCmp;
           self._writeHash();
           self.runBar();
           if (CS.viewer) CS.viewer.toast('换不过去：' + document.getElementById('prog').textContent);
         }
+        return ok;
+      });
+    },
+
+    /* ---- 对比：另一个 run，模块图上三种颜色 ---- */
+    cmpBar: function () {
+      var self = this, cb = document.getElementById('cmpchips');
+      if (!cb) return;
+      var d = this.data, m = d && d.hot && d.hotMeta;
+      var c = d && d.cmp;
+      if (m && c && this.runListEmbedded) {            // 导出版：对比是导出时定好的，只显示、不能换
+        cb.innerHTML = '<span class="lbl">对比</span><span class="chip runbtn onb" title="导出时用 --compare 定好的对比；要换请用 codestrata serve">'
+          + esc((c.meta_b || {}).case || '?') + ' · ' + esc(shortTime((c.meta_b || {}).created)) + '</span>';
+        return;
+      }
+      var canCmp = m && CS.ds.canSwitchRun && !(this.runListEmbedded) && (this.runList || []).length > 1;
+      if (!canCmp) { cb.innerHTML = ''; return; }
+      cb.innerHTML = '<span class="lbl">对比</span><span class="runsel"><button class="chip runbtn' + (c ? ' onb' : '') + '" id="cmpbtn"'
+        + ' title="和另一个 run 对比：只有这个 run 跑到的橙色，只有另一个跑到的紫色，两边都跑到的前景色">'
+        + (c ? esc((c.meta_b || {}).case || '?') + ' · ' + esc(shortTime((c.meta_b || {}).created)) : '无') + '</button>'
+        + '<div class="runpop" id="cmppop" role="menu" aria-label="选择对比的 run" hidden></div></span>';
+      var b = document.getElementById('cmpbtn'), pop = document.getElementById('cmppop');
+      b.onclick = function (e) {
+        e.stopPropagation();
+        if (!pop.hidden) { pop.hidden = true; return; }
+        self.closeRunPop();
+        self.refreshRuns(false).then(function () {
+          self.renderCmpPop(pop); pop.hidden = false;
+          var f = pop.querySelector('[aria-current=true]') || pop.querySelector('.rr');
+          if (f) f.focus();
+        });
+      };
+      if (!this._cmpWired) {
+        this._cmpWired = true;
+        document.addEventListener('click', function (e) {
+          var p = document.getElementById('cmppop');
+          if (p && !p.hidden && !p.contains(e.target)) p.hidden = true;
+        });
+        document.addEventListener('keydown', function (e) {
+          var p = document.getElementById('cmppop');
+          if (e.key === 'Escape' && p && !p.hidden) {
+            e.stopPropagation(); e.preventDefault(); p.hidden = true;
+            var b = document.getElementById('cmpbtn'); if (b) b.focus();
+          }
+        }, true);
+      }
+    },
+
+    renderCmpPop: function (pop) {
+      var self = this, m = this.data.hotMeta, cur = (this.data.cmp || {}).ref_b || '';
+      var h = '<button class="rr" role="menuitem" data-cmp="" aria-current="' + !cur + '"><span class="rt">不对比</span><span class="rm">只看 '
+        + esc(m.case) + '</span><span></span></button>';
+      (this.runList || []).forEach(function (x) {
+        if (x.id === m.run_id || !x.loadable) return;
+        var suf = self._cmpPhase(x, m.phase || ''), p = suf.slice(1);
+        var ref = x.id + suf;
+        h += '<button class="rr" role="menuitem" data-cmp="' + esc(ref) + '" aria-current="' + (cur.split('@')[0] === x.id) + '">'
+          + '<span class="rt">' + esc(shortTime(x.created)) + '</span><span class="rm"><b>' + esc(x.case) + '</b>' + (p ? ' @' + esc(p) : '')
+          + (x.events ? '　<span class="ev">时序</span>' : '') + (x.tags || []).map(function (t) { return ' <span class="tag">' + esc(t) + '</span>'; }).join('')
+          + '</span><span class="rs ' + (x.status === 'ok' ? 'ok' : 'bad') + '">' + esc(x.status || '') + '</span></button>';
+      });
+      pop.innerHTML = h;
+      [].forEach.call(pop.querySelectorAll('[data-cmp]'), function (el) {
+        el.onclick = function (e) { e.stopPropagation(); pop.hidden = true; self.selectCmp(el.dataset.cmp); };
+      });
+    },
+
+    /* 对比的阶段跟着 A：A 看全部就比全部；A 看某个阶段、B 也有同名的就比它；B 没有就比 B 的全部 */
+    _cmpPhase: function (x, phase) {
+      if (!phase) return '';
+      return (x.phases || []).some(function (p) { return p.name === phase; }) ? '@' + phase : '';
+    },
+
+    selectCmp: function (ref) {
+      var self = this, prev = CS.ds.cmp;
+      CS.ds.cmp = ref || '';
+      this._writeHash();
+      var p = this.setCut(this.curOpen()), mine = this._cutSeq;
+      return p.then(function (ok) {
+        if (!ok && self._cutSeq === mine) { CS.ds.cmp = prev; self._writeHash(); self.cmpBar(); }
         return ok;
       });
     },
@@ -293,7 +393,7 @@ window.CS = window.CS || {};
       var self = this, vc = document.getElementById('viewchips');
       if (!vc) return;
       var m = this.data && this.data.hot && this.data.hotMeta, ev = this._runHasEvents();
-      if (!m || !CS.ds.canSwitchRun) { vc.innerHTML = ''; return; }
+      if (!m || !CS.ds.canSwitchRun || this.runListEmbedded) { vc.innerHTML = ''; return; }
       vc.innerHTML = '<span class="lbl">图</span>'
         + '<button class="chip" data-view="graph" aria-pressed="' + (this.view !== 'seq') + '" title="模块之间的依赖，橙色是这个 run 跑到的">模块图</button>'
         + '<button class="chip" data-view="seq" aria-pressed="' + (this.view === 'seq') + '"' + (ev ? '' : ' disabled')
@@ -309,7 +409,7 @@ window.CS = window.CS || {};
       if (v === 'seq' && !this._runHasEvents()) {
         // 说清楚为什么看不了：没选 run（或地址里的 run 找不到了，那句已经提示过）、导出版、这个 run 没录事件
         var m = this.data && this.data.hot && this.data.hotMeta;
-        var why = !CS.ds.canSwitchRun ? '导出的单文件没有带时序图；要看请用 codestrata serve'
+        var why = CS.ds.mode === 'embedded' ? '导出的单文件没有带时序图；要看请用 codestrata serve'
           : this._runMissing && !m ? null
           : !m ? '先在上面「运行」里选一个录了时序事件的 run'
           : this._runEventsError() ? '这个 run 的时序事件整理失败了：codestrata runs <repo> merge <id> 重来'
@@ -397,7 +497,8 @@ window.CS = window.CS || {};
       var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
       var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
       this.viewBar();
-      if (!m || phases.length < 2 || !CS.ds.canSwitchRun) { pc.innerHTML = ''; return; }
+      this.cmpBar();
+      if (!m || phases.length < 2 || !CS.ds.canSwitchRun || this.runListEmbedded) { pc.innerHTML = ''; return; }
       pc.innerHTML = '<span class="lbl">阶段</span>' + [{ name: '' }].concat(phases).map(function (p) {
         return '<button class="chip" data-ph="' + esc(p.name) + '" aria-pressed="' + ((m.phase || '') === p.name) + '" title="'
           + (p.name ? '只看 ' + esc(p.name) + ' 这一段' + (p.n_funcs != null ? '（' + p.n_funcs + ' 个函数）' : '') : '各阶段加在一起')
@@ -437,6 +538,7 @@ window.CS = window.CS || {};
 
     openRunPop: function () {
       var self = this, pop = document.getElementById('runpop'), b = document.getElementById('runbtn');
+      var cp = document.getElementById('cmppop'); if (cp) cp.hidden = true;   // 两个下拉不同时开
       document.getElementById('rundot').hidden = true;
       pop.hidden = false;
       b.setAttribute('aria-expanded', 'true');
@@ -453,7 +555,10 @@ window.CS = window.CS || {};
 
     renderRunPop: function () {
       var self = this, pop = document.getElementById('runpop'), list = this.runList || [];
-      var cur = this.data && this.data.hot && this.data.hotMeta ? this.data.hotMeta.run_id : '';
+      var hm = this.data && this.data.hot && this.data.hotMeta;
+      // 导出版：同一个 run 的两个阶段可能是两行，按「id@阶段」认
+      var cur = hm ? (this.runListEmbedded ? hm.run_id + (hm.phase ? '@' + hm.phase : '') : hm.run_id) : '';
+      var keyOf = function (x) { return x.ref || x.id; };
       var h = '<button class="rr" role="menuitem" data-run="" aria-current="' + !cur + '"><span class="rt">静态图</span>'
         + '<span class="rm">不叠 runtime，只看 import 结构</span><span></span></button>';
       if (!list.length) {
@@ -474,10 +579,10 @@ window.CS = window.CS || {};
             + (x.stale && x.stale.changed ? '<span style="color:var(--stale)">⚠ 录制后改过 ' + x.stale.changed + ' 个文件</span>　' : '')
             + (x.stale && x.stale.mismatch ? '<span style="color:var(--stale)">录制时安装包和仓库有 ' + x.stale.mismatch + ' 个文件不一致</span>　' : '')
             + (x.note ? '「' + esc(x.note) + '」' : '');
-          h += '<button class="rr' + (ok ? '' : ' weak') + '" role="menuitem" data-run="' + esc(x.id) + '"'
+          h += '<button class="rr' + (ok ? '' : ' weak') + '" role="menuitem" data-run="' + esc(keyOf(x)) + '"'
             + (x.loadable ? '' : ' disabled title="还没有计数：还在录，或录制中断了（codestrata runs <repo> merge ' + esc(x.id) + '）"')
-            + ' aria-current="' + (x.id === cur) + '">'
-            + '<span class="rt" title="' + esc(x.id) + '">' + esc(shortTime(x.created)) + '</span>'
+            + ' aria-current="' + (keyOf(x) === cur) + '">'
+            + '<span class="rt" title="' + esc(keyOf(x)) + '">' + esc(shortTime(x.created)) + (x.ref && x.ref.indexOf('@') > 0 ? ' @' + esc(x.ref.split('@')[1]) : '') + '</span>'
             + '<span class="rm">' + meta + '</span>'
             + '<span class="rs ' + (ok ? 'ok' : 'bad') + '">' + esc(x.status || '') + '</span>'
             + (!ok && x.problems && x.problems.length ? '<span class="rx">' + esc(x.problems.join('；')) + '</span>' : '')
@@ -487,9 +592,11 @@ window.CS = window.CS || {};
       pop.innerHTML = h;
       [].forEach.call(pop.querySelectorAll('[data-run]'), function (el) {
         el.onclick = function () {
-          var id = el.dataset.run, x = list.filter(function (r) { return r.id === id; })[0];
+          var id = el.dataset.run, x = list.filter(function (r) { return keyOf(r) === id; })[0];
           if (id === cur) { self.closeRunPop(); return; }
-          self.selectRun(id, x ? self._defaultPhase(x) : '');
+          // 导出版：只能换到导出时带上的那几个（它们的「id@阶段」就是 x.ref），不猜阶段
+          if (x && x.ref) { var rp = x.ref.split('@'); self.selectRun(rp[0], rp[1] || ''); }
+          else self.selectRun(id, x ? self._defaultPhase(x) : '');
         };
       });
       var first = pop.querySelector('[aria-current=true]') || pop.querySelector('.rr');
@@ -528,8 +635,17 @@ window.CS = window.CS || {};
         // 地址里记完整的 id（case 名会随着重录指到别的 run 上），刷新页面还是同一个 run
         var ref = m.run_id + (m.phase ? '@' + m.phase : '');
         if (CS.ds.run !== ref && CS.ds.canSwitchRun) { CS.ds.run = ref; this._writeHash(); }
+        // 对比的 run 也记完整 id（case 名会随重录指到别的 run 上，也可能解析成主 run 自己）
+        if (d.cmp && CS.ds.cmp !== d.cmp.ref_b && !this.runListEmbedded) { CS.ds.cmp = d.cmp.ref_b; this._writeHash(); }
+        if (d.cmpError) { CS.ds.cmp = ''; this._writeHash(); if (CS.viewer) CS.viewer.toast(d.cmpError); }
+        var cmp = d.cmp, mb = cmp && cmp.meta_b;
         document.getElementById('hotbanner').innerHTML =
-          '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
+          (mb ? '<div class="hotbanner cmpbanner"><div><b>对比</b>：<span class="tA">A = ' + esc(m.case) + (m.phase ? '@' + esc(m.phase) : '')
+            + '</span>　<span class="tB">B = ' + esc(mb.case) + (mb.phase ? '@' + esc(mb.phase) : '') + '</span>　'
+            + '橙色只有 A 跑到，紫色只有 B 跑到，前景色两边都跑到；节点上的数是「A/B」。'
+            + ((!!m.events) !== (!!mb.events) ? '<br><span style="color:var(--stale)">一个录了时序事件、一个没录：录事件本身有开销，调用次数和时长不完全可比。</span>' : '')
+            + '</div></div>' : '')
+          + '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
           + (m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
           + (m.status && m.status !== 'ok' ? '<span style="color:var(--stale)">⚠ 这次录制不完整'
@@ -562,7 +678,11 @@ window.CS = window.CS || {};
       var defs = [['refs', 'e ref', '引用', c.ref, 'import 了，并且真的用到了对方的符号', false],
                   ['imp', 'e imp', '只 import', c.imp,
                    '一个符号都没用到：再导出 / 只做类型标注 / 为了副作用 / 死 import', false]];
-      if (hot) {
+      if (hot && CS.graph.cmp) {
+        defs.push(['hot', 'e ref warm', 'runtime', c.warm, '对比：橙色只有 A 跑到、紫色只有 B 跑到、前景色两边都跑到，粗细 ∝ 两边的较大值', true]);
+        if (c.dyn) defs.push(['dyn', 'e dyn warm', '只在 runtime', c.dyn,
+                              '静态 import 图里没有：插件 / getattr / 注册表这类动态分派（两个 run 任一跑到）', true]);
+      } else if (hot) {
         defs.push(['hot', 'e ref warm', 'runtime', c.warm, '这次 case 真的调用过，粗细 ∝ 调用次数', true]);
         if (c.dyn) defs.push(['dyn', 'e dyn warm', '只在 runtime', c.dyn,
                               '静态 import 图里没有：插件 / getattr / 注册表这类动态分派', true]);
@@ -571,7 +691,8 @@ window.CS = window.CS || {};
         return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="' + (s[x[0]] !== false) + '" title="'
           + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true"><line x1="0" y1="4" x2="22" y2="4" class="'
           + x[1] + '" style="stroke-width:1.8"/></svg>' + x[2] + ' <span class="n">' + x[3] + '</span></button>';
-      }).join('');
+      }).join('')
+        + (CS.graph.cmp ? '<span class="cmpleg" title="对比两个 run"><i class="a"></i>只有 A<i class="b"></i>只有 B<i class="ab"></i>两边都有</span>' : '');
     },
 
     /* ---- 切面：展开 / 收起 ---- */
@@ -740,7 +861,7 @@ window.CS = window.CS || {};
     redraw: function () {
       var d = this.data, s = CS.graph.state;
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
-                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges });
+                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, cmp: d.cmp });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();

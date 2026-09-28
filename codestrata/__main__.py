@@ -8,7 +8,7 @@
     codestrata pack  <repo> <target>             打印某个模块给 agent 的输入包
     codestrata note  <repo> <target> <file.md>   写回一份解读（仓库总览的 target 是 _overview）
     codestrata check <repo> [target ...]         机器核对解读：过期、引用的 file:line / 符号是否存在
-    codestrata graph <repo> [--hot RUN]          导出单文件 HTML（只读、离线、可分享）
+    codestrata graph <repo> [--hot RUN]… [--compare]   导出单文件 HTML（只读、离线、可分享；多个 run 可切换）
 
 RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
 后面可以加 @阶段（如 minicpmo-duplex@serving）。
@@ -16,6 +16,7 @@ RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -99,11 +100,30 @@ def cmd_graph(a) -> int:
     """导出单文件 HTML（只读、离线、可分享）。要写解读或跳编辑器，用 serve。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
-    hot, meta = _payload.load_hot(repo, idx, a.hot)
-    pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg)
+    refs = a.hot or []
+    if any(not r.strip() for r in refs):
+        raise SystemExit("--hot 给了空值（脚本里的变量没设？）")
+    refs = list(dict.fromkeys(refs))              # 同一个写了两遍：只留一份
+    if a.compare and len(refs) < 2:
+        raise SystemExit("--compare 要给两个 --hot：第一个是主 run，第二个和它对比")
+    hot, meta = _payload.load_hot(repo, idx, refs[0]) if refs else (None, None)
+    others = [_payload.load_hot(repo, idx, r) for r in refs[1:]]
+    # 写法不同、解析到同一个 run（同一阶段）的只留一份；--compare 要真的有另一个
+    ref_of = lambda m: m["run_id"] + (f"@{m['phase']}" if m.get("phase") else "")
+    seen, uniq = {ref_of(meta)} if meta else set(), []
+    for h, m in others:
+        if ref_of(m) not in seen:
+            seen.add(ref_of(m))
+            uniq.append((h, m))
+    others = uniq
+    if a.compare and not others:
+        raise SystemExit("--compare：几个 --hot 解析到的是同一个 run（同一阶段），没有可以对比的")
+    pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg,
+                                 others=others, compare=a.compare)
     html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
                           fragment=a.fragment)
-    name = f"overview{'-' + re.sub(r'[^A-Za-z0-9@._-]', '_', a.hot) if a.hot else ''}.html"
+    tag = "+".join(refs) + ("-vs" if a.compare else "")
+    name = f"overview{'-' + re.sub(r'[^A-Za-z0-9@._+-]', '_', tag) if refs else ''}.html"
     out = Path(a.out) if a.out else (_outdir(repo) / name)
     out.write_text(html, encoding="utf-8")
     g = pl["graph"]
@@ -111,7 +131,10 @@ def cmd_graph(a) -> int:
     noted = sum(1 for i in ids if pl["notes"][i]["present"] and not pl["notes"][i]["stale"])
     print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边，"
           f"泳道 {g['lanes']}，解读 {noted}/{len(ids)}"
-          + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "") + ")")
+          + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "")
+          + (f"，另带 {len(others)} 个 run 可切换" if others else "") + ("，对比前两个" if a.compare else "") + ")")
+    parts = {k: len(json.dumps(pl.get(k), ensure_ascii=False)) for k in ("graph", "graphHot", "edges", "sources", "files", "hotBy", "cmp")}
+    print("  各部分：" + "，".join(f"{k} {v / 1024:.0f} KB" for k, v in parts.items() if v > 4))
     return 0
 
 
@@ -513,7 +536,9 @@ def main(argv: list[str] | None = None) -> int:
 
     g = sub.add_parser("graph", help="导出单文件 HTML（只读、可分享）")
     common(g)
-    g.add_argument("--hot", default=None, metavar="RUN", help="叠加某个 run 的 runtime 结果（run id 或 case 名，可加 @阶段）")
+    g.add_argument("--hot", action="append", default=None, metavar="RUN",
+                   help="叠加某个 run 的 runtime 结果（run id 或 case 名，可加 @阶段）；可以给多个，第一个是主 run，其余在页面上可切换")
+    g.add_argument("--compare", action="store_true", help="主 run 和第二个 --hot 对比（三种颜色）")
     g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
     g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
     g.add_argument("--out", default=None)

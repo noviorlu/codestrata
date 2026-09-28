@@ -352,7 +352,7 @@ REF := (<完整 run id> | <case>) ["@" PHASE]
 - **只写 `<case>`**：取这个 case 最新一次 `ok` 的 run；一次 ok 都没有时，取最新的 `partial` 并打印警告。
 - **不写 `@PHASE`**：各阶段相加，和现在 `--hot case` 的含义相同。现在的 `minicpmo-duplex@serving` 写法照旧能用。
 - **每条命令都打印解析到的完整 id。**
-- **导出的默认文件名**：`overview-<case>@<phase>.html`，只保留 `[A-Za-z0-9@._-]` 这些字符。
+- **导出的默认文件名**：`overview-<REF>.html`；多个 `--hot` 用 `+` 连起来，`--compare` 再加 `-vs`；只保留 `[A-Za-z0-9@._+-]` 这些字符。
 
 ---
 
@@ -686,7 +686,9 @@ T                                        达到上限，之后不再记（计数
 - **做什么**：实现 `runs.remap`（见 3.5 第 3 条），在 `hotMeta` 里报 `unmatched`。
 - **验收**：在 codestrata 自己的 case 跑到的文件里，把一个函数下移 5 行后重新 scan：这个函数的 `hot.symbols` 次数和移动前相同；包 `__init__.py` 里的函数也能对上。
 
-### M7　对比与多 run 导出（约 1.5 天）
+### M7　对比与多 run 导出（约 1.5 天）　✅ 已完成（MiniCPM 对 Qwen 的对比待 Qwen 录好）
+
+> 实现：`payload._hot_on_cut`（A、B 各汇总一次）、`graph_payload(hot_b=)` 的 `cmp` 块、`payload.edge_compare`（两边各算一遍 edge_detail 再按符号合：每项带 `calls_b`，只有 B 调到的补在后面）；serve 的 graph / edge 接受 `cmp=`；前端「对比」按钮（有同名阶段就比同名阶段）、三种颜色（新 token `--hotb` 明暗各一套）、横幅图例、边详情「A n / B m」、地址里记 `cmp=`；导出 `graph --hot A --hot B [--compare]`：别的 run 在 `EMB.hotBy` 里只带切面上的节点、边次数，单文件里能切换，边详情的调用明细只有主 run 的（切过去时说明）。在 codestrata 自己的两次 scan-export 上核对了明暗两种主题的配色。
 
 - **做什么**：`_hot_on_cut` 和 `cmp` 块；`edge_detail(hot_b)`；三种颜色；`graph --hot` 可以给多个、`--compare`、`hotBy`。
 - **验收**：

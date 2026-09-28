@@ -35,12 +35,22 @@ window.CS = window.CS || {};
           + jump(d, x.name, 'lk')
           + (d ? '<span class="loc">' + esc(d.f + ':' + d.l) + '</span>' : '<span class="loc">（没找到定义）</span>')
           + '<span class="cnt">' + (x.n_uses ? '引用 ' + x.n_uses + ' 处' : '') + '</span>'
-          + (x.calls ? '<span class="rt">调用 ' + x.calls + '</span>' : '') + '</div>';
+          + (x.calls_b != null
+             ? '<span class="rt" title="A：主 run　B：对比的 run">A ' + x.calls + ' / <span class="rtb">B ' + x.calls_b + '</span></span>'
+             : (x.calls ? '<span class="rt">调用 ' + x.calls + '</span>' : '')) + '</div>';
         var body = '';
         if (x.uses.length)
           body += '<div class="row"><span class="lab">在 ' + esc(short(E.a)) + ' 里：</span>'
             + x.uses.map(function (u) { return jump(u, u.f.split('/').pop() + ':' + u.l); }).join('')
             + (x.n_uses > x.uses.length ? '<span>…</span>' : '') + '</div>';
+        (x.runtime_b || []).forEach(function (r) {       // 对比的 run（B）谁调了它
+          var nm = r.sym === x.sym ? '直接调用' : r.sym.slice(r.sym.indexOf(':') + 1);
+          body += '<div class="row"><span class="lab rtb">B</span>'
+            + (r.sym === x.sym ? '<span>' + esc(nm) + '</span>' : jump(r.def, nm))
+            + '<span class="rtb">×' + r.n + '</span><span class="lab">←</span>'
+            + r.callers.map(function (c) { return jump(c.def, symLabel(c.sym)) + '<span class="lab">×' + c.n + '</span>'; }).join(' ')
+            + '</div>';
+        });
         x.runtime.forEach(function (r) {
           // 类被调用时，runtime 看到的是具体方法；把「哪个方法被谁调了几次」摊开
           var nm = r.sym === x.sym ? '直接调用' : r.sym.slice(r.sym.indexOf(':') + 1);
@@ -120,14 +130,17 @@ window.CS = window.CS || {};
         if (E.a === id) dyn.o.push(E.b); if (E.b === id) dyn.i.push(E.a);
       });
       var list = (D.pkgSyms || {})[id] || [];
-      var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0;
+      var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0, cmp = CS.graph.cmp;
+      var nab = cmp ? (cmp.nodes[id] || [0, 0]) : null;
       function pills(a, l, out) {
         if (!a.length) return '';
         return '<div class="kv"><span>' + l + '</span>' + a.map(function (i) {
           var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || {}, inf = E.info || {};
-          var tag = E.kind === 'dyn' ? E.hits + ' 次' : (inf.uses ? inf.uses + ' 符号' : '只 import');
+          // 对比时：次数写成 A/B，颜色按哪边跑到（只有 B 的紫色），不拿两边的较大值冒充 A 的
+          var ab = E.ab, tone = ab ? (ab[0] && ab[1] ? ' both' : ab[0] ? ' warm' : ab[1] ? ' warmb' : '') : (E.hits ? ' warm' : '');
+          var tag = E.kind === 'dyn' ? (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次' : (inf.uses ? inf.uses + ' 符号' : '只 import');
           return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(short(i))
-            + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + (E.hits ? ' warm' : '')
+            + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + tone
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
         }).join('') + '</div>';
       }
@@ -135,7 +148,8 @@ window.CS = window.CS || {};
       det.innerHTML = '<h2>' + esc(id) + '</h2>'
         + '<div class="sub">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
-        + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
+        + (nab ? '　runtime <span class="rtA">A ' + nab[0] + '</span> / <span class="rtb">B ' + nab[1] + '</span> 次'
+           : hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
@@ -517,6 +531,8 @@ window.CS = window.CS || {};
       var c = E.counts, rt = E.has_runtime;
       var sub = (E.static_edge ? E.n_sites + ' 条 import 语句' : '静态 import 图里<b>没有</b>这条边')
         + (rt ? '　·　runtime 跨这条边调用 <b>' + c.calls + '</b> 次'
+                + (E.has_runtime_b ? '（对比的 run：<b class="rtb">' + (c.calls_b || 0) + '</b> 次）' : '')
+              : E.note ? '　·　' + esc(E.note)
               : '　·　没有 runtime 数据：只能说「引用了」，不能说「调用了」')
         + (E.import_exec ? '<br>另有 ' + E.import_exec + ' 次是 import 触发的模块顶层执行，不算调用' : '')
         + (rt ? '<br><span class="lab">「调用方」是最近的仓库内的帧：中间经过仓库外的代码（比如 vLLM 内部）时，会显示成直接调用。</span>' : '');
@@ -524,11 +540,12 @@ window.CS = window.CS || {};
       if (rt) {
         pills.push(['confirmed', '确认调用', c.confirmed]);
         if (c.dynamic) pills.push(['dynamic', '动态分派', c.dynamic]);
+        if (c.only_b) pills.push(['only_b', '只有对比的 run 调到', c.only_b]);
         pills.push(['static', '引用了没跑到', c.static]);
       } else pills.push(['static', '引用', c.static]);
       pills.push(['import_only', '只 import', c.import_only]);
 
-      var groups = { confirmed: [], dynamic: [], static: [] };
+      var groups = { confirmed: [], dynamic: [], static: [], only_b: [] };
       E.items.forEach(function (x) { groups[x.status].push(x); });
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'
         + '<div class="sub">' + esc(E.a) + ' → ' + esc(E.b) + '</div>'
@@ -543,6 +560,8 @@ window.CS = window.CS || {};
                '代码里有静态引用，runtime 也走到了。这是这条边真正承载的调用。', E);
       h += sec('动态分派：调到了，但代码里看不到引用', groups.dynamic,
                '静态分析的盲区——经由 getattr、注册表、插件或基类方法走过来的调用。', E);
+      h += sec('只有对比的 run（B）调到', groups.only_b,
+               '这个 run 没调，对比的那个 run 调到了：两个 run 走的路在这里分开。', E);
       h += sec(rt ? '引用了，但这次 case 没走到' : '静态引用', groups.static,
                rt ? '代码里写了，但记录的这次运行没有调用。可能是别的分支、错误处理，或只在别的 case 用到。'
                   : '代码里对 ' + short(E.b) + ' 的符号有引用。要知道会不会真的被调用，录一个 trace。', E);

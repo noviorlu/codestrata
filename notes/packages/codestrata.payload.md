@@ -2,33 +2,34 @@
 written_by: claude-opus-5-5
 target: codestrata.payload
 kind: package
-code_sha: c2bef4114fc24508
+code_sha: 41095f0bbe144700
 status: draft
-refs: payload.py:1@eae6f6c4,payload.py:44@792c7b2a,payload.py:67@cdbac5e5,payload.py:258@c36f173a,payload.py:196@dfc3e98b,payload.py:395@939c9802,runs.py:586@5028c052,serve.py:410@eae1c1a1,notes.py:316@a5ce0618,payload.py:45@17be1534,runs.py:721@b2d6757f,runs.py:755@47fcd1f8,payload.py:35@d6513e46,runs.py:710@47887e94,payload.py:131@5b622921,payload.py:154@bf6ecf7f,payload.py:162@b41f714c,payload.py:63@1d41b21d,serve.py:167@4317bbc0,serve.py:265@12773134,payload.py:75@213a94e3,payload.py:88@90fe571f,payload.py:235@b3119dbf,payload.py:357@e6dabe0a,payload.py:374@65f7556a,payload.py:415@539a480b,payload.py:430@5e093a3b,payload.py:441@08d14eee,payload.py:491@8b3d5b0c,payload.py:459@70082336,payload.py:518@5b368878,payload.py:543@52abe3fa,payload.py:612@61e30aeb,serve.py:270@7f242479,serve.py:278@2b2b2aed
+refs: payload.py:1@eae6f6c4,serve.py:330@7bd2304b,payload.py:649@9ea6c4cf,payload.py:44@792c7b2a,payload.py:93@cdbac5e5,payload.py:306@c36f173a,payload.py:221@dfc3e98b,payload.py:283@ef38d1f0,payload.py:443@939c9802,payload.py:67@78863fea,payload.py:82@b455e869,runs.py:586@5028c052,serve.py:426@eae1c1a1,notes.py:316@a5ce0618,payload.py:45@17be1534,runs.py:721@b2d6757f,runs.py:755@47fcd1f8,payload.py:35@d6513e46,runs.py:710@47887e94,payload.py:157@5b622921,payload.py:179@bf6ecf7f,payload.py:187@b41f714c,payload.py:63@1d41b21d,serve.py:168@4317bbc0,payload.py:173@785b8360,payload.py:180@49dec5e4,payload.py:183@c9105fa6,serve.py:277@12773134,payload.py:101@213a94e3,payload.py:114@90fe571f,payload.py:260@b3119dbf,payload.py:295@73024331,payload.py:405@e6dabe0a,payload.py:422@65f7556a,payload.py:463@539a480b,payload.py:478@5e093a3b,payload.py:489@08d14eee,payload.py:539@8b3d5b0c,payload.py:507@70082336,payload.py:566@5b368878,payload.py:591@43800150,payload.py:685@61e30aeb,payload.py:618@6528ed04,payload.py:86@7613e6ca,payload.py:601@72251dcf,payload.py:609@a518b91f,serve.py:282@afccde76,serve.py:294@2b2b2aed
 ---
 
 ## 是什么
-把各路数据组装成前端要的形状：某个**切面**上的图（`cut` 汇总 + `layout` 排版）、runtime 叠加（某一次 run，由 `runs` 映射到当前 index）、源码（`highlight`）、解读（`notes`）、点开一条边时它到底承载了什么；还有右边搜索栏要的名字索引，和全文窗口 Ctrl+点击要的交叉引用（`xref`）。
+把各路数据组装成前端要的形状：某个**切面**上的图（`cut` 汇总 + `layout` 排版）、runtime 叠加（某一次 run，由 `runs` 映射到当前 index；M7 起还能再叠一个 run 做对比）、源码（`highlight`）、解读（`notes`）、点开一条边时它到底承载了什么；还有右边搜索栏要的名字索引，和全文窗口 Ctrl+点击要的交叉引用（`xref`）。
 
 ## 为什么这样切
-serve（live）和 export（单文件）要给前端**完全相同**的数据，否则两种模式会慢慢漂移（payload.py:1）。于是组装逻辑单独成一层，两边都只调它：serve 按请求调单个函数，export 一次性调 `export_payload` 把所有东西内嵌进去。
+serve（live）和 export（单文件）要给前端**完全相同**的数据，否则两种模式会慢慢漂移（payload.py:1）。于是组装逻辑单独成一层，两边都只调它：serve 按请求调单个函数，export 一次性调 `export_payload` 把所有东西内嵌进去。对比也守着这条：serve 的边详情接口和导出都一律调 `edge_compare`（没有第二个 run 时它就是 `edge_detail`，serve.py:330、payload.py:649），两边不各写一套「带不带 B」的分支。
 
-它在图上处于中间层，正因为它是汇合点：依赖 `cut`、`highlight`、`layout`、`notes`、`runs`、`xref` 六个下层模块，被 `serve` 和 `__main__` 依赖。切面、布局、高亮、引用倒排都委托给下层；run 的存储、解析、映射和过期判断整个交给 `runs`（M1 之前这些散在这里的 `load_hot` 里，直接读 `trace` 的产物）。它自己只做拼接、**按切面汇总**、两类数据的**交叉**，外加 serve 进程里几份按修改时间失效的缓存。
+它在图上处于中间层，正因为它是汇合点：依赖 `cut`、`highlight`、`layout`、`notes`、`runs`、`xref` 六个下层模块，被 `serve` 和 `__main__` 依赖。切面、布局、高亮、引用倒排都委托给下层；run 的存储、解析、映射和过期判断整个交给 `runs`（M1 之前这些散在这里的 `load_hot` 里，直接读 `trace` 的产物）。它自己只做拼接、**按切面汇总**、两类数据的**交叉**、两个 run 的**对齐**，外加 serve 进程里几份按修改时间失效的缓存。
 
 ## 读法
 1. `load_index` / `load_hot` —— 读 scan 的两个 JSON；把一个 run 叠到当前 index 上。`load_hot` 现在只是 `runs.load` 的薄包装（payload.py:44），见下面「关键算法」第一节
-2. `graph_payload`（payload.py:67）—— `/api/graph` 的全部内容。`open_` 是切面（不给就是 scan 算出的默认切面），`width` 是浏览器里图框的宽度
-3. `edge_detail`（payload.py:258）和它底下的 `_pair_detail`（payload.py:196）—— 点开箭头看到的东西
+2. `graph_payload`（payload.py:93）—— `/api/graph` 的全部内容。`open_` 是切面（不给就是 scan 算出的默认切面），`width` 是浏览器里图框的宽度，`hot_b` / `hot_meta_b` 是对比的另一个 run
+3. `edge_detail`（payload.py:306）和它底下的 `_pair_detail`（payload.py:221）—— 点开箭头看到的东西；对比时外面再套一层 `edge_compare`（payload.py:283）
 4. `file_outline` / `file_view` / `symbol_source` —— 源码；后两个带上 `xref_for` 给的可点击 token
 5. `search_index` / `reveal` —— 搜索栏：一次给全的名字索引，和「让某个模块在图上露出来要展开哪些目录」
-6. `load_xref` 到 `refs`（payload.py:395 起）—— 交叉引用：缓存、过期判断、谁引用了这个定义
-7. `export_payload` —— 把上面全部打包，给单文件导出
+6. `load_xref` 到 `refs`（payload.py:443 起）—— 交叉引用：缓存、过期判断、谁引用了这个定义
+7. `export_payload` —— 把上面全部打包，给单文件导出；`others` / `compare` 是 M7 的多 run 导出
+8. `_hot_on_cut`（payload.py:67）/ `_meta_brief`（payload.py:82）—— 对比和多 run 导出共用的两个小工具：一个 run 按切面汇总，一个 run 的 meta 挑出页面要读的键
 
 ## 关键算法
 ### `load_hot`：一个名字、一行提示，别的都在 `runs`
 以前每个 case 只有一份 `trace-<case>.json`，同名重录就覆盖，`load_hot` 自己读文件、切阶段、比过期、合并进程、找脚本。M1 起每次 trace 都是 `.codestrata/runs/` 下一个新目录（录一次、永久复用，见 `docs/design/runs.md` 第 1、3 节），「REF 指的是哪个 run、它的计数和清单怎么读、哪些文件录制后改过」都成了 `runs` 的事，所以这里整个换成一句 `runs.load`（payload.py:44）：
 - **ref 语法**（`runs.resolve`，runs.py:586）：完整 run id，或 case 名（取它最新一次 ok 的，没有就退到最新的 partial 并提示），后面可以加 `@阶段`；不写阶段就是各阶段相加——老的 `--hot 名字@阶段` 写法原样能用。第一次解析时 `catalog` 还会顺带把老的 `trace-<case>.json` 迁进 runs/，老 case 名不必手动搬
-- **名字和调用方式不变**（第三个参数由 case 改叫 ref，调用方都按位置传）：`__main__` 的 graph / tasks / pack、`tests/test_runs.py` 照旧调 `load_hot`。serve 只在启动时调一次，用来当场校验 `--hot` 写没写错、并把它解析成页面默认选中的完整 id（serve.py:410）；之后每个请求自带 `run=`，由 `serve.Handler._hot` 直接调 `runs.resolve` / `runs.load`，按 run 和计数文件的 mtime 缓存——所以页面上换 run、换阶段不用重启（M4）。`runs.load` 返回的 meta 保留老的全部键（`procs`、`script`、`stale_files`、`phases`……，`web/app.js` 的 hot 横幅和帮助认它们），再加上 `run_id`、`status`、`problems`、`file_state`、`git`、`tags` 等。hot 本身还带上 `run`，`notes.prompt_pack` 的 runtime 那一行据此写明数字来自哪个 run（notes.py:316）
+- **名字和调用方式不变**（第三个参数由 case 改叫 ref，调用方都按位置传）：`__main__` 的 graph / tasks / pack、`tests/test_runs.py` 照旧调 `load_hot`（graph 给了几个 --hot 就调几次）。serve 只在启动时调一次，用来当场校验 `--hot` 写没写错、并把它解析成页面默认选中的完整 id（serve.py:426）；之后每个请求自带 `run=`（对比时还有 cmp=），由 `serve.Handler._hot` 直接调 `runs.resolve` / `runs.load`，按 run 和计数文件的 mtime 缓存——所以页面上换 run、换阶段、换对比对象都不用重启（M4 / M7）。`runs.load` 返回的 meta 保留老的全部键（`procs`、`script`、`stale_files`、`phases`……，`web/app.js` 的 hot 横幅和帮助认它们），再加上 `run_id`、`status`、`problems`、`file_state`、`git`、`tags` 等。hot 本身还带上 `run`，`notes.prompt_pack` 的 runtime 那一行据此写明数字来自哪个 run（notes.py:316）
 - **打印用了哪个 run**（payload.py:45）：case 名解析到的是「最新一次录完的」，每录一次新的，同一个 `--hot 名字` 指的 run 就变了——不打印出来，用户分不清图上的数字来自哪一次（设计 4.5：每条命令都打印解析到的完整 id）。打到 stderr，因为 `pack` 的 stdout 是整个输入包，常被重定向给 agent。serve 按请求换 run 不经过这里、不打印：页面的 hot 横幅直接显示 meta 里的 `run_id`
 - 原先也在这里的两件事一并搬走了。进程按命令合并成了 `runs.procs_grouped`（runs.py:721），「argv 被截断」改读每个进程记下的 `argv_cut`（新 run 由 hook 在 import 时记，迁移来的老 trace 在迁移时按「没有 ppid」补上），不再在读的时候现猜，另外带上被 setproctitle 改过的 `title`。case 脚本改为优先读 run 目录 `files/` 里录制时存下的副本（runs.py:755），老 run 没存才读现在的文件、标 `saved` 为假
 
@@ -38,21 +39,28 @@ scan 现在往 symbols.json 里写每个 .py 文件的内容哈希 `file_sha`，
 ### 一切都按切面汇总（`graph_payload`）
 scan 的数据全在单元（文件）之间；图上的节点是切面上的目录 / 本层文件 / 单个文件。`graph_payload` 先让 `cut.view` 给出节点和节点间的边，把它包成一个和老格式同形的「合成 index」交给 `layout.build`——布局模块完全不知道切面的存在。然后同一个 `node_of` 映射把其余数据也挪到节点上：
 - 节点的文件、顶层符号、文档（`pkgFiles` / `pkgSyms` / `pkgDocs`）。C++ 文件和 README 挂在目录上，用 `cut.dir_node` 找到切面上包含那个目录的节点
-- 边的种类 `edgeKinds`：用到对方几个**不同的**符号（多个单元对指向同一个符号只算一次，payload.py:131）、几个 import 没被引用，前端据此画灰实线 / 灰虚线
-- hot 叠加：节点命中数、节点间调用数都从单元级累加；`runtimeOnlyEdges` 是静态 import 图里根本没有、但 runtime 走过的节点间调用（payload.py:154）——不单独画出来，图就会说谎
-- 每个节点带上 `kind`、`expandable`、`parent`、`collapsible`、`fanout`、`units`（payload.py:162），前端据此画「＋」和「收起到上一级」
+- 边的种类 `edgeKinds`：用到对方几个**不同的**符号（多个单元对指向同一个符号只算一次，payload.py:157）、几个 import 没被引用，前端据此画灰实线 / 灰虚线
+- hot 叠加：节点命中数、节点间调用数都从单元级累加，两端落在同一个节点里的调用不算边。这一步抽成了 `_hot_on_cut`（payload.py:67）：对比时 B、多 run 导出时每个别的 run 都要按同一个切面再汇总一遍，只写一处，几个 run 的数字才是同一种口径。`runtimeOnlyEdges` 是静态 import 图里根本没有、但 runtime 走过的节点间调用（payload.py:179）——不单独画出来，图就会说谎
+- 每个节点带上 `kind`、`expandable`、`parent`、`collapsible`、`fanout`、`units`（payload.py:187），前端据此画「＋」和「收起到上一级」
 
-返回里还有 `open` / `defaultOpen` / `autoSplit`，前端用它们判断当前是不是默认切面；`hotMeta` 原样透传 `runs.load` 给的 meta（CLI 经 `load_hot`，serve 经 `serve.Handler._hot`）。
+返回里还有 `open` / `defaultOpen` / `autoSplit`，前端用它们判断当前是不是默认切面；`hotMeta` 原样透传 `runs.load` 给的 meta（CLI 经 `load_hot`，serve 经 `serve.Handler._hot`）；对比时另有 `cmp` 块，见下面「对比两个 run」。
 
-切面先过一道 `_norm_open`（payload.py:63）：没给就换成 scan 的默认切面，给了就只留 `cut.is_node` 认得的名字（重新 scan 之后 URL 里残留的旧目录名被悄悄丢掉，而不是传给下层）。M5 起 serve 的时序图接口（`serve.Handler._seq`）也调它（serve.py:167），所以时序图的生命线和模块图的节点落在同一个切面上，两张图切换时选中的东西对得上。
+切面先过一道 `_norm_open`（payload.py:63）：没给就换成 scan 的默认切面，给了就只留 `cut.is_node` 认得的名字（重新 scan 之后 URL 里残留的旧目录名被悄悄丢掉，而不是传给下层）。M5 起 serve 的时序图接口（`serve.Handler._seq`）也调它（serve.py:168），所以时序图的生命线和模块图的节点落在同一个切面上，两张图切换时选中的东西对得上。
+
+### 对比两个 run（`graph_payload` 的 `hot_b`）
+M7：同一个切面上叠 A、B 两个 run（比如同一份代码上两个模型的 serving 阶段），前端按「只有 A / 只有 B / 两边都有」画三种颜色。
+- **A、B 汇总方式完全一样**：各调一次 `_hot_on_cut`，用的是同一个 `node_of`。对比看的是差异，两边若各有一套汇总，哪天一边的规则改了（比如同节点内的调用算不算边），图上就会冒出并不存在的差异。测试 test_compare_and_multi_export 逐个核对：`cmp` 里每个节点的 [A, B] 等于分别单独叠 A、单独叠 B 时的次数
+- **多一个 `cmp` 块，A 那一份不动**（payload.py:173）：`ref_b`（B 的「run id@阶段」，前端把它写进地址——case 名会随重录指到别的 run）、`meta_b`（`_meta_brief`，横幅上写 B 是哪个 case、哪一次、录没录事件）、`nodes` {节点: [A, B]}、`edges` {"x|y": [A, B]}，只收至少一边不为 0 的。`hot` / `hotMeta` 仍然只是 A：不认识对比的地方（面板的其余部分、单 run 的逻辑）看到的形状和以前一样，对比只是在上面加一层
+- **两处取并集**：`runtimeOnlyEdges` 取 A∪B，权重用两边的较大值（payload.py:180，和图上「粗细 ∝ log(较大值)」一致），不然只有 B 走过的动态分派边在图上就没了；hot 图（「只看跑到的」）按两边任一跑到的节点排版（payload.py:183），只有 B 跑到的节点才画得出来。总图不为对比重新排版：开关对比只换颜色，节点不挪位置
+- 只有在有 A（`hot`）时才看 `hot_b`：没有 A 就谈不上对比。B 找不到、或者就是 A 自己（同一个 run 同一个阶段），由 serve 挡在前面——只叠 A、另回一句 `cmpError`，不让整张图 404；这里不判断
 
 ### 按图框的宽度排版
-`width` 原样交给 `layout.build`，总图和 hot 图都用它：宽屏上图铺满、一行多放几个节点、少折行，而不是把按 1180 排好的图整体放大。serve 把浏览器报来的宽度按 40px 取整、夹在 700–4000 之间，并把它放进缓存键（serve.py:265）：窗口拖一点点不必重排，不同宽度的排版也不会混用。
+`width` 原样交给 `layout.build`，总图和 hot 图都用它：宽屏上图铺满、一行多放几个节点、少折行，而不是把按 1180 排好的图整体放大。serve 把浏览器报来的宽度按 40px 取整、夹在 700–4000 之间，并把它放进缓存键（serve.py:277）：窗口拖一点点不必重排，不同宽度的排版也不会混用。
 
 ### 框：谁套着谁
-展开着的目录在图上画成一个框。一个节点直接被哪个框套着，就是 `cut.parent_of` 给出的那个展开着的目录（或展开着的本层文件节点）；框的外层框再往上问 `parent_of`，一直到根（payload.py:75 起）。只有一个根时不画根的框——它就是整张图；多个根时每个根一个框，也能收起。`collapsible` 就是「有没有套着它的框」：顶层节点没有，详情面板也就不给「收起到上一级」。
+展开着的目录在图上画成一个框。一个节点直接被哪个框套着，就是 `cut.parent_of` 给出的那个展开着的目录（或展开着的本层文件节点）；框的外层框再往上问 `parent_of`，一直到根（payload.py:101 起）。只有一个根时不画根的框——它就是整张图；多个根时每个根一个框，也能收起。`collapsible` 就是「有没有套着它的框」：顶层节点没有，详情面板也就不给「收起到上一级」。
 
-每个框还记下一共框着几个画得出来的节点（payload.py:88）：hot 视图只给跑到的节点排版，框头要写「画出来的 / 一共」，一共有几个只有这里知道。
+每个框还记下一共框着几个画得出来的节点（payload.py:114）：hot 视图只给跑到的节点排版，框头要写「画出来的 / 一共」，一共有几个只有这里知道。
 
 ### 边的五类归并（`_pair_detail`）
 两个维度交叉：静态上有没有引用（`scan` 的 `edge_uses` / `edge_dead`），runtime 有没有调用（`trace.to_package_graph` 算出的 `edge_calls`）。
@@ -61,38 +69,52 @@ scan 的数据全在单元（文件）之间；图上的节点是切面上的目
 - **dynamic**：调到了，但代码里没有静态引用——插件、`importlib`、注册表
 - **import_only**：导入了但从没引用，原因沿用 scan 的分类；有 runtime 时，副作用 import 还会标出对方模块的顶层这次执行了没有
 
-对齐时有一个粒度差：静态上引用的往往是**类**（`Handler(...)`），runtime 调到的是**方法**（`Handler.do_GET`）。`_top` 把 `模块:类.方法` 收到 `模块:类` 再对齐，于是一个类下面能列出「哪个方法被谁调了几次」。排序是 confirmed → dynamic → static（payload.py:235）：真调用和静态盲区最值得先看。
+对齐时有一个粒度差：静态上引用的往往是**类**（`Handler(...)`），runtime 调到的是**方法**（`Handler.do_GET`）。`_top` 把 `模块:类.方法` 收到 `模块:类` 再对齐，于是一个类下面能列出「哪个方法被谁调了几次」。排序是 confirmed → dynamic → static（payload.py:260）：真调用和静态盲区最值得先看。
 
 ### 节点间的边 = 底下所有单元对的合并（`edge_detail`）
 两端都是单个文件时直接走 `_pair_detail`；否则取两端底下所有有依赖（静态的或 runtime 的）单元对，逐对算完再按符号合并。状态要**合并完再定**：同一个符号可能在一对里是静态引用、在另一对里被 runtime 调到，分开看是 static + dynamic，合起来才是 confirmed。
 
+### 对比时的边详情（`edge_compare`）
+没有照设计 §6.3 最初写的那样给 `_pair_detail` / `edge_detail` 加一个 `hot_b` 参数，而是用 A、B 各算一遍 `edge_detail`，再按符号合（payload.py:283）：静态部分两边本来就一样，上面那套「合并完再定状态」的规则只在一处，不必让每一层都背着两份 runtime。合出来的是 **A 的明细**，每项多 `calls_b` / `runtime_b`（B 调了几次、谁调的）；状态、`counts` 里的 confirmed / dynamic / static / `calls` 仍然只说 A，`counts` 另加 B 的总数 `calls_b`，外加 `has_runtime_b`，面板据此在标题下写「对比的 run：m 次」，每项写「A n / B m」。
+
+只有 B 调到、A 的明细里没有的符号补在最后，状态记 `only_b`、`calls` 记 0、条数单独记在 `counts` 的 `only_b` 里（payload.py:295）。不归进 dynamic：dynamic 的意思是「这次（A）调到了、代码里却没有静态引用」，归进去面板就会在「动态分派」里说成 A 调到了它，A 的 dynamic 条数和 `calls` 也会被 B 撑大。能落到这一组的只会是 B 那边的 dynamic——有静态引用的符号两遍都会列出来、已经挂上了 `calls_b`——所以 B 的调用一次都不会漏：测试核对各项 `calls_b` 之和等于 B 单独算的总数。
+
 ### 源码先整文件高亮再切片
-`symbol_source` 取一个符号的前 40 行，但高亮的是整个文件（payload.py:357）：从中间切开再高亮，跨行字符串会被着错色。高亮结果有缓存，所以代价只在第一次。片段的 xref 只取这几行的 token。
+`symbol_source` 取一个符号的前 40 行，但高亮的是整个文件（payload.py:405）：从中间切开再高亮，跨行字符串会被着错色。高亮结果有缓存，所以代价只在第一次。片段的 xref 只取这几行的 token。
 
 ### 搜索索引要紧凑（`search_index`）
-搜索全在前端做（`web/search.js`），每敲一个字不来回请求，导出版也能用同一套——所以索引一次给全：`mods`（目录树上每个目录、每个单元，带文件数）、`files`（Python 文件和包里的 C++ / CUDA 文件）、和 `files` 对齐的 `units`、`syms`。符号有几万条，存完整键会让模块名重复两万多遍，所以每条只存「限定名、种类首字母、文件下标、行」，键由前端用「文件所属单元去掉 .__init__ + ":" + 限定名」拼回来（payload.py:374）。serve 只序列化一次、缓存住。
+搜索全在前端做（`web/search.js`），每敲一个字不来回请求，导出版也能用同一套——所以索引一次给全：`mods`（目录树上每个目录、每个单元，带文件数）、`files`（Python 文件和包里的 C++ / CUDA 文件）、和 `files` 对齐的 `units`、`syms`。符号有几万条，存完整键会让模块名重复两万多遍，所以每条只存「限定名、种类首字母、文件下标、行」，键由前端用「文件所属单元去掉 .__init__ + ":" + 限定名」拼回来（payload.py:422）。serve 只序列化一次、缓存住。
 
 点中一个结果要先在图上露出那个模块：`reveal` 在**当前**切面上展开它的所有祖先、把它自己收起（`cut.open_for`），而不是跳回默认切面把用户展开的东西全丢掉。
 
 ### 交叉引用的缓存：整份换上去（`load_xref`）
-xref.json 读一次、解析一次，缓存在模块级的 `_XREF`，键是（路径, 修改时间）：重新 scan 之后下一次请求自动换成新的。serve 是多线程的，所以换法是「整份建好再一次性赋给全局名」（payload.py:415）：快路径不加锁，先把 `_XREF` 读进局部变量再比键；要换时才拿 `_XREF_LOCK`，锁里再比一次（双重检查）。读的人拿到的要么整份旧的、要么整份新的，不会拿到一半。倒排表（目标 → 引用它的地方）只有 `refs` 要，所以不在加载时建，第一次用到时由 `_inverted` 在这份缓存自己的锁里调 `_xref.invert`。没有 xref.json 时返回 None，前端就不给 Ctrl+点击。
+xref.json 读一次、解析一次，缓存在模块级的 `_XREF`，键是（路径, 修改时间）：重新 scan 之后下一次请求自动换成新的。serve 是多线程的，所以换法是「整份建好再一次性赋给全局名」（payload.py:463）：快路径不加锁，先把 `_XREF` 读进局部变量再比键；要换时才拿 `_XREF_LOCK`，锁里再比一次（双重检查）。读的人拿到的要么整份旧的、要么整份新的，不会拿到一半。倒排表（目标 → 引用它的地方）只有 `refs` 要，所以不在加载时建，第一次用到时由 `_inverted` 在这份缓存自己的锁里调 `_xref.invert`。没有 xref.json 时返回 None，前端就不给 Ctrl+点击。
 
 ### 改过的文件宁可不给链接（`_stale`）
-xref 的 token 是「行 + UTF-16 列」，文件在 scan 之后改过，行列号就对不上了：链接会落在别的字上、跳到不相干的定义。xref.json 记了每个文件构建时的 [字节数, mtime_ns]（`fp`），`_stale` 拿现在的 stat 比（payload.py:430）；老的 xref.json 没有指纹就照旧当没改过，文件没了算改过。`xref_for` 对改过的文件只回 `stale` 和空 token（payload.py:441），形状不变；平时回这个文件（或 lo..hi 行）的 token，外加这些 token **用到的**目标 {目标号: [目标, 定义位置]}，不带全表。
+xref 的 token 是「行 + UTF-16 列」，文件在 scan 之后改过，行列号就对不上了：链接会落在别的字上、跳到不相干的定义。xref.json 记了每个文件构建时的 [字节数, mtime_ns]（`fp`），`_stale` 拿现在的 stat 比（payload.py:478）；老的 xref.json 没有指纹就照旧当没改过，文件没了算改过。`xref_for` 对改过的文件只回 `stale` 和空 token（payload.py:489），形状不变；平时回这个文件（或 lo..hi 行）的 token，外加这些 token **用到的**目标 {目标号: [目标, 定义位置]}，不带全表。
 
 ### 谁引用了这个定义（`refs`）
-- 同一行的几处合成一条、记 ×N（`n`），种类取最强的：调用 > 普通引用 > import，排序也是调用在前（payload.py:491）。`counts` / `total` 仍按处数计，`lines` 是合并后的条数，最多列 `limit` 条
-- 每条带那一行的原文，读的是**现在**的文件：`_line_text` 背后是按（路径, mtime_ns）缓存的 `_lines_of`（payload.py:459）——几百条引用常常落在同几个文件里，不必每条读一遍，文件一改键就变。所在文件 scan 后改过的条目照列、只标 `stale`（行号可能已经不对）——和全文窗口里整份不给链接不同，这里只提示
+- 同一行的几处合成一条、记 ×N（`n`），种类取最强的：调用 > 普通引用 > import，排序也是调用在前（payload.py:539）。`counts` / `total` 仍按处数计，`lines` 是合并后的条数，最多列 `limit` 条
+- 每条带那一行的原文，读的是**现在**的文件：`_line_text` 背后是按（路径, mtime_ns）缓存的 `_lines_of`（payload.py:507）——几百条引用常常落在同几个文件里，不必每条读一遍，文件一改键就变。所在文件 scan 后改过的条目照列、只标 `stale`（行号可能已经不对）——和全文窗口里整份不给链接不同，这里只提示
 - 定义本身作为 `def` 放最上面：跳到某个引用之后，点它就回到定义。函数 / 类还带上这次 runtime 调了几次（`calls`）
-- 「同名的 .xxx」（`maybe`，payload.py:518）：方法、类属性常常通过别的对象调用（engine.generate()），静态分析不知道接收者是什么类型，确认不了是不是它。xref 把这种解析不了的「表达式.名字」按名字存在 `attrs` 里；这里按名字列出、同一行合并、调用在前，标明没确认，并附上仓库里一共有几个同名成员（`same`）——只有它一个时基本就是它。同名成员超过 3 个的名字（get、to……）xref 压根不记（`ATTRS_MAX_SAME`），列出来一大半都不是它
+- 「同名的 .xxx」（`maybe`，payload.py:566）：方法、类属性常常通过别的对象调用（engine.generate()），静态分析不知道接收者是什么类型，确认不了是不是它。xref 把这种解析不了的「表达式.名字」按名字存在 `attrs` 里；这里按名字列出、同一行合并、调用在前，标明没确认，并附上仓库里一共有几个同名成员（`same`）——只有它一个时基本就是它。同名成员超过 3 个的名字（get、to……）xref 压根不记（`ATTRS_MAX_SAME`），列出来一大半都不是它
 
 ### 导出有体积预算
-`export_payload` 只导出默认切面，把整个导出控制在 14 MB（payload.py:543，单文件宿主上限 16 MB）：先把图、边详情、解读、符号片段、搜索索引放进去，剩下的额度给全文。全文按「这次 run 跑到过的 + 解读里引用过的」优先、再按体积从小到大挑；先用原始字节数估算，明显放不下的不去高亮——vllm-omni 上导出从 32 秒降到 10 秒。
+`export_payload` 只导出默认切面，把整个导出控制在 14 MB（payload.py:591，单文件宿主上限 16 MB）：先把图、边详情、解读、符号片段、搜索索引、别的 run（`hotBy`）放进去，剩下的额度给全文。全文按「主 run 跑到过的 + 解读里引用过的」优先、再按体积从小到大挑；先用原始字节数估算，明显放不下的不去高亮——vllm-omni 上导出从 32 秒降到 10 秒。
 
-xref 的目标全导出共用一张表 `xrefTargets`：片段和文件只带 token，目标挪进共用表（`share`），前端取出时再补回（`web/ds.js`）。早先每个文件各带一份，同一个目标重复几百遍，占掉的额度够再内嵌一两百个文件。挑全文时一个文件的代价 = 它自己 + 它带来的**新**目标的字节数，放得下才把新目标并进表（payload.py:612）。
+xref 的目标全导出共用一张表 `xrefTargets`：片段和文件只带 token，目标挪进共用表（`share`），前端取出时再补回（`web/ds.js`）。早先每个文件各带一份，同一个目标重复几百遍，占掉的额度够再内嵌一两百个文件。挑全文时一个文件的代价 = 它自己 + 它带来的**新**目标的字节数，放得下才把新目标并进表（payload.py:685）。
+
+### 一个文件里带几个 run（`others` / `compare`）
+M7：graph --hot A --hot B … [--compare] 导出一个能在几个 run 之间切换的单文件。
+- **主 run 全量，别的只带切面上的次数**：第一个 --hot 照旧嵌 `hot`、`hotMeta`、`graphHot` 和所有边的明细；其余的进 `hotBy`，键是「run id@阶段」，每个只带导出切面上的节点次数、节点间边次数、`unmapped`、它自己的 `runtimeOnlyEdges`（payload.py:618）和一份 meta。符号 / 文件级的计数和每条边的调用明细才是大头，每个 run 都带全，几个 run 就把全文的额度吃光了。`hotBy` 在算剩余额度之前放进去，占多少就从全文里扣多少
+- **meta 挑页面要读的键**（`_meta_brief`，payload.py:86）：在导出里切到别的 run 时，web/ds.js 把这份 meta 当成 `hotMeta` 交给页面，横幅和帮助读的就是它。所以横幅要的安装包映射（`mapped_from` / `n_mapped` / `mapped_mismatch`）、`unmapped`、`stale_files`、`unmatched`，帮助里「这次跑了什么」要的 `cmd` / `procs` / `script`，还有 `file_state`，都得带上——少了它们，切过去时「运行的是安装包、有几个文件和仓库不一致」这类警告和命令、进程表会凭空消失，读者会以为那个 run 干干净净。这些都不大；和完整 meta 相比只少了 `migrated_from`，省体积靠的是上一条不带的 hot 明细（名字里的「brief」已经名不副实）。`cmp` 的 `meta_b` 用的也是它
+- **去重**（payload.py:601）：同一个 run 可以写成 case 名，也可以写成完整 id，`__main__` 只能按字符串去重；解析成「run id@阶段」之后才知道是不是同一个，所以这里再去一次。和主 run 相同的也跳过：否则 `hotBy` 里会有一份主 run 的精简版，页面上选中主 run 时 ds.js 先查 `hotBy`，拿到的就是没有符号计数、没有边明细的那份（测试里「同一个 run 写两遍」那段）
+- **--compare**：去重后剩下的第一个别的 run 当 B（payload.py:609），交给 `graph_payload` 得到 `cmp`；边详情一律走 `edge_compare`（payload.py:649），所以只有这一对带 `calls_b`。B 同时也在 `hotBy` 里：在页面上把 B 切成主视图时，它和其他别的 run 一样只有切面上的次数
 
 ## 局限
-- 导出的页面是固定切面：不能展开（其他切面的边详情没有预先算）、没有 `reveal`；不传 `width`，按默认 1180 排版；引用列表只能在内嵌了全文的文件里找，也没有「同名的 .xxx」。导出里只有一个 run（多 run 导出排在 M7），也不带时序图：`export_payload` 不算时序，`web/ds.js` 的导出版对时序图请求直接报「请用 codestrata serve」（设计 M5 状态里记为 §8 / M7 再说）。
-- ref 找不到、阶段不存在、run 还没有计数（还在录，或录制中断、要先 `runs merge`）时，`runs` 直接以 `SystemExit` 报错，这里不兜底——CLI（和 serve 启动时校验 `--hot`）上退出并给出下一步该跑的命令；serve 按请求解析时由 `serve.Handler._hot` 转成 `LookupError`，回 404 并带上这句提示，页面照常可用。
-- 每个切面的 payload 都带全部顶层符号，vllm-omni 上一份约 2.5 MB；serve 的缓存键是（切面, 宽度, run）（serve.py:270），只留最近的 32 份（serve.py:278）——换着看几个 run 时，同一个切面会各存一份。
+- 导出的页面是固定切面：不能展开（其他切面的边详情没有预先算）、没有 `reveal`；不传 `width`，按默认 1180 排版；引用列表只能在内嵌了全文的文件里找，也没有「同名的 .xxx」。也不带时序图：`export_payload` 不算时序，`web/ds.js` 的导出版对时序图请求直接报「请用 codestrata serve」。
+- 导出里的别的 run（`hotBy`）只有切面上的次数：切过去时边详情只剩静态引用（ds.js 把调用清掉并写明原因）、没有「只看跑到的」那张图（不带 `graphHot`）、文件和符号上的次数是空的；只在它身上出现的 runtime-only 边，导出里没有明细（`edges` 只给总图的边和主 run 的——对比时加上 B 的——runtime-only 边算了），点开只说「导出版里没有这条边的详情」。
+- 对比只比两个（设计 §10：不做 N 路）。边详情里 import 触发的模块顶层执行次数（`import_exec`）和 import_only 那一组的「对方顶层执行了没有」只是 A 的，没有 B 的一份。
+- ref 找不到、阶段不存在、run 还没有计数（还在录，或录制中断、要先 `runs merge`）时，`runs` 直接以 `SystemExit` 报错，这里不兜底——CLI（和 serve 启动时校验 `--hot`）上退出并给出下一步该跑的命令；serve 按请求解析时由 `serve.Handler._hot` 转成 `LookupError`，回 404 并带上这句提示，页面照常可用（对比的 B 解析失败只降级成不对比，见上）。
+- 每个切面的 payload 都带全部顶层符号，vllm-omni 上一份约 2.5 MB；serve 的缓存键是（切面和宽度, run, 对比的 run）（serve.py:282），只留最近的 32 份（serve.py:294）——换着看几个 run、几种对比组合时，同一个切面会各存一份。
 - `_XREF` 是进程级的单槽缓存：同一进程里交替查两个仓库会互相顶掉，每次重新解析整份 xref.json（serve 一个进程只服务一个仓库，所以实际碰不到）。

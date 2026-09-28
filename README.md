@@ -83,6 +83,11 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
   默认从当前阶段的起点开始，自动收窄到一屏 300 行；画得下就不折，画不下才把重复的片段折成
   「↻ ×N」（点开看那一段）；顶上的时间刷是每个进程的调用密度，拖一段就看那一段。模块图上选中
   一条边，抽屉里有「在时序图里看」，跳到这条边第一次被调用的时刻。
+- **对比两个 run**：选了一个 run 之后，工具栏上「对比」再选一个（有同名阶段就比同名阶段）：模块图上
+  只有 A 跑到的橙色、只有 B 跑到的紫色、两边都跑到的前景色，节点上的数是「A/B」，边详情里每个函数
+  都带 B 的次数。比如 MiniCPM@serving 对比 Qwen@serving，一眼看出两个模型各走了哪些代码。
+- **导出带多个 run**：`graph <repo> --hot A --hot B [--compare]`——单文件里能在这几个 run 之间切换
+  （别的 run 只带图上的次数，调用明细只有第一个的），`--compare` 带上 A、B 的对比。
 - `trace --events` 同时记时序事件（时序图的数据，要 Python 3.12+）：每次跨文件调用的起止时刻，
   返回 / 挂起 / 恢复按帧配对，同一线程里交错的 asyncio 协程也配得对。原始日志永久留在
   `events/raw.tar.gz`，整理好的 span 在 `events/spans/`（`runs merge` 可重建）；
@@ -231,7 +236,7 @@ codestrata tasks <repo> [--write]             # 待解读 + 输入包
 codestrata note  <repo> <模块> <file.md>       # 写回解读（总览用 _overview）
 codestrata check <repo> [模块 ...] [--fix]     # 机器核对解读：过期、引用漂移、名字 / 路径不存在
                                               # --fix 把只是挪了位置的引用改到新行号（不去掉过期标记）
-codestrata graph <repo> [--hot RUN[@阶段]]     # 导出单文件
+codestrata graph <repo> [--hot RUN[@阶段]]… [--compare]   # 导出单文件；多个 --hot 可在页面上切换
 ```
 
 ## 状态

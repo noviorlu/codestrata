@@ -56,7 +56,13 @@ def trace_fake(repo: Path, case="fake", *extra, env=None, check=True):
 
 
 def latest(repo: Path) -> tuple[dict, dict, Path]:
-    rd = sorted(p for p in (repo / ".codestrata" / "runs").iterdir() if not p.name.startswith("."))[-1]
+    """最新录的那个 run。按录制时刻（单调时钟）排，不按目录名——同一秒里录的两个，名字的先后看 case 名"""
+    def when(p):
+        try:
+            return (json.loads((p / "run.json").read_text()).get("clock") or {}).get("mono0_ns") or 0
+        except (OSError, ValueError):
+            return 0
+    rd = max((p for p in (repo / ".codestrata" / "runs").iterdir() if not p.name.startswith(".")), key=when)
     return json.loads((rd / "run.json").read_text()), json.loads((rd / "detail.json").read_text()), rd
 
 
@@ -922,6 +928,95 @@ def decorated():
     h3, m3 = payload.load_hot(repo, idx, "mv")
     assert not h3["symbols"].get("fakesvc.work:other_fn"), h3["symbols"]
     assert h3["files"]["fakesvc/work.py"] >= before["files"]["fakesvc/work.py"] - 1, (h3["files"], before["files"])
+
+
+def test_compare_and_multi_export():
+    """M7：两个 run 对比——节点、边上带 [A, B]，只有一边跑到的也在；边详情带 calls_b，和 B 自己的
+    明细对得上；只在 runtime 出现的边、「只看跑到的」取并集。导出能带多个 run、--compare 带对比块。"""
+    repo = fresh()
+    cs("trace", repo, "--case", "a", "--", PY, "-c", "from fakesvc import work; work.init_model()")
+    cs("trace", repo, "--case", "b", "--", PY, "-m", "fakesvc.truth")
+    idx = payload.load_index(repo)
+    ha, ma = payload.load_hot(repo, idx, "a")
+    hb, mb = payload.load_hot(repo, idx, "b")
+    g = payload.graph_payload(repo, idx, hot=ha, hot_meta=ma, hot_b=hb, hot_meta_b=mb)
+    c = g["cmp"]
+    assert c and c["ref_b"].startswith(mb["run_id"]) and c["meta_b"]["case"] == "b"
+    ga = payload.graph_payload(repo, idx, hot=ha, hot_meta=ma)
+    gb = payload.graph_payload(repo, idx, hot=hb, hot_meta=mb)
+    for n, (x, y) in c["nodes"].items():
+        assert x == ga["hot"]["packages"].get(n, 0) and y == gb["hot"]["packages"].get(n, 0), n
+    assert any(x and not y for x, y in c["nodes"].values()) or any(y and not x for x, y in c["nodes"].values())
+    assert {tuple(e[:2]) for e in g["runtimeOnlyEdges"]} >= {tuple(e[:2]) for e in gb["runtimeOnlyEdges"]}
+    k = next(k for k, v in c["edges"].items() if v[1])
+    a, b = k.split("|")
+    d = payload.edge_compare(repo, idx, a, b, ha, hb)
+    db = payload.edge_detail(repo, idx, a, b, hb)
+    assert d["has_runtime_b"] and d["counts"]["calls_b"] == db["counts"]["calls"]
+    assert sum(it.get("calls_b", 0) for it in d["items"]) == db["counts"]["calls"]
+    ob = [it for it in d["items"] if it["status"] == "only_b"]
+    assert d["counts"].get("only_b", 0) == len(ob) and all(it["calls"] == 0 and it["calls_b"] for it in ob)
+    # 导出：两个 run、对比
+    out = repo / "exp.html"
+    r = cs("graph", repo, "--hot", "a", "--hot", "b", "--compare", "--out", out)
+    html = out.read_text()
+    assert out.stat().st_size < 16 * 1024 * 1024 and '"hotBy"' in html and '"cmp"' in html, r.stdout
+    emb = json.loads(html.split("window.CS_EMBEDDED = ", 1)[1].split(";</script>", 1)[0].replace("<\\/", "</"))
+    assert len(emb["hotBy"]) == 1 and emb["cmp"]["ref_b"].startswith(mb["run_id"]), list(emb["hotBy"])
+    r = cs("graph", repo, "--hot", "a", "--compare", check=False)
+    assert r.returncode != 0 and "--compare" in (r.stdout + r.stderr)
+    r = cs("graph", repo, "--hot", "a", "--hot", "", check=False)          # 脚本里变量没设
+    assert r.returncode != 0 and "空值" in (r.stdout + r.stderr)
+    # 同一个 run 写两遍：不会把主 run 换成精简版
+    cs("graph", repo, "--hot", "a", "--hot", ma["run_id"], "--out", out)
+    emb = json.loads(out.read_text().split("window.CS_EMBEDDED = ", 1)[1].split(";</script>", 1)[0].replace("<\\/", "</"))
+    assert emb["hotBy"] == {} and emb["hot"]["symbols"], list(emb["hotBy"])
+    # serve：对比的 run 找不到 / 就是自己 → 只叠 A、说一声，不让整张图 404
+    import socket
+    import urllib.request
+    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        def get(path):
+            for _ in range(50):
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+                        return r.status, json.loads(r.read())
+                except urllib.error.HTTPError as e:
+                    return e.code, json.loads(e.read())
+                except OSError:
+                    time.sleep(0.1)
+            raise AssertionError("serve 没起来")
+        st, g1 = get(f"/api/graph?run=a&cmp=nope")
+        assert st == 200 and g1["cmp"] is None and "找不到" in g1["cmpError"], (st, g1.get("cmpError"))
+        st, g2 = get(f"/api/graph?run=a&cmp=a")
+        assert st == 200 and g2["cmp"] is None and "同一个" in g2["cmpError"]
+        st, g3 = get(f"/api/graph?run=a&cmp=b")
+        assert st == 200 and g3["cmp"] and not g3.get("cmpError")
+    finally:
+        srv.kill()
+        srv.wait()
+
+
+def test_notes_fix_refs_keeps_changed():
+    """check --fix 只改挪了位置的引用；那一行内容改掉了的，修完还得报出来（指纹不能被顺手刷新）。"""
+    repo = fresh()
+    w = repo / "fakesvc" / "work.py"
+    lines = w.read_text().splitlines()
+    ln_moved = next(i for i, l in enumerate(lines, 1) if l.startswith("def compute"))
+    ln_changed = next(i for i, l in enumerate(lines, 1) if l.startswith("def load_weight"))
+    md = repo / "n.md"
+    md.write_text(f"## 是什么\n`compute` 在 work.py:{ln_moved}，`load_weight` 在 work.py:{ln_changed}。\n")
+    cs("note", repo, "fakesvc.work", md)
+    # 顶上插一行（两个都往下挪一行），再把 load_weight 那一行改掉
+    w.write_text("# 插一行\n" + w.read_text().replace("def load_weight(i: int) -> int:", "def load_weight(i: int, k: int = 1) -> int:"))
+    cs("scan", repo)
+    cs("check", repo, "fakesvc.work", "--fix", check=False)
+    r = cs("check", repo, "fakesvc.work", check=False)
+    out = r.stdout + r.stderr
+    assert f"work.py:{ln_moved}" not in out, out                       # 挪了的已经改到新行号，不再报
+    assert "改掉了" in out and r.returncode != 0, out                    # 改掉了的那一行还在报
 
 
 def main(argv):

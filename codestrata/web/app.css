@@ -2,7 +2,7 @@
   color-scheme:light;
   --ink:#11161f; --body:#39424f; --muted:#6b7686; --faint:#9aa4b2;
   --paper:#f6f7f9; --card:#fff; --sunk:#eef0f4; --line:#dde1e8; --rule:#e6e9ef;
-  --hot:#b4690e; --hot-bg:#fdf3e2; --cool:#0f7b74; --cool-bg:#e6f4f2;
+  --hot:#b4690e; --hot-bg:#fdf3e2; --cool:#0f7b74; --cool-bg:#e6f4f2; --hotb:#7c3aed; --hotb-bg:#f1ebfd;
   --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd;
   --edge:#c3cad5; --shadow:0 1px 2px rgba(17,22,31,.06),0 8px 24px rgba(17,22,31,.05);
   /* 代码 token：三类语言共用一套语义色，语言专属的构造（Triton 原语、CUDA、预处理）各有一色 */
@@ -15,7 +15,7 @@
   color-scheme:dark;
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
-  --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a;
+  --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
   --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
   --t-kw:#d19be8; --t-str:#8fd19e; --t-doc:#7fae87; --t-com:#6d7889; --t-num:#f0a868;
@@ -27,7 +27,7 @@
   color-scheme:dark;
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
-  --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a;
+  --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
   --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
   --t-kw:#d19be8; --t-str:#8fd19e; --t-doc:#7fae87; --t-com:#6d7889; --t-num:#f0a868;
@@ -105,6 +105,8 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .e{fill:none;stroke:var(--edge);stroke-width:1.2}
 .e.imp{stroke-dasharray:3 3}
 .e.warm{stroke:var(--hot);opacity:.85}
+.e.warmb{stroke:var(--hotb);opacity:.9}
+.e.both{stroke:var(--ink);opacity:.8}
 .e.dyn{stroke-dasharray:6 3}
 /* dim / hi 必须写在 warm 后面：同优先级后者覆盖。早先顺序反了，
    runtime 边在选中别的节点时永远不淡化，看起来像和选中节点相关。
@@ -122,6 +124,8 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd.dim{opacity:.34}   /* .18 时非邻居的标签读不出来 */
 .nd.match rect{stroke:var(--sel);stroke-width:2;stroke-dasharray:4 2}
 .nd.warm rect{fill:var(--hot-bg);stroke:var(--hot)}
+.nd.warmb rect{fill:var(--hotb-bg);stroke:var(--hotb)}
+.nd.both rect{fill:var(--sunk);stroke:var(--ink)}
 /* 选中必须写在 warm 后面，否则跑到过的节点选中了也还是橙框 */
 .nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
@@ -588,3 +592,16 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .sq-row[tabindex]:focus-visible .sq-arrow,.sq-row[tabindex]:focus-visible .sq-loopbox{stroke:var(--sel);stroke-width:2.6}
 .sq-loop.on .sq-loopbox{stroke:var(--sel);stroke-width:2}
 .chip[disabled]{opacity:.45;cursor:not-allowed}
+
+/* ---- 对比：只有 A 橙（--hot），只有 B 紫（--hotb），两边都跑到前景色 ---- */
+.runbtn.onb{background:var(--hotb-bg);border-color:var(--hotb);color:var(--hotb);font-weight:600}
+.cmpbanner{border-left-color:var(--hotb)}
+.cmpbanner .tA{color:var(--hot);font-weight:600}
+.cmpbanner .tB{color:var(--hotb);font-weight:600}
+.rtb{color:var(--hotb)}
+.cmpleg{display:inline-flex;align-items:center;gap:4px;font:11px/1 ui-monospace,monospace;color:var(--muted)}
+.cmpleg i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-left:6px}
+.cmpleg i.a{background:var(--hot)}.cmpleg i.b{background:var(--hotb)}.cmpleg i.ab{background:var(--ink)}
+.eb2.warmb{color:var(--hotb);border-color:var(--hotb)}.eb2.both{color:var(--ink);border-color:var(--ink)}
+.rtA{color:var(--hot)}
+.ecount .only_b{color:var(--hotb)}

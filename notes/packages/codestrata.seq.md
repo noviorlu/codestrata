@@ -4,11 +4,11 @@ target: codestrata.seq
 kind: package
 code_sha: 1038bfe273b97aaa
 status: draft
-refs: serve.py:153@cd0d48b0,seq.py:30@d2fe4395,seq.py:31@f165eef3,seq.py:1@304d1b5d,seq.py:85@43f9c39a,seq.py:120@34dd7026,seq.py:167@61ce1067,seq.py:256@fd849997,seq.py:197@611c8331,seq.py:240@a038f312,seq.py:263@68d56e72,seq.py:321@cdc2e97a,seq.py:333@e12f9208,seq.py:456@9d9e6eae,seq.py:477@be801626,seq.py:91@0672036a,seq.py:80@67bd13ba,seq.py:44@1d1d28f5,seq.py:96@1bee3588,seq.py:109@c37e9e0b,seq.py:132@b06c4d35,seq.py:159@39442eb4,seq.py:176@cb1fc72f,seq.py:499@e84b4c7d,seq.py:260@f4212c28,seq.py:207@7e1453a5,seq.py:217@be625d98,codestrata/web/seq.js:248@407f576e,seq.py:247@3830fda0,seq.py:276@fc7d4dd0,seq.py:282@9a554aeb,seq.py:286@8926a1d8,seq.py:324@7d78a787,seq.py:330@ccaa9583,seq.py:328@b47beb03,seq.py:345@a888ad0a,seq.py:356@86170292,seq.py:394@ce625da7,seq.py:36@e9373c14,seq.py:375@511d3e8e,seq.py:377@054bf37f,seq.py:380@5ecfc7ae,seq.py:384@196dce40,seq.py:401@a6ba8106,seq.py:307@ea17d85f,seq.py:317@f3e51ce3,seq.py:426@bfa9e50c,seq.py:435@881709d7,cut.py:171@577ac73b,seq.py:422@4b935c97,seq.py:446@79fd9e84,seq.py:471@545713f1,seq.py:460@78c02b35,seq.py:470@03679a05,serve.py:180@6c4aa61f,seq.py:505@93d0dc85,codestrata/web/app.js:378@6a135785,seq.py:396@675c27cf
+refs: serve.py:154@cd0d48b0,seq.py:30@d2fe4395,seq.py:31@f165eef3,seq.py:1@304d1b5d,seq.py:85@43f9c39a,seq.py:120@34dd7026,seq.py:167@61ce1067,seq.py:256@fd849997,seq.py:197@611c8331,seq.py:240@a038f312,seq.py:263@68d56e72,seq.py:321@cdc2e97a,seq.py:333@e12f9208,seq.py:456@9d9e6eae,seq.py:477@be801626,seq.py:91@0672036a,seq.py:80@67bd13ba,seq.py:44@1d1d28f5,seq.py:96@1bee3588,seq.py:109@c37e9e0b,seq.py:132@b06c4d35,seq.py:159@39442eb4,seq.py:176@cb1fc72f,seq.py:499@e84b4c7d,seq.py:260@f4212c28,seq.py:207@7e1453a5,seq.py:217@be625d98,codestrata/web/seq.js:248@407f576e,seq.py:247@3830fda0,seq.py:276@fc7d4dd0,seq.py:282@9a554aeb,seq.py:286@8926a1d8,seq.py:324@7d78a787,seq.py:330@ccaa9583,seq.py:328@b47beb03,seq.py:345@a888ad0a,seq.py:356@86170292,seq.py:394@ce625da7,seq.py:36@e9373c14,seq.py:375@511d3e8e,seq.py:377@054bf37f,seq.py:380@5ecfc7ae,seq.py:384@196dce40,seq.py:401@a6ba8106,seq.py:307@ea17d85f,seq.py:317@f3e51ce3,seq.py:426@bfa9e50c,seq.py:435@881709d7,cut.py:171@577ac73b,seq.py:422@4b935c97,seq.py:446@79fd9e84,seq.py:471@545713f1,seq.py:460@78c02b35,seq.py:470@03679a05,serve.py:181@6c4aa61f,seq.py:505@93d0dc85,codestrata/web/app.js:478@6a135785,seq.py:396@675c27cf
 ---
 
 ## 是什么
-M5 时序图的服务端。它把一个 run 录下的 span（`codestrata.events` 整理好、写在 events/spans/ 里的那些）变成当前切面上的一张时序图。三个入口都经 `Handler._seq`（serve.py:153）进来：`build` 对应 /api/seq，`overview` 对应 /api/seq/overview，`find` 对应 /api/seq/find。前端 `codestrata/web/seq.js` 只管画。
+M5 时序图的服务端。它把一个 run 录下的 span（`codestrata.events` 整理好、写在 events/spans/ 里的那些）变成当前切面上的一张时序图。三个入口都经 `Handler._seq`（serve.py:154）进来：`build` 对应 /api/seq，`overview` 对应 /api/seq/overview，`find` 对应 /api/seq/find。前端 `codestrata/web/seq.js` 只管画。
 
 图上有两样东西：
 - **生命线** = (进程, 切面节点)。同一个节点在两个进程里各占一条，因为进程之间只画确定的关系（fork/exec 派生），IPC 交接不画（设计稿 7.4）。
@@ -92,7 +92,7 @@ next_t0 由服务端给出（seq.py:401）：截过的，是最后一条的时�
 把整个 run 分成 400 格，每个进程每格累加 Σrep（seq.py:471）。它不看切面、不分阶段，数的是全部跨文件调用（不画的那三类也算在内），所以按 (spans 目录, index 的 mtime, 格数) 缓存一次就够了（seq.py:460）。设计稿里写的是按 (run, phase) 缓存。它要把所有块扫一遍，所以读块时带 cache=False（seq.py:470），不经过那个 16 块的 LRU：块数超过 16 时，一次概览就会把正在看的那几块全挤出去。
 
 ### find：先在当前阶段里找
-在切面上找 a → b 这条边在 after 之后第一次出现的时刻。块按时间窗和当前找到的最早结果剪枝；块内有序，一超出范围就停；被调方是 rel:0 的跳过。serve 把 run 引用里的阶段换算成一个窗口（serve.py:180），这里先在这个窗口里找（seq.py:505），找不到再搜整个 run。serve 的注释写了原因：这条边在 serving 里叠成了橙色，就应该跳到 serving 里的那一次，而不是启动时的第一次。前端拿到时刻后，从 t−1 起按自动模式取一屏（codestrata/web/app.js:378），再滚到那条消息。
+在切面上找 a → b 这条边在 after 之后第一次出现的时刻。块按时间窗和当前找到的最早结果剪枝；块内有序，一超出范围就停；被调方是 rel:0 的跳过。serve 把 run 引用里的阶段换算成一个窗口（serve.py:181），这里先在这个窗口里找（seq.py:505），找不到再搜整个 run。serve 的注释写了原因：这条边在 serving 里叠成了橙色，就应该跳到 serving 里的那一次，而不是启动时的第一次。前端拿到时刻后，从 t−1 起按自动模式取一屏（codestrata/web/app.js:478），再滚到那条消息。
 
 ## 局限
 - 只取**在窗口里开始**的 span：窗口开始之前就已经开始、还没返回的调用不画。消息只是某个时刻的一根箭头；async span 没有激活条，dur 和挂起次数只在详情里给（设计稿 7.4 说的第一版就是这样）。
