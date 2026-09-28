@@ -2,7 +2,8 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
-    GET  /api/graph?open=a,b      一个切面上的图 + hot 叠加（open：展开着的目录，缺省是默认切面）
+    GET  /api/graph?open=a,b&w=   一个切面上的图 + hot 叠加（open：展开着的目录，缺省是默认切面；
+                                  w：页面上图框的宽度，按它排版）
     GET  /api/notes/<target>      解读（含 stale 判定）
     GET  /api/status?ids=a,b      一批节点的解读状态 noted / stale / todo（图上的徽标）
     PUT  /api/notes/<target>      写入解读        ← LLM agent 从这里介入
@@ -11,6 +12,9 @@
     GET  /api/symbol/<key>        一个符号的源码片段
     GET  /api/file?f=             整个文件 + 符号大纲（全文窗口用）
     GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
+    GET  /api/refs?t=             一个定义被哪些地方引用（全文窗口里 Ctrl+点击定义）
+    GET  /api/search-index        搜索栏要的全部名字（模块、文件、类 / 函数），前端自己搜
+    GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
     GET  /api/edge?a=&b=          一条边承载了什么：用到了对方哪些符号、runtime 调了哪些
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line
     GET  /code/<path>?l=N         整个文件，带行号锚点
@@ -75,6 +79,7 @@ class Handler(BaseHTTPRequestHandler):
     hot: dict | None = None
     hot_meta: dict | None = None
     _graphs: dict = {}          # 切面（open 的规范化字符串）→ 已算好的 /api/graph 结果
+    _search: bytes | None = None  # /api/search-index，算一次
 
     def log_message(self, fmt, *a):
         if os.environ.get("CODESTRATA_VERBOSE"):
@@ -115,12 +120,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/graph":
             raw = (q.get("open") or [None])[0]
             open_ = None if raw is None else [o for o in raw.split(",") if o]
-            key = "\u0000" if open_ is None else ",".join(sorted(open_))
+            # 图框多宽就按多宽排版（按 40px 取整，窗口拖一点点不必重排）
+            try:
+                width = max(700, min(4000, round(float((q.get("w") or ["1180"])[0]) / 40) * 40))
+            except (ValueError, OverflowError):       # w=abc / w=inf / w=1e999：按默认宽度
+                width = 1180
+            key = ("\u0000" if open_ is None else ",".join(sorted(open_))) + f"@{width}"
             if key not in Handler._graphs:
                 if len(Handler._graphs) > 32:          # 切面可以任意组合，缓存只留最近的一些
                     Handler._graphs.pop(next(iter(Handler._graphs)))
                 Handler._graphs[key] = json.dumps(_payload.graph_payload(
-                    self.repo, self.idx, hot=self.hot, hot_meta=self.hot_meta, open_=open_),
+                    self.repo, self.idx, hot=self.hot, hot_meta=self.hot_meta, open_=open_, width=width),
                     ensure_ascii=False).encode()
             return self._send(200, Handler._graphs[key], "application/json; charset=utf-8")
 
@@ -157,6 +167,22 @@ class Handler(BaseHTTPRequestHandler):
             if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
                 return self._json({"error": "unknown node"}, 404)
             return self._json(_payload.edge_detail(self.repo, self.idx, a, b, self.hot))
+
+        if path == "/api/search-index":
+            if Handler._search is None:
+                Handler._search = json.dumps(_payload.search_index(self.idx), ensure_ascii=False,
+                                             separators=(",", ":")).encode()
+            return self._send(200, Handler._search, "application/json; charset=utf-8")
+
+        if path == "/api/reveal":
+            raw = (q.get("open") or [None])[0]
+            open_ = None if raw is None else [o for o in raw.split(",") if o]
+            r = _payload.reveal(self.idx, (q.get("node") or [""])[0], open_)
+            return self._json({"open": r}) if r is not None else self._json({"error": "unknown node"}, 404)
+
+        if path == "/api/refs":
+            r = _payload.refs(self.repo, (q.get("t") or [""])[0], self.hot)
+            return self._json(r) if r else self._json({"error": "unknown target"}, 404)
 
         if path == "/api/outline":
             rel = (q.get("f") or [""])[0]
@@ -233,6 +259,7 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
     h, hm = _payload.load_hot(repo, idx, hot)
     Handler.repo, Handler.idx, Handler.hot, Handler.hot_meta = repo, idx, h, hm
     Handler._graphs = {}
+    Handler._search = None
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     ed = _editor()
     todo = _notes.tasks(repo, idx)

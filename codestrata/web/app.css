@@ -39,15 +39,23 @@
 body{margin:0;background:var(--paper);color:var(--body);
   font:14.5px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.wrap{max-width:1280px;margin:0 auto;padding:0 18px 56px}
-header{padding:28px 0 14px}
+/* 整页是一个应用：上面一条、中间的图铺满剩下的空间、下面的详情抽屉 */
+html,body{height:100%}
+body{overflow:hidden}
+.app{height:100vh;height:100dvh;display:flex;flex-direction:column}
+.top{flex:none;padding:10px 16px 0}
+.hrow{display:flex;align-items:baseline;gap:6px 14px;flex-wrap:wrap}
+.hrow h1{margin:0;font-size:20px}
+.hrow .stats{margin:0 0 0 auto}
+.lede[hidden]{display:none}
+header{padding:0}
 .kick{font:600 11px/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--hot)}
 h1{margin:8px 0 6px;font-size:clamp(22px,3.4vw,30px);color:var(--ink);letter-spacing:-.02em;line-height:1.15}
 .lede{margin:0;max-width:72ch;font-size:14.5px}
 .lede b{color:var(--ink)}
 .stats{display:flex;flex-wrap:wrap;gap:5px 15px;margin-top:12px;font:12px/1.5 ui-monospace,monospace;color:var(--muted)}
 .stats b{color:var(--ink)}
-.bar{display:flex;flex-wrap:wrap;gap:7px 12px;align-items:center;padding:9px 12px;margin:14px 0 11px;
+.bar{display:flex;flex-wrap:wrap;gap:7px 12px;align-items:center;padding:7px 12px;margin:8px 0 6px;
   background:var(--card);border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow)}
 .bar .lbl{font:11px/1 ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .chip{font:11.5px/1 ui-monospace,monospace;padding:5px 10px;border-radius:13px;cursor:pointer;
@@ -61,12 +69,27 @@ h1{margin:8px 0 6px;font-size:clamp(22px,3.4vw,30px);color:var(--ink);letter-spa
 .hotbanner{display:flex;gap:10px;padding:10px 13px;margin:0 0 11px;border-left:3px solid var(--hot);
   background:var(--hot-bg);border-radius:0 7px 7px 0;font-size:13.5px}
 .hotbanner b{color:var(--ink)}
+.hotbanner{margin:10px 0 0}
+/* 「?」帮助：浮在标题下面 */
+.hdr{position:relative}
+.helpbtn{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--sel);
+  font:700 12px/1 system-ui,sans-serif;cursor:pointer;align-self:center}
+.helpbtn[aria-expanded="true"]{background:var(--sel);color:var(--card);border-color:var(--sel)}
+.hottag{all:unset;cursor:pointer;color:var(--hot);font:12px/1.5 ui-monospace,monospace}
+.hottag b{color:var(--hot)}
+.help{position:absolute;top:34px;left:0;z-index:60;width:min(760px,calc(100vw - 32px));max-height:min(72vh,640px);overflow:auto;
+  padding:14px 18px 16px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.22)}
+.help[hidden]{display:none}
+.help h3{margin:4px 0 6px;font:600 13.5px/1.4 ui-sans-serif,system-ui,sans-serif;color:var(--ink)}
+.help .lede{margin:0 0 10px;max-width:none}
+.help .howto{margin:0 0 4px;padding-left:18px;font-size:13.5px;line-height:1.7}
+.help .hx{position:absolute;top:10px;right:10px}
 .hotbanner .cmd{font:11.5px/1.5 ui-monospace,monospace;color:var(--muted);word-break:break-all}
-.gbox{border:1px solid var(--line);border-radius:11px;background:var(--card);box-shadow:var(--shadow);overflow-x:auto}
-svg.g{display:block;min-width:900px;width:100%;height:auto;margin:0 auto}
+.gbox{position:absolute;inset:0;border:1px solid var(--line);border-radius:11px;background:var(--card);box-shadow:var(--shadow);overflow:auto}
+svg.g{display:block;min-width:600px;width:100%;height:auto;margin:0 auto}
 /* 画布比页面宽时（展开了很多目录），图框撑到整个窗口宽 */
-/* 画布比一栏宽时（展开了很多目录），图框由 graph.js 撑宽到窗口；两侧的渐隐提示「那边还有」 */
-.gwrap{position:relative}
+/* 图框由 graph.js 铺满窗口宽；画布比图框宽时两侧的渐隐提示「那边还有」 */
+.gwrap{position:relative;flex:1;min-height:160px;margin:0 16px 12px}
 .gfade{position:absolute;top:1px;bottom:1px;width:44px;pointer-events:none;opacity:0;transition:opacity .15s}
 .gfade.l{left:1px;border-radius:11px 0 0 11px;background:linear-gradient(90deg,var(--card),transparent)}
 .gfade.r{right:1px;border-radius:0 11px 11px 0;background:linear-gradient(270deg,var(--card),transparent)}
@@ -107,7 +130,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd .badge.noted{fill:var(--cool)}
 .nd .badge.stale{fill:var(--stale)}
 .nd .badge.todo{fill:var(--faint)}
-.cols{display:grid;grid-template-columns:1fr 380px;gap:12px;margin-top:12px;align-items:start}
+.cols{display:grid;grid-template-columns:1fr 380px;gap:12px;align-items:start}
 @media (max-width:980px){.cols{grid-template-columns:1fr}}
 .det,.side{background:var(--card);border:1px solid var(--line);border-radius:10px;
   padding:14px 16px;box-shadow:var(--shadow);min-width:0}
@@ -170,7 +193,30 @@ pre.note-code{background:var(--sunk);border:1px solid var(--rule);border-radius:
 .rowbtn button.primary{border-color:var(--hot);color:var(--hot);background:var(--hot-bg);font-weight:600}
 .stalewarn{border-left:3px solid var(--stale);background:var(--stale-bg);padding:9px 11px;
   border-radius:0 6px 6px 0;font-size:12.5px;margin-bottom:10px}
-footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);font-size:12.5px;color:var(--muted)}
+footer{margin-top:18px;padding-top:12px;border-top:1px solid var(--rule);font-size:12.5px;color:var(--muted)}
+/* 详情栏：浮在图的下沿（半透明、背后模糊），收起时只剩一条（写着选中的是什么）；拖上沿 / 左右边框改大小 */
+.drawer{position:absolute;left:var(--dl,10px);right:var(--dr,10px);bottom:10px;z-index:35;display:flex;flex-direction:column;
+  border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--card) 82%,transparent);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:0 10px 32px rgba(0,0,0,.16)}
+.drawer:hover,.drawer:focus-within{background:color-mix(in srgb,var(--card) 93%,transparent)}
+.drawer.open{height:min(var(--dh,44vh),calc(100% - 20px))}
+.dhead{flex:none;display:flex;align-items:center;gap:10px;padding:7px 12px;cursor:pointer;min-width:0}
+.dtog{flex:none;width:26px;height:24px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--body);cursor:pointer}
+.drawer.open .dtog{transform:rotate(180deg)}
+.dtitle{font:600 13px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.dbody{flex:1;min-height:0;overflow:auto;padding:4px 12px 14px;display:none}
+.drawer.open .dbody{display:block}
+.drawer .det,.drawer .side{background:color-mix(in srgb,var(--card) 70%,transparent)}
+/* 浮着的栏：拖边框改大小 */
+.rz{position:absolute;z-index:4}
+.rz-l{left:-4px;top:10px;bottom:10px;width:8px;cursor:ew-resize}
+.rz-r{right:-4px;top:10px;bottom:10px;width:8px;cursor:ew-resize}
+.rz-t{top:-4px;left:10px;right:10px;height:8px;cursor:ns-resize}
+.rz-b{bottom:-4px;left:10px;right:10px;height:8px;cursor:ns-resize}
+.rz-lb{left:-5px;bottom:-5px;width:14px;height:14px;cursor:nesw-resize}
+.rz:hover{background:color-mix(in srgb,var(--sel) 25%,transparent);border-radius:4px}
+body.rzing,body.rzing *{user-select:none!important}
 
 /* ---- 代码 token ---- */
 .t-kw{color:var(--t-kw)}.t-str{color:var(--t-str)}.t-doc{color:var(--t-doc);font-style:italic}
@@ -245,7 +291,7 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);font-si
 .chip.lg[aria-pressed=false]{opacity:.5}
 .chip.lg[aria-pressed=true]{background:var(--sunk);border-color:var(--line);color:var(--ink)}
 .chip.lg.rt[aria-pressed=true]{background:var(--hot-bg);border-color:var(--hot);color:var(--hot)}
-.edgehint{font-size:12px;color:var(--faint);margin:-4px 0 8px}
+.edgehint{font-size:12px;color:var(--faint);margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .edgehint b{color:var(--sel);font-weight:600}
 
 /* ---- 边详情 ---- */
@@ -344,3 +390,119 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 @keyframes fresh{from{fill:var(--sel-bg)}to{}}
 .cutrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
 .cutrow .kindtag{font-size:11.5px;color:var(--muted)}
+/* ---- Ctrl（⌘）+ 点击：按着时能解析的名字像链接；点定义列出引用 ---- */
+.xctrl .xr{cursor:pointer}
+.xctrl .xr:hover{text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--sel)}
+.xctrl .xr[data-k="3"]:hover{text-decoration-style:dotted}
+.vhint{font-size:11.5px;color:var(--faint);white-space:nowrap}
+.vbox{position:relative}
+.vbody{position:relative}
+/* 引用列表是代码旁边的一栏（不是盖在代码上）：跳到的那一处不会被挡住 */
+.vbody.withrefs{grid-template-columns:250px minmax(0,1fr) min(440px,38%)}
+@media (max-width:760px){.vbody.withrefs{grid-template-columns:1fr}.vbody.withrefs .vcode{display:none}}
+.vrefs{background:var(--card);border-left:1px solid var(--line);overflow:auto;padding:10px 12px 16px;min-width:0}
+.vrefs[hidden]{display:none}
+.vrefs .rh{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--body)}
+.vrefs .rh b{color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.vrefs .rx{margin-left:auto}
+.vrefs .rs{font-size:12px;color:var(--muted);margin:4px 0 8px;line-height:1.6}
+.vrefs .rt{color:var(--hot)}
+.rf{margin:8px 0 10px}
+.rfn{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--body);display:flex;gap:6px;align-items:center;margin-bottom:3px;word-break:break-all}
+.rfn .n{color:var(--faint);font-weight:400}
+.rr{display:flex;gap:8px;align-items:baseline;width:100%;text-align:left;background:none;border:0;border-radius:6px;
+  padding:3px 6px;cursor:pointer;color:var(--body)}
+.rr:hover,.rr.on{background:var(--sel-bg)}
+.rr:focus-visible{outline:2px solid var(--sel);outline-offset:-2px}
+.rr .rl{flex:none;width:42px;text-align:right;color:var(--faint);font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+.rr .rk{flex:none;font-size:11px;padding:0 5px;border-radius:4px;background:var(--sunk);color:var(--muted)}
+.rr .rk.k1{color:var(--sel)}
+.rr code{font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--ink)}
+.vtoast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:var(--ink);color:var(--card);
+  padding:6px 12px;border-radius:8px;font-size:12.5px;opacity:0;transition:opacity .15s;pointer-events:none;z-index:4}
+.vtoast.on{opacity:.92}
+.vtoast.page{position:fixed;z-index:120}
+.vhint.stale{color:var(--stale)}
+.xr.xhit{background:var(--hot-bg);outline:1px solid var(--hot);border-radius:2px;animation:hitflash 1.8s ease-out}
+.rr .rn{flex:none;font-size:11px;color:var(--muted)}
+.rr .rst{flex:none;font-size:10.5px;color:var(--stale);border:1px solid var(--stale);border-radius:4px;padding:0 4px}
+.vrefs .rs.note{color:var(--faint)}
+.vrefs .rs code,.rmh code{font-size:11.5px}
+.rr .rk.k3{color:var(--hot)}
+.rf.rdef{margin:6px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.rmaybe{margin-top:14px;padding-top:8px;border-top:1px dashed var(--line)}
+.rmh{font-size:12.5px;color:var(--body);display:flex;gap:6px;align-items:center}
+.rmh .n{color:var(--faint)}
+.rf.maybe .rr code{color:var(--body)}
+/* ---- 搜索栏：浮在右上角（半透明、背后模糊），不占页面宽度，图照样铺满 ---- */
+:root{--sbw:360px}
+.sbar{position:absolute;top:10px;right:10px;width:min(var(--sbw),calc(100% - 20px));z-index:40;
+  max-height:calc(100% - 30px - var(--dnow,52px));
+  display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;
+  background:color-mix(in srgb,var(--card) 80%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  box-shadow:0 10px 32px rgba(0,0,0,.14)}
+.sbar:hover,.sbar:focus-within{background:color-mix(in srgb,var(--card) 92%,transparent)}
+.sbar.mini .sbf,.sbar.mini .sbr{display:none}
+.sbar.mini{height:auto!important}
+.sbar.mini #sq{margin-bottom:12px}
+.sbar[hidden]{display:none}
+.sbh{display:flex;align-items:center;gap:8px;padding:14px 14px 8px;color:var(--ink);font-size:14px}
+.sbh .sp{margin-left:auto}
+.sbh .kbd,.sbar kbd{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:4px;padding:2px 5px;color:var(--muted);background:var(--sunk)}
+.sbx{border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:6px;width:28px;height:26px;cursor:pointer}
+.sbx:hover{color:var(--ink)}
+#sq{margin:0 14px 8px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);
+  color:var(--ink);font:13.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none}   /* 行高写在 font 里：单写 line-height 会被 font 简写盖掉，下划线被裁 */
+#sq:focus{border-color:var(--sel);box-shadow:0 0 0 3px var(--sel-bg)}
+.sbf{display:flex;flex-wrap:wrap;gap:5px;padding:0 14px 8px;border-bottom:1px solid var(--line)}
+.sbr{flex:1;overflow:auto;padding:4px 6px 12px;min-height:0}
+.sbr .hint{padding:8px 8px;margin:0;line-height:1.8}
+.sg{margin:6px 0 4px}
+.sgh{display:flex;align-items:center;gap:6px;padding:6px 8px 3px;font-size:11.5px;color:var(--muted);text-transform:none}
+.sgh .n{color:var(--faint)}
+.sgh .linkbtn{margin-left:auto}
+.sr{display:flex;align-items:flex-start;gap:8px;width:100%;text-align:left;background:none;border:0;border-radius:7px;
+  padding:5px 8px;cursor:pointer;color:var(--body)}
+.sr:hover,.sr.cur{background:var(--sel-bg)}
+.sr:focus-visible{outline:2px solid var(--sel);outline-offset:-2px}
+.si{flex:none;width:18px;height:18px;margin-top:1px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;
+  font:700 10.5px/1 ui-monospace,monospace;background:var(--sunk);color:var(--muted);border:1px solid var(--line)}
+.si.m{color:var(--sel)}
+.si.c{color:var(--hot)}
+.sm{display:flex;flex-direction:column;min-width:0;flex:1}
+.sn{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);word-break:break-all}
+.sn mark{background:var(--hot-bg);color:inherit;border-radius:2px}
+.ss{font-size:11.5px;color:var(--faint);word-break:break-all;line-height:1.4}
+.sloc{flex:none;align-self:center;font-size:11px;color:var(--sel);border:1px solid var(--line);border-radius:5px;padding:1px 6px;background:var(--card)}
+.sloc:hover{border-color:var(--sel)}
+.sbtab{position:absolute;right:10px;top:10px;z-index:40;padding:7px 14px;border:1px solid var(--line);border-radius:999px;
+  background:color-mix(in srgb,var(--card) 85%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  color:var(--sel);cursor:pointer;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.12)}
+.sbtab[hidden]{display:none}
+/* 从搜索栏跳过来的那一项：文件树里标出来 */
+.tree .tr.hit{background:var(--sel-bg);box-shadow:inset 3px 0 0 var(--sel);animation:hitflash 1.8s ease-out}
+@keyframes hitflash{from{background:var(--hot-bg)}to{background:var(--sel-bg)}}
+/* ---- 图的缩放 / 移动按钮：钉在图框左上角（右上角是浮着的搜索栏），滚动时一直看得见 ---- */
+.gctl{position:absolute;top:0;left:84px;z-index:6;display:flex;gap:4px;pointer-events:none}
+.gctl > *{pointer-events:auto;margin-top:10px;height:28px;border:1px solid var(--line);background:var(--card);color:var(--body);
+  border-radius:7px;cursor:pointer;box-shadow:var(--shadow);font:600 14px/1 system-ui,sans-serif}
+.gctl .gz{width:30px}
+.gctl .gzl{min-width:52px;padding:0 8px;font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+.gctl > *:hover{color:var(--ink);border-color:var(--sel)}
+.gctl [aria-pressed="true"]{background:var(--sel);border-color:var(--sel);color:var(--card)}
+.gbox.panmode,.gbox.panmode .nd,.gbox.panmode .ehit{cursor:grab}
+.gbox.panmode.dragging,.gbox.panmode.dragging .nd{cursor:grabbing}
+/* 帮助里「这次跑了什么」 */
+.run{font-size:12.5px}
+.run .lab{color:var(--muted);font-size:12px}
+.run .cmdline{margin:4px 0 8px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.run code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;color:var(--ink)}
+.procs{width:100%;border-collapse:collapse;margin:4px 0 8px}
+.procs td{padding:3px 6px;border-top:1px solid var(--rule);vertical-align:top}
+.procs .pn{white-space:nowrap;color:var(--muted);width:3em;text-align:right}
+.procs .pf{white-space:nowrap;color:var(--hot);text-align:right}
+.procs tr.idle code,.procs tr.idle .pf{color:var(--faint)}
+.script summary{cursor:pointer;margin:4px 0}
+.script pre{margin:6px 0 0;max-height:320px;overflow:auto;padding:10px;background:var(--sunk);border-radius:8px;
+  font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}

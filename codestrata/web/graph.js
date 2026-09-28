@@ -33,6 +33,7 @@ window.CS = window.CS || {};
 
   CS.graph = {
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
+    zoom: 1, panMode: false,   // 缩放倍数（相对「适应宽度」）；移动模式：按住任意位置拖动
     state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, hot: true, dyn: true,
              onlyHot: false, onlyNoted: false },
     noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
@@ -203,48 +204,95 @@ window.CS = window.CS || {};
       box._wired = true;
       var self = this, drag = null, moved = false;
       box.addEventListener('mousedown', function (ev) {
-        if (ev.button !== 0 || ev.target.closest('.nd, .ehit, .xp')) return;
-        drag = { x: ev.clientX, y: ev.clientY, sl: box.scrollLeft, sy: window.scrollY };
+        // 平时只在空白处按下才拖；移动模式下哪里都能拖（按在节点上拖也不会选中它）
+        if (ev.button !== 0 || (!self.panMode && ev.target.closest('.nd, .ehit, .xp'))) return;
+        drag = { x: ev.clientX, y: ev.clientY, sl: box.scrollLeft, st: box.scrollTop };
         moved = false;
+        if (self.panMode) ev.preventDefault();
       });
+      // 拖动结束时的那次 click 不能落到节点 / 边上（捕获阶段先拦下）
+      box.addEventListener('click', function (ev) {
+        if (moved) { moved = false; ev.stopPropagation(); ev.preventDefault(); }
+      }, true);
+      // 按住 Ctrl（Mac 上 ⌘）滚滚轮缩放，以鼠标所在的点为中心；不按 Ctrl 的滚轮照常滚页面。
+      // 触控板的双指捏合在浏览器里也是「按着 Ctrl 的滚轮」，一并支持
+      box.addEventListener('wheel', function (ev) {
+        if (!(ev.ctrlKey || ev.metaKey)) return;
+        ev.preventDefault();
+        self.zoomBy(Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0022)), ev.clientX, ev.clientY);
+      }, { passive: false });
       window.addEventListener('mousemove', function (ev) {
         if (!drag) return;
         var dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
         if (!moved && Math.abs(dx) + Math.abs(dy) < 5) return;
         moved = true; box.classList.add('dragging');
         box.scrollLeft = drag.sl - dx;
-        window.scrollTo(window.scrollX, drag.sy - dy);
+        box.scrollTop = drag.st - dy;
       });
       window.addEventListener('mouseup', function () { drag = null; box.classList.remove('dragging'); });
       box.addEventListener('click', function () {
-        if (moved) { moved = false; return; }        // 拖动结束时的那次 click 不算点空白
         var s = self.state;
         if (s.sel || s.selEdge || s.selFrame) self.clear();
+      });
+      // 缩放 / 移动按钮
+      var ctl = box.parentNode && box.parentNode.querySelector('.gctl');
+      if (ctl) [].forEach.call(ctl.querySelectorAll('[data-z]'), function (b) {
+        b.onclick = function () {
+          var z = b.dataset.z;
+          if (z === 'pan') { self.setPan(!self.panMode); return; }
+          if (z === 'reset') { self.setZoom(1); return; }
+          // 以图框的中心为准
+          var r = box.getBoundingClientRect();
+          self.zoomBy(z === 'in' ? 1.25 : 0.8, r.left + r.width / 2, r.top + r.height / 2);
+        };
       });
       box.addEventListener('scroll', function () { self.fade(); });
       window.addEventListener('resize', function () { self.fit(); });
     },
 
-    /* 图框多宽：默认画布（≤1200）和页面一栏同宽、按比例缩放（老样子）。展开多了画布变宽时，
-       图框撑宽到窗口（但不超过画布本身，免得两侧大片空白），字最多缩到 0.88 倍，
-       再宽就在图框里横向滚动——而不是整页横向滚动，也不是把字缩到看不清 */
+    /* 图框铺满页面中间那一大块（整页宽，上面一条和下面的抽屉之外的高度），在框里上下左右滚。
+       live 模式按图框宽度排版（app 把宽度传给 serve），画布宽就等于图框宽；展开多了画布更宽，
+       最多缩到 0.88 倍，再宽就横向滚动。导出版的画布宽度是固定的，宽屏上最多放大到 1.25 倍 */
     fit: function () {
       var svg = this.svg, G = this.G, box = svg && svg.parentNode, wrap = box && box.parentNode;
       if (!wrap || !G) return;
-      wrap.style.width = wrap.style.marginLeft = '';
-      svg.style.minWidth = svg.style.maxWidth = '';
-      var wide = G.width > 1200;
-      box.classList.toggle('wide', wide);
-      if (wide) {
-        var col = wrap.getBoundingClientRect().width;
-        var win = document.documentElement.clientWidth - 48;
-        var w = Math.max(col, Math.min(win, G.width + 2));
-        wrap.style.width = w + 'px';
-        wrap.style.marginLeft = ((col - w) / 2) + 'px';
-        svg.style.minWidth = Math.round(G.width * 0.88) + 'px';
-        svg.style.maxWidth = G.width + 'px';
-      }
+      var scale = Math.max(0.88, Math.min(1.25, box.clientWidth / G.width));
+      svg.style.minWidth = svg.style.maxWidth = 'none';
+      svg.style.width = Math.round(G.width * scale * this.zoom) + 'px';
+      var zl = wrap.querySelector('.gzl');
+      if (zl) zl.textContent = Math.round(this.zoom * 100) + '%';
       this.fade();
+    },
+
+    /* 图框能用多宽（排版时也按它） */
+    boxWidth: function () {
+      var w = document.getElementById('gwrap');
+      return (w && w.clientWidth ? w.clientWidth : document.documentElement.clientWidth - 32) - 2;
+    },
+
+    /* 缩放到 z 倍，(cx, cy) 这个屏幕上的点缩放前后指着图上同一个地方 */
+    setZoom: function (z, cx, cy) {
+      var svg = this.svg, box = svg && svg.parentNode;
+      if (!box) return;
+      z = Math.max(0.3, Math.min(4, z));
+      var r0 = svg.getBoundingClientRect(), rb = box.getBoundingClientRect();
+      if (cx == null) { cx = rb.left + rb.width / 2; cy = rb.top + rb.height / 2; }
+      var fx = r0.width ? (cx - r0.left) / r0.width : 0.5, fy = r0.height ? (cy - r0.top) / r0.height : 0;
+      this.zoom = Math.abs(z - 1) < 0.02 ? 1 : z;
+      this.fit();
+      var r1 = svg.getBoundingClientRect();
+      box.scrollLeft += (r1.left + fx * r1.width) - cx;
+      box.scrollTop += (r1.top + fy * r1.height) - cy;
+      this.fade();
+    },
+
+    zoomBy: function (k, cx, cy) { this.setZoom(this.zoom * k, cx, cy); },
+
+    setPan: function (on) {
+      this.panMode = on;
+      var box = this.svg && this.svg.parentNode, b = box && box.parentNode.querySelector('[data-z="pan"]');
+      if (box) box.classList.toggle('panmode', on);
+      if (b) b.setAttribute('aria-pressed', on);
     },
 
     /* 图框能横向滚动时，哪边还有东西就在哪边渐隐；顺便显示「可以拖动」的提示 */
@@ -283,6 +331,7 @@ window.CS = window.CS || {};
     /* 选中的节点被展开成了框：框算选中，面板不动（它讲的还是这个目录） */
     selectFrame: function (id) {
       this.state.sel = this.state.selEdge = null; this.state.selFrame = id; this.paint();
+      if (this.onSelectFrame) this.onSelectFrame(id);
     },
 
     setNoteStatus: function (map) {
@@ -360,7 +409,30 @@ window.CS = window.CS || {};
       this.state.sel = id; this.state.selEdge = this.state.selFrame = null; this.paint();
       if (this.onPick) this.onPick(id);
       var g = this.nodes[id];
-      if (!stay && g && g.scrollIntoView) g.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+      if (!stay && g && !this.inView(g)) this.showEl(g, true);
+    },
+
+    /* 图框里真正看得见的区域：浮在下沿的详情栏盖住的那一截不算 */
+    viewRect: function () {
+      var box = this.svg && this.svg.parentNode;
+      if (!box) return null;
+      var b = box.getBoundingClientRect(), bottom = b.bottom, dr = document.getElementById('drawer');
+      if (dr) { var d = dr.getBoundingClientRect(); if (d.top < bottom) bottom = Math.max(b.top + 80, d.top - 8); }
+      return { left: b.left, right: b.right, top: b.top, bottom: bottom };
+    },
+
+    inView: function (el) {
+      var v = this.viewRect(), r = el.getBoundingClientRect();
+      return !!v && r.left >= v.left && r.right <= v.right && r.top >= v.top && r.bottom <= v.bottom;
+    },
+
+    /* 把图上的一个元素滚到看得见的区域中间（不会滚到详情栏底下去） */
+    showEl: function (el, smooth) {
+      var box = this.svg && this.svg.parentNode, v = this.viewRect();
+      if (!el || !box || !v) return;
+      var r = el.getBoundingClientRect();
+      box.scrollBy({ left: (r.left + r.width / 2) - (v.left + v.right) / 2,
+                     top: (r.top + r.height / 2) - (v.top + v.bottom) / 2, behavior: smooth ? 'smooth' : 'auto' });
     },
 
     pickEdge: function (a, b) {

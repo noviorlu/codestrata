@@ -126,7 +126,7 @@ window.CS = window.CS || {};
         return '<div class="kv"><span>' + l + '</span>' + a.map(function (i) {
           var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || {}, inf = E.info || {};
           var tag = E.kind === 'dyn' ? E.hits + ' 次' : (inf.uses ? inf.uses + ' 符号' : '只 import');
-          return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(i.split('.').pop())
+          return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(short(i))
             + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + (E.hits ? ' warm' : '')
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
         }).join('') + '</div>';
@@ -312,6 +312,45 @@ window.CS = window.CS || {};
       var closed = n.classList.toggle('closed');
       n.querySelector('.tg').textContent = closed ? '▸' : '▾';
       if (!closed && !n.dataset.filled) this._fillFile(n, q);
+      return n._ready;
+    },
+
+    /* 从搜索栏过来：在当前模块的文件树里展开到这个文件（给了 key 就再展开到这个类 / 函数，
+       在它下面放源码片段），标出来。返回标出来的那一行，调用方决定要不要滚过去 */
+    focusIn: function (rel, key, line) {
+      var self = this, box = document.getElementById('tree'), n = null;
+      [].forEach.call(box ? box.querySelectorAll('.tn.file') : [], function (x) { if (x.dataset.file === rel) n = x; });
+      if (!n) {                                   // 这个模块的文件树里没有它（不该发生）：片段放在最下面
+        if (key) this.showSource(this._tree && this._tree.pkg, key, null, { f: rel, l: line });
+        return Promise.resolve(document.getElementById('srcslot'));
+      }
+      for (var p = n.parentNode; p && p !== box; p = p.parentNode)
+        if (p.classList && p.classList.contains('dir')) p.classList.remove('closed');
+      var ready = n.classList.contains('closed') ? this._toggleFile(n, '') : (n._ready || this._fillFile(n, ''));
+      return Promise.resolve(ready).then(function () {
+        var target = n.querySelector('.tr');
+        if (key) {
+          var b = null;
+          [].forEach.call(n.querySelectorAll('[data-tsym]'), function (x) { if (x.dataset.tsym === key) b = x; });
+          if (b) {
+            // 方法：先把它所在的类展开
+            var cls = b.parentNode.parentNode.parentNode.closest('.tn.sym');
+            if (cls && cls.classList.contains('closed')) {
+              cls.classList.remove('closed');
+              var tg = cls.querySelector(':scope > .tr > .tg'); if (tg) tg.textContent = '▾';
+            }
+            var slot = b.parentNode.nextElementSibling;
+            if (!slot.innerHTML) self.showSource(self._tree.pkg, key, slot, { f: rel, l: line });
+            target = b.parentNode;
+          } else {                                // 大纲里只有顶层和一层方法，更深的（嵌套函数）放在最下面
+            self.showSource(self._tree.pkg, key, null, { f: rel, l: line });
+            target = document.getElementById('srcslot') || target;   // 滚到片段那里，而不是文件那一行
+          }
+        }
+        [].forEach.call(box.querySelectorAll('.tr.hit'), function (x) { x.classList.remove('hit'); });
+        (target.classList.contains('tr') ? target : n.querySelector('.tr')).classList.add('hit');
+        return target;
+      });
     },
 
     /* 展开一个文件：类（可再展开看方法）和函数，按行号排。点符号名在这一行下面展开源码片段 */
@@ -369,9 +408,10 @@ window.CS = window.CS || {};
         });
       };
       tc.innerHTML = '<div class="tr empty" style="--d:' + depth + '">读取大纲…</div>';
-      var lang = f.split('.').pop().toLowerCase();
-      CS.ds.outline ? CS.ds.outline(f).then(function (o) { draw(o && o.symbols && o.symbols.length ? o.symbols : null); },
-                                             function () { draw(null); }) : draw(null);
+      // 记下「大纲画好了」的 promise：搜索栏要在画好之后再定位到某个类 / 函数
+      n._ready = CS.ds.outline(f).then(function (o) { draw(o && o.symbols && o.symbols.length ? o.symbols : null); },
+                                       function () { draw(null); });
+      return n._ready;
     },
 
     showSource: function (pkg, key, slotEl, where) {
@@ -405,9 +445,14 @@ window.CS = window.CS || {};
           + '<button data-view="' + esc(s.file) + '" data-line="' + s.line + '">整个文件</button>'
           + '</div><div class="srcscroll"><div class="srcgrid">'
           + '<div class="gut">' + g.join('\n') + '</div>'
-          + '<pre class="code"><code>' + L.join('\n') + '</code></pre>'
+          + '<pre class="code"><code>' + L.map(function (x, i) {
+              return '<span class="cl" data-l="' + (s.line + i) + '">' + x + '</span>'; }).join('\n') + '</code></pre>'
           + '</div></div></div>';
         self._wireIn(slot);
+        // 片段里也能 Ctrl+点击：跳到定义 / 列出引用（在全文窗口里打开）
+        var code = slot.querySelector('pre.code');
+        CS.xref.mark(code, s.xref, s.file, function (l) { return code.querySelector('.cl[data-l="' + l + '"]'); });
+        code.addEventListener('click', function (ev) { CS.xref.click(ev); });
       }).catch(function () { slot.innerHTML = ''; });
     },
 

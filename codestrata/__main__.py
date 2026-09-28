@@ -22,6 +22,7 @@ from . import payload as _payload
 from . import render as _render
 from . import scan as _scan
 from . import trace as _trace
+from . import xref as _xref
 
 
 def _outdir(repo: Path) -> Path:
@@ -55,6 +56,10 @@ def cmd_scan(a) -> int:
               + "；".join(r["unresolved_imports"][:5]) + ("…" if len(r["unresolved_imports"]) > 5 else ""))
     print(f"→ {p}")
     print(f"→ {p.parent / 'symbols.json'}")
+    # 交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用）。和符号表同一时刻的快照，行号才对得上
+    x = _xref.build(repo, idx)
+    xp = _xref.write(p.parent, x)
+    print(f"→ {xp}  （{sum(len(v) for v in x['files'].values())} 处能解析的名字）")
     print("\n架构高度（+1 入口 … −1 叶子），默认切面上的节点：")
     for name in sorted(shown, key=lambda n: -v["nodes"][n]["alt"]):
         x = v["nodes"][name]

@@ -417,16 +417,17 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
         plans[key] = ((r[0] if r else {}), ws)
         return plans[key]
 
-    # 画布宽度：默认 1180（和页面同宽）。展开多了，窄画布只能把每块压成一列、图拉得很长；
-    # 宽一点能省下不少高度。在几档宽度里挑「高度 + 多出来的宽度」最小的——宽出来的部分
-    # 在页面上横向滚动，所以宽度比高度更贵一点。
+    # 画布宽度：width 是页面上图框的宽度（serve 按浏览器窗口传进来，默认 1180）。展开多了，
+    # 窄画布只能把每块压成一列、图拉得很长；宽一点能省下不少高度。在几档宽度里挑
+    # 「高度 + 多出来的宽度」最小的——宽出来的部分要在图框里横向滚动，所以宽度比高度更贵一点。
     # 展开得很多、最窄也超过这几档时，再试比最窄宽 15% / 35% 的两档：每块都压在下限上时
     # 一行只放得下一个节点，稍微放宽一点常常能省下好几行
     WIDTH_COST = 1.5
     floor = need[None][1] + MARGIN * 2
     base = max(width, floor)
-    cands = sorted({base} | {w for w in (1400.0, 1640.0, 1900.0, 2200.0, base * 1.15, base * 1.35)
-                             if w > base and (w <= 2200.0 or base > 2200.0)})
+    steps = [width * k for k in (1.19, 1.39, 1.61, 1.86)]
+    cands = sorted({base} | {w for w in steps + [base * 1.15, base * 1.35]
+                             if w > base and (w <= steps[-1] or base > steps[-1])})
     best_w, best_cost = cands[0], None
     for w in cands:
         rows_w = plan(None, w - MARGIN * 2)[0]

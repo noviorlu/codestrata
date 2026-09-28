@@ -288,7 +288,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             rel = path.relative_to(root)
             n_files += 1
             try:
-                src = path.read_text(encoding="utf-8", errors="replace")
+                # utf-8-sig：开头带 BOM 的文件（Windows 编辑器存的）照样能解析，早先整个文件被当成解析失败
+                src = path.read_text(encoding="utf-8-sig", errors="replace")
                 tree = ast.parse(src)
             except (SyntaxError, ValueError, OSError):
                 n_err += 1

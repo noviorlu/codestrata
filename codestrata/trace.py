@@ -161,7 +161,14 @@ if _root and _out:
         try:
             os.makedirs(_out, exist_ok=True)
             p = os.path.join(_out, "part-%d.json" % os.getpid())
-            data = {"pid": os.getpid(), "argv": sys.argv[:6], "funcs": dict(_funcs),
+            # 完整的命令行（解释器 + 参数；python -c 的代码也在里面），hot 图的帮助里要列出
+            # 「这次到底跑了什么」。早先只存 sys.argv 的前 6 个，参数一长就看不全
+            try:
+                with open("/proc/self/cmdline", "rb") as f:
+                    argv = [a.decode("utf-8", "replace")[:400] for a in f.read().split(b"\\0") if a][:60]
+            except OSError:
+                argv = [sys.executable] + sys.argv[:60]
+            data = {"pid": os.getpid(), "ppid": os.getppid(), "argv": argv, "funcs": dict(_funcs),
                     "func_edges": dict(_fedges), "mapped": dict(_mapped), "phase": _phase[0]}
             with open(p + ".tmp", "w") as f:
                 json.dump(data, f)
@@ -297,6 +304,10 @@ def run(root: Path, cmd: list[str], case: str,
         print("[codestrata] 被中断，用已收集到的数据", file=sys.stderr)
 
     tr = merge(parts, case=case, cmd=cmd, returncode=rc)
+    tr["cwd"] = str(root)
+    script = case_script(root, cmd)
+    if script:
+        tr["script"] = script
     rels = {k.rpartition(":")[0] for k in tr["funcs"]}
     tr["file_shas"] = file_shas(root, rels)
     if tr["mapped"]:
@@ -325,6 +336,24 @@ def run(root: Path, cmd: list[str], case: str,
               + (f"（另有 {len(extra)} 个只在安装包里：{', '.join(extra[:3])}）" if extra else ""),
               file=sys.stderr)
     return tr
+
+
+def case_script(root: Path, cmd: list[str]) -> dict | None:
+    """case 命令里的脚本（bash case.sh、python demo.py 里那个文件）：把它的内容一起存下来。
+    hot 图的帮助里要能看到「这次到底跑了什么」——光一句 bash ../../trace_case.sh 看不出
+    起了什么服务、跑的是哪个 demo / benchmark、带了什么参数。命令从仓库根目录开始跑。"""
+    for a in cmd:
+        if a.startswith("-"):
+            continue
+        p = Path(a) if Path(a).is_absolute() else root / a
+        try:
+            if p.is_file() and p.stat().st_size < 200_000 and p.suffix in (".sh", ".bash", ".py", ".zsh", ""):
+                text = p.read_text(encoding="utf-8", errors="replace")
+                if p.suffix or text.startswith("#!"):
+                    return {"path": a, "text": text}
+        except OSError:
+            continue
+    return None
 
 
 def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
@@ -362,7 +391,7 @@ def merge(parts: Path, *, case: str, cmd: list[str] | None = None,
                     if dv > 0:
                         dst[k] = dst.get(k, 0) + dv
             pf, pe = fu, fe
-        pids.append({"pid": d.get("pid"), "argv": d.get("argv"),
+        pids.append({"pid": d.get("pid"), "ppid": d.get("ppid"), "argv": d.get("argv"),
                      "n_funcs": len(d.get("funcs") or {})})
         for k, v in (d.get("funcs") or {}).items():
             funcs[k] = funcs.get(k, 0) + v

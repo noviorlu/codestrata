@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from functools import lru_cache
 from pathlib import Path
 
 from . import cut as _cut
@@ -9,6 +11,7 @@ from . import highlight as _hl
 from . import layout as _layout
 from . import notes as _notes
 from . import trace as _trace
+from . import xref as _xref
 
 
 def load_index(repo: Path) -> dict:
@@ -53,8 +56,31 @@ def load_hot(repo: Path, idx: dict, case: str | None) -> tuple[dict | None, dict
             "stale_files": _trace.stale_files(repo, tr) if tr.get("file_shas") else [],
             # 跑的是安装包时：从哪映射来的、有没有和仓库对不上的文件
             "mapped_from": tr.get("mapped_from"), "n_mapped": len(tr.get("mapped") or {}),
-            "mapped_mismatch": tr.get("mapped_mismatch") or []}
+            "mapped_mismatch": tr.get("mapped_mismatch") or [],
+            "procs": _procs(tr), "script": _script(repo, tr)}
     return hot, meta
+
+
+def _procs(tr: dict) -> list[dict]:
+    """被 trace 的进程按命令合并：[{argv, n: 几个进程, funcs: 一共跑到几个仓库里的函数}]。
+    跑到仓库代码多的排前面——服务、demo 在前，健康检查之类的一次性小进程在后。"""
+    by: dict[tuple, dict] = {}
+    for p in tr.get("pids") or []:
+        k = tuple(p.get("argv") or [])
+        # 老的 trace（没有 ppid 的那一版）只存了 sys.argv 的前 6 个：标出来，免得以为命令就这么长
+        d = by.setdefault(k, {"argv": list(k), "n": 0, "funcs": 0,
+                              "cut": "ppid" not in p and len(k) >= 6})
+        d["n"] += 1
+        d["funcs"] += p.get("n_funcs") or 0
+    return sorted(by.values(), key=lambda d: (-d["funcs"], -d["n"]))
+
+
+def _script(repo: Path, tr: dict) -> dict | None:
+    """case 脚本的内容。新的 trace 录制时就存下了；老的 trace 没存，就读现在的文件（标明是现在的）。"""
+    if tr.get("script"):
+        return {**tr["script"], "saved": True}
+    s = _trace.case_script(repo, tr.get("cmd") or [])
+    return {**s, "saved": False} if s else None
 
 
 def _unit_syms(idx: dict) -> dict:
@@ -75,9 +101,11 @@ def _norm_open(idx: dict, open_) -> set:
 
 
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
-                  hot_meta: dict | None = None, open_=None, lanes="auto", min_files: int = 1) -> dict:
+                  hot_meta: dict | None = None, open_=None, lanes="auto", min_files: int = 1,
+                  width: float = 1180.0) -> dict:
     """一个切面上的全部前端数据。open_ 是展开着的目录（不给就用 scan 算出的默认切面）；
-    图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。"""
+    图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。
+    width：页面上图框有多宽——按它排版，宽屏上图铺满、少折行，而不是把 1180 宽的图放大"""
     open_ = _norm_open(idx, open_)
     v = _cut.view(idx, open_)
     # 框：每个节点被哪个展开着的目录（或展开着的本层文件）直接套着，一路往上。
@@ -99,7 +127,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             frames[f]["n"] += 1
             f = frames[f]["parent"]
     syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames}
-    g = _layout.build(syn, lanes=lanes, min_files=min_files)
+    g = _layout.build(syn, lanes=lanes, min_files=min_files, width=width)
     mem, node_of = v["members"], v["node_of"]
     repo_info = dict(idx["repo"])
     repo_info["n_symbols"] = len(idx.get("symbols") or {})
@@ -162,7 +190,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             if k not in kinds and a in shown and b in shown:
                 rt_only.append([a, b, n])
     # hot 视图单独排版：只放跑到的节点，泳道数沿用总图，纵坐标含义不变、横向更紧凑
-    g_hot = (_layout.build(syn, lanes=g["lanes"], min_files=min_files,
+    g_hot = (_layout.build(syn, lanes=g["lanes"], min_files=min_files, width=width,
                            only={p for p, n in hot_view["packages"].items() if n})
              if hot_view else None)
     for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里
@@ -354,7 +382,7 @@ def file_view(repo: Path, idx: dict, rel: str) -> dict | None:
         kind = "lexer"
     return {"file": rel, "pkg": pkg, "lang": h["lang"], "lang_label": h["label"],
             "n_lines": len(h["lines"]), "lines": h["lines"],
-            "symbols": syms, "outline_kind": kind}
+            "symbols": syms, "outline_kind": kind, "xref": xref_for(repo, rel)}
 
 
 def symbol_source(repo: Path, idx: dict, key: str, lines: int = 40) -> dict | None:
@@ -368,7 +396,182 @@ def symbol_source(repo: Path, idx: dict, key: str, lines: int = 40) -> dict | No
     a = max(0, s["l"] - 1)
     return {"key": key, "name": s["n"], "file": s["f"], "line": s["l"],
             "bases": s.get("b", []), "lang": h["lang"], "lang_label": h["label"],
-            "lines": h["lines"][a:a + lines]}
+            "lines": h["lines"][a:a + lines], "xref": xref_for(repo, s["f"], a + 1, a + lines)}
+
+
+# ---------------------------------------------------------------- 搜索栏
+
+def search_index(idx: dict) -> dict:
+    """右边搜索栏要的全部名字，前端自己搜（导出版也能用）：
+      mods   [[模块名, 种类 dir / unit, 文件数], ...]   目录树上的每个目录和每个文件级模块
+      files  [路径, ...]                               Python 文件和包里的 C++ / CUDA 文件
+      units  [所属单元, ...]                           和 files 对齐（C++ 文件是空串）
+      syms   [[限定名, 种类首字母 c / f, 文件下标, 行], ...]   类、函数、方法
+    符号不存完整的键（模块名重复两万多遍）：键 = 文件所属单元去掉 .__init__ + ":" + 限定名。"""
+    tree = idx.get("dirs") or {}
+    mods = [[d, "dir", len(_cut.units_of(idx, d))] for d in sorted(tree)]
+    mods += [[u, "unit", v["files"]] for u, v in sorted((idx.get("packages") or {}).items())]
+    unit_of = idx.get("files") or {}
+    files = sorted(set(unit_of) | set(idx.get("aux") or {}))
+    at = {f: i for i, f in enumerate(files)}
+    syms = [[s["n"], s["k"][0], at[s["f"]], s["l"]] for _, s in sorted((idx.get("symbols") or {}).items())
+            if s["f"] in at]
+    return {"mods": mods, "files": files, "units": [unit_of.get(f, "") for f in files], "syms": syms}
+
+
+def reveal(idx: dict, node: str, open_) -> list[str] | None:
+    """让一个模块在图上露出来要展开哪些目录（在当前切面的基础上）。"""
+    if not _cut.is_node(idx, node):
+        return None
+    return sorted(_cut.open_for(idx, _norm_open(idx, open_), node))
+
+
+# ---------------------------------------------------------------- 交叉引用（Ctrl+点击）
+
+_XREF: dict = {"key": None, "x": None}
+_XREF_LOCK = threading.Lock()
+
+
+def load_xref(repo: Path) -> dict | None:
+    """scan 写下的 xref.json（按修改时间缓存；重新 scan 之后下一次请求自动换成新的）。
+    没有就返回 None：前端不给 Ctrl+点击。serve 是多线程的：新的一份整个建好了再一次性
+    换上去，读的人拿到的要么是旧的、要么是新的，不会拿到一半。"""
+    global _XREF
+    p = repo / ".codestrata" / "xref.json"
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        return None
+    cur = _XREF
+    if cur["key"] == (str(p), mt):
+        return cur
+    with _XREF_LOCK:
+        if _XREF["key"] != (str(p), mt):
+            x = json.loads(p.read_text(encoding="utf-8"))
+            _XREF = {"key": (str(p), mt), "x": x, "inv": None, "inv_lock": threading.Lock(),
+                     "tid": {t: i for i, t in enumerate(x["targets"])}}
+        return _XREF
+
+
+def _stale(repo: Path, X: dict, rel: str) -> bool:
+    """这个文件在 scan 之后改过没有（大小或修改时间变了）。改过的文件，xref 里的行列号
+    已经对不上了：链接会落在别的字上、跳到不相干的定义——宁可不给 Ctrl+点击。"""
+    fp = (X["x"].get("fp") or {}).get(rel)
+    if fp is None:
+        return False                      # 老的 xref.json 没记指纹：没法判断，照旧
+    try:
+        st = (repo / rel).stat()
+    except OSError:
+        return True
+    return [st.st_size, st.st_mtime_ns] != list(fp)
+
+
+def xref_for(repo: Path, rel: str, lo: int | None = None, hi: int | None = None) -> dict | None:
+    """一个文件（或其中 lo..hi 行）里能解析的名字：[[行, 起, 止, 目标号, 种类], ...]（列是 UTF-16
+    下标，和 JS 一致），以及用到的目标 {目标号: [目标, [定义文件, 行] | None]}。
+    文件在 scan 之后改过时只回 {"stale": true}。"""
+    X = load_xref(repo)
+    if not X:
+        return None
+    if _stale(repo, X, rel):
+        return {"stale": True, "toks": [], "targets": {}}
+    toks = X["x"]["files"].get(rel) or []
+    if lo is not None:
+        toks = [t for t in toks if lo <= t[0] <= hi]
+    tg, wh = X["x"]["targets"], X["x"]["where"]
+    return {"toks": toks, "targets": {i: [tg[i], wh[i]] for i in sorted({t[3] for t in toks})}}
+
+
+@lru_cache(maxsize=256)
+def _lines_of(path: str, mtime_ns: int) -> tuple:
+    try:
+        return tuple(Path(path).read_text(encoding="utf-8", errors="replace").split("\n"))
+    except OSError:
+        return ()
+
+
+def _line_text(repo: Path, rel: str, line: int) -> str:
+    try:
+        ls = _lines_of(str(repo / rel), (repo / rel).stat().st_mtime_ns)   # 按修改时间失效
+    except OSError:
+        return ""
+    return ls[line - 1] if 0 < line <= len(ls) else ""
+
+
+def _inverted(X: dict) -> dict:
+    if X["inv"] is None:
+        with X["inv_lock"]:
+            if X["inv"] is None:
+                X["inv"] = _xref.invert(X["x"])
+    return X["inv"]
+
+
+def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> dict | None:
+    """一个定义被哪些地方引用：调用在前，其次是普通引用、import。同一行的几处合成一条（×N）。
+    每条带上那一行的原文；文件在 scan 之后改过的标 stale（行号可能已经不对）。
+
+    方法、类属性还另给一组「同名的 .xxx」：通过别的对象调用（engine.generate()）时，
+    静态分析不知道那个对象是什么类型，确认不了是不是它——按名字列出来，标明没确认，
+    并说仓库里一共有几个同名的成员（只有它一个时，基本就是它）。"""
+    X = load_xref(repo)
+    if not X or target not in X["tid"]:
+        return None
+    i = X["tid"][target]
+    rank = {_xref.CALL: 0, _xref.REF: 1, _xref.IMPORT: 2}
+    names = {_xref.CALL: "call", _xref.REF: "ref", _xref.IMPORT: "import"}
+    counts: dict[str, int] = {}
+    merged: dict[tuple, dict] = {}
+    for f, l, c, k in _inverted(X).get(i, []):
+        counts[names[k]] = counts.get(names[k], 0) + 1
+        m = merged.get((f, l))
+        if m is None or rank[k] < rank[m["k"]]:
+            merged[(f, l)] = {"f": f, "l": l, "c": c, "k": k, "n": (m["n"] + 1) if m else 1}
+        else:
+            m["n"] += 1
+    rows = sorted(merged.values(), key=lambda r: (rank[r["k"]], r["f"], r["l"]))
+    stale_cache: dict[str, bool] = {}
+
+    def stale(f):
+        if f not in stale_cache:
+            stale_cache[f] = _stale(repo, X, f)
+        return stale_cache[f]
+
+    out = []
+    for r in rows[:limit]:
+        r["text"] = _line_text(repo, r["f"], r["l"]).strip()[:200]
+        if stale(r["f"]):
+            r["stale"] = True
+        out.append(r)
+    kind, _, key = target.partition(":")
+    wh = X["x"]["where"][i]
+    res = {"target": target, "where": wh, "total": sum(counts.values()), "lines": len(rows),
+           "counts": counts, "refs": out,
+           # 定义本身也放进列表（最上面一条）：跳到某个引用之后，点它就回到定义
+           "def": ({"f": wh[0], "l": wh[1], "text": _line_text(repo, wh[0], wh[1]).strip()[:200],
+                    **({"stale": True} if stale(wh[0]) else {})} if wh else None),
+           "calls": ((hot or {}).get("symbols") or {}).get(key, 0) if kind == "s" else 0}
+    qual = key.partition(":")[2]
+    if kind in ("s", "v") and "." in qual:           # 类的成员：方法、嵌套类、类属性、实例属性
+        name = qual.rsplit(".", 1)[1]
+        same = sum(1 for t in X["x"]["targets"]
+                   if t[0] in "sv" and "." in t.partition(":")[2].partition(":")[2]
+                   and t.rsplit(".", 1)[-1] == name)
+        maybe = (X["x"].get("attrs") or {}).get(name) or []
+        mrows = {}
+        for f, l, c, e, k in maybe:
+            m = mrows.get((f, l))
+            if m is None:
+                mrows[(f, l)] = {"f": f, "l": l, "c": c, "k": k, "n": 1}
+            else:
+                m["n"] += 1
+        mrows = sorted(mrows.values(), key=lambda r: (-r["k"], r["f"], r["l"]))
+        for r in mrows[:limit]:
+            r["text"] = _line_text(repo, r["f"], r["l"]).strip()[:200]
+            if stale(r["f"]):
+                r["stale"] = True
+        res["maybe"] = {"name": name, "same": same, "total": len(maybe), "lines": len(mrows),
+                        "refs": mrows[:limit]}
+    return res
 
 
 def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
@@ -385,18 +588,32 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
         nt["problems"] = _notes.verify(repo, idx, name)
     todo = _notes.tasks(repo, idx)
     packs = {t["target"]: _notes.prompt_pack(repo, idx, t["target"], hot=hot) for t in todo}
+    # Ctrl+点击的目标（目标串 + 定义位置）全文件共用一张表，每个文件 / 片段只带 token：
+    # 早先每个文件各带一份，同一个目标重复几百遍，占掉的额度够再内嵌一两百个文件
+    xtargets: dict = {}
+
+    def share(x) -> int:
+        """把 x 的目标挪进共用表，返回新增了多少字节"""
+        if not x or not x.get("targets"):
+            return 0
+        new = {k: v for k, v in x.pop("targets").items() if k not in xtargets}
+        xtargets.update(new)
+        return len(json.dumps(new, ensure_ascii=False)) if new else 0
+
     sources = {}
     for pkg, syms in p["pkgSyms"].items():
         for s in syms[:per_pkg]:
             src = symbol_source(repo, idx, s["key"], lines)
             if src:
+                share(src.get("xref"))
                 sources[s["key"]] = src
     edges = {}
     for a, b, _ in p["graph"]["edges"]:
         edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
     for a, b, _ in p["runtimeOnlyEdges"]:
         edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
-    p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources, "edges": edges})
+    p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources, "edges": edges,
+              "search": search_index(idx), "xrefTargets": xtargets})
 
     # 全文：用剩下的额度。跑到过的文件优先，其次按体积从小到大（同样额度能带上更多文件）。
     # 先用原始字节数估算（高亮 + JSON 转义后约 3 倍），明显放不下的不去高亮，省掉大部分时间。
@@ -424,9 +641,14 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
         fv = file_view(repo, idx, rel)
         if not fv:
             continue
-        sz = len(json.dumps(fv, ensure_ascii=False))
+        x = fv.get("xref")
+        new = {k: v for k, v in ((x or {}).get("targets") or {}).items() if k not in xtargets}
+        if x:
+            x.pop("targets", None)
+        sz = len(json.dumps(fv, ensure_ascii=False)) + (len(json.dumps(new, ensure_ascii=False)) if new else 0)
         if sz > remaining:
             continue
+        xtargets.update(new)
         files[rel] = fv
         remaining -= sz
     p.update({"files": files, "filesTruncated": len(files) < len(every)})

@@ -148,15 +148,36 @@ GET  /api/notes/<模块>         解读 + 是否过期
 GET  /api/status?ids=a,b      一批节点的解读状态（noted / stale / todo）
 PUT  /api/notes/<模块>         写回解读        ← agent 从这里介入
 GET  /api/symbol/<key>        符号源码
-GET  /api/file?f=             整个文件（高亮）+ 符号大纲
+GET  /api/file?f=             整个文件（高亮）+ 符号大纲 + 能 Ctrl+点击的名字
+GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
 GET  /api/edge?a=&b=          一条边：引用了哪些符号、runtime 调了哪些、哪些只 import
+GET  /api/refs?t=             一个定义被哪些地方引用（Ctrl+点击定义时的列表）
+GET  /api/search-index        搜索栏要的全部名字（模块、文件、类 / 函数）
+GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
 GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 ```
+
+## 读代码：Ctrl+点击、搜索栏、缩放
+
+- **Ctrl（Mac 上 ⌘）+ 点击**：全文窗口和详情面板的源码片段里，按住 Ctrl 能点的名字会带下划线。
+  点一个名字跳到它的定义（「← 返回」回到点的地方）；点一个定义，旁边一栏列出所有引用它的地方
+  （调用在前，同一行的几处合成一条），点哪条跳哪条。名字指向哪由 scan 时写下的
+  `.codestrata/xref.json` 给出：import（包括经 `__init__.py` 再导出的）、`模块.函数`、`类.方法`、
+  `self.` / `cls.` / `super()`（按 MRO 在仓库里的基类里找）、`self.x = …` 定义的实例属性；
+  局部变量会遮住同名的全局名字。确定不了的不给链接——宁可不跳，也不跳错。通过别的对象调用的方法
+  （`engine.generate()`）不知道对象类型，引用列表里单列一组「同名的 `.generate`（没确认对象类型）」。
+  文件在 scan 之后改过，行列号就对不上了：那个文件不给 Ctrl+点击，重新 scan 即可。
+- **搜索栏**（右边一栏，`/` 或 Ctrl+K 跳过去）：按名字找模块、文件、类 / 函数。函数看它自己的名字
+  （方法也看类名），文件看文件名，模块看最后一段；词里写了 `.` 或 `/` 才按路径找（`entrypoints/`、
+  `engine.async`）。点结果先回到图上，展开到它所在的模块并选中，再在下面的详情里展开到它；
+  「代码」按钮直接开全文窗口。图上包含命中项的节点会高亮。
+- **缩放**：图框右上角有放大、缩小、移动三个按钮；按住 Ctrl 滚滚轮以鼠标为中心缩放（不按 Ctrl
+  的滚轮照常滚页面）；移动模式下按住任意位置拖动图。
 
 ## 用法
 
 ```bash
-codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描；默认切面按规模自动拆分
+codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描 + 交叉引用；默认切面按规模自动拆分
 codestrata serve <repo> [--hot CASE[@阶段]]    # 本地部署前端
 codestrata trace <repo> --case NAME -- CMD    # 跑一个 case，记录真实调用（子进程一并 trace）
 codestrata tasks <repo> [--write]             # 待解读 + 输入包

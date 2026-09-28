@@ -10,14 +10,19 @@ window.CS = window.CS || {};
 
     boot: function () {
       var self = this;
-      CS.ds.graph().then(function (d) {
+      CS.ds.graph(null, CS.graph.boxWidth()).then(function (d) {
         self.data = d;
         self.header(d);
         CS.panel.init(document.getElementById('det'), document.getElementById('side'), d);
-        CS.graph.onPick = function (id) { CS.panel.showPkg(id); CS.panel.showNote(id); };
-        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); CS.panel.showEdgeSide(a, b); };
+        CS.graph.onPick = function (id) { CS.panel.showPkg(id); CS.panel.showNote(id); self.drawerTitle(id); };
+        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); CS.panel.showEdgeSide(a, b); self.drawerTitle(null, a, b); };
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
-        CS.graph.onClear = function () { CS.panel.reset(); };
+        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); };
+        CS.graph.onSelectFrame = function (f) {
+          var t = document.getElementById('dtitle'); if (t) t.textContent = f;
+          var s = document.getElementById('dsub'); if (s) s.textContent = '已在图上展开成框（框头的 − 收起）';
+        };
+        self.wireDrawer();
         CS.graph.onExpand = function (id) {
           if (!CS.ds.canCut) { document.getElementById('prog').textContent = '导出的单文件不能展开，请用 codestrata serve'; return; }
           self.expand(id);
@@ -29,29 +34,183 @@ window.CS = window.CS || {};
         self.cutBar();
         self.refreshStatus();
         self.footer(d);
+        if (CS.search) CS.search.init();
+        // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
+        self._w = CS.graph.boxWidth();
+        var rt = 0;
+        window.addEventListener('resize', function () {
+          clearTimeout(rt);
+          rt = setTimeout(function () {
+            if (CS.ds.canCut && Math.abs(CS.graph.boxWidth() - self._w) >= 80) self.setCut(self.curOpen());
+          }, 350);
+        });
       }).catch(function (e) {
         document.getElementById('h1').textContent = '加载失败';
         document.getElementById('lede').textContent = e.message;
       });
     },
 
+    /* 浮着的栏（搜索、详情）拖边框改大小。edges：l / r / t / b / lb；apply(edge, 起始矩形, dx, dy) 改尺寸，
+       松开鼠标时 done() 记下来 */
+    resizable: function (el, edges, apply, done) {
+      edges.forEach(function (e) {
+        var h = document.createElement('div');
+        h.className = 'rz rz-' + e; h.title = '拖动改变大小';
+        el.appendChild(h);
+        h.addEventListener('mousedown', function (ev) {
+          if (ev.button !== 0) return;
+          ev.preventDefault(); ev.stopPropagation();
+          var r0 = el.getBoundingClientRect(), x0 = ev.clientX, y0 = ev.clientY;
+          document.body.classList.add('rzing');
+          function mv(e2) { apply(e, r0, e2.clientX - x0, e2.clientY - y0); }
+          function up() {
+            window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up);
+            document.body.classList.remove('rzing');
+            if (done) done();
+          }
+          window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+        });
+        h.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      });
+    },
+
+    _load: function (k) { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } },
+    _save: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 隐私模式 */ } },
+
+    /* 详情栏：浮在图的下沿，展开 / 收起、拖边框改大小（都记在浏览器里）；收起时标题写着选中的是什么 */
+    wireDrawer: function () {
+      var dr = document.getElementById('drawer'), gw = document.getElementById('gwrap'), self = this;
+      if (!dr || dr._wired) return;
+      dr._wired = true;
+      var st = this._load('codestrata.drawer');
+      if (st.h) dr.style.setProperty('--dh', st.h + 'px');
+      if (st.l != null) dr.style.setProperty('--dl', st.l + 'px');
+      if (st.r != null) dr.style.setProperty('--dr', st.r + 'px');
+      this.drawer(!!st.open, true);
+      document.getElementById('dhead').onclick = function () { self.drawer(!dr.classList.contains('open')); };
+      this.resizable(dr, ['t', 'l', 'r'], function (e, r0, dx, dy) {
+        var g = gw.getBoundingClientRect();
+        if (e === 't') {
+          if (!dr.classList.contains('open')) self.drawer(true, true);
+          dr.style.setProperty('--dh', Math.max(120, Math.min(g.height - 20, r0.height - dy)) + 'px');
+        } else if (e === 'l') {
+          dr.style.setProperty('--dl', Math.max(0, Math.min(r0.right - g.left - 320, r0.left - g.left + dx)) + 'px');
+        } else {
+          dr.style.setProperty('--dr', Math.max(0, Math.min(g.right - r0.left - 320, g.right - r0.right - dx)) + 'px');
+        }
+        self._roomForDrawer();
+      }, function () { self._saveDrawer(); });
+      window.addEventListener('resize', function () { self._roomForDrawer(); });
+    },
+
+    drawer: function (open, quiet) {
+      var dr = document.getElementById('drawer');
+      if (!dr) return;
+      dr.classList.toggle('open', open);
+      document.getElementById('dtog').setAttribute('aria-expanded', open);
+      if (!quiet) this._saveDrawer();
+      this._roomForDrawer();
+    },
+
+    /* 详情栏盖住了图的下沿：图框底下留出同样的空白，最下面的泳道能滚到它上面来；
+       搜索栏的最大高度也让着它 */
+    _roomForDrawer: function () {
+      var dr = document.getElementById('drawer'), gw = document.getElementById('gwrap'), box = gw && gw.querySelector('.gbox');
+      if (!dr || !box) return;
+      var h = dr.getBoundingClientRect().height + 20;
+      box.style.paddingBottom = h + 'px';
+      gw.style.setProperty('--dnow', h + 'px');
+    },
+
+    _saveDrawer: function () {
+      var dr = document.getElementById('drawer'), v = function (n) { var x = parseFloat(dr.style.getPropertyValue(n)); return isNaN(x) ? undefined : x; };
+      this._save('codestrata.drawer', { open: dr.classList.contains('open'), h: v('--dh'), l: v('--dl'), r: v('--dr') });
+    },
+
+    drawerTitle: function (id, a, b) {
+      var t = document.getElementById('dtitle'), s = document.getElementById('dsub');
+      if (!t) return;
+      var v = id && (this.data.pkgs || {})[id];
+      if (id) {
+        t.textContent = id;
+        s.textContent = v ? v.files + ' 个文件 · ' + v.classes + ' 个类 · ' + v.funcs + ' 个函数' : '';
+      } else if (a) {
+        t.textContent = a.split('.').pop() + ' → ' + b.split('.').pop();
+        s.textContent = '这条依赖具体用了对方哪些函数 / 类';
+      } else {
+        t.textContent = '详情';
+        s.textContent = '点图上的节点或箭头，在这里看它的文件、类 / 函数和解读';
+      }
+    },
+
+    /* 「?」帮助：说明、操作、这次 trace 的情况 */
+    wireHelp: function () {
+      var b = document.getElementById('helpBtn'), p = document.getElementById('help'), self = this;
+      if (!b || b._wired) return;
+      b._wired = true;
+      b.onclick = function (ev) { ev.stopPropagation(); self.help(p.hidden); };
+      document.getElementById('helpX').onclick = function () { self.help(false); };
+      document.addEventListener('mousedown', function (ev) {         // 点别处关掉
+        if (!p.hidden && !p.contains(ev.target) && ev.target !== b && !ev.target.closest('[data-help]')) self.help(false);
+      });
+    },
+
+    help: function (on) {
+      var p = document.getElementById('help');
+      p.hidden = !on;
+      document.getElementById('helpBtn').setAttribute('aria-expanded', on);
+    },
+
+    /* 帮助里「这次跑了什么」：case 命令、脚本内容、被 trace 的进程（按命令合并，跑到仓库代码多的在前） */
+    runHtml: function (m) {
+      var h = '<h3>这次跑了什么</h3><div class="run"><div class="cmdline"><span class="lab">case 命令</span><code>'
+        + esc((m.cmd || []).join(' ')) + '</code></div>';
+      var P = m.procs || [];
+      if (P.length) {
+        var n = 0; P.forEach(function (p) { n += p.n; });
+        h += '<div class="lab">被 trace 的 ' + n + ' 个 Python 进程（同一条命令的合在一起；跑到仓库代码多的在前）</div><table class="procs">'
+          + P.map(function (p) {
+            var a = (p.argv || []).join(' ');
+            return '<tr' + (p.funcs ? '' : ' class="idle"') + '><td class="pn">' + p.n + ' ×</td><td><code>' + esc(a || '（没记下命令）')
+              + '</code>' + (p.cut ? ' <span class="lab">…（这份 trace 是老版本录的，只存了前 6 个参数；重新 trace 就是完整的）</span>' : '')
+              + '</td><td class="pf">' + (p.funcs ? p.funcs + ' 个函数' : '没跑到仓库代码') + '</td></tr>';
+          }).join('') + '</table>';
+      }
+      if (m.script) {
+        h += '<details class="script"' + '><summary><span class="lab">case 脚本</span> <code>' + esc(m.script.path) + '</code>'
+          + (m.script.saved ? '（录制时的内容）' : '（<span style="color:var(--stale)">录制时没存，这是现在的内容</span>）')
+          + '</summary><pre>' + esc(m.script.text) + '</pre></details>';
+      }
+      return h + '</div>';
+    },
+
+    wireRun: function () { /* 目前只是静态内容；留个口子给以后的交互 */ },
+
     header: function (d) {
-      var r = d.repo;
+      var r = d.repo, self = this;
       document.getElementById('h1').textContent = r.name + ' 架构';
+      this.wireHelp();
       document.getElementById('lede').innerHTML =
         '纵轴是<b>架构高度</b> <code>(出−入)/(出+入)</code>：最上面的泳道谁都不依赖它、它依赖一切，'
         + '最下面的只被依赖。横轴用重心排序减少交叉。'
         + ' 灰实线是真的用到了对方符号的 import，灰虚线是只 import 没用到的。'
         + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的部分。' : '')
-        + '　左上角带 <b>＋</b> 的节点可以就地展开：子模块出现在一个框里，框头的 <b>−</b> 收起；'
-        + '展开 / 收起不会取消选中，再点一次选中的节点才取消。'
-        + '　右侧是<b>解读层</b>——机器给不出的那部分。';
+        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。'
+        + '　下面抽屉的右半边是<b>解读层</b>——机器给不出的那部分。';
       var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
                 ['符号', r.n_symbols || 0], ['图上的边', d.graph.edges.length],
                 ['解析失败', r.n_parse_errors]];
+      var hm = d.hot && d.hotMeta;
       document.getElementById('stats').innerHTML =
         st.map(function (p) { return '<span>' + p[0] + ' <b>' + p[1] + '</b></span>'; }).join('')
-        + '<span>模式 <b>' + CS.ds.mode + '</b></span>';
+        + '<span>模式 <b>' + CS.ds.mode + '</b></span>'
+        // hot 图：上面只留一个标记，来历（阶段、进程、安装包映射、命令）在「?」里
+        + (hm ? '<button class="hottag" data-help title="这次 trace 的情况在帮助里">hot <b>' + esc(hm.case)
+                 + (hm.phase ? '@' + esc(hm.phase) : '') + '</b>'
+                 + (hm.stale_files && hm.stale_files.length ? ' <span style="color:var(--stale)">⚠ 录制后有文件改过</span>' : '')
+                 + '</button>' : '');
+      var ht = document.querySelector('#stats [data-help]');
+      if (ht) ht.onclick = function () { self.help(true); };
       if (d.hot && d.hotMeta) {
         var m = d.hotMeta;
         document.getElementById('hotbanner').innerHTML =
@@ -71,7 +230,8 @@ window.CS = window.CS || {};
                 : '（逐文件与仓库一致 ✓）') + '　' : '')
           + (m.stale_files && m.stale_files.length ? '<span style="color:var(--stale)">⚠ 录制后有 '
              + m.stale_files.length + ' 个文件改动过，叠加可能不准，重跑 trace 即可</span>　' : '')
-          + '<div class="cmd">' + esc((m.cmd || []).join(' ')) + '</div></div></div>';
+          + '</div></div>' + self.runHtml(m);
+        self.wireRun();
       }
     },
 
@@ -129,8 +289,9 @@ window.CS = window.CS || {};
       this.data.graph.nodes.concat(this.data.graph.frames || []).forEach(function (n) { was.kind[n.id] = n.kind; });
       this.data.graph.nodes.forEach(function (n) { before[n.id] = 1; });
       document.getElementById('prog').textContent = '重新汇总…';
-      CS.ds.graph(open).then(function (d) {
-        if (seq !== self._cutSeq) return;   // 连着点了几次：只认最后一次，先发出的请求晚回来也不能盖掉它
+      this._w = CS.graph.boxWidth();
+      return CS.ds.graph(open, this._w).then(function (d) {
+        if (seq !== self._cutSeq) return false;   // 连着点了几次：只认最后一次，先发出的请求晚回来也不能盖掉它
         self._pending = null;
         self.data = d;
         CS.panel.setData(d);
@@ -148,33 +309,91 @@ window.CS = window.CS || {};
         // 新出现的节点闪一下，好看出展开出来的是哪些
         CS.graph.flash(d.graph.nodes.filter(function (n) { return !before[n.id]; }).map(function (n) { return n.id; }));
         self.cutBar();
+        return true;
       }).catch(function (e) {
-        if (seq !== self._cutSeq) return;
+        if (seq !== self._cutSeq) return false;
         self._pending = null;
         document.getElementById('prog').textContent = e.message;
+        return false;
       });
     },
 
     /* 展开 / 收起不取消选中。选中的节点还在就还选它（详情重画：它的邻居可能变了）；
        它被收进了某个节点就选那个节点；它自己被展开成了框，就选中那个框、详情面板不动。
        选中的边两头按同样的规则落到新节点上，新图上还有这条边就接着选它。 */
-    keepSelection: function (was) {
-      var g = this.data.graph, ids = {}, frames = {};
-      g.nodes.forEach(function (n) { ids[n.id] = 1; });
-      (g.frames || []).forEach(function (f) { frames[f.id] = 1; });
-      // id 在新图上落在哪个节点：还是节点就是它自己；被收起了就是装着它的那个节点。
-      // 目录节点装着它底下的一切；本层文件节点只装直接放在这个目录里的单个文件（不装子目录）
-      function home(id) {
-        if (ids[id]) return id;
-        var best = null, unit = was.kind[id] === 'unit';
-        g.nodes.forEach(function (n) {
-          var res = /\.\*$/.test(n.id), base = res ? n.id.slice(0, -2) : n.id;
-          var inside = id.indexOf(base + '.') === 0
-            && (!res || (unit && id.slice(base.length + 1).indexOf('.') < 0));
-          if (inside && (!best || n.id.length > best.length)) best = n.id;
-        });
-        return best;
+    /* id（目录 / 本层文件 / 单个文件）在当前图上落在哪个节点：是节点就是它自己；被收着就是
+       装着它的那个节点。目录节点装着它底下的一切；本层文件节点只装直接放在这个目录里的
+       单个文件（不装子目录），所以要知道 id 是不是单个文件（kind === 'unit'） */
+    homeOf: function (id, kind, graph) {
+      // 默认在画出来的那张图上找（hot 视图只画跑到的）
+      var g = graph || CS.graph.G || this.data.graph, best = null, unit = kind === 'unit';
+      for (var i = 0; i < g.nodes.length; i++) if (g.nodes[i].id === id) return id;
+      g.nodes.forEach(function (n) {
+        var res = /\.\*$/.test(n.id), base = res ? n.id.slice(0, -2) : n.id;
+        var inside = id.indexOf(base + '.') === 0
+          && (!res || (unit && id.slice(base.length + 1).indexOf('.') < 0));
+        if (inside && (!best || n.id.length > best.length)) best = n.id;
+      });
+      return best;
+    },
+
+    /* 把一个模块在图上找出来并选中：它已经是节点就直接选；被收在某个目录里时，展开到它
+       （serve 算要展开哪些目录）；导出版不能展开，就选中装着它的那个节点。
+       已经展开成框的目录选中那个框（不能去收起它）；图上画不出来的模块（空的 __init__.py）
+       选中装着它的框；hot 视图里没跑到的，先退出 hot 视图。选中后滚到屏幕中间、闪一下。
+       返回最后选中的节点（选中的是框或什么都没选时返回 null） */
+    revealNode: function (id, kind) {
+      var self = this, st = CS.graph.state;
+      function drawn(x) { return !!CS.graph.nodes[x]; }
+      function frames() { return (CS.graph.G && CS.graph.G.frames) || []; }
+      function show(x) {
+        if (!x || !drawn(x)) return null;
+        CS.graph.pick(x, true); CS.graph.focus(x); CS.graph.flash([x]);
+        CS.graph.showEl(CS.graph.nodes[x], true);
+        return x;
       }
+      function showFrame(f, msg) {
+        CS.graph.selectFrame(f);
+        var g = CS.graph.frames[f];
+        if (g && !CS.graph.inView(g)) CS.graph.showEl(g, true);
+        if (msg) CS.viewer.toast(msg);
+        return null;
+      }
+      function frameOf(x) {                      // 画不出来的单元：装着它的框（本层文件的框或目录的框）
+        var d = kind === 'unit' ? x.replace(/\.[^.]+$/, '') : x, ids = frames().map(function (f) { return f.id; });
+        return ids.indexOf(d + '.*') >= 0 ? d + '.*' : ids.indexOf(d) >= 0 ? d : null;
+      }
+      function exitHot() {                        // 「只看跑到的」里没有它：退出 hot 视图再找
+        st.onlyHot = false;
+        var b = document.querySelector('[data-t="onlyhot"]'); if (b) b.setAttribute('aria-pressed', 'false');
+        self.redraw();
+        CS.viewer.toast('它这次没跑到，已退出「只看跑到的」');
+      }
+      function finish() {
+        var h = self.homeOf(id, kind);
+        // hot 视图里没画它，但完整的图上有：它这次没跑到——退出 hot 视图再找
+        if ((!h || !drawn(h)) && st.onlyHot && self.homeOf(id, kind, self.data.graph)) { exitHot(); h = self.homeOf(id, kind); }
+        if (h && drawn(h)) return show(h);
+        var f = frameOf(id);
+        return f ? showFrame(f, '它在图上没有节点（没有类、函数，也没有依赖——比如空的 __init__.py）') : null;
+      }
+      if (frames().some(function (f) { return f.id === id; })) return Promise.resolve(showFrame(id));
+      if (this.data.open.indexOf(id) >= 0) {       // 只有一个根时根就是整张图，不画框
+        CS.graph.clear();
+        var gb = document.querySelector('.gbox'); if (gb) gb.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        return Promise.resolve(null);
+      }
+      var h0 = this.homeOf(id, kind);
+      if (h0 === id || !CS.ds.canCut) return Promise.resolve(finish());
+      return CS.ds.reveal(id, this.curOpen()).then(function (r) {
+        return self.setCut(r.open, id).then(function (done) { return done ? finish() : null; });
+      }).catch(function () { return finish(); });
+    },
+
+    keepSelection: function (was) {
+      var g = this.data.graph, frames = {}, self = this;
+      (g.frames || []).forEach(function (f) { frames[f.id] = 1; });
+      function home(id) { return self.homeOf(id, was.kind[id]); }
       var id = was.sel || was.selFrame;
       if (id) {
         if (frames[id]) { CS.graph.selectFrame(id); CS.panel.asFrame(id); }   // 自己被展开成了框
@@ -199,11 +418,10 @@ window.CS = window.CS || {};
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
-      // 重画会重建所有节点：图例上边的条数按这张图重数，搜索框里还有字就把高亮重新套上
+      // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();
       this.controls();
-      var q = document.getElementById('q');
-      if (q.value.trim()) q.oninput();
+      if (CS.search) CS.search.reapply();
     },
 
     controls: function () {
@@ -220,19 +438,11 @@ window.CS = window.CS || {};
           else CS.graph.paint();
         };
       });
-      var q = document.getElementById('q');
-      q.oninput = function () {
-        var t = q.value.trim().toLowerCase();
-        CS.graph.highlight(t ? function (n) {
-          if ((n.id + ' ' + n.label).toLowerCase().indexOf(t) !== -1) return true;
-          return ((self.data.pkgSyms || {})[n.id] || []).some(function (x) {
-            return x.n.toLowerCase().indexOf(t) !== -1; });
-        } : null);
-      };
       var rc = document.getElementById('resetcut');
       if (rc) rc.onclick = function () { self.resetCut(); };
       document.getElementById('reset').onclick = function () {
-        q.value = ''; CS.graph.highlight(null); CS.graph.clear();
+        if (CS.search) CS.search.clear();
+        CS.graph.highlight(null); CS.graph.clear();
       };
       if (!this._esc) {
         this._esc = true;
@@ -241,6 +451,7 @@ window.CS = window.CS || {};
           // 正在输入框里打字（搜索框、文件树过滤、贴解读的文本框）时 Esc 归输入框自己
           var s = CS.graph.state, t = ev.target;
           if (ev.isComposing || (t && t.closest && t.closest('input, textarea, select, [contenteditable]'))) return;
+          if (ev.key === 'Escape' && !document.getElementById('help').hidden) { self.help(false); return; }
           if (ev.key === 'Escape' && document.getElementById('viewer').hidden
               && (s.sel || s.selEdge || s.selFrame)) CS.graph.clear();
         });

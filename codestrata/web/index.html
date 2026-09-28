@@ -4,38 +4,86 @@
 <title>codestrata</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="app.css">
-<div class="wrap">
-  <header>
-    <div class="kick">codestrata</div>
-    <h1 id="h1">…</h1>
-    <p class="lede" id="lede"></p>
-    <div class="stats" id="stats"></div>
-  </header>
-
-  <div id="hotbanner"></div>
-
-  <div class="bar">
-    <span class="lbl">边</span>
-    <span id="edgechips" style="display:contents"></span>
-    <span class="lbl">视图</span>
-    <button class="chip" data-t="onlyhot" aria-pressed="false">只看跑到的</button>
-    <button class="chip" data-t="noted" aria-pressed="false">只看已解读</button>
-    <span class="sp"></span>
-    <span class="prog" id="prog"></span>
-    <input id="q" type="search" placeholder="高亮包 / 符号…">
-    <button class="chip" id="resetcut" style="display:none" title="回到 scan 算出来的默认层级">恢复默认层级</button>
-    <button class="chip" id="reset">重置</button>
+<!-- 整页是一个应用：上面一条（标题、开关），图铺满剩下的全部空间。图是核心，
+     其余都浮在图上：右上角的搜索栏、下面的详情栏，都半透明、可收起、拖边框改大小 -->
+<div class="app">
+  <div class="top">
+    <header class="hdr">
+      <div class="hrow">
+        <span class="kick">codestrata</span>
+        <h1 id="h1">…</h1>
+        <button class="helpbtn" id="helpBtn" aria-expanded="false" aria-controls="help" title="帮助：怎么读这张图、怎么操作、这次 trace 的情况">?</button>
+        <div class="stats" id="stats"></div>
+      </div>
+      <!-- 帮助：说明、操作、这次 trace 的来历都收在这里，不占图的地方 -->
+      <div class="help" id="help" role="dialog" aria-label="帮助" hidden>
+        <button class="vclose hx" id="helpX" aria-label="关闭帮助">×</button>
+        <h3>怎么读这张图</h3>
+        <p class="lede" id="lede"></p>
+        <h3>怎么操作</h3>
+        <ul class="howto">
+          <li>点<b>节点</b>在下面的抽屉里看模块：依赖谁、文件树、类 / 函数、解读；再点一次、点空白处或按 Esc 取消选中。</li>
+          <li>点<b>箭头</b>看这条依赖具体用了对方哪些函数 / 类、在哪一行。</li>
+          <li>节点左上角的 <b>＋</b> 就地展开成子模块（框在一个框里），框头的 <b>−</b> 收起；展开 / 收起不会取消选中。</li>
+          <li>缩放：图左上角的 ＋ / －，或按住 <b>Ctrl</b> 滚滚轮；✥ 打开后按住任意位置拖动图。<span id="panhint" hidden>现在图比图框宽：按住空白处也能拖，或 Shift + 滚轮横着滚。</span></li>
+          <li>全文窗口和源码片段里，按住 <b>Ctrl</b>（Mac 上 ⌘）点名字跳到定义，旁边一栏列出定义和所有引用。</li>
+          <li>右上角的搜索：<b>/</b> 或 <b>Ctrl+K</b>；按名字找模块、文件、类 / 函数，词里带 . 或 / 才按路径找。拖左边 / 下边改大小。</li>
+          <li>下面的详情栏浮在图上：点标题栏展开 / 收起，拖上沿 / 左右边框改大小。</li>
+        </ul>
+        <div id="hotbanner"></div>
+      </div>
+    </header>
+    <div class="bar">
+      <span class="lbl">边</span>
+      <span id="edgechips" style="display:contents"></span>
+      <span class="lbl">视图</span>
+      <button class="chip" data-t="onlyhot" aria-pressed="false">只看跑到的</button>
+      <button class="chip" data-t="noted" aria-pressed="false">只看已解读</button>
+      <span class="sp"></span>
+      <span class="prog" id="prog"></span>
+      <button class="chip" id="resetcut" style="display:none" title="回到 scan 算出来的默认层级">恢复默认层级</button>
+      <button class="chip" id="reset">重置</button>
+    </div>
   </div>
 
-  <p class="edgehint">点<b>箭头</b>看这条依赖具体用了对方哪些函数 / 类、在哪一行；点节点看模块，再点一次取消。<span id="panhint" hidden>　图比窗口宽：按住空白处左右拖动，或 Shift + 滚轮。</span></p>
-  <div class="gwrap"><div class="gbox"><svg class="g" id="g"></svg></div><div class="gfade l"></div><div class="gfade r"></div></div>
-
-  <div class="cols">
-    <section class="det" id="det"></section>
-    <aside class="side" id="side"></aside>
+  <div class="gwrap" id="gwrap">
+    <div class="gbox"><svg class="g" id="g"></svg></div><div class="gfade l"></div><div class="gfade r"></div>
+    <div class="gctl" role="toolbar" aria-label="缩放和移动">
+      <button class="gz" data-z="in" title="放大（也可以按住 Ctrl 滚滚轮）" aria-label="放大">＋</button>
+      <button class="gz" data-z="out" title="缩小（也可以按住 Ctrl 滚滚轮）" aria-label="缩小">－</button>
+      <button class="gz" data-z="pan" aria-pressed="false" title="移动：打开后按住任意位置拖动图" aria-label="移动">✥</button>
+      <button class="gzl" data-z="reset" title="回到适应宽度">100%</button>
+    </div>
+    <aside class="sbar" id="sbar" aria-label="搜索" hidden>
+      <div class="sbh"><b>搜索</b><span class="kbd" title="按 / 或 Ctrl+K 跳到这里">/</span><span class="sp"></span>
+        <button class="sbx" id="sbx" aria-label="收起搜索栏" title="收起">»</button></div>
+      <input id="sq" type="search" placeholder="模块 / 文件 / 函数名…" autocomplete="off" spellcheck="false" aria-controls="sbr">
+      <div class="sbf" id="sbf">
+        <button class="chip" data-only="all" aria-pressed="true">全部</button>
+        <button class="chip" data-only="mod" aria-pressed="false">模块</button>
+        <button class="chip" data-only="file" aria-pressed="false">文件</button>
+        <button class="chip" data-only="sym" aria-pressed="false">类 / 函数</button>
+      </div>
+      <div class="sbr" id="sbr" role="listbox" aria-label="搜索结果"></div>
+    </aside>
+    <button class="sbtab" id="sbtab" hidden title="打开搜索栏（/ 或 Ctrl+K）">搜索</button>
+    <!-- 详情：和搜索栏一样浮在图上（半透明），点标题栏展开 / 收起，拖边框改大小 -->
+    <section class="drawer" id="drawer" aria-label="详情">
+      <div class="dhead" id="dhead">
+        <button class="dtog" id="dtog" aria-expanded="false" aria-controls="dbody" title="展开 / 收起详情">▴</button>
+        <span class="dtitle" id="dtitle">详情</span>
+        <span class="dsub" id="dsub">点图上的节点或箭头，在这里看它的文件、类 / 函数和解读</span>
+      </div>
+      <div class="dbody" id="dbody">
+        <div class="cols">
+          <section class="det" id="det"></section>
+          <aside class="side" id="side"></aside>
+        </div>
+        <footer id="foot"></footer>
+      </div>
+    </section>
   </div>
 
-  <footer id="foot"></footer>
 </div>
 
 <div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-label="整个文件"></div>
@@ -44,4 +92,5 @@
 <script src="graph.js"></script>
 <script src="viewer.js"></script>
 <script src="panel.js"></script>
+<script src="search.js"></script>
 <script src="app.js"></script>
