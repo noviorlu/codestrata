@@ -121,10 +121,21 @@ window.CS = window.CS || {};
             + '<span class="sp"></span>'
             + (hist.length ? '<button class="vbtn" data-back>← 返回</button>' : '')
             + '<button class="vclose" aria-label="关闭">×</button></div>'
-            + '<p class="hint" style="padding:18px">这个文件没有内嵌进导出版（体积上限）。'
-            + '用 <code>codestrata serve</code> 本地打开就能看全文。</p></div>';
+            + '<p class="hint" style="padding:18px">' + (CS.ds.linked ? '这个文件不在扫描范围里。'
+              : '这个文件没有内嵌进导出版（体积上限）。用 <code>codestrata serve</code> 本地打开就能看全文。') + '</p></div>';
           var bk = root.querySelector('[data-back]');
           if (bk) bk.onclick = function () { self.back(); };
+          curFile = null; codeEl = null;
+          self._wireClose(); return;
+        }
+        if (fv.unpublished) {
+          root.innerHTML = '<div class="vbox"><div class="vhead"><b>' + esc(rel) + '</b><span class="sp"></span>'
+            + (hist.length ? '<button class="vbtn" data-back>← 返回</button>' : '')
+            + '<button class="vclose" aria-label="关闭">×</button></div>'
+            + '<p class="hint" style="padding:18px">公开页没带这个文件的源码：它被 .gitignore 忽略（可能是本地配置），'
+            + '扫描时在本地、GitHub 上没有。</p></div>';
+          var bk2 = root.querySelector('[data-back]');
+          if (bk2) bk2.onclick = function () { self.back(); };
           curFile = null; codeEl = null;
           self._wireClose(); return;
         }
@@ -158,8 +169,13 @@ window.CS = window.CS || {};
         + (fv.outline_kind === 'lexer' ? '（大纲为启发式）' : '') + '　包 ' + esc(fv.pkg) + '</span>'
         + '<span class="sp"></span>'
         + (hist.length ? '<button class="vbtn" data-back title="回到跳过来之前的位置">← 返回</button>' : '')
-        + (X && X.stale ? '<span class="vhint stale" title="xref 是 scan 时的快照，文件改过之后行列号对不上，链接会指错地方">文件在 scan 之后改过：重新 scan 才能 Ctrl+点击</span>'
+        + (fv.mismatch ? '<span class="vhint stale" title="页面按扫描时的提交号从 GitHub 取源码；取回来的行数（'
+             + fv.mismatch.fetched + '）和扫描时（' + fv.mismatch.scanned + '）对不上，跳转的行列号会指错地方">GitHub 上的这个文件和扫描时不一样：没给 Ctrl+点击</span>'
+           : X && X.stale ? '<span class="vhint stale" title="xref 是 scan 时的快照，文件改过之后行列号对不上，链接会指错地方">文件在 scan 之后改过：重新 scan 才能 Ctrl+点击</span>'
            : X && X.toks.length ? '<span class="vhint" title="Ctrl（Mac 上 ⌘）+ 点击名字跳到定义；点定义列出所有引用">Ctrl+点击：定义 / 引用</span>' : '')
+        + (fv.local ? '<span class="vhint" title="扫描时这个文件本地改过、或者没进 git：GitHub 上没有这个版本，随页面带上的">本地版本</span>' : '')
+        + (CS.ds.blobUrl && !fv.local ? '<a class="vbtn" data-gh href="' + esc(CS.ds.blobUrl(fv.file, line)) + '" target="_blank" rel="noopener"'
+             + ' title="在 GitHub 上看扫描时那个提交的这个文件">GitHub ↗</a>' : '')
         + '<button class="vbtn" data-copy="' + esc(fv.file) + '">复制路径</button>'
         + (CS.ds.canOpenEditor ? '<button class="vbtn" data-edit="1">编辑器打开</button>' : '')
         + '<button class="vclose" aria-label="关闭">×</button></div>'
@@ -177,6 +193,8 @@ window.CS = window.CS || {};
       [].forEach.call(root.querySelectorAll('.osym'), function (b) {
         b.onclick = function () { var k = +b.dataset.k; curLine = syms[k].l; self.focus(syms[k].l, rangeOf(syms, k, fv.n_lines)); };
       });
+      var gh = root.querySelector('[data-gh]');           // GitHub 链接跟着当前看到的行走
+      if (gh) gh.onmousedown = gh.onfocus = function () { gh.href = CS.ds.blobUrl(curFile, curLine); };
       var cp = root.querySelector('[data-copy]');
       if (cp) cp.onclick = function () {
         var t = fv.file + ':' + cur;
@@ -289,6 +307,8 @@ window.CS = window.CS || {};
         if (!refsOpen || refsOpen.target !== target) return;
         refsOpen.data = r || { refs: [], total: 0, counts: {} };
         self._renderRefs();
+        // 链接模式：列表先出来，每行原文从 GitHub 陆续取回，取齐了再画一次
+        if (r && r.more) r.more.then(function () { if (refsOpen && refsOpen.target === target) self._renderRefs(); });
       }).catch(function (e) { if (refsOpen && refsOpen.target === target) { refsOpen.data = { error: e.message }; self._renderRefs(); } });
     },
 

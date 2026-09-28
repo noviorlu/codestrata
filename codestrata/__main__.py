@@ -118,8 +118,7 @@ def cmd_graph(a) -> int:
     others = uniq
     if a.compare and not others:
         raise SystemExit("--compare：几个 --hot 解析到的是同一个 run（同一阶段），没有可以对比的")
-    pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg,
-                                 others=others, compare=a.compare)
+    keep = []
     if a.public:
         # 要保留的目录：仓库，和各 run 录制时所在的目录（PATH 里的 venv 往往在那下面）
         keep = [str(repo)]
@@ -131,6 +130,32 @@ def cmd_graph(a) -> int:
             cwd = (run.get("invocation") or {}).get("cwd") or run.get("cwd")
             if cwd:
                 keep.append(cwd)
+    if a.link:
+        # 静态站点：源码不内嵌，页面按扫描时的提交号从 GitHub 取（见 site.py）
+        if not a.out or a.out.endswith(".html"):
+            raise SystemExit("--link github 导出的是一个目录（index.html + data/）：--out 给目录")
+        from . import site as _site
+        r = _site.export_site(repo, idx, Path(a.out), hot=hot, hot_meta=meta, others=others, compare=a.compare,
+                              per_pkg=a.per_pkg, public=a.public, home=str(Path.home()), keep=keep,
+                              code_bases=a.code_base or None, check_remote=not a.no_remote_check,
+                              title=f"{idx['repo']['name']} · codestrata")
+        inf = r["info"]
+        print(f"→ {r['out']}/  页面 {r['index_bytes'] / 1024:.0f} KB + data/{r['ver']}/ {r['data_bytes'] / 1024 / 1024:.1f} MB："
+              f"{r['files']} 个文件的大纲和跳转、引用倒排 {r['refBuckets']} 桶")
+        probe = ("已试取一个文件 ✓" if r["reach"] else "没去试取（--no-remote-check）" if r["probe"] == "skipped"
+                 else f"⚠ 没能确认 GitHub 上有这个提交（{r['probe'] or '没网？'}）：页面上取源码要联网")
+        print(f"  源码：github.com/{inf['owner']}/{inf['name']} @ {inf['sha'][:12]}"
+              + (f"（仓库里的 {inf['prefix']}/）" if inf["prefix"] else "") + f"，{probe}")
+        if r["local"]:
+            print(f"  随页面带上的本地版本（GitHub 上那个提交里没有或不一样）{len(r['local'])} 个："
+                  + "，".join(r["local"][:12]) + ("…" if len(r["local"]) > 12 else ""))
+        if r["held"]:
+            print(f"  --public：被 .gitignore 忽略的 {len(r['held'])} 个本地文件没带（页面上说明）："
+                  + "，".join(r["held"][:12]) + ("…" if len(r["held"]) > 12 else ""))
+        return 0
+    pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg,
+                                 others=others, compare=a.compare)
+    if a.public:
         pl = _payload.publicize(pl, str(Path.home()), keep)
     html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
                           fragment=a.fragment)
@@ -584,6 +609,14 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--compare", action="store_true", help="主 run 和第二个 --hot 对比（三种颜色）")
     g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
     g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
+    g.add_argument("--link", choices=["github"], default=None,
+                   help="源码不内嵌：导出成一个目录（--out 给目录），页面按扫描时的提交号从 GitHub 取源码，"
+                        "codestrata 算的数据放在 data/ 里按需加载——没有体积上限，放 GitHub Pages 用")
+    g.add_argument("--code-base", action="append", default=None, metavar="URL",
+                   help="--link 时取源码的地址模板（可重复，按顺序试；默认 jsDelivr、再 raw.githubusercontent.com），"
+                        "占位符 {owner} {name} {sha} {path}")
+    g.add_argument("--no-remote-check", action="store_true",
+                   help="--link 时不去 GitHub 试取一个文件（没网、或测试时）")
     g.add_argument("--public", action="store_true",
                    help="要放到公网上：主目录写成 ~，PATH 这类目录列表里仓库和录制目录以外的部分省略成 …（页面上会注明）")
     g.add_argument("--out", default=None)

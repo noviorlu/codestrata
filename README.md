@@ -101,6 +101,17 @@ codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得�
   run 元数据里 PATH / LD_LIBRARY_PATH / PYTHONPATH 这种目录列表，仓库和录制目录以外的部分省略成 `…`
   （那些只是本机装了哪些工具）；还剩主目录就拒绝写出。页面上注明命令因此不能原样执行，原样的在录制的
   机器上 `runs show` 里。导出的单文件没有时序图（它要 serve 现算）。
+- **源码从 GitHub 取、没有体积上限**：`graph … --link github --out 目录`。单文件导出要把源码塞进 HTML，
+  受单文件宿主 16 MB 的上限（vllm-omni 1600 多个文件只装得下两百多个）；扫的仓库在 GitHub 上时，页面按
+  **扫描时的提交号**从 jsDelivr（不行再 raw.githubusercontent.com）取源码、在浏览器里高亮（`web/hl.js`，
+  和服务端 Pygments 逐字符一致），codestrata 自己算的放在旁边的 `data/<版本>/` 里按需取——所有文件都能看、
+  都能 Ctrl+点击、看全仓的引用，每个文件带「GitHub ↗」。取回来的行数和扫描时对不上就不给跳转并说明；
+  GitHub 上那个提交里没有或不一样的文件（改了没提交、没进 git、skip-worktree、软链接）随页面带上，
+  `--public` 时被 .gitignore 忽略的不带。导出时会试取一个文件，提交没推上去就不导出。
+
+```bash
+codestrata graph . --link github --public --hot qwen-chat@serving --out ../mysite/source/codestrata/myrepo
+```
 - **复刻**：每个 run 存下录制时原样的 codestrata 命令和所在目录（`cd <目录> && <命令>`，照抄就能再录一次），
   以及 shell 里和跑模型有关的环境变量（CUDA_* / VLLM_* / HF_* / PATH…，名字像密钥的不存）——命令会继承它们，
   光看命令复刻不出来。网页上 run 按钮旁边的「复刻」、或「?」帮助里「这次跑了什么」都能一键复制；

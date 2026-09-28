@@ -716,8 +716,10 @@ def publicize(pl: dict, home: str, keep: list[str]) -> dict:
 
 def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                    per_pkg: int = 10, lines: int = 30,
-                   total_budget: int = 14_000_000, others: list | None = None, compare: bool = False) -> dict:
+                   total_budget: int = 14_000_000, others: list | None = None, compare: bool = False,
+                   code: bool = True) -> dict:
     """单文件导出要的全部数据：图 + 已有解读 + 待办输入包 + 代表符号的源码 + 尽量多的全文。
+    code=False（site.export_site，源码从 GitHub 取）：不带符号片段、全文和共用的跳转目标表。
 
     整个 HTML 要装得进一个单文件（artifact 之类的宿主上限 16 MB），所以先算好其余部分，
     剩下的额度才留给全文；这次 case 实际跑到的文件优先。
@@ -766,7 +768,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
         return len(json.dumps(new, ensure_ascii=False)) if new else 0
 
     sources = {}
-    for pkg, syms in p["pkgSyms"].items():
+    for pkg, syms in (p["pkgSyms"].items() if code else ()):
         for s in syms[:per_pkg]:
             src = symbol_source(repo, idx, s["key"], lines)
             if src:
@@ -779,6 +781,10 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
         edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
     p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources, "edges": edges,
               "search": search_index(idx), "xrefTargets": xtargets, "hotBy": hot_by})
+    if not code:
+        for k in ("sources", "xrefTargets"):
+            p.pop(k)
+        return p
 
     # 全文：用剩下的额度。跑到过的文件优先，其次按体积从小到大（同样额度能带上更多文件）。
     # 先用原始字节数估算（高亮 + JSON 转义后约 3 倍），明显放不下的不去高亮，省掉大部分时间。

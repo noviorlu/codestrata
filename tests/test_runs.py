@@ -720,6 +720,172 @@ def test_public_export():
     assert ".fake-tool-xyz" in out2.read_text() and '"public": true' not in out2.read_text()
 
 
+def git_repo(origin="https://github.com/acme/fakesvc.git") -> Path:
+    """fresh() 的仓库再做成一个 git 仓库（提交一次、设好 origin）。"""
+    repo = fresh()
+    g = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / ".gitignore").write_text(".codestrata/\n")
+    subprocess.run(g + ["add", "-A"], check=True)
+    subprocess.run(g + ["commit", "-q", "-m", "init"], check=True)
+    if origin:
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", origin], check=True)
+    return repo
+
+
+def emb_of(html: str) -> dict:
+    i = html.index("window.CS_EMBEDDED = ") + len("window.CS_EMBEDDED = ")
+    return json.loads(html[i:html.index(";</script>", i)].replace("<\\/", "</"))
+
+
+def test_site_export():
+    """graph --link github --out 目录：页面不带源码，EMB.link 说从 GitHub 哪个提交取；data/ 里每个文件的
+    大纲 / 跳转（按序号命名，避开 Hexo 丢 _ 开头的文件）、引用倒排按 FNV-1a 分桶；本地改过、没进 git 的
+    文件随页面带上。origin 不是 GitHub、--out 是别人的目录都拒绝。"""
+    from codestrata import site
+    repo = git_repo()
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (repo / "fakesvc" / "callee.py").write_text((repo / "fakesvc" / "callee.py").read_text() + "\n# 本地改的\n")
+    (repo / "fakesvc" / "extra.py").write_text("from fakesvc import work\n\n\ndef more():\n    return work.compute(3)\n")
+    cs("scan", repo)
+    trace_offline(repo, "site")
+    out = repo.parent / "site"
+    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--hot", "site", "--out", out)
+    assert "github.com/acme/fakesvc" in r.stdout and sha[:12] in r.stdout, r.stdout
+    E = emb_of((out / "index.html").read_text())
+    L = E["link"]
+    assert (L["owner"], L["name"], L["sha"], L["prefix"]) == ("acme", "fakesvc", sha, ""), L
+    assert not any(k in E for k in ("files", "sources", "xrefTargets", "edges", "search")), sorted(E)
+    files = L["files"]
+    D = out / L["data"]
+    assert L["data"].startswith(f"data/{sha[:10]}-"), L["data"]
+    w = files.index("fakesvc/work.py")
+    meta = json.loads((D / "f" / f"{w}.json").read_text())
+    text = (repo / "fakesvc" / "work.py").read_text()
+    assert meta["n_lines"] == text.count("\n") + 1 and meta["lang"] == "python" and meta["xref"]["toks"], meta.keys()
+    assert any(s["n"] == "compute" for s in meta["symbols"])
+    local = {files[i] for i in L["local"]}
+    assert local == {"fakesvc/callee.py", "fakesvc/extra.py"}, local
+    assert "# 本地改的" in (D / "src" / f"{files.index('fakesvc/callee.py')}.txt").read_text()
+    assert not (D / "src" / f"{w}.txt").exists()
+    assert (D / "edges.json").is_file() and (D / "search.json").is_file()
+    # 引用倒排：compute 的目标在它的桶里，引用它的地方里有 extra.py（本地文件也算）
+    t = next(v[0] for v in meta["xref"]["targets"].values() if v[0].endswith(":fakesvc.work:compute"))
+    B = json.loads((D / "refs" / f"{site.fnv1a(t) % L['refBuckets']}.json").read_text())
+    assert t in B and any((files[x[0]] if isinstance(x[0], int) else x[0]) == "fakesvc/extra.py" for x in B[t]["r"]), B.get(t)
+    assert B[t]["w"][0] == "fakesvc/work.py"
+    assert not any(p.name.startswith("_") for p in (out / "data").rglob("*")), "Hexo 会丢掉 _ 开头的文件"
+    # 再导出到同一个目录：认得出是自己的，照样覆盖；别人的目录拒绝
+    cs("graph", repo, "--link", "github", "--no-remote-check", "--out", out)
+    other = repo.parent / "notmine"
+    other.mkdir()
+    (other / "keep.txt").write_text("x")
+    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--out", other, check=False)
+    assert r.returncode != 0 and "不是空目录" in r.stdout + r.stderr and (other / "keep.txt").exists()
+    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--out", repo.parent / "x.html", check=False)
+    assert r.returncode != 0 and "--out 给目录" in r.stdout + r.stderr
+    # origin 不是 GitHub、根本没有 git：拒绝
+    for bad in (git_repo(origin="https://gitlab.com/acme/fakesvc.git"), fresh()):
+        r = cs("graph", bad, "--link", "github", "--no-remote-check", "--out", bad.parent / "s", check=False)
+        assert r.returncode != 0 and "--link github" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_site_export_public_local_home():
+    """--link github --public：随页面带上的本地文件里有主目录也换成 ~，这个文件的跳转列号跟着挪；
+    GitHub 上的文件不经过这里（页面直接取），data/ 里的每个文件都查过没有主目录。"""
+    repo = git_repo()
+    home = str(Path.home())
+    (repo / "fakesvc" / "extra.py").write_text(
+        "from fakesvc import work\n\n\ndef more():\n"
+        f"    p = \"{home}/data/in.wav\"; return work.compute(len(p))\n")
+    cs("scan", repo)
+    out = repo.parent / "pub"
+    cs("graph", repo, "--link", "github", "--no-remote-check", "--public", "--out", out)
+    L = emb_of((out / "index.html").read_text())["link"]
+    i = L["files"].index("fakesvc/extra.py")
+    src = (out / L["data"] / "src" / f"{i}.txt").read_text()
+    assert home not in src and '"~/data/in.wav"' in src, src
+    toks = json.loads((out / L["data"] / "f" / f"{i}.json").read_text())["xref"]["toks"]
+    line = src.split("\n")[4]
+    tk = next(t for t in toks if t[0] == 5 and line[t[1]:t[2]] == "compute")        # 列号对得上换过之后的文本
+    assert tk
+    for p in out.rglob("*"):
+        if p.is_file():
+            assert home + "/" not in p.read_text(errors="replace"), p
+
+
+def test_site_export_edges():
+    """链接模式的边角：所有桶都写（空的也写，页面按桶号取不能 404）；没被引用的定义也在倒排里（引用栏要给
+    「定义」一行）；scan 之后改过的文件标出来；有单独 \r 的文件行数按扫描器的口径（浏览器会判「不一样」）；
+    软链接、skip-worktree 的本地改动算本地版本；--public 时被 .gitignore 忽略的文件不带源码；
+    试取 GitHub：416（空文件的 Range）算取得到，全是 404 才算没推上去，相对地址不试。"""
+    from codestrata import site
+    repo = git_repo()
+    (repo / "fakesvc" / "lonely.py").write_text("def nobody_calls_me():\n    return 1\n")
+    (repo / "fakesvc" / "crlf.py").write_bytes(b"x = 1\ry = 2\ndef z():\n    return y\n")
+    g = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(g + ["add", "-A"], check=True)
+    (repo / "fakesvc" / "link.py").symlink_to("other.py")
+    subprocess.run(g + ["add", "fakesvc/link.py"], check=True)
+    subprocess.run(g + ["commit", "-q", "-m", "more"], check=True)
+    (repo / ".gitignore").write_text(".codestrata/\nfakesvc/secret_cfg.py\n")
+    (repo / "fakesvc" / "secret_cfg.py").write_text("TOKEN_FOR_TESTS = 'sk-the-secret-value-9f3a'\n")
+    subprocess.run(["git", "-C", str(repo), "update-index", "--skip-worktree", "fakesvc/truth.py"], check=True)
+    (repo / "fakesvc" / "truth.py").write_text((repo / "fakesvc" / "truth.py").read_text() + "\n# skip-worktree 的本地改动\n")
+    cs("scan", repo)
+    (repo / "fakesvc" / "work.py").write_text((repo / "fakesvc" / "work.py").read_text() + "\n# scan 之后改的\n")
+    out = repo.parent / "edges-site"
+    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--public", "--out", out)
+    assert "fakesvc/secret_cfg.py" in r.stdout and "没带" in r.stdout, r.stdout
+    L = emb_of((out / "index.html").read_text())["link"]
+    D, files = out / L["data"], L["files"]
+    assert sorted(p.name for p in (D / "refs").iterdir()) == sorted(f"{b}.json" for b in range(L["refBuckets"]))
+    if L["attrBuckets"]:
+        assert len(list((D / "attrs").iterdir())) == L["attrBuckets"]
+    t = "s:fakesvc.lonely:nobody_calls_me"
+    B = json.loads((D / "refs" / f"{site.fnv1a(t) % L['refBuckets']}.json").read_text())
+    assert B[t] == {"w": ["fakesvc/lonely.py", 1], "r": []}, B.get(t)
+    assert files.index("fakesvc/work.py") in L["stale"], L["stale"]
+    crlf = json.loads((D / "f" / f"{files.index('fakesvc/crlf.py')}.json").read_text())
+    assert crlf["n_lines"] == 5, crlf["n_lines"]              # 扫描器按 \r 也换行；浏览器只按 \n 切出 4 行 → 判「不一样」
+    local = {files[i] for i in L["local"]}
+    assert {"fakesvc/link.py", "fakesvc/truth.py"} <= local, local
+    held = {files[i] for i in L["unpublished"]}
+    assert held == {"fakesvc/secret_cfg.py"}, held
+    i = files.index("fakesvc/secret_cfg.py")
+    assert not (D / "src" / f"{i}.txt").exists() and json.loads((D / "f" / f"{i}.json").read_text())["unpublished"]
+    # 源码（值）不出去；文件名、符号名是静态结构的一部分（图上本来就有），照常带
+    assert "sk-the-secret-value-9f3a" not in "".join(p.read_text(errors="replace") for p in out.rglob("*") if p.is_file())
+    # 不带 --public（自己本地看）：忽略的文件照样带上
+    cs("graph", repo, "--link", "github", "--no-remote-check", "--out", out)
+    L2 = emb_of((out / "index.html").read_text())["link"]
+    assert not L2["unpublished"] and L2["files"].index("fakesvc/secret_cfg.py") in L2["local"]
+    # 试取的分类（不连网：用一个本地 HTTP 服务模拟 GitHub）
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            code = 416 if "empty" in self.path else 404 if "gone" in self.path else 500 if "boom" in self.path else 200
+            self.send_response(code)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    info = {"owner": "o", "name": "n", "sha": "s", "prefix": ""}
+    try:
+        assert site._reachable(info, "empty.py", [base + "/{path}"])[0] is True
+        assert site._reachable(info, "gone.py", [base + "/{path}", base + "/x/{path}"])[0] is False
+        assert site._reachable(info, "a.py", [base + "/gone/{path}", base + "/{path}"])[0] is True
+        assert site._reachable(info, "a.py", [base + "/boom/{path}", base + "/gone/{path}"])[0] is None
+        assert site._reachable(info, "a.py", ["gh/{path}"])[0] is None       # 相对地址：试不了
+    finally:
+        srv.shutdown()
+
+
 def test_manage():
     """tag / untag / note / rm；.codestrata 带 .gitignore 和 README.txt。"""
     repo = fresh()

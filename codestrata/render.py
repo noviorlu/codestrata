@@ -23,13 +23,18 @@ def export(payload: dict, *, title: str | None = None, fragment: bool = False) -
     css = (WEB / "app.css").read_text(encoding="utf-8")
     js = "\n".join(f"/* ---- {n} ---- */\n" + (WEB / n).read_text(encoding="utf-8")
                    for n in SCRIPTS)
+    # 源码从 GitHub 取的导出（site.py）要在浏览器里高亮：多带一个 hl.js（别的导出是服务端高亮好的）。
+    # 单独一个 <script>：它用了正则的后行断言，老浏览器（Safari 16.4 之前）解析不了会整段报错——
+    # 和别的放在一起就整页都没了；分开的话只是没高亮（ds.js 退回纯文本）
+    hl = (f"<script>\n/* ---- hl.js ---- */\n{(WEB / 'hl.js').read_text(encoding='utf-8')}\n</script>\n"
+          if payload.get("link") else "")
     data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
 
     html = html.replace('<link rel="stylesheet" href="app.css">', f"<style>\n{css}\n</style>")
     html = re.sub(r'\s*<script src="[^"]+"></script>', "", html)
     html = html.replace("</div>\n\n", "</div>\n\n", 1)
-    boot = (f"<script>window.CS_EMBEDDED = {data};</script>\n"
-            f"<script>\n{js}\n</script>\n")
+    boot = (f"<script>window.CS_EMBEDDED = {data};</script>\n" + hl
+            + f"<script>\n{js}\n</script>\n")
     html = html.rstrip() + "\n" + boot
     if title:
         html = re.sub(r"<title>.*?</title>", f"<title>{title}</title>", html, count=1)

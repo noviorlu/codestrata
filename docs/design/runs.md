@@ -772,6 +772,26 @@ PATH 类目录列表，只留仓库和各 run 录制目录下面的段，其余�
 成 JSON 再查一遍主目录，还有就 SystemExit 不写出。`pl["public"]` 为真时帮助里的复刻块注明「这是公开页」。
 隐私评审（找真实页面里的一切个人信息 + 审 publicize）确认的问题都修了、带测试和变异检查。
 
+### M8.2　源码从 GitHub 取的导出 `graph --link github`（2026-09-28，用户：扫的基本都是 GitHub 仓库）　✅ 已完成
+
+单文件导出的体积上限来自单文件宿主（16 MB），放 GitHub Pages 时没有这个限制，而且扫的仓库基本都在
+GitHub 上：源码不必自己带。`site.export_site` 导出一个目录：
+- `index.html` 内嵌图、解读、run（vllm-omni 约 2.8 MB）；`EMB.link` 记 owner/name/提交号/子目录前缀、
+  源码地址模板（jsDelivr → raw，`--code-base` 可换）、文件表、本地版本 / 没带 / 改过的文件序号、桶数。
+- `data/<提交号前缀>-<哈希>/`：`f/<序号>.json`（语言、按扫描器口径的行数、大纲、跳转）、`refs/<桶>.json`
+  （xref.invert 的倒排 + 没被引用的定义，FNV-1a 分桶，空桶也写）、`attrs/<桶>.json`、`src/<序号>.txt`、
+  `edges.json`、`search.json`。用序号不用路径命名：Hexo 丢 source/ 下 `_` 开头的文件。按版本分目录：重新
+  部署后还开着的旧页面取到 404 并提示刷新，不会拿新序号对旧文件表。
+- 前端（`ds.js` 的 `linkedDs`）：源码按提交号取（并发 6、20 秒超时、按顺序退路），`hl.js` 高亮（Pygments
+  状态表的移植，`tests/hl_parity.py` 在 vllm_omni + codestrata 与 2.2 万个 C/C++/CUDA/Python 文件上逐字符、
+  逐 token 类与 Pygments 一致；单独一个 `<script>`，老浏览器解析不了时退回纯文本）；行数和扫描时对不上就
+  不给跳转；引用列表先给行、原文陆续填（`r.more`）；符号片段从取回的文件里切（方法从文件大纲里找）。
+- 本地版本：按 blob 哈希和 HEAD 比对（`git ls-files -s` + `hash-object --no-filters`），git status 看不出的
+  （skip-worktree、软链接）也算；`--public` 时被 .gitignore 忽略的文件只带名字不带源码。
+- 导出时试取一个非空文件（416 也算取得到），全 404 才判「提交没推上去」拒绝导出。
+- 评审（Python 侧 + 前端各一组，逐条反驳）确认的 15 条都修了、带测试；变异检查 Python 7 处（软链接那条被
+  哈希比对兜住，模式检查是多一道）、前端 3 处在浏览器里抓到。
+
 **合计约 11 天。**
 - M1 做完：「今天 MiniCPM、明天 Qwen，两份都留着」就成立了，而且都能用 `--hot` 选（换 run 要重启 serve）。
 - M3 做完：之后录的每个 run 都自带时序数据。

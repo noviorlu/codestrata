@@ -433,11 +433,15 @@ window.CS = window.CS || {};
       if (!slot) return;
       slot.innerHTML = '<p class="hint" style="margin-top:10px">读取源码…</p>';
       var self = this;
-      CS.ds.source(key).then(function (s) {
+      CS.ds.source(key, where).then(function (s) {
         if (!s) {
           // 导出版只内嵌了每个包前几个符号的片段；其他符号退回到全文窗口——前提是这个文件内嵌了
           if (!where) { slot.innerHTML = ''; return; }
-          CS.ds.file(where.f).then(function (fv) {
+          CS.ds.file(where.f).catch(function (e) {
+            slot.innerHTML = '<p class="hint" style="margin:4px 0 6px">读取失败：' + esc(e.message) + '</p>';
+            return undefined;
+          }).then(function (fv) {
+            if (fv === undefined) return;
             slot.innerHTML = '<p class="hint" style="margin:4px 0 6px">' + (fv
               ? '导出版里没有这个符号的片段。<button class="linkbtn" data-view="' + esc(where.f) + '" data-line="' + where.l + '">在全文里看（第 ' + where.l + ' 行）</button>'
               : '导出版的体积有上限，没带上这个文件。要看源码请用 <code>codestrata serve</code>。') + '</p>';
