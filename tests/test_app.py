@@ -441,11 +441,16 @@ def test_app_http():
         assert t["command"] == OFFLINE and t["phases"] == [PHASE] and t["env"] == {"FOO": "1"}, t
         assert c.req("GET", f"/api/template?repo={raw}")[1]["case"] == "demo"
         # 打开图：起 serve（带 --home），页面能拿到主菜单地址
-        st, o, _ = c.req("POST", "/api/open", {"repo": str(raw)})
-        assert st == 200 and o["url"].startswith("/v/") and o["url"].endswith("/"), o
-        vport = int(o["url"].split("/")[2])
+        # 默认：图服务自己的地址（和主菜单不同源）；/v/ 不转发
+        st, direct, _ = c.req("POST", "/api/open", {"repo": str(raw)})
+        assert st == 200 and direct["url"].startswith("http://127.0.0.1:"), direct
+        vport = int(direct["url"].rsplit(":", 1)[1].strip("/"))
         assert _get_json(vport, "/api/app") == {"home": f"http://127.0.0.1:{port}/"}
-        # 经主菜单转发（ssh -L 只转主菜单一个端口）：页面、接口都能用；要口令；只转发给这里起的图服务
+        assert c.req("GET", f"/v/{vport}/", header=False)[0] == 404
+        # --proxy：经主菜单转发（ssh -L 只转主菜单一个端口）：页面、接口都能用；要口令；只转发给这里起的图服务
+        a.proxy = True
+        st, o, _ = c.req("POST", "/api/open", {"repo": str(raw)})
+        assert st == 200 and o["url"] == f"/v/{vport}/", o
         st, page, _ = c.req("GET", o["url"], header=False)
         assert st == 200 and "ds.js" in page, (st, page[:200])
         st, graph, r = c.req("GET", o["url"] + "api/graph?w=900", header=False)
@@ -547,7 +552,7 @@ def test_cli_app():
         assert c.req("POST", "/api/projects", {"path": str(repo)})[0] == 200
         st, o, _ = c.req("POST", "/api/open", {"repo": str(repo)})
         assert st == 200, o
-        vport = int(o["url"].split("/")[2])
+        vport = int(o["url"].rsplit(":", 1)[1].strip("/"))
         assert _listening(vport)
         assert (cfg / "codestrata" / "app-token").stat().st_mode & 0o077 == 0     # 口令文件只有自己能读
     finally:

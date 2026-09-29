@@ -13,9 +13,9 @@
     POST   /api/trace {表单}           起一个录制任务（字段见 jobs.TraceSpec）
     GET    /api/jobs/<id>?since=N     任务状态 + 第 N 行之后的输出
     POST   /api/jobs/<id>/stop        停任务（SIGINT，和终端里 Ctrl+C 一样）
-    POST   /api/open {repo}           起（或复用）这个仓库的图服务（codestrata serve），返回地址 /v/<端口>/
-    *      /v/<端口>/…                转发给这里起的图服务：只转发到 1 个端口（ssh -L 8930:…）就够了，
-                                      图服务自己的端口不用对外。只转发到这里起的、还活着的图服务
+    POST   /api/open {repo}           起（或复用）这个仓库的图服务（codestrata serve），返回地址
+    *      /v/<端口>/…                只在 --proxy 下：转发给这里起的图服务，/api/open 返回 /v/<端口>/。
+                                      给远程用的（ssh -L 只转主菜单一个端口）；只转发到这里起的、还活着的图服务
 
 这里只做 HTTP：路由、鉴权、JSON 进出。数据在 projects，任务在 jobs，图服务在 viewers。
 
@@ -25,6 +25,8 @@
     带不上前者，跨源也设不了后者（这里不回 CORS），知道端口也调不动
   - 口令存在配置目录（只有自己能读），用启动时打印的链接（/?t=口令）打开一次就设进了 cookie
   - 扫描、录制、打开图只接受清单里的项目
+  - 图服务默认在自己的端口上：和主菜单不同源，图页面里就算有 XSS 也调不动主菜单的接口（跨源带不上
+    X-Codestrata）。--proxy 把图转发到主菜单的端口下（同源）：方便远程，但这层隔离就没了，所以不是默认
   - /v/ 下的页面和接口（仓库的代码）也要口令 cookie；图服务自己的检查（Host、X-Codestrata）照旧在它那边做
 """
 from __future__ import annotations
@@ -84,6 +86,7 @@ class App:
     jobs: JobManager
     viewers: Viewers
     token: str
+    proxy: bool = False             # --proxy：图经主菜单的端口转发（/v/<端口>/），见模块说明
     # 改清单和起任务互斥：「没有任务在跑 → 移除」和「在清单里 → 起任务」都得是一口气做完的
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -154,7 +157,7 @@ class AppHandler(BaseHandler):
         raw = self.path
         path, _, query = raw.partition("?")
         m = _VIEW.match(path)
-        if not m:
+        if not m or not self.app.proxy:
             return False
         port, rest = int(m.group(1)), m.group(2)
         if not rest:                             # /v/123 → /v/123/：页面里的相对地址才对
@@ -280,7 +283,8 @@ class AppHandler(BaseHandler):
         except ViewerError as e:
             return self._json({"error": str(e)}, 500)
         self.app.registry.touch(Path(repo))
-        return self._json({"url": f"/v/{port}/"})   # 经主菜单转发：只要主菜单这一个端口能访问
+        # --proxy：经主菜单转发，只要主菜单这一个端口能访问；默认直接给图服务自己的地址（不同源，见模块说明）
+        return self._json({"url": f"/v/{port}/" if self.app.proxy else f"http://127.0.0.1:{port}/"})
 
     def _scan_argv(self, repo: str, body: dict) -> list[str]:
         """勾选的目录 → scan 的命令行；没勾、或者勾了不在候选里的（手改的请求）就 ValueError"""
@@ -341,29 +345,31 @@ class AppHandler(BaseHandler):
         return self._json({"removed": removed})
 
 
-def make_app(port: int, config: Path | None = None) -> App:
+def make_app(port: int, config: Path | None = None, proxy: bool = False) -> App:
     """按配置目录装配主菜单（测试里给临时目录）"""
     config = config or _projects.config_dir()
     viewers = Viewers(f"http://127.0.0.1:{port}/", config / "logs")
     return App(registry=_projects.Registry(config / "projects.json"),
                jobs=JobManager(on_done=lambda job: _restart_after_scan(viewers, job)),
-               viewers=viewers, token=load_token(config / "app-token"))
+               viewers=viewers, token=load_token(config / "app-token"), proxy=proxy)
 
 
 def _interrupt(*_) -> None:
     raise KeyboardInterrupt
 
 
-def main(*, port: int, open_browser: bool = True) -> int:
+def main(*, port: int, open_browser: bool = True, proxy: bool = False) -> int:
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
     except OSError as e:
         raise SystemExit(f"端口 {port} 用不了（{e.strerror}）：换一个，codestrata app --port N") from None
-    AppHandler.app = app = make_app(port)
+    AppHandler.app = app = make_app(port, proxy=proxy)
     url = f"http://127.0.0.1:{port}/?t={app.token}"
     print(f"codestrata app → {url}")
     print(f"  项目清单 {app.registry.path}（{len(app.registry.paths())} 个）")
     print(f"  这个链接带着口令：打开一次浏览器就记住了，之后直接访问 http://127.0.0.1:{port}/ 即可")
+    if proxy:
+        print("  --proxy：图经这个端口转发（/v/…），远程只要转发这一个端口；图页面和主菜单同源", flush=True)
     print("  Ctrl+C 停止（会一起停掉由这里起的扫描、录制和图服务）", flush=True)
     if open_browser:
         threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()

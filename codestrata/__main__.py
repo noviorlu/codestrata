@@ -611,7 +611,7 @@ def cmd_serve(a) -> int:
 
 def cmd_app(a) -> int:
     from . import app as _app
-    return _app.main(port=a.port, open_browser=not a.no_browser)
+    return _app.main(port=a.port, open_browser=not a.no_browser, proxy=a.proxy)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -737,6 +737,9 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("app", help="主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图（浏览器里）")
     m.add_argument("--port", type=int, default=8930)
     m.add_argument("--no-browser", action="store_true", help="不自动打开浏览器，只打印地址")
+    m.add_argument("--proxy", action="store_true",
+                   help="图也经这个端口转发（远程用：ssh -L 只转这一个端口）。图页面和主菜单会同源，"
+                        "少了一层隔离，所以默认不开")
     m.set_defaults(fn=cmd_app)
 
     # 自己先按第一个 "--" 切开：argparse 的 REMAINDER 和可选位置参数放在一起时
