@@ -315,6 +315,26 @@ def test_phase_at():
     assert payload.graph_payload(repo, idx)["phaseMarks"] == []
 
 
+def test_layers_point_down():
+    """纵轴是依赖的层次：边从上指向下（调用方在上）；环里打断的是轻的那条；叠了 run 时实际的调用比
+    静态 import 重——import 方向反过来的回调（基类调子类）也画成往下；没有边的放最底层"""
+    from codestrata import layout
+    lay = layout.layers(["a", "b", "c", "d", "iso"], [("a", "b", 5), ("b", "c", 5), ("c", "a", 1), ("a", "d", 1)])
+    assert lay["a"] < lay["b"] < lay["c"] and lay["a"] < lay["d"] and lay["iso"] == max(lay.values()), lay
+    # 贪心（Eades）在这里会逆掉 a → c 这条重边（共 91）；sifting 之后逆掉的是 c → a 和 b → c（共 51）
+    edges = [("a", "c", 90), ("b", "c", 1), ("c", "a", 50), ("c", "b", 90), ("d", "a", 50)]
+    lay = layout.layers(["a", "b", "c", "d"], edges)
+    assert sum(w for a, b, w in edges if lay[a] >= lay[b]) == 51, lay
+    # 叠了 run：base 按 import 在 sub 下面，但 runtime 是 base 调 sub（回调）→ base 在上
+    idx = {"repo": {"roots": ["p"]}, "edges": [["p.sub", "p.base", 3]], "frames": {},
+           "packages": {n: {"files": 1, "loc": 10, "classes": 1, "funcs": 1, "out": 1, "in": 1, "alt": 0.0}
+                        for n in ("p.sub", "p.base")}}
+    static = {n["id"]: n["lane"] for n in layout.build(idx)["nodes"]}
+    assert static["p.sub"] < static["p.base"], static
+    hot = {n["id"]: n["lane"] for n in layout.build(idx, runtime_edges=[("p.base", "p.sub", 500)])["nodes"]}
+    assert hot["p.base"] < hot["p.sub"], hot
+
+
 def test_phase_at_once_and_order():
     """每个阶段整个 run 只切一次，顺序按实际发生：写 --phase 的先后不影响。work 由工作进程第一次进
     compute 切出来；close 之后主进程才第一次进 compute，不会把阶段切回 work。

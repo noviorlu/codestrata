@@ -145,7 +145,7 @@ def _meta_brief(m: dict | None) -> dict | None:
 
 
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
-                  hot_meta: dict | None = None, open_=None, lanes="auto", min_files: int = 1,
+                  hot_meta: dict | None = None, open_=None, min_files: int = 1,
                   width: float = 1180.0, hot_b: dict | None = None, hot_meta_b: dict | None = None) -> dict:
     """一个切面上的全部前端数据。open_ 是展开着的目录（不给就用 scan 算出的默认切面）；
     图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。
@@ -173,7 +173,14 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     # 同一个切面上短名撞了的（flask.app 和 flask.sansio.app 都叫 app）：补上父目录段，图上和面板里一样
     alias = _cut.disambiguate(idx, set(_cut.visible(v)) | set(frames))
     syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames, "alias": alias}
-    g = _layout.build(syn, lanes=lanes, min_files=min_files, width=width)
+    # 分层（纵轴）：叠了 run 就按这次实际发生的调用排（对比时两个 run 合起来），调用方在上；
+    # 静态 import 只作次要依据——基类回调子类、注册表、回调这些调用和 import 的方向是反的
+    rt_calls: dict[str, int] = {}
+    for h in (hot, hot_b):
+        for k, n in (_hot_on_cut(h, v["node_of"])[1] if h else {}).items():
+            rt_calls[k] = rt_calls.get(k, 0) + n
+    g = _layout.build(syn, min_files=min_files, width=width,
+                      runtime_edges=[(*k.split("|"), n) for k, n in sorted(rt_calls.items())])
     mem, node_of = v["members"], v["node_of"]
     repo_info = dict(idx["repo"])
     repo_info["n_symbols"] = len(idx.get("symbols") or {})
@@ -243,8 +250,8 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             a, _, b = k.partition("|")
             if k not in kinds and a in shown and b in shown:
                 rt_only.append([a, b, max(he.get(k, 0), heb.get(k, 0))])
-    # hot 视图单独排版：只放跑到的节点（对比时两边任一跑到的），泳道数沿用总图，纵坐标含义不变、横向更紧凑
-    g_hot = (_layout.build(syn, lanes=g["lanes"], min_files=min_files, width=width,
+    # hot 视图单独排版：只放跑到的节点（对比时两边任一跑到的），每个节点的层沿用总图，纵坐标含义不变、横向更紧凑
+    g_hot = (_layout.build(syn, lane_of={n["id"]: n["lane"] for n in g["nodes"]}, min_files=min_files, width=width,
                            only={p for p, n in hot_view["packages"].items() if n} | set((cmp or {}).get("nodes") or {}))
              if hot_view else None)
     for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里

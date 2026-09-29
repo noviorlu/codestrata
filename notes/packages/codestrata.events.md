@@ -4,7 +4,7 @@ target: codestrata.events
 kind: package
 code_sha: a767f0b4997792d5
 status: draft
-refs: runs.py:349@dcfcecf7,events.py:1@d55ae9b7,trace.py:222@1d353c75,trace.py:234@b260cb52,runs.py:446@1c2edb45,runs.py:447@fe850b3d,runs.py:891@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:190@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:239@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:232@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,seq.py:86@43f9c39a,events.py:166@9e27b77d
+refs: runs.py:349@dcfcecf7,events.py:1@d55ae9b7,trace.py:222@1d353c75,trace.py:234@b260cb52,runs.py:446@1c2edb45,runs.py:447@fe850b3d,runs.py:891@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:190@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:239@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:232@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,seq.py:87@43f9c39a,events.py:166@9e27b77d
 ---
 
 ## 是什么
@@ -80,7 +80,7 @@ refs: runs.py:349@dcfcecf7,events.py:1@d55ae9b7,trace.py:222@1d353c75,trace.py:2
 
 ### 时序图（`seq`）读什么
 `seq` 按设计稿 7.4 每次请求现算，不 import 这个模块，直接读写出的文件：
-- **index.json 的 chunks**：按 [t0_us, t1_us] 挑出和时间窗重叠的块，只解压这些块，解压过的放进 16 块的 LRU（`spans_in`，seq.py:86）。同一个 pid 的块内、块间都按 t0 有序。
+- **index.json 的 chunks**：按 [t0_us, t1_us] 挑出和时间窗重叠的块，只解压这些块，解压过的放进 16 块的 LRU（`spans_in`，seq.py:87）。同一个 pid 的块内、块间都按 t0 有序。
 - **index.json 的 procs**：子进程在它的 t0_us 时刻，从 ppid 画一条派生箭头。argv 摘要不在这里，另从 detail.json 的 procs 拿。
 - **keys.json**：keys 用来把 a / b 经 rel → 单元 → `node_of` 映射到切面上的节点，两端落在不同节点的才画；"?" 和 <外部代码>/… 映射不到，不画、只计数。threads 给 (pid, tid) 起名；第二级折叠也按 (pid, tid) 分组。
 - **行本身**：rep 用来显示 ×n，n_susp 和 dur 放进 async 消息的详情，dur = -1 表示没返回。

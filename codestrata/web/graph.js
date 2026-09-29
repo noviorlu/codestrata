@@ -82,12 +82,13 @@ window.CS = window.CS || {};
         if (!L.empty && L.i % 2 === 0)
           lg.appendChild(el('rect', { x: 0, y: L.y, width: G.width, height: L.h, class: 'laneband' }));
         lg.appendChild(el('line', { x1: 0, y1: L.y, x2: G.width, y2: L.y, class: 'lanerule' }));
-        var rng = (L.hi > 0 ? '+' : '') + L.hi.toFixed(2) + '…' + (L.lo > 0 ? '+' : '') + L.lo.toFixed(2);
+        // 纵轴是依赖的层次（layout.layers）：上面的模块 import / 调用下面的
+        var rng = L.label || '第 ' + (L.i + 1) + ' 层';     // 层太多被压过时一条泳道装几层（第 a–b 层）
         if (L.empty) {
-          // 只写高度区间（放在左边的留白里，不伸进框）；「这段高度没有模块」放在悬停提示里
+          // 只写层号（放在左边的留白里，不伸进框）；「这一层没有模块」放在悬停提示里
           var t0 = el('text', { x: 8, y: L.y + L.h / 2 + 3, class: 'lanealt empty' });
           t0.textContent = rng;
-          var tt = el('title', {}); tt.textContent = '没有模块落在 ' + rng + ' 这段高度'; t0.appendChild(tt);
+          var tt = el('title', {}); tt.textContent = '这一层的模块这张图上都没有'; t0.appendChild(tt);
           lg.appendChild(t0); return;
         }
         if (L.name) { var t = el('text', { x: 8, y: L.y + 14, class: 'lanetxt' }); t.textContent = L.name; lg.appendChild(t); }

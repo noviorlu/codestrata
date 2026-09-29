@@ -1,8 +1,10 @@
-"""把包 + 架构高度变成可画的坐标。
+"""把包 + 依赖边变成可画的坐标。
 
-纵轴是架构高度（scan.py 算出来的 `alt`）：把 [+1, -1] 切成若干泳道，
-+1 那条在最上面。横轴用重心迭代排序减少连线交叉——Sugiyama 分层画图法里
-那一步的简化版，对几十个节点足够，而且不引入任何依赖。
+纵轴是依赖的层次（layers）：边尽量都从上指向下——import 别人的（调用方）在上，被 import 的在下，
+读图时 runtime 的调用也就大多是往下走的。早先纵轴是「架构高度」alt =（出 − 入）/（出 + 入），
+它只看每个模块自己的出入比例、不看谁连着谁，于是 omni → omni_base 这种边会画成往上指。
+横轴用重心迭代排序减少连线交叉——Sugiyama 分层画图法里那一步的简化版，对几十个节点足够，
+而且不引入任何依赖。
 
 节点面积编码规模（文件数），所以「哪个包大」和「哪个包在底层」可以同时读出来。
 
@@ -60,13 +62,83 @@ def _display(pkg: str, kind: str | None, root_prefix: str) -> str:
     return _label(pkg, root_prefix) + ("/" if kind == "dir" else "")
 
 
-def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
+MAX_LANES = 16      # 层太多时按比例压到这么多条泳道（会有少数边落在同一条里）
+RUNTIME_WEIGHT = 10.0   # 分层时一条 runtime 调用边抵得上几条静态边：叠了 run 就先顺着实际的调用
+
+
+def layers(ids, edges) -> dict[str, int]:
+    """每个节点在第几层（0 在最上）：边 a → b 尽量让 a 在 b 上面。
+    1. 去环：按边的权重（import 语句数）贪心排一个顺序（Eades–Lin–Smyth）——没有上游的往前、
+       没有下游的往后，其余的挑「出去的权重 − 进来的权重」最大的往前。逆着这个顺序的边是环里
+       被打断的那几条，只有它们会往上指，而且挑的是权重小的
+    2. 从下往上数的最长路分层：高度 = 往下（顺着顺序的边）最长能走几步，叶子（谁也不调）高度 0、
+       在最底层；层号 = 最大高度 − 高度。从上往下数的话，只被一个入口用到的叶子会停在那个入口的
+       下一层，飘在图中间（codestrata 自己的 render、highlight 就是）
+    一条边都没有的节点高度也是 0：放最底层"""
+    ids = sorted(ids)
+    out: dict[str, dict[str, float]] = {i: {} for i in ids}
+    inn: dict[str, dict[str, float]] = {i: {} for i in ids}
+    for a, b, w in edges:
+        if a != b and a in out and b in out:
+            out[a][b] = out[a].get(b, 0) + w
+            inn[b][a] = inn[b].get(a, 0) + w
+    alive, head, tail = set(ids), [], []
+    while alive:
+        moved = True
+        while moved:
+            moved = False
+            for n in sorted(alive):
+                if not any(m in alive for m in out[n]):
+                    tail.append(n)
+                elif not any(m in alive for m in inn[n]):
+                    head.append(n)
+                else:
+                    continue
+                alive.discard(n)
+                moved = True
+        if alive:
+            n = max(sorted(alive), key=lambda n: sum(w for m, w in out[n].items() if m in alive)
+                    - sum(w for m, w in inn[n].items() if m in alive))
+            head.append(n)
+            alive.discard(n)
+    order = head + tail[::-1]
+    # 贪心不求最优：它会为了拆环把一条很重的边（几千次调用）反过来。再逐个节点挪到让「逆着顺序的
+    # 边的权重」最小的位置（sifting），直到挪不动为止
+    for _ in range(20):
+        moved = False
+        for v in list(order):
+            rest = [u for u in order if u != v]
+            cost = sum(inn[v].get(u, 0) for u in rest)      # v 放最前：所有指向 v 的边都逆着
+            best, best_k = cost, 0
+            for k, u in enumerate(rest, 1):                 # v 挪到 u 后面
+                cost += out[v].get(u, 0) - inn[v].get(u, 0)
+                if cost < best - 1e-9:
+                    best, best_k = cost, k
+            cur = order.index(v)
+            cur_cost = (sum(out[v].get(u, 0) for u in rest[:cur]) + sum(inn[v].get(u, 0) for u in rest[cur:]))
+            if best < cur_cost - 1e-9:
+                order = rest[:best_k] + [v] + rest[best_k:]
+                moved = True
+        if not moved:
+            break
+    pos = {n: i for i, n in enumerate(order)}
+    height = {n: 0 for n in ids}
+    for n in reversed(order):
+        for m in out[n]:
+            if pos[m] > pos[n]:
+                height[n] = max(height[n], height[m] + 1)
+    top = max(height.values(), default=0)
+    return {n: top - h for n, h in height.items()}
+
+
+def build(index: dict, *, lane_of: dict[str, int] | None = None, min_files: int = 1,
           top: int | None = None, width: float = 1180.0,
-          only: set[str] | None = None) -> dict:
+          only: set[str] | None = None, runtime_edges: list | None = None) -> dict:
     """返回 {"nodes": [...], "edges": [...], "frames": [...], "lanes": n, "width": w, "height": h}
 
-    only：只给这些包排版（hot 视图用）。泳道数应当由调用方传入总图的值，
-    这样两张图的纵坐标含义一致，只是横向更紧凑。
+    only：只给这些包排版（hot 视图用）。lane_of：每个节点在哪条泳道——hot 视图传总图的，
+    两张图的纵坐标含义一致，只是横向更紧凑；不给就按 layers 分层。runtime_edges：叠着的 run
+    在这个切面上的调用 [(a, b, 次数)]，分层时比静态边重得多（RUNTIME_WEIGHT）
     """
     pkgs = index["packages"]
     # 过滤：小包和 top-N。同时丢掉「既无符号又无连边」的空包——
@@ -85,23 +157,22 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
     roots = index["repo"].get("roots") or []
     root_prefix = roots[0].split("/")[-1] if len(roots) == 1 else ""
 
-    # 高度 → 泳道。+1 在 lane 0（最上），-1 在最后一条。
-    def lane_at(alt: float, k: int) -> int:
-        t = (1.0 - alt) / 2.0                     # +1→0, -1→1
-        return max(0, min(k - 1, int(t * k)))
-
-    if lanes == "auto":
-        # 泳道太多会出现大片空带（6 个模块摊到 9 条泳道时有 6 条是空的），
-        # 太少又把不同高度压在一起。所以取「占用率最高」的泳道数，
-        # 占用率相同时偏向更多泳道（保留更多高度分辨率）。
-        # 早先取的是「满足 ≥60% 的最大 k」，于是 6 个模块也会摊到 6 条、空 2 条。
-        alts = [v["alt"] for _, v in items]
-        lanes = max(range(3, 10),
-                    key=lambda k: (len({lane_at(a, k) for a in alts}) / k, k))
-    lanes = int(lanes)
-
-    def lane_of(alt: float) -> int:
-        return lane_at(alt, lanes)
+    edges = [(a, b, w) for a, b, w in index["edges"] if a in keep and b in keep]
+    if lane_of is None:
+        # 边的权重取对数：几百条 import 的一对不该压过几十对只有一条的
+        weighted = ([(a, b, 1 + math.log1p(w)) for a, b, w in edges]
+                    + [(a, b, RUNTIME_WEIGHT * (1 + math.log1p(n))) for a, b, n in runtime_edges or ()])
+        lay = layers(keep, weighted)
+        deep = max(lay.values(), default=0) + 1
+        lane_of = {p: (i * MAX_LANES // deep if deep > MAX_LANES else i) for p, i in lay.items()}
+        # 每条泳道装的是哪几层（层太多被压过时，一条泳道里有好几层）：泳道标签用
+        span_of: dict[int, list[int]] = {}
+        for p, i in lay.items():
+            s = span_of.setdefault(lane_of[p], [i, i])
+            s[0], s[1] = min(s[0], i), max(s[1], i)
+    else:
+        span_of = {}
+    lanes = max(lane_of.values(), default=0) + 1
 
     # 框：展开着的目录把它底下的节点框在一起。fparent 是框的嵌套，home 是每个节点直接所在的框
     fr_in = index.get("frames") or {}
@@ -131,12 +202,10 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
     for p, v in items:
         f = v.get("frame") if v.get("frame") in fr_in else None
         nodes[p] = Node(
-            id=p, label=name_in(p, f), lane=lane_of(v["alt"]), frame=f,
+            id=p, label=name_in(p, f), lane=lane_of[p], frame=f,
             alt=v["alt"], files=v["files"], loc=v["loc"],
             classes=v["classes"], funcs=v["funcs"], out=v["out"], inn=v["in"],
         )
-
-    edges = [(a, b, w) for a, b, w in index["edges"] if a in keep and b in keep]
 
     # 节点宽度：标签长度为底，文件数给一点加成（面积编码规模）
     for n in nodes.values():
@@ -178,7 +247,7 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
                 n.order = float(i)
 
     # ---- 框：展开着的目录把它底下的节点框在一起 ----
-    # 纵轴仍然是架构高度，所以一个目录的子模块会分散在好几条泳道里。框不能在纵向上
+    # 纵轴是依赖的层次，一个目录的子模块会分散在好几条泳道里。框不能在纵向上
     # 把它们挪到一起（那样纵轴就说谎了），只能在横向上给每个展开的目录一段列：
     # 图按目录树切成嵌套的列，框画在这段列上、从它最高的子模块到最低的子模块。
     home = {n.id: n.frame for n in nodes.values()}
@@ -508,34 +577,29 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
         head_stack[span[f][0]] = max(head_stack.get(span[f][0], 0), d + 1)
         foot_stack[span[f][1]] = max(foot_stack.get(span[f][1], 0), e + 1)
 
-    # 泳道几何。空泳道压成细条并标出它跳过的高度区间——既不占画布，
-    # 又保留「这里有一段高度差」这个信息（把空泳道直接删掉会让纵轴说谎）。
+    # 泳道几何。空泳道（hot 视图里这一层的模块都没跑到）压成细条——既不占画布，
+    # 又保留「这里隔着一层」这个信息（把空泳道直接删掉，两张图的层就对不上了）。
     FULL_H, EMPTY_H, TOP = 118.0, 34.0, 30.0
     HEAD_H, FOOT_H = 22.0, 8.0
     occupied = {n.lane for n in nodes.values()}
     rows = []
     y = TOP
     for i in range(lanes):
-        hi = 1.0 - 2.0 * i / lanes
-        lo = 1.0 - 2.0 * (i + 1) / lanes
         # 节点上方有 37px 空白，放得下一层框头；多一层框头就多留一层的高度。
         # 节点下方的空白放得下四层框底（每层 8px），再多才加高
         extra_top = HEAD_H * max(0, head_stack.get(i, 0) - 1)
         h = (FULL_H + ROW_H * (n_rows.get(i, 1) - 1) + extra_top
              + FOOT_H * max(0, foot_stack.get(i, 0) - 4)) if i in occupied else EMPTY_H
-        rows.append({"i": i, "y": y, "h": h, "empty": i not in occupied, "pad": extra_top,
-                     "hi": round(hi, 2), "lo": round(lo, 2), "name": ""})
+        a, b = span_of.get(i, (i, i))
+        rows.append({"i": i, "y": y, "h": h, "empty": i not in occupied, "pad": extra_top, "name": "",
+                     "label": f"第 {a + 1} 层" if a == b else f"第 {a + 1}–{b + 1} 层"})
         y += h
-    # 标签：入口 / 叶子给最上、最下**有内容**的泳道；中间只给最接近 0 的那一条。
-    # （早先用 abs(mid) < 0.18 判断，lanes=6 时会有两条同时命中，图上出现两个「中间」。）
+    # 标签：入口 / 叶子给最上、最下**有内容**的泳道
     occ = sorted(occupied)
     if occ:
         rows[occ[0]]["name"] = "入口"
         if len(occ) > 1:
             rows[occ[-1]]["name"] = "叶子"
-        if len(occ) > 2:
-            mid = min(occ[1:-1], key=lambda i: abs((rows[i]["hi"] + rows[i]["lo"]) / 2))
-            rows[mid]["name"] = "中间"
     height = y + 26.0
 
     for n in nodes.values():

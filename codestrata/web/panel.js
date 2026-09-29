@@ -141,8 +141,8 @@ window.CS = window.CS || {};
     reset: function () {
       this._detTok++;
       delete det.dataset.pkg;
-      det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是一段架构高度区间，'
-        + '越上面越靠入口、越下面越是被依赖的叶子；节点大小编码文件数。'
+      det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是依赖的一层，箭头尽量从上指向下：'
+        + '越上面越靠入口、越下面越是被调用的叶子；节点大小编码文件数。'
         + '点节点看它依赖谁、里面有什么符号，右边是这个模块的<b>解读</b>。</p>';
       // 右边正贴着一份还没保存的解读时不清掉它（取消选中、换切面都会走到这里）
       var ta = side.querySelector('#noteta');
