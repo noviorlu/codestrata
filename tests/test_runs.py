@@ -306,6 +306,13 @@ def test_phase_at():
     assert pc["shutdown"].get(close) == 1 and close not in pc["generate"], pc
     # 没有触发的阶段在 CLI 里报出来；这里都切到了
     assert "没切到" not in r.stdout, r.stdout
+    # 图上标阶段的起点 / 终点：触发函数落在切面的哪个节点上（继承来的按定义它的文件）
+    idx = payload.load_index(repo)
+    hot, meta = payload.load_hot(repo, idx, "off@generate")
+    marks = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["fakesvc"])["phaseMarks"]
+    assert [(m["name"], m["qualname"], m["node"]) for m in marks] == [
+        ("generate", "Engine.generate", "fakesvc.offline"), ("shutdown", "BaseEngine.close", "fakesvc.offline")], marks
+    assert payload.graph_payload(repo, idx)["phaseMarks"] == []
 
 
 def test_phase_at_once_and_order():

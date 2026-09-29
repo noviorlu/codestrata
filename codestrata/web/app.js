@@ -52,6 +52,7 @@ window.CS = window.CS || {};
           if (!CS.ds.canCut) { document.getElementById('prog').textContent = '导出的单文件不能展开，请用 codestrata serve'; return; }
           self.expand(id);
         };
+        CS.graph.phaseMarks = self.phaseMarks();
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
                       { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
         self.edgeChips();
@@ -607,9 +608,48 @@ window.CS = window.CS || {};
              + (at[p.name] && hook[p.name] ? '；从第一次进入 ' + esc(at[p.name].qualname) + ' 开始' : '') : '各阶段加在一起')
           + '">' + (p.name ? esc(p.name) : '全部') + '</button>';
       }).join('');
+      // 选了阶段：写明从哪个函数开始、到哪个函数结束（图上对应的节点标成绿 ▶ / 红 ■）
+      var b = this.phaseBounds();
+      if (m.phase)
+        pc.innerHTML += '<span class="pbound"><b class="ps">▶ 起点</b> ' + (b.start ? esc(b.start.qualname) : '程序开始')
+          + '　<b class="pe">■ 终点</b> ' + (b.end ? esc(b.end.qualname) + '（切到 ' + esc(b.end.name) + '）' : '程序结束') + '</span>';
       [].forEach.call(pc.querySelectorAll('[data-ph]'), function (x) {
         x.onclick = function () { if ((m.phase || '') !== x.dataset.ph) self.selectRun(m.run_id, x.dataset.ph); };
       });
+    },
+
+    /* 当前阶段从哪个函数开始、到哪个函数（下一个阶段的起点）结束：{start, end}，各是 phase_at 里的一项
+       （带 node：落在当前切面的哪个节点上）或 null。没选阶段（全部）时 start / end 都是 null */
+    phaseBounds: function () {
+      var d = this.data, m = d && d.hot && d.hotMeta, marks = (d && d.phaseMarks) || [];
+      if (!m || !m.phase) return { start: null, end: null };
+      var by = Object.create(null), order = (m.phase_log || []).map(function (x) { return x[0]; });
+      marks.forEach(function (x) { by[x.name] = x; if (order.indexOf(x.name) < 0) order.push(x.name); });
+      var next = null;
+      for (var j = order.indexOf(m.phase) + 1; j > 0 && j < order.length && !next; j++) next = by[order[j]] || null;
+      return { start: by[m.phase] || null, end: next };
+    },
+
+    /* 图上要标的阶段起点 / 终点。选了阶段：它的起点（绿 ▶）和终点（红 ■，下一个阶段的触发函数）；
+       全部：每个阶段的起点 */
+    phaseMarks: function () {
+      var d = this.data, m = d && d.hot && d.hotMeta;
+      if (!m) return [];
+      var out = [];
+      function where(x) { return x.qualname + '（' + x.file + ':' + x.line + '）'; }
+      if (!m.phase) {
+        ((d && d.phaseMarks) || []).forEach(function (x) {
+          if (x.node) out.push({ node: x.node, kind: 'start', label: '▶ ' + x.name,
+                                 title: x.name + ' 阶段从第一次进入 ' + where(x) + ' 开始' });
+        });
+        return out;
+      }
+      var b = this.phaseBounds();
+      if (b.start && b.start.node) out.push({ node: b.start.node, kind: 'start', label: '▶ ' + m.phase + ' 起点',
+                                              title: m.phase + ' 阶段从第一次进入 ' + where(b.start) + ' 开始' });
+      if (b.end && b.end.node) out.push({ node: b.end.node, kind: 'end', label: '■ ' + m.phase + ' 终点',
+                                          title: '第一次进入 ' + where(b.end) + ' 时切到 ' + b.end.name + ' 阶段：' + m.phase + ' 到这里结束' });
+      return out;
     },
 
     wireRunSel: function () {
@@ -982,6 +1022,7 @@ window.CS = window.CS || {};
 
     redraw: function () {
       var d = this.data, s = CS.graph.state;
+      CS.graph.phaseMarks = this.phaseMarks();
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);

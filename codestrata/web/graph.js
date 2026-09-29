@@ -241,13 +241,14 @@ window.CS = window.CS || {};
           g.appendChild(xp);
         }
         var bd = el('text', { x: n.cx + n.w / 2 - 5, y: n.cy - n.h / 2 + 8, class: 'badge todo', 'text-anchor': 'end' });
-        g.appendChild(bd); g._badge = bd;
+        g.appendChild(bd); g._badge = bd; g._n = n;
         ng.appendChild(g); self.nodes[n.id] = g;
         // 再点一次选中的节点就取消选中（程序里调 pick 总是选中，比如从详情面板跳过来）
         var toggle = function () { if (self.state.sel === n.id) self.clear(); else self.pick(n.id); };
         g.onclick = function (ev) { ev.stopPropagation(); toggle(); };
         g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } };
       });
+      this.setPhaseMarks(this.phaseMarks);
       this.wireBox(svg.parentNode);
       this.fit();
       this.paint();
@@ -404,6 +405,28 @@ window.CS = window.CS || {};
         b.textContent = st === 'noted' ? '✓' : (st === 'stale' ? '!' : '');
       });
       this.paint();
+    },
+
+    /* 阶段的起点 / 终点（trace --phase 的触发函数所在的节点）：[{node, kind: start|end, label, title}]。
+       节点框描成绿 / 红，框上面写一行字；同一个节点上有几个就往上叠。重画之后按 phaseMarks 再套一遍 */
+    setPhaseMarks: function (marks) {
+      this.phaseMarks = marks || [];
+      var self = this, stack = {};
+      Object.keys(this.nodes).forEach(function (id) {
+        var g = self.nodes[id];
+        g.classList.remove('pstart', 'pend');
+        [].forEach.call(g.querySelectorAll('.pmark'), function (t) { t.remove(); });
+      });
+      this.phaseMarks.forEach(function (m) {
+        var g = self.nodes[m.node];
+        if (!g) return;
+        var n = g._n, k = stack[m.node] = (stack[m.node] || 0) + 1;
+        g.classList.add(m.kind === 'end' ? 'pend' : 'pstart');
+        var t = el('text', { x: n.cx, y: n.cy - n.h / 2 - 5 - 12 * (k - 1), class: 'pmark ' + m.kind, 'text-anchor': 'middle' });
+        t.textContent = m.label;
+        var tt = el('title', {}); tt.textContent = m.title || m.label; t.appendChild(tt);
+        g.appendChild(t);
+      });
     },
 
     /* 静态邻居（详情面板的「依赖 / 被依赖」用） */

@@ -4,6 +4,7 @@
   --paper:#f6f7f9; --card:#fff; --sunk:#eef0f4; --line:#dde1e8; --rule:#e6e9ef;
   --hot:#b4690e; --hot-bg:#fdf3e2; --cool:#0f7b74; --cool-bg:#e6f4f2; --hotb:#7c3aed; --hotb-bg:#f1ebfd;
   --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd;
+  --pstart:#15803d; --pend:#b91c1c;
   --edge:#c3cad5; --shadow:0 1px 2px rgba(17,22,31,.06),0 8px 24px rgba(17,22,31,.05);
   /* 代码 token：三类语言共用一套语义色，语言专属的构造（Triton 原语、CUDA、预处理）各有一色 */
   --t-kw:#8f3fb0; --t-str:#2f7d3b; --t-doc:#5b8a62; --t-com:#8a94a3; --t-num:#b4580e;
@@ -17,6 +18,7 @@
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
   --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
+  --pstart:#4ade80; --pend:#f87171;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
   --t-kw:#d19be8; --t-str:#8fd19e; --t-doc:#7fae87; --t-com:#6d7889; --t-num:#f0a868;
   --t-type:#6cc6e0; --t-fn:#8fb4ff; --t-cls:#e8c170; --t-dec:#e0b24f; --t-bi:#c3a6f0;
@@ -29,6 +31,7 @@
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
   --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
+  --pstart:#4ade80; --pend:#f87171;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
   --t-kw:#d19be8; --t-str:#8fd19e; --t-doc:#7fae87; --t-com:#6d7889; --t-num:#f0a868;
   --t-type:#6cc6e0; --t-fn:#8fb4ff; --t-cls:#e8c170; --t-dec:#e0b24f; --t-bi:#c3a6f0;
@@ -131,6 +134,14 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
 .nd:focus{outline:none}.nd:focus-visible rect{stroke:var(--sel);stroke-width:2.4}
+/* 阶段的起点 / 终点：写在选中之后，选中了也还看得出是起点 / 终点 */
+.nd.pstart rect{stroke:var(--pstart);stroke-width:3}
+.nd.pend rect{stroke:var(--pend);stroke-width:3}
+.nd .pmark{font-size:10px;font-weight:700;paint-order:stroke;stroke:var(--paper);stroke-width:3px}
+.nd .pmark.start{fill:var(--pstart)}
+.nd .pmark.end{fill:var(--pend)}
+.pbound{margin-left:10px;font-size:12px;color:var(--muted)}
+.pbound .ps{color:var(--pstart)}.pbound .pe{color:var(--pend)}
 .nd .badge{font-size:8px;font-weight:700}
 .nd .badge.noted{fill:var(--cool)}
 .nd .badge.stale{fill:var(--stale)}

@@ -251,11 +251,16 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
         x = v["nodes"][nd["id"]]
         nd.update(kind=x["kind"], expandable=x["expandable"], parent=x["parent"],
                   collapsible=x["collapsible"], fanout=x["fanout"], units=x["units"])
+    # 阶段从哪个函数开始（trace --phase）：落在这个切面的哪个节点上，前端据此标出阶段的起点 / 终点
+    files = idx.get("files") or {}
+    phase_marks = [{**{k: t.get(k) for k in ("name", "func", "qualname", "file", "line")},
+                    "node": v["node_of"].get(files.get(t.get("file")))}
+                   for t in (hot_meta or {}).get("phase_at") or []]
     return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"],
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
             "alias": alias, "edgeKinds": kinds, "runtimeOnlyEdges": rt_only, "dynOnlyEdges": dyn_only, "typeOnlyEdges": type_only,
-            "hot": hot_view, "hotMeta": hot_meta, "cmp": cmp,
+            "hot": hot_view, "hotMeta": hot_meta, "cmp": cmp, "phaseMarks": phase_marks,
             "open": sorted(open_), "defaultOpen": idx.get("default_open") or [],
             "autoSplit": idx["repo"].get("auto_split") or []}
 
