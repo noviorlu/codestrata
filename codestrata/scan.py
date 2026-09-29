@@ -128,6 +128,15 @@ def _use(store: dict, a: str, b: str, sym: str, f: str, line: int) -> None:
         lst.append([f, line])
 
 
+def _skip_dir(parent: str, name: str) -> bool:
+    """遍历时跳过的子目录：隐藏目录，和 SKIP_DIRS 里的名字——但只在它不是 Python 包的时候。
+    build/、dist/ 这类名字在仓库顶层是构建产物，在包里却可能是真正的子包（pip 的
+    _internal/operations/build/），有 __init__.py 的照扫"""
+    if name.startswith("."):
+        return True
+    return name in SKIP_DIRS and not os.path.isfile(os.path.join(parent, name, "__init__.py"))
+
+
 def _is_env(files, dirs) -> bool:
     """虚拟环境（pyvenv.cfg）或 conda 环境（conda-meta/）：里面是装好的第三方库和标准库，不是仓库代码。
     名字不固定（envs/xxx、venv-hx），SKIP_DIRS 按名字挡不住，按里面有什么认"""
@@ -139,7 +148,7 @@ def _subdirs(d: Path) -> list[Path]:
     常软链到大盘上，进去数文件会很慢；扫描本身（os.walk）也不跟软链）"""
     out = []
     for p in sorted(d.iterdir()):
-        if p.is_dir() and not p.is_symlink() and p.name not in SKIP_DIRS and not p.name.startswith("."):
+        if p.is_dir() and not p.is_symlink() and not _skip_dir(str(d), p.name):
             try:
                 names = os.listdir(p)
             except OSError:
@@ -154,7 +163,7 @@ def iter_py_files(root: Path) -> Iterable[Path]:
         if _is_env(fn, dn):
             dn[:] = []
             continue
-        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        dn[:] = [d for d in dn if not _skip_dir(dp, d)]
         for f in fn:
             if f.endswith(".py"):
                 yield Path(dp) / f
@@ -219,6 +228,31 @@ def root_clashes(roots: list[str]) -> dict[str, list[str]]:
 
 PROJECT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
 
+# 扫描目录「.」：仓库根目录直接放着的 .py（研究代码的 train.py / render.py 这类入口脚本）。只取这一层，
+# 不往下——下面的目录各自是别的扫描目录。图上它们装在一个以仓库名命名的目录节点里（scripts_package）
+ROOT_SCRIPTS = "."
+
+
+def root_py_files(root: Path, r: str) -> list[Path]:
+    """一个扫描目录下要扫的 .py"""
+    if r == ROOT_SCRIPTS:
+        return [p for p in sorted(root.iterdir()) if p.suffix == ".py" and p.is_file()]
+    base = root / r
+    return list(iter_py_files(base)) if base.is_dir() else []
+
+
+def scripts_package(root: Path, roots: list[str]) -> str:
+    """「.」里的脚本在图上装进的目录节点名：仓库名（换掉点号、横杠这类字符）；和别的扫描目录撞名
+    （仓库名和包名一样很常见）就加 _scripts"""
+    name = re.sub(r"\W", "_", root.name) or "repo"
+    others = {r.split("/")[-1] for r in roots if r != ROOT_SCRIPTS}
+    return name + "_scripts" if name in others else name
+
+
+def root_name(r: str, scripts: str) -> str:
+    """扫描目录在模块名里的第一段（包名）"""
+    return scripts if r == ROOT_SCRIPTS else r.split("/")[-1]
+
 
 def candidate_roots(root: Path, depth: int = 3) -> list[dict]:
     """仓库里能选来扫描的目录（主菜单「静态扫描」的勾选框）。只列不挑——扫哪些由用户决定。
@@ -250,6 +284,9 @@ def candidate_roots(root: Path, depth: int = 3) -> list[dict]:
 
     for d in _subdirs(root):
         visit(d, 1)
+    n = len(root_py_files(root, ROOT_SCRIPTS))
+    if n:
+        out.insert(0, {"path": ROOT_SCRIPTS, "files": n, "package": False})
     return out
 
 
@@ -289,7 +326,7 @@ def collect_docs(root: Path, files: dict[str, str]) -> dict[str, list]:
         if _is_env(fn, dn):
             dn[:] = []
             continue
-        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        dn[:] = [d for d in dn if not _skip_dir(dp, d)]
         for f in fn:
             if not f.lower().endswith(".md"):
                 continue
@@ -365,7 +402,17 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     if not roots:
         raise SystemExit(f"在 {root} 下没找到 Python 包；用 --roots 手动指定")
     # 顶层包名集合，用来判断一条 import 是不是「内部依赖」
-    top = {r.split("/")[-1] for r in roots}
+    scripts = scripts_package(root, roots)
+    top = {root_name(r, scripts) for r in roots}
+
+    def module_name(r: str, path: Path) -> str:
+        # 模块名相对于包根的**父目录**算，文件路径仍相对仓库根。
+        # src-layout（src/mypkg/...）下若相对仓库根算，模块名会变成 src.mypkg.x，
+        # 而代码里写的是 import mypkg.x——所有边都指向不存在的包，图上一条边都画不出来。
+        # 根目录的脚本装进 <仓库名>.<脚本名>（见 ROOT_SCRIPTS）
+        if r == ROOT_SCRIPTS:
+            return f"{scripts}.{path.stem}"
+        return module_of(path.relative_to((root / r).parent))
 
     symbols: dict[str, Symbol] = {}
     files: dict[str, str] = {}
@@ -388,22 +435,19 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     # 图上「整个目录收起来」的那个节点——图上显示哪一层，由 cut.py 在目录树上取切面。
     unit_of_module: dict[str, str] = {}
     for r in roots:
-        base = root / r
-        if base.exists():
-            for p in iter_py_files(base):
-                m = module_of(p.relative_to(base.parent))
-                unit_of_module[m] = m + ".__init__" if p.name == "__init__.py" else m
+        for p in root_py_files(root, r):
+            m = module_name(r, p)
+            unit_of_module[m] = m + ".__init__" if p.name == "__init__.py" and r != ROOT_SCRIPTS else m
+    # 根目录的脚本之间 `import utils`：Python 按脚本所在目录找到的是 utils.py，这里的模块名是
+    # <仓库名>.utils。裸名字对上根目录的脚本、又不是仓库里的包时，换成那个模块名
+    bare_scripts = {p.stem for p in root_py_files(root, ROOT_SCRIPTS)} - top if ROOT_SCRIPTS in roots else set()
+
+    def canon(name: str) -> str:
+        return f"{scripts}.{name}" if name.split(".")[0] in bare_scripts else name
     unresolved: dict[tuple[str, str], int] = {}
 
     for r in roots:
-        base = root / r
-        if not base.exists():
-            continue
-        # 模块名相对于包根的**父目录**算，文件路径仍相对仓库根。
-        # src-layout（src/mypkg/...）下若相对仓库根算，模块名会变成 src.mypkg.x，
-        # 而代码里写的是 import mypkg.x——所有边都指向不存在的包，图上一条边都画不出来。
-        mod_base = base.parent
-        for path in iter_py_files(base):
+        for path in root_py_files(root, r):
             rel = path.relative_to(root)
             n_files += 1
             try:
@@ -415,7 +459,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             except (SyntaxError, ValueError, OSError):
                 n_err += 1
                 continue
-            module = module_of(path.relative_to(mod_base))
+            module = module_name(r, path)
             pkg = unit_of_module[module]           # 这个文件自己的单元
             files[str(rel)] = pkg
             file_loc[str(rel)] = src.count("\n") + 1
@@ -530,8 +574,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         up = up[: max(0, len(up) - node.level + (1 if is_init else 0))]
                         base = ".".join(up)
                         mod0 = (f"{base}.{node.module}" if base else node.module) if node.module else base
-                    elif node.module and node.module.split(".")[0] in top:
-                        mod0 = node.module
+                    elif node.module and node.module.split(".")[0] in top | bare_scripts:
+                        mod0 = canon(node.module)
                     if mod0:
                         for a in node.names:
                             sub = f"{mod0}.{a.name}"
@@ -540,8 +584,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                                            else (mod0, a, "name"))
                 elif isinstance(node, ast.Import):
                     for a in node.names:
-                        if a.name.split(".")[0] in top:
-                            entries.append((a.name, a, "import"))
+                        if a.name.split(".")[0] in top | bare_scripts:
+                            entries.append((canon(a.name), a, "import"))
                 if not entries:
                     continue
                 names = [a.name for a in node.names]
@@ -662,22 +706,40 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     # 它们不进 import 图——C++ 与 Python 之间的绑定边（pybind、torch.ops）
     # 需要真正的 C++ 解析（tree-sitter），是另一件事。
     aux: dict[str, str] = {}
-    for r in roots:
-        base = root / r
-        if not base.exists():
-            continue
-        for dp, dn, fn in os.walk(base):
-            dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+
+    def add_aux(p: Path, where: str) -> None:
+        aux[str(p.relative_to(root))] = where
+        try:
+            with open(p, "rb") as fh:
+                file_loc[str(p.relative_to(root))] = fh.read().count(b"\n") + 1
+        except OSError:
+            pass
+
+    def walk_aux(top_dir: Path, skip: set[Path]):
+        for dp, dn, fn in os.walk(top_dir):
+            if _is_env(fn, dn):
+                dn[:] = []
+                continue
+            dn[:] = [d for d in dn if not _skip_dir(dp, d) and Path(dp, d) not in skip]
             for f in fn:
                 if os.path.splitext(f)[1].lower() in AUX_EXTS:
-                    p = Path(dp, f)
-                    # 挂到所在目录（点分名）；图上显示在包含这个目录的节点里
-                    aux[str(p.relative_to(root))] = ".".join(p.relative_to(base.parent).parent.parts)
-                    try:
-                        with open(p, "rb") as fh:
-                            file_loc[str(p.relative_to(root))] = fh.read().count(b"\n") + 1
-                    except OSError:
-                        pass
+                    yield Path(dp, f)
+
+    chosen = {(root / r).resolve() for r in roots if r != ROOT_SCRIPTS}
+    for r in roots:
+        base = root / r
+        if r == ROOT_SCRIPTS or not base.is_dir():
+            continue
+        for p in walk_aux(base, set()):
+            # 挂到所在目录（点分名）；图上显示在包含这个目录的节点里
+            add_aux(p, ".".join(p.relative_to(base.parent).parent.parts))
+        # 包在一个嵌套的工程里（submodules/<工程>/<包>，工程目录有 setup.py）：C++ / CUDA 源码常放在
+        # 包旁边（3DGS 的 diff-gaussian-rasterization/cuda_rasterizer/），也挂到这个包上。
+        # 仓库根目录这一层不这么做：那会把整个仓库的 C 代码都挂到一个包上
+        proj = base.parent
+        if proj.resolve() != root and any((proj / m).exists() for m in PROJECT_MARKERS):
+            for p in walk_aux(proj, chosen):
+                add_aux(p, base.name)
 
     docs = collect_docs(root, files)
     class_names = {s.name.rsplit(".", 1)[-1] for s in symbols.values() if s.kind == "class"}

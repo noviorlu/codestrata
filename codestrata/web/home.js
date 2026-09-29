@@ -279,10 +279,11 @@
           $('scanList').innerHTML = d.candidates.length ? d.candidates.map(function (c) {
             return '<li><label><input type="checkbox" value="' + esc(c.path) + '" data-name="' + esc(c.name) + '"'
               + (on[c.path] ? ' checked' : '') + '>'
-              + '<code>' + esc(c.path) + '/</code>' + (c.package ? ' <span class="tag py">Python 包</span>' : '')
+              + (c.path === '.' ? '<code>./*.py</code> 仓库根目录直接放着的脚本（只取这一层）'
+                                 : '<code>' + esc(c.path) + '/</code>') + (c.package ? ' <span class="tag py">Python 包</span>' : '')
               + (c.previous ? ' <span class="tag">上次选的</span>' : '')
               + '<span class="n">' + c.files + ' 个 .py</span></label></li>';
-          }).join('') : '<li class="none">没有含 .py 的子目录（直接放在仓库根目录下的 .py 目前不支持扫描）</li>';
+          }).join('') : '<li class="none">这个文件夹里没有 .py 文件</li>';
           sum();
           $('scanDlg').showModal();
         }, function (e) { showErr($('err'), '读取可扫描的目录失败：' + e.message); });

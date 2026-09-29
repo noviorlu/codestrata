@@ -307,7 +307,7 @@ def cmd_trace(a) -> int:
     # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
     # 默认用 scan 时选的目录（主菜单里用户勾的、或者 scan --roots 给的）：录制和图对的是同一批代码
     roots = a.roots or (_payload.index_summary(repo) or {}).get("roots") or _scan.detect_roots(repo)
-    pkgs = {r.split("/")[-1]: r for r in roots}
+    pkgs = {r.split("/")[-1]: r for r in roots if r != _scan.ROOT_SCRIPTS}   # 根目录的脚本不会装进 site-packages
     # 行数上限是从 shell 继承来的：记进 run 的 env（在建 run 之前放进去，run.json 里才有、重录命令才带上）
     if a.events and os.environ.get("CODESTRATA_EV_MAX") and "CODESTRATA_EV_MAX" not in env:
         env["CODESTRATA_EV_MAX"] = os.environ["CODESTRATA_EV_MAX"]

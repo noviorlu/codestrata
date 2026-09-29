@@ -175,6 +175,45 @@ def test_candidate_roots_layouts():
     assert idx["repo"]["roots"] == ["pkg"] and ["pkg.a", "pkg.b", 1] in idx["edges"], (idx["repo"], idx["edges"])
 
 
+def test_scan_build_pkg_root_scripts_and_ext_sources():
+    """build/、env/ 这类名字只在不是 Python 包时跳过（pip 的 _internal/operations/build/ 照扫，顶层的构建
+    产物 build/lib 不扫）；仓库根目录的脚本能选（「.」，只取这一层，装进以仓库名命名的目录节点，和包撞名
+    加 _scripts），trace 录得到它们；嵌套工程里包旁边的 C++ / CUDA 源码挂到这个包上"""
+    repo = tmpdir("cs-app-") / "my.repo"
+    files = {"pkg/__init__.py": "", "pkg/core.py": "def f():\n    return 1\n",
+             "pkg/build/__init__.py": "", "pkg/build/wheel.py": "from pkg import core\n",
+             "pkg/env/__init__.py": "", "build/lib/pkg/core.py": "x = 1\n", "build/lib/pkg/__init__.py": "",
+             "train.py": "from pkg import core\n\n\ndef main():\n    return core.f()\n\n\nif __name__ == '__main__':\n    main()\n",
+             "setup_tools.py": "import train\nfrom train import main\n", "sub/proj/setup.py": "", "sub/proj/ext/__init__.py": "",
+             "sub/proj/ext/inner.cu": "// k\n", "sub/proj/tools-env/pyvenv.cfg": "", "sub/proj/tools-env/lib/x.cu": "", "sub/proj/csrc/k.cu": "// k\n// k2\n", "sub/proj/tests/t.cpp": "",
+             "csrc/top.cu": "// not attached\n"}
+    for rel, src in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    got = {c["path"]: c["files"] for c in scan_mod.candidate_roots(repo)}
+    assert got["."] == 2 and "build" not in got and "build/lib" not in got, got
+    cs("scan", repo, "--roots", ".", "pkg", "sub/proj/ext")
+    idx = payload.load_index(repo)
+    units = set(idx["packages"])
+    assert {"pkg.build.wheel", "pkg.env.__init__", "my_repo.train", "my_repo.setup_tools"} <= units, units
+    assert not any("lib" in u for u in units), units
+    assert ["my_repo.train", "pkg.core", 1] in idx["edges"] and ["pkg.build.wheel", "pkg.core", 1] in idx["edges"]
+    assert ["my_repo.setup_tools", "my_repo.train", 2] in idx["edges"], idx["edges"]      # 根目录脚本之间的裸 import
+    assert idx["dirs"]["my_repo"]["parent"] is None and idx["files"]["train.py"] == "my_repo.train"
+    assert idx["aux"] == {"sub/proj/ext/inner.cu": "ext", "sub/proj/csrc/k.cu": "ext", "sub/proj/tests/t.cpp": "ext"}, idx["aux"]
+    assert idx["file_loc"]["sub/proj/csrc/k.cu"] == 3
+    # 根目录的脚本 trace 得到：函数记在 my_repo.train 上
+    cs("trace", repo, "--case", "s", "--phase", "work=my_repo.train:main", "--", PY, "train.py")
+    hot, _ = payload.load_hot(repo, idx, "s@work")
+    assert hot["symbols"].get("my_repo.train:main") == 1 and hot["symbols"].get("pkg.core:f") == 1, hot["symbols"]
+    # 仓库名和包名一样：脚本的目录节点加 _scripts
+    same = tmpdir("cs-app-") / "pkg"
+    for rel in ("pkg/__init__.py", "run.py"):
+        (same / rel).parent.mkdir(parents=True, exist_ok=True)
+        (same / rel).write_text("")
+    assert set(scan_mod.scan(same, roots=[".", "pkg"])["packages"]) == {"pkg.__init__", "pkg_scripts.run"}
+
+
 # ---------------------------------------------------------------- jobs
 
 def test_trace_spec():
