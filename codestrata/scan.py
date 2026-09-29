@@ -67,6 +67,10 @@ _STMT_CONTAINERS = tuple(t for t in (
 ) if t is not None)
 
 
+# 字符串里写的带模块的类路径：插件表、配置里的 worker_cls 之类（"a.b.Cls"、entry point 式的 "a.b:Cls"）
+_QUALNAME_STR = re.compile(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[.:]([A-Z]\w*)")
+
+
 @dataclass
 class Symbol:
     """一个类或函数的定义点。"""
@@ -264,6 +268,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     edge_dead: dict[tuple[str, str], list] = {}
     file_loc: dict[str, int] = {}          # 文件 → 行数（含 C/C++/CUDA）
     file_sha: dict[str, str] = {}          # .py 文件 → 内容哈希
+    str_refs: dict[str, list] = {}         # 像类名的字符串 → [[文件, 行], ...]（扫完只留仓库里有的类名）
     n_files = n_err = 0
 
     # 最细的粒度：每个 .py 文件是一个「单元」，依赖边、符号、调用明细都记在单元之间。
@@ -349,6 +354,26 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         walk(child, prefix)
 
             walk(tree)
+
+            # 字符串里写着的类名：注册表按名字登记类（{"Arch": ("pkg", "mod", "Cls")}）、getattr(mod, "Cls")、
+            # 插件表。先收下所有像类名的字符串（大写开头的标识符），扫完再只留仓库里真有这个类名的——
+            # 动态分派调到的类，payload 靠它回答「是在哪儿按名字接上的」。__all__ 里的是再导出清单，不算
+            in_all: set[int] = set()
+            named: list[tuple[str, int]] = []
+            for n2 in ast.walk(tree):
+                if isinstance(n2, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                    tg = n2.targets if isinstance(n2, ast.Assign) else [n2.target]
+                    if any(isinstance(t, ast.Name) and t.id == "__all__" for t in tg) and n2.value is not None:
+                        in_all.update(id(c) for c in ast.walk(n2.value))
+                elif isinstance(n2, ast.Constant) and isinstance(n2.value, str) and 2 < len(n2.value) < 200:
+                    v = n2.value
+                    if v[0].isupper() and v.isidentifier():
+                        named.append((v, None, n2.lineno, id(n2)))
+                    elif (q := _QUALNAME_STR.fullmatch(v)):     # "pkg.mod.Cls" / "pkg.mod:Cls"：带着模块，没有歧义
+                        named.append((q.group(2), q.group(1), n2.lineno, id(n2)))
+            for v, mod, ln, i in named:
+                if i not in in_all:
+                    str_refs.setdefault(v, []).append([str(rel), ln] + ([mod] if mod else []))
 
             # 单元间 import 边（只算内部依赖）
             bound: dict[str, dict] = {}
@@ -536,6 +561,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         pass
 
     docs = collect_docs(root, files)
+    class_names = {s.name.rsplit(".", 1)[-1] for s in symbols.values() if s.kind == "class"}
     index = {
         "docs": docs, "file_loc": file_loc,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
@@ -550,6 +576,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
         # reexport __init__ 里的再导出 / sideeffect import a.b.c 为了注册或打补丁 /
         # intentional 行上带 noqa: F401，作者说了是故意的
         "edge_dead": {f"{a}|{b}": v for (a, b), v in edge_dead.items()},
+        # 字符串里按名字提到的仓库内的类：{"类名": [[文件, 行], ...]}（注册表、getattr、插件表）
+        "name_refs": {k: v for k, v in sorted(str_refs.items()) if k in class_names},
         "packages": packages,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
         "symbols": {k: s.as_json() for k, s in symbols.items()},
@@ -573,13 +601,14 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     sites = index.pop("edge_sites", {})
     uses = index.pop("edge_uses", {})
     dead = index.pop("edge_dead", {})
+    name_refs = index.pop("name_refs", {})
     docs = index.pop("docs", {})
     file_loc = index.pop("file_loc", {})
     file_sha = index.pop("file_sha", {})
     (outdir / "symbols.json").write_text(
         json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs, "file_loc": file_loc,
                     "file_sha": file_sha,
-                    "edge_sites": sites, "edge_uses": uses, "edge_dead": dead},
+                    "edge_sites": sites, "edge_uses": uses, "edge_dead": dead, "name_refs": name_refs},
                    ensure_ascii=False),
         encoding="utf-8")
     index["n_symbols"] = len(symbols)
@@ -587,6 +616,7 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     p.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     index["symbols"], index["files"], index["aux"] = symbols, files, aux   # 调用方还要用
     index["edge_sites"], index["edge_uses"], index["edge_dead"] = sites, uses, dead
+    index["name_refs"] = name_refs
     index["docs"] = docs
     index["file_loc"] = file_loc
     index["file_sha"] = file_sha

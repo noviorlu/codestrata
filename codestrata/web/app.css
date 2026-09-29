@@ -330,6 +330,9 @@ body.rzing,body.rzing *{user-select:none!important}
 .ei .site{all:unset;cursor:pointer;color:var(--muted);border-bottom:1px dotted var(--line)}
 .ei .site:hover,.ei .site:focus-visible{color:var(--sel);border-bottom-color:var(--sel)}
 .ei .src{display:block;color:var(--body);white-space:pre-wrap;word-break:break-all;margin-top:2px}
+.ei .eb .csite{flex-wrap:nowrap}
+.ei .eb .csite .lab:first-child{flex:none}
+.ei .eb .csite code{flex:1 1 auto;min-width:0;color:var(--body);white-space:pre-wrap;word-break:break-all}
 .whytag{font-size:10.5px;padding:2px 6px;border-radius:4px;background:var(--sunk);color:var(--muted)}
 .whytag.unused{background:var(--stale-bg);color:var(--stale)}
 .ran{font-size:10.5px}.ran.y{color:var(--cool)}.ran.n{color:var(--faint)}

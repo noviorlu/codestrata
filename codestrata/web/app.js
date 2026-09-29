@@ -53,7 +53,7 @@ window.CS = window.CS || {};
           self.expand(id);
         };
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
-                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, cmp: d.cmp });
+                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, cmp: d.cmp });
         self.edgeChips();
         self.controls();
         self.cutBar();
@@ -776,18 +776,19 @@ window.CS = window.CS || {};
 
     /* 边的开关兼图例：每个开关上画的线就是图上那种边的样子，数字是条数 */
     edgeChips: function () {
+      var DYN_TIP = '跑到的调用在代码里找不到对应的引用：插件 / getattr / 注册表 / self.model 这类接口分派。'
+        + '两端之间可能没有 import，也可能有 import、但 import 的东西这次一次都没跑到';
       var c = CS.graph.counts, hot = !!CS.graph.hot, s = CS.graph.state;
       var defs = [['refs', 'e ref', '引用', c.ref, 'import 了，并且真的用到了对方的符号', false],
                   ['imp', 'e imp', '只 import', c.imp,
                    '一个符号都没用到：再导出 / 只做类型标注 / 为了副作用 / 死 import', false]];
       if (hot && CS.graph.cmp) {
         defs.push(['hot', 'e ref warm', 'runtime', c.warm, '对比：橙色只有 A 跑到、紫色只有 B 跑到、前景色两边都跑到，粗细 ∝ 两边的较大值', true]);
-        if (c.dyn) defs.push(['dyn', 'e dyn warm', '只在 runtime', c.dyn,
-                              '静态 import 图里没有：插件 / getattr / 注册表这类动态分派（两个 run 任一跑到）', true]);
+        if (c.dyn) defs.push(['dyn', 'e dyn warm', '动态分派', c.dyn,
+                              DYN_TIP + '（两个 run 任一跑到）', true]);
       } else if (hot) {
         defs.push(['hot', 'e ref warm', 'runtime', c.warm, '这次 case 真的调用过，粗细 ∝ 调用次数', true]);
-        if (c.dyn) defs.push(['dyn', 'e dyn warm', '只在 runtime', c.dyn,
-                              '静态 import 图里没有：插件 / getattr / 注册表这类动态分派', true]);
+        if (c.dyn) defs.push(['dyn', 'e dyn warm', '动态分派', c.dyn, DYN_TIP, true]);
       }
       document.getElementById('edgechips').innerHTML = defs.map(function (x) {
         return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="' + (s[x[0]] !== false) + '" title="'
@@ -963,7 +964,7 @@ window.CS = window.CS || {};
     redraw: function () {
       var d = this.data, s = CS.graph.state;
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
-                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, cmp: d.cmp });
+                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, cmp: d.cmp });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();

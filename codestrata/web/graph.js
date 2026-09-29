@@ -4,7 +4,9 @@
  *   灰实线  静态引用——import 了，而且真的用到了对方的符号
  *   灰虚线  只 import——一个符号都没用到（再导出 / 类型标注 / 副作用 / 死 import）
  *   橙色    这次 runtime 真的走过，粗细 ∝ log(调用次数)
- *   橙虚线  只在 runtime 出现——静态 import 图里没有（插件、getattr、注册表）
+ *   橙虚线  动态分派——跑到的调用在代码里找不到对应的引用（插件、getattr、注册表、self.model 这类接口）。
+ *           两端之间可能根本没有 import，也可能有 import、但 import 的东西这次没跑到；后一种不能画成
+ *           实线：收起时实线、展开后变成灰边加一条虚线，看起来就像箭头「消失」了
  * 选中用蓝色光晕叠在边下面，边本身的颜色不变——否则选中一个节点后，
  * 它的所有边都变成同一种颜色，恰好把最想看的信息（哪些是真调用）抹掉了。 */
 window.CS = window.CS || {};
@@ -44,7 +46,8 @@ window.CS = window.CS || {};
       this.G = G; this.hot = hot || null;
       // 对比（另一个 run）：节点、边上带 [A, B] 两个次数，画三种颜色（只有 A 橙、只有 B 紫、两边都跑到前景色）
       this.cmp = (extra && extra.cmp) || null;
-      var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [];
+      var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [], dynOnly = {};
+      (extra.dynOnly || []).forEach(function (k) { dynOnly[k] = 1; });
       svg.textContent = '';
       svg.setAttribute('viewBox', '0 0 ' + G.width + ' ' + G.height);
       this.svg = svg;
@@ -120,6 +123,7 @@ window.CS = window.CS || {};
       svg.appendChild(fg);
 
       var hotPk = (hot && hot.packages) || {}, hotEd = (hot && hot.edges) || {}, cmp = this.cmp;
+      var hotDyn = (hot && hot.dyn) || {};
       if (cmp) {                                   // 粗细、「跑到了」都按两边的较大值
         hotPk = {}; hotEd = {};
         Object.keys(cmp.nodes).forEach(function (k) { hotPk[k] = Math.max(cmp.nodes[k][0], cmp.nodes[k][1]); });
@@ -142,7 +146,9 @@ window.CS = window.CS || {};
         var a = N[src], b = N[dst]; if (!a || !b) return;
         var d = route(a, b);
         var ab = cmp ? (cmp.edges[src + '|' + dst] || [0, 0]) : null;
+        var dab = cmp ? ((cmp.dyn || {})[src + '|' + dst] || [0, 0]) : null;
         var E = { a: src, b: dst, kind: kind, hits: hits, info: info, ab: ab,
+                  dynOnly: kind !== 'dyn' && !!dynOnly[src + '|' + dst],
                   side: ab ? (ab[0] && ab[1] ? 'both' : ab[0] ? 'a' : ab[1] ? 'b' : '') : '',
                   w: hits ? 1.2 + 2.2 * Math.log1p(hits) / Math.log1p(maxE) : 1.2 };
         E.halo = el('path', { d: d, class: 'halo' });
@@ -155,6 +161,10 @@ window.CS = window.CS || {};
              : (info.uses ? '用到对方 ' + info.uses + ' 个符号' : '只 import，没用到任何符号')
                + (info.dead ? '　·　' + info.dead + ' 个 import 没被引用' : ''))
           + (ab ? '\nruntime 调用 A ' + ab[0] + ' / B ' + ab[1] : (hits ? '\nruntime 调用 ' + hits + ' 次' : ''))
+          + (E.dynOnly ? '\n跑到的调用全是动态分派：这条边上的 import / 引用这次都没跑到，跑到的调用不经过它们'
+             : kind === 'dyn' ? ''
+             : dab && (dab[0] || dab[1]) ? '\n其中动态分派 A ' + dab[0] + ' / B ' + dab[1] + ' 次'
+             : !cmp && hotDyn[src + '|' + dst] ? '\n其中 ' + hotDyn[src + '|' + dst] + ' 次是动态分派（代码里看不到引用）' : '')
           + '\n点击看具体是哪些函数';
         E.x.appendChild(tip);
         E.x.onclick = function (ev) {
@@ -165,7 +175,7 @@ window.CS = window.CS || {};
         E.x.onmouseleave = function () { E.p.classList.remove('hover'); E.halo.classList.remove('hover'); };
         hg.appendChild(E.halo); hg.appendChild(E.gap); eg.appendChild(E.p); xg.appendChild(E.x);
         self.edges.push(E);
-        cnt[kind]++; if (hits && kind !== 'dyn') cnt.warm++;
+        cnt[kind]++; if (E.dynOnly) cnt.dyn++; else if (hits && kind !== 'dyn') cnt.warm++;
       }
       G.edges.forEach(function (e) {
         var key = e[0] + '|' + e[1], info = kinds[key] || { uses: 1, dead: 0 };
@@ -391,16 +401,18 @@ window.CS = window.CS || {};
         this.edges.forEach(function (E) { if (E.a === s.sel) keep[E.b] = 1; if (E.b === s.sel) keep[E.a] = 1; });
       }
       this.edges.forEach(function (E) {
-        var warm = E.hits > 0 && s.hot && E.kind !== 'dyn';
-        var show = E.kind === 'dyn' ? s.dyn : (warm || (E.kind === 'ref' ? s.refs : s.imp));
+        // 有 import、但跑到的调用全是动态分派的边：「动态分派」开着就画成橙虚线，关了就退回没跑到的静态边
+        var dyn = E.kind === 'dyn' || (E.dynOnly && s.dyn);
+        var warm = E.hits > 0 && s.hot && E.kind !== 'dyn' && !E.dynOnly;
+        var show = E.kind === 'dyn' ? s.dyn : (warm || dyn || (E.kind === 'ref' ? s.refs : s.imp));
         show = show && self.vis(E.a) && self.vis(E.b);
         var mine = s.selEdge ? s.selEdge === E.a + '|' + E.b
                  : !!s.sel && (E.a === s.sel || E.b === s.sel);
         // hot 视图里没被调用的静态边退到背景：要看的是这个 case 走过的路
-        var lit = warm || E.kind === 'dyn';
+        var lit = warm || dyn;
         // 对比时：只有 A 跑到 = 橙（warm），只有 B = 紫（warmb），两边都跑到 = 前景色（both）
         var tone = !lit ? '' : E.side === 'b' ? ' warmb' : E.side === 'both' ? ' both' : ' warm';
-        var cls = 'e ' + E.kind + (lit ? tone : (s.onlyHot ? ' bg' : ''))
+        var cls = 'e ' + (dyn ? 'dyn' : E.kind) + (lit ? tone : (s.onlyHot ? ' bg' : ''))
                 + (keep && !mine ? ' dim' : '') + (mine ? ' hi' : '');
         E.p.setAttribute('class', cls);
         E.p.style.strokeWidth = (lit ? E.w : 1.2) + (mine ? 1 : 0);

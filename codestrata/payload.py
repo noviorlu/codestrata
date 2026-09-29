@@ -31,6 +31,7 @@ def load_index(repo: Path) -> dict:
         idx["edge_sites"] = extra.get("edge_sites", {})
         idx["edge_uses"] = extra.get("edge_uses", {})
         idx["edge_dead"] = extra.get("edge_dead", {})
+        idx["name_refs"] = extra.get("name_refs")    # 老的 symbols.json 没有：None（不显示接线点）
         idx["docs"] = extra.get("docs", {})
         idx["file_loc"] = extra.get("file_loc", {})
         idx["file_sha"] = extra.get("file_sha")      # 老的 symbols.json 没有：None
@@ -65,8 +66,13 @@ def _norm_open(idx: dict, open_) -> set:
     return set(idx.get("default_open") or []) if open_ is None else {o for o in open_ if _cut.is_node(idx, o)}
 
 
-def _hot_on_cut(hot: dict, node_of: dict) -> tuple[dict, dict]:
-    """一个 run 的 hot（单元粒度）按切面汇总：(节点 → 次数, "a|b" 节点间的边 → 次数)。"""
+def _hot_on_cut(hot: dict, node_of: dict, used: dict | None = None) -> tuple[dict, dict, dict]:
+    """一个 run 的 hot（单元粒度）按切面汇总：(节点 → 次数, "a|b" 节点间的边 → 次数,
+    "a|b" → 其中动态分派的次数)。
+
+    动态分派和边详情（edge_detail）同一个口径：被调的符号（方法归到类）不在这条切面边的静态引用
+    （used，边 → 引用到的符号）里。这个数要按切面算、不能按单元对算完再加：同一个符号可能一对单元里
+    静态引用、另一对里 runtime 调到，合成一条边之后算「确认」。"""
     hp: dict[str, int] = {}
     for u, n in hot["packages"].items():
         if u in node_of:
@@ -77,7 +83,38 @@ def _hot_on_cut(hot: dict, node_of: dict) -> tuple[dict, dict]:
         if a in node_of and b in node_of and node_of[a] != node_of[b]:
             kk = f"{node_of[a]}|{node_of[b]}"
             he[kk] = he.get(kk, 0) + n
-    return hp, he
+    hd: dict[str, int] = {}
+    for k, calls in (hot.get("edge_calls") or {}).items():
+        a, _, b = k.partition("|")
+        if a in node_of and b in node_of and node_of[a] != node_of[b]:
+            kk = f"{node_of[a]}|{node_of[b]}"
+            refs = (used or {}).get(kk, ())
+            n = sum(x["n"] for c, x in calls.items() if _top(c) not in refs)
+            if n:
+                hd[kk] = hd.get(kk, 0) + n
+    return hp, he, hd
+
+
+def _edge_uses_on_cut(idx: dict, node_of: dict) -> dict[str, set]:
+    """切面边 "a|b" → 两端底下各对单元之间静态引用到的符号（合起来）"""
+    uses = idx.get("edge_uses") or {}
+    out: dict[str, set] = {}
+    for a, b, _ in idx.get("edges") or []:
+        na, nb = node_of[a], node_of[b]
+        if na != nb:
+            out.setdefault(f"{na}|{nb}", set()).update(uses.get(f"{a}|{b}", {}))
+    return out
+
+
+def _dyn_only(kinds: dict, runs: list[tuple[dict, dict]]) -> list[str]:
+    """有静态边、但这次跑到的调用全是动态分派的切面边（对比时两个 run 都是这样）。
+    这种边不能画成「引用 + runtime」的实线：import 的是一回事（比如一个常量），跑到的是另一回事
+    （经由 self.model、注册表调到的类），展开之后实线就变成了没跑到的灰边加一条动态分派的虚线"""
+    out = []
+    for k in kinds:
+        if any(he.get(k) for he, _ in runs) and all(hd.get(k, 0) >= he.get(k, 0) for he, hd in runs):
+            out.append(k)
+    return sorted(out)
 
 
 def _meta_brief(m: dict | None) -> dict | None:
@@ -147,16 +184,15 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             pkg_docs.setdefault(n, []).extend(d for d in ds if d["f"] not in have)
     # 每条边的「实质」：用到了对方几个符号、有几个只 import 没用的绑定。
     # 一个符号都没用到的边（纯 import）在图上画成虚线——它不承载任何调用。
-    uses, dead = idx.get("edge_uses") or {}, idx.get("edge_dead") or {}
+    dead = idx.get("edge_dead") or {}
     kinds: dict[str, dict] = {}
-    syms_used: dict[str, set] = {}
+    syms_used = _edge_uses_on_cut(idx, node_of)
     for a, b, w in idx.get("edges") or []:
         na, nb = node_of[a], node_of[b]
         if na == nb:
             continue
         k = f"{na}|{nb}"
         d = kinds.setdefault(k, {"uses": 0, "dead": 0, "sites": 0})
-        syms_used.setdefault(k, set()).update(uses.get(f"{a}|{b}", {}))
         d["dead"] += len(dead.get(f"{a}|{b}", []))
         d["sites"] += w
     for k, ss in syms_used.items():
@@ -165,16 +201,18 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     # importlib、注册表——是静态分析的盲区，必须单独画出来，否则图会说谎。
     # 对比（hot_b，另一个 run）：两边各自按切面汇总，节点和边上都带 [A, B] 两个次数；
     # 只在 runtime 出现的边、「只看跑到的」都取两边的并集
-    hot_view, rt_only, cmp = None, [], None
+    hot_view, rt_only, cmp, dyn_only = None, [], None, []
     if hot:
-        hp, he = _hot_on_cut(hot, node_of)
-        hot_view = {**hot, "packages": hp, "edges": he}
-        hpb, heb = _hot_on_cut(hot_b, node_of) if hot_b else ({}, {})
+        hp, he, hd = _hot_on_cut(hot, node_of, syms_used)
+        hot_view = {**hot, "packages": hp, "edges": he, "dyn": hd}
+        hpb, heb, hdb = _hot_on_cut(hot_b, node_of, syms_used) if hot_b else ({}, {}, {})
         if hot_b:
             ref_b = (hot_meta_b or {}).get("run_id", "?") + (f"@{hot_meta_b['phase']}" if (hot_meta_b or {}).get("phase") else "")
             cmp = {"ref_b": ref_b, "meta_b": _meta_brief(hot_meta_b),
                    "nodes": {n: [hp.get(n, 0), hpb.get(n, 0)] for n in set(hp) | set(hpb) if hp.get(n) or hpb.get(n)},
-                   "edges": {k: [he.get(k, 0), heb.get(k, 0)] for k in set(he) | set(heb) if he.get(k) or heb.get(k)}}
+                   "edges": {k: [he.get(k, 0), heb.get(k, 0)] for k in set(he) | set(heb) if he.get(k) or heb.get(k)},
+                   "dyn": {k: [hd.get(k, 0), hdb.get(k, 0)] for k in set(hd) | set(hdb)}}
+        dyn_only = _dyn_only(kinds, [(he, hd)] + ([(heb, hdb)] if hot_b else []))
         shown = {n["id"] for n in g["nodes"]}
         for k in sorted(set(he) | set(heb)):
             a, _, b = k.partition("|")
@@ -191,7 +229,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"],
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
-            "edgeKinds": kinds, "runtimeOnlyEdges": rt_only,
+            "edgeKinds": kinds, "runtimeOnlyEdges": rt_only, "dynOnlyEdges": dyn_only,
             "hot": hot_view, "hotMeta": hot_meta, "cmp": cmp,
             "open": sorted(open_), "defaultOpen": idx.get("default_open") or [],
             "autoSplit": idx["repo"].get("auto_split") or []}
@@ -218,6 +256,102 @@ def _module_files(idx: dict) -> dict:
             parts = parts[:-1]
         out[".".join(parts)] = orig
     return out
+
+
+@lru_cache(maxsize=256)
+def _file_lines(path: str, mtime_ns: int) -> tuple[str, ...]:
+    return tuple(Path(path).read_text(encoding="utf-8", errors="replace").splitlines())
+
+
+_DEF_LINE = re.compile(r"\s*(?:async\s+)?(?:def|class)\s")
+
+
+def _add_call_sites(repo: Path, idx: dict, items: list) -> None:
+    """动态分派的每个调用方：在它的函数体里找出调用那一行，记在 caller["sites"]（找过但没找到是 []）。
+    静态分析连不上的原因多半就写在这一行上——self.model.compute_logits(…)、getattr(mod, 'lookup')(…)：
+    代码里有调用，只是对象的类型要到运行时才定。找不到说明中间隔了一层 __call__、回调或仓库外的代码。
+    只在仓库里扫描过的文件里找；只按名字匹配（`名字(` 或 `'名字'`），不做类型推断。"""
+    syms, files = idx.get("symbols") or {}, idx.get("files") or {}
+
+    def span(sym: str):
+        while sym not in syms and ".<L" in sym:          # 闭包：用包住它的那个函数的范围
+            sym = sym.rsplit(".<L", 1)[0]
+        d = syms.get(sym)
+        return (d.get("dl", d["l"]), d["e"]) if d and d.get("e") else None
+
+    def lines(f: str):
+        if f not in files:
+            return None
+        try:
+            st = (repo / f).stat()
+            return _file_lines(str(repo / f), st.st_mtime_ns)
+        except OSError:
+            return None
+
+    for it in items:
+        if it["status"] != "dynamic":
+            continue
+        for r in it["runtime"]:
+            parts = r["sym"].partition(":")[2].split(".")
+            if not parts[-1] or parts[-1].startswith("<"):
+                continue                                 # 闭包、模块顶层：没有名字可找
+            names = [parts[-2], "__init__"] if parts[-1] == "__init__" and len(parts) > 1 else [parts[-1]]
+            alt = "|".join(map(re.escape, names))
+            pat = re.compile(rf"(?<![\w])(?:{alt})\s*\(|['\"](?:{alt})['\"]")
+            for c in r["callers"]:
+                sp, ls = span(c["sym"]), lines(c["def"]["f"]) if c.get("def") else None
+                if not sp or ls is None:
+                    continue
+                c["sites"] = [{"f": c["def"]["f"], "l": i + 1, "s": ls[i].strip()[:200]}
+                              for i in range(sp[0] - 1, min(sp[1], len(ls)))
+                              if pat.search(ls[i]) and not _DEF_LINE.match(ls[i])][:3]
+                c["callee"] = names[0]
+
+
+def _add_wiring(repo: Path, idx: dict, items: list) -> None:
+    """动态分派调到的类：仓库里哪些字符串按名字提到了它（scan 的 name_refs）——注册表
+    {"Arch": ("pkg", "mod", "Cls")}、getattr(mod, "Cls")、插件表里的 "pkg.mod.Cls"。调用方和它之间
+    没有 import，接线多半就在这几行。记在 item["wiring"] = {refs: [{f, l, s, exact}], n, same_name}：
+    带模块的类路径只认模块对得上的（exact）；只有类名的，同一个文件里挨着的几行（注册表的键和元组里的
+    类名）只留第一行，same_name > 1 时仓库里有同名类、这些字符串不一定指它。老的 index 没有 name_refs：不加。"""
+    refs_by = idx.get("name_refs")
+    if refs_by is None:
+        return
+    syms = idx.get("symbols") or {}
+    n_same: dict[str, int] = {}
+    for it in items:
+        d = it.get("def")
+        if it["status"] != "dynamic" or not d or d.get("k") != "class":
+            continue
+        name, mod = it["name"].rsplit(".", 1)[-1], it["sym"].split(":", 1)[0]
+        if name not in n_same:
+            n_same[name] = sum(1 for x in syms.values() if x["k"] == "class" and x["n"].rsplit(".", 1)[-1] == name)
+        kept: list[dict] = []
+        for ref in sorted(refs_by.get(name) or [], key=lambda r: (r[0], r[1])):   # scan 按 ast.walk 的顺序收的
+            f, l, exact = ref[0], ref[1], len(ref) > 2
+            if exact and ref[2] != mod:
+                continue                                 # 别的模块里的同名类
+            if kept and kept[-1]["f"] == f and 0 <= l - kept[-1]["l"] <= 3:
+                if exact and not kept[-1]["exact"]:     # 同一处登记：留带模块的那一行
+                    kept[-1] = {"f": f, "l": l, "s": "", "exact": True}
+                continue
+            kept.append({"f": f, "l": l, "s": "", "exact": exact})
+        if not kept:
+            continue
+        kept.sort(key=lambda r: not r["exact"])          # 带模块的（没有歧义）排前面
+        for r in kept[:6]:
+            try:
+                ls = _file_lines(str(repo / r["f"]), (repo / r["f"]).stat().st_mtime_ns)
+                r["s"] = ls[r["l"] - 1].strip()[:200] if 0 < r["l"] <= len(ls) else ""
+            except OSError:
+                pass
+        it["wiring"] = {"refs": kept[:6], "n": len(kept), "same_name": n_same[name]}
+
+
+def _dyn_hints(repo: Path, idx: dict, items: list) -> None:
+    """动态分派的两条线索：调用方那一行（_add_call_sites）、按名字接线的地方（_add_wiring）"""
+    _add_call_sites(repo, idx, items)
+    _add_wiring(repo, idx, items)
 
 
 def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
@@ -310,7 +444,9 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
     （静态的或 runtime 的）单元的明细合起来；同一个被引用的符号只列一次。"""
     A, B = _cut.units_of(idx, a), _cut.units_of(idx, b)
     if A == [a] and B == [b]:
-        return _pair_detail(repo, idx, a, b, hot)
+        d = _pair_detail(repo, idx, a, b, hot)
+        _dyn_hints(repo, idx, d["items"])
+        return d
     Bs = set(B)
     hot_edges = (hot or {}).get("edges") or {}
     pairs = sorted({(x, y) for x, y, _ in idx.get("edges") or [] if y in Bs and x in set(A)}
@@ -347,6 +483,7 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
         out["counts"]["calls"] += it["calls"]
     out["counts"]["import_only"] = len(out["import_only"])
     out["sites"] = out["sites"][:80]
+    _dyn_hints(repo, idx, out["items"])
     return out
 
 
@@ -742,13 +879,15 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     if others:
         v = _cut.view(idx, _norm_open(idx, None))
         shown = {n["id"] for n in p["graph"]["nodes"]}
+        used = _edge_uses_on_cut(idx, v["node_of"])
         for h, m in others:
-            hp, he = _hot_on_cut(h, v["node_of"])
+            hp, he, hd = _hot_on_cut(h, v["node_of"], used)
             ref = m["run_id"] + (f"@{m['phase']}" if m.get("phase") else "")
             rt = [[k.split("|")[0], k.split("|")[1], n] for k, n in sorted(he.items())
                   if k not in p["edgeKinds"] and k.split("|")[0] in shown and k.split("|")[1] in shown]
-            hot_by[ref] = {"packages": hp, "edges": he, "unmapped": h.get("unmapped"),
-                           "runtimeOnlyEdges": rt, "meta": _meta_brief(m)}
+            hot_by[ref] = {"packages": hp, "edges": he, "dyn": hd, "unmapped": h.get("unmapped"),
+                           "runtimeOnlyEdges": rt, "dynOnlyEdges": _dyn_only(p["edgeKinds"], [(he, hd)]),
+                           "meta": _meta_brief(m)}
     nts = {n["id"]: _notes.load(repo, idx, n["id"]) for n in p["graph"]["nodes"]}
     nts[_notes.OVERVIEW] = _notes.load(repo, idx, _notes.OVERVIEW)
     for name, nt in nts.items():

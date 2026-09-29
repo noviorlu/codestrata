@@ -26,6 +26,34 @@ window.CS = window.CS || {};
       + esc(text) + '</button>' : '<span>' + esc(text) + '</span>';
   }
 
+  /* 动态分派：调用方函数体里调到它的那一行（payload._add_call_sites 按名字找的）。
+     一行都没找到（sites 是 []）说明中间隔了 __call__、回调或仓库外的代码——照实说 */
+  function callSites(r) {
+    return r.callers.map(function (c) {
+      if (!c.sites) return '';
+      if (!c.sites.length)
+        return '<div class="row csite"><span class="lab">调用处</span><span class="lab">' + esc(symLabel(c.sym))
+          + ' 里没直接写 ' + esc(c.callee) + '(…)：中间隔了一层 __call__、回调，或仓库外的代码</span></div>';
+      return c.sites.map(function (t) {
+        return '<div class="row csite"><span class="lab">调用处</span>' + jump(t, t.f.split('/').pop() + ':' + t.l)
+          + '<code>' + esc(t.s) + '</code></div>';
+      }).join('');
+    }).join('');
+  }
+
+  /* 动态分派调到的类：仓库里用字符串写着它名字的地方（payload._add_wiring）——注册表、配置、插件表 */
+  function wiring(w) {
+    if (!w) return '';
+    var loose = w.same_name > 1 && w.refs.some(function (t) { return !t.exact; });
+    return w.refs.map(function (t) {
+      return '<div class="row csite"><span class="lab">按名字登记</span>' + jump(t, t.f.split('/').pop() + ':' + t.l)
+        + '<code>' + esc(t.s) + '</code></div>';
+    }).join('')
+      + (w.n > w.refs.length ? '<div class="row"><span class="lab">…还有 ' + (w.n - w.refs.length) + ' 处</span></div>' : '')
+      + (loose ? '<div class="row"><span class="lab">仓库里有 ' + w.same_name
+         + ' 个同名的类：只写了类名的字符串不一定指这一个</span></div>' : '');
+  }
+
   function sec(title, items, why, E) {
     if (!items.length) return '';
     return '<div class="esec"><h4>' + esc(title) + '<span class="n">' + items.length + '</span></h4>'
@@ -43,13 +71,14 @@ window.CS = window.CS || {};
           body += '<div class="row"><span class="lab">在 ' + esc(short(E.a)) + ' 里：</span>'
             + x.uses.map(function (u) { return jump(u, u.f.split('/').pop() + ':' + u.l); }).join('')
             + (x.n_uses > x.uses.length ? '<span>…</span>' : '') + '</div>';
+        body += wiring(x.wiring);
         (x.runtime_b || []).forEach(function (r) {       // 对比的 run（B）谁调了它
           var nm = r.sym === x.sym ? '直接调用' : r.sym.slice(r.sym.indexOf(':') + 1);
           body += '<div class="row"><span class="lab rtb">B</span>'
             + (r.sym === x.sym ? '<span>' + esc(nm) + '</span>' : jump(r.def, nm))
             + '<span class="rtb">×' + r.n + '</span><span class="lab">←</span>'
             + r.callers.map(function (c) { return jump(c.def, symLabel(c.sym)) + '<span class="lab">×' + c.n + '</span>'; }).join(' ')
-            + '</div>';
+            + '</div>' + callSites(r);
         });
         x.runtime.forEach(function (r) {
           // 类被调用时，runtime 看到的是具体方法；把「哪个方法被谁调了几次」摊开
@@ -58,7 +87,7 @@ window.CS = window.CS || {};
             + (r.sym === x.sym ? '<span>' + esc(nm) + '</span>' : jump(r.def, nm))
             + '<span class="rt">×' + r.n + '</span><span class="lab">←</span>'
             + r.callers.map(function (c) { return jump(c.def, symLabel(c.sym)) + '<span class="lab">×' + c.n + '</span>'; }).join(' ')
-            + '</div>';
+            + '</div>' + callSites(r);
         });
         return '<div class="ei ' + x.status + '">' + head + (body ? '<div class="eb">' + body + '</div>' : '') + '</div>';
       }).join('') + '</div>';
@@ -138,7 +167,9 @@ window.CS = window.CS || {};
           var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || {}, inf = E.info || {};
           // 对比时：次数写成 A/B，颜色按哪边跑到（只有 B 的紫色），不拿两边的较大值冒充 A 的
           var ab = E.ab, tone = ab ? (ab[0] && ab[1] ? ' both' : ab[0] ? ' warm' : ab[1] ? ' warmb' : '') : (E.hits ? ' warm' : '');
-          var tag = E.kind === 'dyn' ? (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次' : (inf.uses ? inf.uses + ' 符号' : '只 import');
+          var tag = E.kind === 'dyn' ? (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次'
+                  : (inf.uses ? inf.uses + ' 符号' : '只 import')
+                    + (E.dynOnly ? ' · 动态分派 ' + (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次' : '');
           return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(short(i))
             + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + tone
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
@@ -562,8 +593,10 @@ window.CS = window.CS || {};
 
       h += sec('确认：引用了，这次也真的调到了', groups.confirmed,
                '代码里有静态引用，runtime 也走到了。这是这条边真正承载的调用。', E);
-      h += sec('动态分派：调到了，但代码里看不到引用', groups.dynamic,
-               '静态分析的盲区——经由 getattr、注册表、插件或基类方法走过来的调用。', E);
+      h += sec('动态分派：调到了，但代码里没有指向它的引用', groups.dynamic,
+               '静态分析的盲区：调用方拿到的是一个运行时才定类型的对象（self.model.xxx(…)、getattr、注册表、插件、回调），'
+               + '代码里写的是调用，却没有 import 或引用这个类。「调用处」是调用方函数体里对应的那一行；'
+               + '「按名字登记」是仓库里用字符串写着这个类的地方（注册表、配置、插件表），接线多半在那里。', E);
       h += sec('只有对比的 run（B）调到', groups.only_b,
                '这个 run 没调，对比的那个 run 调到了：两个 run 走的路在这里分开。', E);
       h += sec(rt ? '引用了，但这次 case 没走到' : '静态引用', groups.static,

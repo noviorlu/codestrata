@@ -35,11 +35,12 @@ window.CS = window.CS || {};
       var alt = this.run && EMB.hotBy && EMB.hotBy[this.run];
       // 在导出里选了「静态图」：不叠任何 run
       if (!this.run && EMB.hot && this.canSwitchRun)
-        return Promise.resolve(Object.assign({}, EMB, { hot: null, hotMeta: null, graphHot: null, runtimeOnlyEdges: [], cmp: null }));
+        return Promise.resolve(Object.assign({}, EMB, { hot: null, hotMeta: null, graphHot: null, runtimeOnlyEdges: [], dynOnlyEdges: [], cmp: null }));
       if (!alt) return Promise.resolve(EMB);
       return Promise.resolve(Object.assign({}, EMB, {
-        hot: { packages: alt.packages, edges: alt.edges, symbols: {}, files: {}, unmapped: alt.unmapped },
-        hotMeta: alt.meta, graphHot: null, runtimeOnlyEdges: alt.runtimeOnlyEdges, cmp: null, _alt: true }));
+        hot: { packages: alt.packages, edges: alt.edges, dyn: alt.dyn || {}, symbols: {}, files: {}, unmapped: alt.unmapped },
+        hotMeta: alt.meta, graphHot: null, runtimeOnlyEdges: alt.runtimeOnlyEdges, dynOnlyEdges: alt.dynOnlyEdges || [],
+        cmp: null, _alt: true }));
     },
     canCut: false,
     run: '',

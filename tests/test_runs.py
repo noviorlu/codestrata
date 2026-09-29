@@ -1547,6 +1547,121 @@ def decorated():
     assert h3["files"]["fakesvc/work.py"] >= before["files"]["fakesvc/work.py"] - 1, (h3["files"], before["files"])
 
 
+_DD = {
+    "dd/__init__.py": "",
+    "dd/registry.py": ('MODELS = {"Net": ("impl", "net", "Net")}\n'
+                       'PLUGINS = ["dd.models.impl.net.Net", "dd.models.helpers:Net"]\n\n\n'
+                       'def lookup(name):\n    return MODELS[name]\n'),
+    "dd/wire.py": 'FALLBACK = "Net"\n',
+    "dd/other.py": 'ALT = "dd.models.helpers.Net"\n',       # 别的模块里的同名类，不是它
+    "dd/runner/__init__.py": "",
+    "dd/runner/loop.py": (
+        "from dd.models import helpers\n\n\n"
+        "class Runner:\n"
+        "    def __init__(self, model, tag):\n"
+        "        self.model, self.tag = model, tag\n\n"
+        "    def step(self):\n"
+        "        if self.tag:\n"
+        "            helpers.tag()\n"
+        "        return self.model.forward(helpers.SCALE)\n\n"
+        "    def batch(self, xs):\n"
+        "        return list(map(self.model.forward, xs))\n"),
+    "dd/models/__init__.py": "",
+    "dd/models/helpers.py": "SCALE = 2\n\n\ndef tag():\n    return 't'\n\n\nclass Net:\n    pass\n",
+    "dd/models/impl/__init__.py": "__all__ = ['Net']\n",
+    "dd/models/impl/net.py": "class Net:\n    def forward(self, x):\n        return x * 2\n",
+    "dd/main.py": (
+        "# 诱饵：函数体外面也写着 lookup(name)，调用处只能在 build 里找\n"
+        "import importlib\nimport sys\n\nfrom dd.registry import MODELS\nfrom dd.runner.loop import Runner\n\n\n"
+        "def build(name):\n"
+        "    assert name in MODELS\n"
+        "    sub, mod, cls = getattr(importlib.import_module('dd.registry'), 'lookup')(name)\n"
+        "    return getattr(importlib.import_module(f'dd.models.{sub}.{mod}'), cls)()\n\n\n"
+        "if __name__ == '__main__':\n"
+        "    r = Runner(build('Net'), 'tag' in sys.argv)\n"
+        "    for _ in range(3):\n"
+        "        r.step()\n"
+        "    r.batch([1])\n"),
+}
+
+
+def test_dynamic_dispatch_consistent_across_cuts():
+    """收起的一条边上碰巧有别的 import（runner 只 import 了 helpers 的一个常量），跑到的调用却是经由
+    self.model 动态分派到 impl 的：收起时不能画成「引用 + runtime」的实线（展开后那条实线会「消失」，
+    变成没跑到的灰边加一条虚线）。图上每条边的动态分派次数和点开边看到的明细必须对得上，每个切面都是。"""
+    t = Path(tempfile.mkdtemp(prefix="cs-dyn-"))
+    _TMP.append(t)
+    repo = t / "repo"
+    for rel, src in _DD.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "dyn", "--", PY, "-m", "dd.main")
+    cs("trace", repo, "--case", "mix", "--", PY, "-m", "dd.main", "tag")
+    idx = payload.load_index(repo)
+    hd, md = payload.load_hot(repo, idx, "dyn")
+    hm, mm = payload.load_hot(repo, idx, "mix")
+    RM, RI, RH = "dd.runner|dd.models", "dd.runner|dd.models.impl", "dd.runner|dd.models.helpers"
+    MR = "dd.main|dd.registry"        # 文件对文件：静态引用的是 MODELS，跑到的 lookup 是 getattr 取的
+
+    def agree(g, hot):
+        """图上的次数 = 边详情里的次数；图上的动态分派次数 = 边详情里「动态分派」那组的次数"""
+        for k, n in g["hot"]["edges"].items():
+            a, b = k.split("|")
+            d = payload.edge_detail(repo, idx, a, b, hot)
+            dyn = sum(it["calls"] for it in d["items"] if it["status"] == "dynamic")
+            assert d["counts"]["calls"] == n and dyn == g["hot"]["dyn"].get(k, 0), (k, n, d["counts"], g["hot"]["dyn"])
+
+    shut = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd"])
+    ids = {n["id"] for n in shut["graph"]["nodes"]}
+    assert {"dd.runner", "dd.models"} <= ids, ids
+    assert RM in shut["edgeKinds"] and shut["hot"]["edges"][RM] == 4 and shut["hot"]["dyn"][RM] == 4, shut["hot"]
+    assert RM in shut["dynOnlyEdges"] and MR in shut["dynOnlyEdges"], shut["dynOnlyEdges"]
+    agree(shut, hd)
+    opened = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd", "dd.models"])
+    assert [RI.split("|")[0], RI.split("|")[1], 4] in opened["runtimeOnlyEdges"], opened["runtimeOnlyEdges"]
+    assert RH in opened["edgeKinds"] and not opened["hot"]["edges"].get(RH) and RH not in opened["dynOnlyEdges"]
+    agree(opened, hd)
+    # 同一条边上也有确认调用（helpers.tag()）：照旧画实线，动态分派的次数单独带着
+    mix = payload.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd"])
+    assert mix["hot"]["edges"][RM] == 7 and mix["hot"]["dyn"][RM] == 4 and RM not in mix["dynOnlyEdges"], mix["hot"]
+    agree(mix, hm)
+    agree(payload.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd", "dd.models"]), hm)
+    # 对比：两个 run 都只有动态分派才算；一边有确认调用就照旧画实线
+    c = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, hot_b=hm, hot_meta_b=mm, open_=["dd"])
+    assert RM not in c["dynOnlyEdges"] and c["cmp"]["dyn"][RM] == [4, 4], c["cmp"]
+    c2 = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, hot_b=hd, hot_meta_b=md, open_=["dd"])
+    assert RM in c2["dynOnlyEdges"], c2["dynOnlyEdges"]
+    # 动态分派的调用处：调用方函数体里那一行；经由 map() 这种仓库外的代码调到的，找过但找不到（[]）
+    def callers(a, b):
+        d = payload.edge_detail(repo, idx, a, b, hd)
+        return {c["sym"].split(":")[1]: c for it in d["items"] if it["status"] == "dynamic"
+                for r in it["runtime"] for c in r["callers"]}
+    for a, b in (("dd.runner.loop", "dd.models.impl.net"), ("dd.runner", "dd.models")):
+        cs_ = callers(a, b)
+        assert [x["s"] for x in cs_["Runner.step"]["sites"]] == ["return self.model.forward(helpers.SCALE)"], cs_
+        assert cs_["Runner.step"]["sites"][0]["f"] == "dd/runner/loop.py", cs_
+        assert cs_["Runner.batch"]["sites"] == [] and cs_["Runner.batch"]["callee"] == "forward", cs_
+    got = callers("dd.main", "dd.registry")["build"]["sites"]
+    assert len(got) == 1 and "'lookup')(name)" in got[0]["s"], got
+    # 按名字登记：带模块的类路径只认模块对得上的，同一处登记留带模块的那一行；只写类名的另起一处；
+    # __all__ 是再导出清单不算；仓库里有同名类（helpers.Net）要说出来
+    d = payload.edge_detail(repo, idx, "dd.runner.loop", "dd.models.impl.net", hd)
+    w = next(it for it in d["items"] if it["status"] == "dynamic")["wiring"]
+    ln = next(i for i, x in enumerate(_DD["dd/main.py"].splitlines(), 1) if "build('Net')" in x)
+    assert [(t["f"], t["l"], t["exact"]) for t in w["refs"]] == [
+        ("dd/registry.py", 2, True), ("dd/main.py", ln, False), ("dd/wire.py", 1, False)], w
+    assert w["same_name"] == 2 and w["n"] == 3 and "dd.models.impl.net.Net" in w["refs"][0]["s"], w
+    nr = payload.load_index(repo)["name_refs"]
+    assert not any(f.endswith("impl/__init__.py") for f, *_ in nr["Net"]), nr["Net"]
+    # 导出里别的 run（hotBy）也带上：页面上换 run 时同样分得开
+    p = payload.export_payload(repo, idx, hot=hm, hot_meta=mm, others=[(hd, md)], code=False)
+    by = next(iter(p["hotBy"].values()))
+    alone = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=p["open"])
+    assert MR in by["dynOnlyEdges"] and by["dynOnlyEdges"] == alone["dynOnlyEdges"], (by["dynOnlyEdges"], p["open"])
+    assert by["dyn"] == alone["hot"]["dyn"], (by["dyn"], alone["hot"]["dyn"])
+
+
 def test_compare_and_multi_export():
     """M7：两个 run 对比——节点、边上带 [A, B]，只有一边跑到的也在；边详情带 calls_b，和 B 自己的
     明细对得上；只在 runtime 出现的边、「只看跑到的」取并集。导出能带多个 run、--compare 带对比块。"""
