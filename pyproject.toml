@@ -19,3 +19,8 @@ codestrata = "codestrata.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["codestrata*"]
+
+# 前端（index.html、主菜单、JS / CSS）是包的一部分：不写这个，非 -e 的安装里没有它们，
+# serve 每个页面都 404、graph 导出直接崩
+[tool.setuptools.package-data]
+codestrata = ["web/*"]

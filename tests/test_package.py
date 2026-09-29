@@ -1,0 +1,42 @@
+"""打包：非 -e 安装的包里要有前端（web/ 下每个文件），不然 serve 全是 404、graph 导出崩。
+
+    .venv/bin/python tests/test_package.py
+要 uv（用它构建 wheel）；没有就跳过。
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import zipfile
+
+from common import HERE, run_tests, tmpdir  # noqa: E402
+
+
+def test_wheel_ships_web():
+    uv = shutil.which("uv")
+    if not uv:
+        print("    （没有 uv，跳过）")
+        return
+    # 在一份干净的拷贝上构建（只有 git 管的文件，含还没提交的）：工作区里 -e 安装留下的
+    # codestrata.egg-info 会让 setuptools 照着它的文件清单把 web/ 带上，掩盖掉配置漏写
+    tmp = tmpdir("cs-pkg-")
+    src, out = tmp / "src", tmp / "dist"
+    files = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"], cwd=HERE.parent,
+                           capture_output=True, text=True, check=True).stdout.split("\n")
+    for f in filter(None, files):
+        if (HERE.parent / f).is_file():
+            (src / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(HERE.parent / f, src / f)
+    r = subprocess.run([uv, "build", "--wheel", "--out-dir", str(out), str(src)],
+                       capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stdout + r.stderr
+    wheel = next(out.glob("*.whl"))
+    names = set(zipfile.ZipFile(wheel).namelist())
+    web = HERE.parent / "codestrata" / "web"
+    missing = [f.name for f in web.iterdir() if f.is_file() and f"codestrata/web/{f.name}" not in names]
+    assert not missing, f"wheel 里没有这些前端文件：{missing}"
+
+
+if __name__ == "__main__":
+    sys.exit(run_tests(globals(), sys.argv[1:]))

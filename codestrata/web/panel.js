@@ -39,7 +39,8 @@ window.CS = window.CS || {};
   function callCards(E) {
     var pairs = [], by = {};
     E.items.forEach(function (x) {
-      if (x.status === 'static') return;
+      // A 只引用没调用的（static）照样要看：对比时 B 可能调到了它（runtime_b）
+      if (!(x.runtime || []).length && !(x.runtime_b || []).length) return;
       function add(rs, side) {
         (rs || []).forEach(function (r) {
           r.callers.forEach(function (c) {
@@ -583,9 +584,13 @@ window.CS = window.CS || {};
 
     _renderEdge: function (E) {
       var c = E.counts, rt = E.has_runtime;
-      var calls = callCards(E), stat = E.items.filter(function (x) { return x.status === 'static'; });
+      // 「引用了，这次没跑到」：两边都没调到的（对比时 B 调到的已经在上面的调用卡片里了）
+      var calls = callCards(E), stat = E.items.filter(function (x) {
+        return x.status === 'static' && !(x.runtime_b || []).length;
+      });
       var wired = E.items.filter(function (x) { return x.wiring; });
-      var sub = rt ? 'runtime <b>' + c.calls + '</b> 次' + (E.has_runtime_b ? ' / B <b class="rtb">' + (c.calls_b || 0) + '</b> 次' : '')
+      var sub = rt ? (E.has_runtime_b ? 'runtime A <b>' + c.calls + '</b> 次 · 对比的 run B <b class="rtb">' + (c.calls_b || 0) + '</b> 次'
+                                      : 'runtime <b>' + c.calls + '</b> 次')
                      + ' · ' + calls.n + ' 对调用' + (E.static_edge ? '' : ' · 没有 import')
                    : (E.note ? esc(E.note) : stat.length + ' 个被引用的符号 · 没有 runtime 数据');
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'
