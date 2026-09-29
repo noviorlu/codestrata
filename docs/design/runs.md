@@ -1,7 +1,7 @@
 # codestrata：一份静态分析 + 多次 runtime 的设计（修订版）
 
 > 设计稿，2026-09-27。三个方向（存储 / 录制流程 / 界面）各出一份方案，合成后再经一轮审阅修订。
-> - 依据：`codestrata/{trace,payload,serve,scan,notes,__main__}.py`、`web/app.js`、`web/ds.js`（commit 6c177e4），以及 vllm-omni 上的实测数据（`src/vllm-omni/.codestrata/trace-minicpmo-duplex.json`、`parts-minicpmo-duplex/`）。
+> - 依据：`codestrata/{trace,payload,serve,scan,notes,__main__}.py`、`web/app.js`、`web/ds.js`（commit 13af3f5），以及 vllm-omni 上的实测数据（`src/vllm-omni/.codestrata/trace-minicpmo-duplex.json`、`parts-minicpmo-duplex/`）。
 > - 用户的补充（同一天）：图上要能在「静态图 ↔ runtime 图 1 ↔ runtime 图 2 …」之间切换（M4 的 run 选择器）；计划完成后直接按计划执行，只有 GPU 录制前先问。
 > - 已定下的（原「需要拍板」第 1 条）：vllm-omni 的 runs 实际放在 `/mnt/data/duplex-agents/codestrata-runs/vllm-omni/`（数据一律放 /mnt/data），`duplex-agents/vllm-omni/runs` 是指过去的软链，`src/vllm-omni/.codestrata/runs → ../../../runs`。已有的 trace 和 parts 备份在 `/mnt/data/duplex-agents/codestrata-runs/backup-20260927/`。
 
