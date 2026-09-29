@@ -705,9 +705,23 @@ window.CS = window.CS || {};
       if (first) first.focus();
     },
 
+    /* 从主菜单打开的：标题前放一个回主菜单的链接（只放一次；header 每次换切面都会调） */
+    homeLink: function () {
+      if (this._homeAsked) return;                // 问一次就够：直接 serve 的（没有主菜单）也别每次都问
+      this._homeAsked = true;
+      CS.ds.home().then(function (url) {
+        if (!url) return;
+        var a = document.createElement('a');
+        a.id = 'homeLink'; a.className = 'homelink'; a.href = url; a.textContent = '← 主菜单';
+        var row = document.querySelector('.hrow');
+        row.insertBefore(a, row.firstChild);
+      }).catch(function () {});
+    },
+
     header: function (d) {
       var r = d.repo, self = this;
       document.getElementById('h1').textContent = r.name + ' 架构';
+      this.homeLink();
       this.wireHelp();
       document.getElementById('lede').innerHTML =
         '纵轴是<b>架构高度</b> <code>(出−入)/(出+入)</code>：最上面的泳道谁都不依赖它、它依赖一切，'

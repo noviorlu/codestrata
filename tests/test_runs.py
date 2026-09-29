@@ -15,39 +15,12 @@ import signal
 import subprocess
 import sys
 import tarfile
-import tempfile
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
+from common import FAKE, HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
 from codestrata import payload, runs, trace  # noqa: E402
-
-PY = sys.executable
-FAKE = HERE / "trace_cases" / "fake_repo"
-
-
-def cs(*args, env=None, check=True, timeout=180) -> subprocess.CompletedProcess:
-    e = dict(os.environ)
-    e.update(env or {})
-    r = subprocess.run([PY, "-m", "codestrata", *map(str, args)], capture_output=True, text=True,
-                       env=e, timeout=timeout, cwd=HERE.parent)
-    if check and r.returncode != 0:
-        raise AssertionError(f"codestrata {' '.join(map(str, args))} → {r.returncode}\n{r.stdout}\n{r.stderr}")
-    return r
-
-
-_TMP: list[Path] = []
-
-
-def fresh() -> Path:
-    t = Path(tempfile.mkdtemp(prefix="cs-runs-"))
-    _TMP.append(t)
-    d = t / "repo"
-    shutil.copytree(FAKE, d)
-    cs("scan", d)
-    return d
 
 
 def trace_fake(repo: Path, case="fake", *extra, env=None, check=True):
@@ -375,8 +348,7 @@ def test_phase_at_errors():
     rs = repo / ".codestrata" / "runs"
     assert not (rs.is_dir() and any(p.name.endswith("-bad") for p in rs.iterdir()))   # 一个 run 都没建
     # 没 scan 过的仓库：模块写法要先 scan，文件路径写法照样能用
-    t = Path(tempfile.mkdtemp(prefix="cs-runs-"))
-    _TMP.append(t)
+    t = tmpdir("cs-runs-")
     bare = t / "repo"
     shutil.copytree(FAKE, bare)
     r = trace_offline(bare, "bare", "--phase", "g=fakesvc.offline:Engine.generate", check=False)
@@ -527,8 +499,7 @@ def test_phase_at_same_target_and_sh_name():
 def test_qualnames_and_mro():
     """文件路径写法按编译器的规则得 co_qualname（match / async for / try-except* 里的 def、global
     声明过的嵌套 def）；继承的方法按 C3 MRO 找，Base[T] 去下标，MRO 里先碰到仓库外的基类就不猜。"""
-    t = Path(tempfile.mkdtemp(prefix="cs-runs-"))
-    _TMP.append(t)
+    t = tmpdir("cs-runs-")
     src = (
         "import sys\n"
         "match sys.platform:\n"
@@ -974,8 +945,7 @@ def test_dump_race():
 
 def test_leftover_by_part_file():
     """setproctitle 会清空 /proc/<pid>/environ：靠分片里记的 (pid, 启动时刻) 也要认得出。"""
-    d = Path(tempfile.mkdtemp(prefix="cs-runs-"))
-    _TMP.append(d)
+    d = tmpdir("cs-runs-")
     p = subprocess.Popen(["sleep", "30"])
     try:
         st = trace._proc_start(p.pid)
@@ -1116,8 +1086,7 @@ def test_single_phase_and_extras():
 
 
 def test_nonexistent_repo():
-    d = Path(tempfile.mkdtemp(prefix="cs-runs-"))
-    _TMP.append(d)
+    d = tmpdir("cs-runs-")
     r = cs("runs", d / "no" / "such", "ls", check=False)
     assert r.returncode != 0 and not (d / "no").exists()
 
@@ -1294,8 +1263,7 @@ def test_events_cap():
 def test_events_parse_partial_line():
     """进程被杀时最后一行可能只写了一半：字段正好够数也不要。"""
     from codestrata import events
-    d = Path(tempfile.mkdtemp(prefix="cs-runs-"))
-    _TMP.append(d)
+    d = tmpdir("cs-runs-")
     f = d / "ev-300-1000.log"
     f.write_text("H 300 1000 1\nN 1 MainThread\nK 1 a.py:1\nK 2 b.py:1\nC 10 1 5 1 2\nR 20 1 5\nC 30 1 57 1 2\nR 900 1 5")
     log = events.parse(f)
@@ -1589,8 +1557,7 @@ def test_dynamic_dispatch_consistent_across_cuts():
     """收起的一条边上碰巧有别的 import（runner 只 import 了 helpers 的一个常量），跑到的调用却是经由
     self.model 动态分派到 impl 的：收起时不能画成「引用 + runtime」的实线（展开后那条实线会「消失」，
     变成没跑到的灰边加一条虚线）。图上每条边的动态分派次数和点开边看到的明细必须对得上，每个切面都是。"""
-    t = Path(tempfile.mkdtemp(prefix="cs-dyn-"))
-    _TMP.append(t)
+    t = tmpdir("cs-dyn-")
     repo = t / "repo"
     for rel, src in _DD.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -1751,26 +1718,5 @@ def test_notes_fix_refs_keeps_changed():
     assert "改掉了" in out and r.returncode != 0, out                    # 改掉了的那一行还在报
 
 
-def main(argv):
-    tests = [(n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)]
-    if argv:
-        tests = [(n, f) for n, f in tests if any(a in n for a in argv)]
-    bad = 0
-    for n, f in tests:
-        t = time.monotonic()
-        try:
-            f()
-            print(f"  ✓ {n}  {time.monotonic() - t:.1f}s", flush=True)
-        except Exception as e:
-            bad += 1
-            import traceback
-            print(f"  ✗ {n}\n" + "".join(traceback.format_exception(e))[-3000:], flush=True)
-    if not bad:                              # 失败时留着现场
-        for t in _TMP:
-            shutil.rmtree(t, ignore_errors=True)
-    print("全部通过" if not bad else f"{bad} 个失败（临时目录留着：{' '.join(map(str, _TMP))}）")
-    return 1 if bad else 0
-
-
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(run_tests(globals(), sys.argv[1:]))

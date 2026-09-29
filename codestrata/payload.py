@@ -16,6 +16,20 @@ from . import runs as _runs
 from . import xref as _xref
 
 
+def index_summary(repo: Path) -> dict | None:
+    """只读 index.json（不读大得多的 symbols.json）：没 scan 过是 None。
+    {scanned_at, n_files, n_symbols, n_parse_errors}——主菜单的项目卡片用"""
+    p = repo / ".codestrata" / "index.json"
+    try:
+        idx = json.loads(p.read_text(encoding="utf-8"))
+        at = p.stat().st_mtime
+    except (OSError, ValueError):
+        return None
+    r = idx.get("repo") or {}
+    return {"scanned_at": at, "n_files": r.get("n_files"), "n_symbols": idx.get("n_symbols"),
+            "n_parse_errors": r.get("n_parse_errors")}
+
+
 def load_index(repo: Path) -> dict:
     d = repo / ".codestrata"
     p = d / "index.json"
@@ -633,17 +647,37 @@ def load_xref(repo: Path) -> dict | None:
         return _XREF
 
 
-def _stale(repo: Path, X: dict, rel: str) -> bool:
-    """这个文件在 scan 之后改过没有（大小或修改时间变了）。改过的文件，xref 里的行列号
-    已经对不上了：链接会落在别的字上、跳到不相干的定义——宁可不给 Ctrl+点击。"""
-    fp = (X["x"].get("fp") or {}).get(rel)
-    if fp is None:
-        return False                      # 老的 xref.json 没记指纹：没法判断，照旧
+@lru_cache(maxsize=32)
+def _xref_fp(path: str, mtime: float) -> dict:
+    """xref.json 里每个文件 scan 时的 (大小, mtime)。自己一份小缓存，不走 load_xref 那个单槽的：
+    主菜单一次要看好几个仓库，走单槽会互相挤掉、每次都重新解析整个 xref.json"""
+    return json.loads(Path(path).read_text(encoding="utf-8")).get("fp") or {}
+
+
+def _changed(repo: Path, rel: str, fp) -> bool:
+    """这个文件和 scan 时记下的 (大小, mtime) 还一样吗；不在了也算改过"""
     try:
         st = (repo / rel).stat()
     except OSError:
         return True
     return [st.st_size, st.st_mtime_ns] != list(fp)
+
+
+def index_lag(repo: Path) -> int:
+    """scan 之后改过（或删掉）了几个文件。index 落后了，图和搜索还是 scan 时的样子
+    （Ctrl+点击的交叉引用逐个文件核对，不受影响）。只是提示：算不出来（没 scan、老格式、文件坏了）就当 0"""
+    p = repo / ".codestrata" / "xref.json"
+    try:
+        return sum(_changed(repo, rel, fp) for rel, fp in _xref_fp(str(p), p.stat().st_mtime).items())
+    except Exception:                         # noqa: BLE001
+        return 0
+
+
+def _stale(repo: Path, X: dict, rel: str) -> bool:
+    """这个文件在 scan 之后改过没有（大小或修改时间变了）。改过的文件，xref 里的行列号
+    已经对不上了：链接会落在别的字上、跳到不相干的定义——宁可不给 Ctrl+点击。"""
+    fp = (X["x"].get("fp") or {}).get(rel)
+    return fp is not None and _changed(repo, rel, fp)   # 老的 xref.json 没记指纹：没法判断，照旧
 
 
 def xref_for(repo: Path, rel: str, lo: int | None = None, hi: int | None = None) -> dict | None:

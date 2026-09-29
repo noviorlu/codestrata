@@ -4,11 +4,11 @@ target: codestrata.xref
 kind: package
 code_sha: 3657c92804dd024c
 status: draft
-refs: __main__.py:81@d89a80ca,xref.py:1345@6f3d4dd5,xref.py:1@33710441,xref.py:292@ad481400,xref.py:612@02ccb7c9,xref.py:827@0ac1d1cb,xref.py:1321@988dc59e,xref.py:854@cf9b4e61,xref.py:1324@eecf9796,xref.py:229@59c04e0c,xref.py:331@dac70f9a,xref.py:912@dd64dbbd,xref.py:1233@7666ecb2,xref.py:938@0289caaf,xref.py:458@7cb35e9c,xref.py:387@d2d72128,xref.py:544@0421ea56,xref.py:764@6f648bce,xref.py:729@738ebce6,xref.py:1209@e1368d8e,xref.py:1314@1b6b0495,xref.py:1211@c48b7ec3,xref.py:1368@7362486b,payload.py:685@8e0ec840
+refs: __main__.py:83@d89a80ca,xref.py:1345@6f3d4dd5,xref.py:1@33710441,xref.py:292@ad481400,xref.py:612@02ccb7c9,xref.py:827@0ac1d1cb,xref.py:1321@988dc59e,xref.py:854@cf9b4e61,xref.py:1324@eecf9796,xref.py:229@59c04e0c,xref.py:331@dac70f9a,xref.py:912@dd64dbbd,xref.py:1233@7666ecb2,xref.py:938@0289caaf,xref.py:458@7cb35e9c,xref.py:387@d2d72128,xref.py:544@0421ea56,xref.py:764@6f648bce,xref.py:729@738ebce6,xref.py:1209@e1368d8e,xref.py:1314@1b6b0495,xref.py:1211@c48b7ec3,xref.py:1368@7362486b,payload.py:719@8e0ec840
 ---
 
 ## 是什么
-交叉引用：代码里每个名字指向哪个定义。scan 结束时顺带建一份 `.codestrata/xref.json`（__main__.py:81），给全文窗口的 Ctrl+点击用——点一个名字跳到它的定义；点一个定义，由 `payload.refs` 列出所有引用它的地方。只用 `ast`，静态地、尽力而为地解析。
+交叉引用：代码里每个名字指向哪个定义。scan 结束时顺带建一份 `.codestrata/xref.json`（__main__.py:83），给全文窗口的 Ctrl+点击用——点一个名字跳到它的定义；点一个定义，由 `payload.refs` 列出所有引用它的地方。只用 `ast`，静态地、尽力而为地解析。
 
 总原则是**宁可不跳，也不跳错**：跳错一次，用户就不再信这个功能。所以只记能确定的；遮住了、类型拿不准、MRO 上有仓库外的基类，一律不记。
 
@@ -77,7 +77,7 @@ from-import 先存成 `("from", 模块, 名字)`，用到时才由 `from_import`
 最后按名字过滤（xref.py:1368）：数 `targets` 里限定名带点、最后一段是这个名字的类 / 函数和变量目标（基本就是类成员），超过 `ATTRS_MAX_SAME`（3）个的名字整组丢掉。`get`、`shape`、`to`、`append` 这种名字按名字列出来一大半都不是它，还会占掉 xref.json 的三分之一。
 
 ### invert
-`invert`：目标下标 → 所有引用它的 `[文件, 行, 列, 种类]`，不含定义本身。serve 第一次有人要引用列表时才建，每份 xref 只建一次（payload.py:685）。
+`invert`：目标下标 → 所有引用它的 `[文件, 行, 列, 种类]`，不含定义本身。serve 第一次有人要引用列表时才建，每份 xref 只建一次（payload.py:719）。
 
 ## 局限
 - 没有类型推断：局部变量的属性（`x = Foo(); x.bar`）、调用结果的属性、`getattr` 之类一律不解析，只能进 attrs 的「没核实」那一组。

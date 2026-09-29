@@ -4,7 +4,7 @@ target: codestrata.scan
 kind: package
 code_sha: acd50be45564786b
 status: draft
-refs: scan.py:116@e3529493,scan.py:589@f74f5b17,scan.py:608@2a8f89e3,scan.py:610@c176b6f0,payload.py:37@d6513e46,scan.py:617@ae396e12,scan.py:580@bd8a6524,scan.py:361@10b3177a,codestrata/__main__.py:81@d89a80ca,scan.py:1@5f7a6e1c,scan.py:277@255e30bf,scan.py:298@2fd7b37d,scan.py:309@e7e68c0d,scan.py:301@1920e340,scan.py:312@5e10daf1,runs.py:78@fb413b11,trace.py:111@0685df0e,scan.py:303@c8d01747,runs.py:697@2e266090,scan.py:539@2373040a,scan.py:51@b93afa5e,scan.py:425@b2d3284a,scan.py:447@22a9f949,scan.py:416@74e4ca0b,scan.py:63@04872629,scan.py:349@0ee68e12,scan.py:386@5898f2be,scan.py:474@b9696986,scan.py:521@6f938f80,scan.py:458@8526611d,scan.py:196@a99d3e2d
+refs: scan.py:116@e3529493,scan.py:589@f74f5b17,scan.py:608@2a8f89e3,scan.py:610@c176b6f0,payload.py:51@d6513e46,scan.py:617@ae396e12,scan.py:580@bd8a6524,scan.py:361@10b3177a,codestrata/__main__.py:83@d89a80ca,scan.py:1@5f7a6e1c,scan.py:277@255e30bf,scan.py:298@2fd7b37d,scan.py:309@e7e68c0d,scan.py:301@1920e340,scan.py:312@5e10daf1,runs.py:90@fb413b11,trace.py:111@0685df0e,scan.py:303@c8d01747,runs.py:709@2e266090,scan.py:539@2373040a,scan.py:51@b93afa5e,scan.py:425@b2d3284a,scan.py:447@22a9f949,scan.py:416@74e4ca0b,scan.py:63@04872629,scan.py:349@0ee68e12,scan.py:386@5898f2be,scan.py:474@b9696986,scan.py:521@6f938f80,scan.py:458@8526611d,scan.py:196@a99d3e2d
 ---
 
 ## 是什么
@@ -15,11 +15,11 @@ refs: scan.py:116@e3529493,scan.py:589@f74f5b17,scan.py:608@2a8f89e3,scan.py:610
 
 它只记**最细的粒度**：每个 `.py` 文件一个单元（包的 `__init__.py` 记成 `<包>.__init__`，把目录本身的名字留给图上「整个目录收起来」的那个节点）。图上显示哪一层不是它的事——它只把目录树（`dirs`）和默认切面（`default_open`，由 `cut.default_open` 按规模算，scan.py:589）写进 index；展开 / 收起时由 `cut` 在单元数据上重新汇总，不用重扫。早先它在扫描时就按「二级包」聚合，粒度一旦定下来，图上就没法再往里看。
 
-`write_index` 把结果拆成 index.json（单元、边、目录树，画图用，小）和 symbols.json（符号、文件映射、行数、哈希、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:608）。`file_sha` 和 `files`、`file_loc` 一样是按文件的数据，放进 symbols.json（scan.py:610）；`payload.load_index` 读回来时，老的 symbols.json 没有这个键就是 None（payload.py:37），`runs.file_state` 据此决定怎么比。写完它会把拆出去的键塞回 index（scan.py:617 的「调用方还要用」），因为调用方接着还要在同一个字典上算切面、建交叉引用。
+`write_index` 把结果拆成 index.json（单元、边、目录树，画图用，小）和 symbols.json（符号、文件映射、行数、哈希、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:608）。`file_sha` 和 `files`、`file_loc` 一样是按文件的数据，放进 symbols.json（scan.py:610）；`payload.load_index` 读回来时，老的 symbols.json 没有这个键就是 None（payload.py:51），`runs.file_state` 据此决定怎么比。写完它会把拆出去的键塞回 index（scan.py:617 的「调用方还要用」），因为调用方接着还要在同一个字典上算切面、建交叉引用。
 
 同样放在 symbols.json 里的还有 `name_refs`（scan.py:580）：字符串常量里写着的仓库内类名——大写开头的标识符，或者 `"pkg.mod.Cls"` / `"pkg.mod:Cls"` 这种带模块的类路径（后者连模块一起记下）；`__all__` 里的是再导出清单，不收（scan.py:361）。它回答的是动态分派的「在哪儿按名字接上的」：注册表 `{"Arch": ("pkg", "mod", "Cls")}`、插件表、配置里的 worker_cls。扫的时候先把所有像类名的字符串收下，扫完再只留仓库里真有这个类名的。
 
-交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用的 xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:81）。放在同一条命令里、紧跟着写 index，是为了让 xref 和符号表是同一时刻的快照，两边的行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」，xref 那套带作用域的第二遍解析不拖进来。
+交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用的 xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:83）。放在同一条命令里、紧跟着写 index，是为了让 xref 和符号表是同一时刻的快照，两边的行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」，xref 那套带作用域的第二遍解析不拖进来。
 
 ## 读法
 1. 模块 docstring（scan.py:1）——两个产出文件各有什么，「架构高度」的定义和为什么不用 SCC
@@ -33,12 +33,12 @@ refs: scan.py:116@e3529493,scan.py:589@f74f5b17,scan.py:608@2a8f89e3,scan.py:610
 每个 `.py` 先 `read_bytes`（scan.py:298），同一份字节派两个用处：
 
 - **解码**（scan.py:301）：用 `utf-8-sig`。Windows 编辑器存的文件开头常带 BOM，按普通 utf-8 解码时 BOM 会变成源码里的一个 U+FEFF 字符，`ast.parse` 直接报 `SyntaxError`——早先这种文件整个被算进解析失败（`n_parse_errors`），它的单元、符号、边全从图上消失。utf-8-sig 在解码时就去掉 BOM，行号不受影响（BOM 不占行）。`bytes.decode` 不像 `read_text` 那样做通用换行转换，所以这里手动把 CRLF 和单独的 CR 换成 LF：行数（`src.count("\n")`，scan.py:309）和第二遍查 noqa 用的 `src_lines` 与改用字节读之前完全一样，只用 CR 换行的老文件也不会被算成一行。xref 那边用 `read_text` 读、再手动去掉开头的 BOM，两边对同一个文件看到的仍是同一份文本。
-- **哈希**（scan.py:312）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:78）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:111）是同一种，三边能直接比。必须哈希原始字节而不是解码后的文本：另外两边哈希的都是磁盘上的字节，改成哈希文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，不再多读一遍（docs/design/runs.md 3.5）；这也保证了哈希和 index 里的行号出自同一份内容——分两次读的话，两次之间文件被改，就会记下一个版本的哈希、另一个版本的行号。
+- **哈希**（scan.py:312）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:90）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:111）是同一种，三边能直接比。必须哈希原始字节而不是解码后的文本：另外两边哈希的都是磁盘上的字节，改成哈希文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，不再多读一遍（docs/design/runs.md 3.5）；这也保证了哈希和 index 里的行号出自同一份内容——分两次读的话，两次之间文件被改，就会记下一个版本的哈希、另一个版本的行号。
 
 `file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:303 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
 
 ### 为什么过期判断要和 index 比
-run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:697）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；老办法 `trace.stale_files` 拿 run 去比工作区，这种时候会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
+run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:709）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；老办法 `trace.stale_files` 拿 run 去比工作区，这种时候会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
 
 ### 架构高度而不是拓扑分层
 `alt = (出 − 入) / (出 + 入)`（scan.py:539）。docstring 里记了为什么：Python 仓库普遍循环 import，在 vllm-omni 上 30 个包有 20 个塌进同一个强连通分量，缩点后分层信息全丢；最长路径分层又会退化成 19 层的链。出入度比值不需要无环。这里算的是单元的高度；图上节点的高度由 `cut.view` 在切面上重算（节点内部的边不算）。

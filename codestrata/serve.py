@@ -2,6 +2,7 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
+    GET  /api/app                 {home}：从主菜单（codestrata app）打开时主菜单的地址，页面上放回去的链接
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/seq?run=&open=&t0=&t1=&max=&fold=
                                   时序图：一个时间窗里切面节点之间的消息（没给 t1 就从 t0 / 阶段起点
@@ -28,7 +29,8 @@
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
-只用标准库。只监听 127.0.0.1；所有路径 realpath 后必须落在仓库内。
+只用标准库。只监听 127.0.0.1，Host 头必须是本机这个端口（防 DNS rebinding）；所有路径 realpath 后
+必须落在仓库内。
 """
 from __future__ import annotations
 
@@ -85,26 +87,31 @@ td.n a{{color:inherit;text-decoration:none}}td.c{{padding:0 14px;white-space:pre
 <script>location.hash||(location.hash='#L{line}');</script>"""
 
 
-class Handler(BaseHTTPRequestHandler):
-    repo: Path
-    idx: dict
-    default_run: str | None = None   # serve --hot 解析成的「完整 id@阶段」：页面没指定时先选它
-    _graphs: dict = {}          # (切面, 宽度, run) → 已算好的 /api/graph 结果
-    _search: bytes | None = None  # /api/search-index，算一次
-    _hots: dict = {}            # (run id, 阶段, (counts、run.json 的 mtime)) → (hot, meta)；最近 8 个
-    _stale: dict = {}           # (run id, detail 的 mtime) → 录制后改过几个文件（下拉列表用）
-    _lock = threading.Lock()
+def asset(name: str) -> tuple[bytes, str] | None:
+    """前端静态文件（web/ 下）：(内容, Content-Type)；不在 web/ 里或不存在就是 None"""
+    f = (WEB / name).resolve()
+    if not str(f).startswith(str(WEB) + os.sep) or not f.is_file():
+        return None
+    ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"
+    if ctype.startswith("text/") or ctype in ("application/javascript",):
+        ctype += "; charset=utf-8"
+    return f.read_bytes(), ctype
+
+
+class BaseHandler(BaseHTTPRequestHandler):
+    """两个本地服务（serve 和 app）共用的：发响应、发 JSON、读 JSON 请求体、静默日志"""
 
     def log_message(self, fmt, *a):
         if os.environ.get("CODESTRATA_VERBOSE"):
             super().log_message(fmt, *a)
 
-    # ---- 基础 ----
-    def _send(self, code: int, body: bytes, ctype: str = "text/html; charset=utf-8"):
+    def _send(self, code: int, body: bytes, ctype: str = "text/html; charset=utf-8", headers: dict | None = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         if body:
             self.wfile.write(body)
@@ -112,6 +119,42 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code: int = 200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
+    def _host_ok(self) -> bool:
+        """Host 头必须是本机的这个端口：防 DNS rebinding（别的域名解析到 127.0.0.1，浏览器就会把
+        那个网页的请求发到这里来；Host 头还是那个域名）。两个本地服务都能执行本机操作（写解读、
+        开编辑器、跑命令），都要挡"""
+        port = self.server.server_address[1]
+        return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+    def _body_json(self, limit: int = 2_000_000):
+        """请求体按 JSON 对象读：(dict, None) 或 (None, 错误说明)"""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > limit:
+            return None, "body 为空或过大"
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None, "body 不是合法 JSON"
+        return (body, None) if isinstance(body, dict) else (None, "body 要是一个 JSON 对象")
+
+    def _asset(self, path: str):
+        """GET 前端静态文件；/ 是 index"""
+        a = asset("index.html" if path in ("/", "") else path.lstrip("/"))
+        return self._send(200, *a) if a else self._send(404, b"not found", "text/plain")
+
+
+class Handler(BaseHandler):
+    repo: Path
+    idx: dict
+    default_run: str | None = None   # serve --hot 解析成的「完整 id@阶段」：页面没指定时先选它
+    home: str | None = None          # 从主菜单（codestrata app）打开的：页面上放一个回主菜单的链接
+    _graphs: dict = {}          # (切面, 宽度, run) → 已算好的 /api/graph 结果
+    _search: bytes | None = None  # /api/search-index，算一次
+    _hots: dict = {}            # (run id, 阶段, (counts、run.json 的 mtime)) → (hot, meta)；最近 8 个
+    _stale: dict = {}           # (run id, detail 的 mtime) → 录制后改过几个文件（下拉列表用）
+    _lock = threading.Lock()
+
+    # ---- 基础 ----
     def _in_repo(self, rel: str) -> Path | None:
         try:
             p = (self.repo / rel).resolve()
@@ -236,9 +279,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET ----
     def do_GET(self):
+        if not self._host_ok():
+            return self._send(403, b"bad host", "text/plain")
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query, keep_blank_values=True)   # ?open= 是「什么都不展开」，不是缺省
         path = u.path
+
+        if path == "/api/app":
+            return self._json({"home": self.home})
 
         if path == "/api/runs":
             try:
@@ -381,31 +429,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, b"not found", "text/plain")
             return self._send(200, _code_page(self.repo, rel, line).encode())
 
-        # ---- 前端静态资源 ----
-        name = "index.html" if path in ("/", "") else path.lstrip("/")
-        f = (WEB / name).resolve()
-        if not str(f).startswith(str(WEB) + os.sep) or not f.is_file():
-            return self._send(404, b"not found", "text/plain")
-        ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype in ("application/javascript",):
-            ctype += "; charset=utf-8"
-        return self._send(200, f.read_bytes(), ctype)
+        return self._asset(path)
 
     # ---- PUT：写解读 ----
     def do_PUT(self):
+        if not self._host_ok():
+            return self._send(403, b"bad host", "text/plain")
         u = urllib.parse.urlparse(self.path)
         if not u.path.startswith("/api/notes/"):
             return self._send(404, b"not found", "text/plain")
         t = self._target("/api/notes/", u.path)
         if not t:
             return self._json({"error": "unknown target"}, 404)
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0 or n > 2_000_000:
-            return self._json({"error": "body 为空或过大"}, 400)
-        try:
-            body = json.loads(self.rfile.read(n).decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return self._json({"error": "body 不是合法 JSON"}, 400)
+        body, err = self._body_json()
+        if err:
+            return self._json({"error": err}, 400)
         md = (body.get("md") or "").strip()
         if not md:
             return self._json({"error": "md 为空"}, 400)
@@ -415,9 +453,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(_notes.save(self.repo, self.idx, t, md, meta=meta))
 
 
-def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
+def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | None = None) -> int:
     idx = _payload.load_index(repo)
-    Handler.repo, Handler.idx = repo, idx
+    Handler.repo, Handler.idx, Handler.home = repo, idx, home
     Handler._graphs, Handler._hots, Handler._stale = {}, {}, {}
     Handler._search = None
     # --hot 只决定页面打开时先选哪个 run（页面上随时能换）；启动时先加载一遍：写错了当场报出来
@@ -432,19 +470,8 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None) -> int:
     except SystemExit as e:                   # runs/ 是软链、盘没挂上：静态图照样能看
         print(f"  ⚠ {e}")
         n_runs = 0
-    # index 落后多少：scan 之后改过的文件（按 xref 记的 fp 比）。图和搜索用的是启动时的 index，
-    # 落后了就说一声（Ctrl+点击的交叉引用逐个文件核对，不受影响）
-    lag = 0
-    try:
-        fp = ((_payload.load_xref(repo) or {}).get("x") or {}).get("fp") or {}
-        for rel, (size, mt) in fp.items():
-            try:
-                st = (repo / rel).stat()
-                lag += (st.st_size, st.st_mtime_ns) != (size, mt)
-            except OSError:
-                lag += 1
-    except Exception:                         # noqa: BLE001 —— 只是提示，算不出来就不说
-        lag = 0
+    # index 落后多少：图和搜索用的是启动时的 index，落后了就说一声
+    lag = _payload.index_lag(repo)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     ed = _editor()
     todo = _notes.tasks(repo, idx)

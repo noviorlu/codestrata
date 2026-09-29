@@ -47,6 +47,18 @@ _MIGRATED: set[str] = set()  # 这个进程里已经检查过迁移的仓库
 
 # ---------------------------------------------------------------- 小工具
 
+def has_runs(repo: Path) -> bool:
+    """录过没有：只看 .codestrata/runs 在不在（是软链也算，指向的盘没挂上时 catalog 会报出来）。
+    不像 runs_dir 那样顺手建目录——只是看一眼状态的地方（主菜单的项目卡片）不该往仓库里写东西"""
+    return os.path.lexists(Path(repo) / ".codestrata" / "runs")
+
+
+def fmt_seconds(x: float) -> str:
+    """秒数写进命令行：整数就不带小数点（900 而不是 900.0），别的原样（不像 :g 会把大数截成 6 位有效数字）"""
+    x = float(x)
+    return str(int(x)) if x.is_integer() else repr(x)
+
+
 def runs_dir(repo: Path) -> Path:
     d = Path(repo) / ".codestrata" / "runs"
     if not d.is_dir():
@@ -1003,11 +1015,11 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
     rec = run.get("rec") or {}
     parts = ["codestrata", "trace", str(Path(run.get("cwd") or repo).resolve()), f"--case={run['case']}"]
     if rec.get("timeout"):
-        parts.append(f"--timeout={rec['timeout']:g}")
+        parts.append(f"--timeout={fmt_seconds(rec['timeout'])}")
     if rec.get("events"):
         parts.append("--events")
     if rec.get("stop_grace") not in (None, 90.0):
-        parts.append(f"--stop-grace={rec['stop_grace']:g}")
+        parts.append(f"--stop-grace={fmt_seconds(rec['stop_grace'])}")
     for k, v in (run.get("env") or {}).items():
         parts.append(f"--env={k}={REDACTED if redact and _ENV_SECRET.search(k) else v}")
     for f in rec.get("attach") or []:

@@ -29,14 +29,20 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[highlight]'
 
 ```bash
 codestrata scan  /path/to/repo                    # 静态扫描：小仓库不到 1 秒，1600 个文件约 13 秒
-codestrata serve /path/to/repo --port 8930        # 浏览器打开 http://127.0.0.1:8930/ 看总图
+codestrata serve /path/to/repo                    # 浏览器打开 http://127.0.0.1:8900/ 看总图
 codestrata trace /path/to/repo --case demo -- python your_script.py   # 录一次真实运行
-codestrata serve /path/to/repo --port 8930 --hot demo                 # 同一张图上叠这次跑到的调用
+codestrata serve /path/to/repo --hot demo                             # 同一张图上叠这次跑到的调用
 ```
 
-`--` 后面是你平时跑它的命令（脚本、pytest、起服务的 sh 都行）。想按阶段看（启动 / 处理请求 / 退出），
+`--` 后面是你平时跑它的命令（脚本、pytest、起服务的 sh 都行），**在仓库根目录执行**——相对路径按仓库根目录算。想按阶段看（启动 / 处理请求 / 退出），
 加 `--phase serving=模块:函数`：这个函数第一次被调到时切到新阶段，不用改脚本。
 录下的 run 存在目标仓库的 `.codestrata/runs/`，**只有这一份**；`.codestrata/` 里别的东西都能随时重建。
+
+不想敲命令也行：`codestrata app` 在浏览器里打开一个主菜单——「打开文件夹…」挑仓库，每个项目三个按钮：
+**静态扫描**、**录制运行…**（填命令、case 名、阶段，阶段的函数名能补全；录过的会按最近一次预先填好）、
+**打开图**（替你起 `codestrata serve`，页面左上角有回主菜单的链接）。扫描和录制的输出实时显示，能中途停止。
+主菜单能在本机执行命令，所以只监听 127.0.0.1、要带口令：第一次用终端里打印的链接打开（带 `?t=…`），
+浏览器记住之后直接访问 `http://127.0.0.1:8930/` 就行。项目清单在 `~/.config/codestrata/projects.json`。
 
 ## 箭头：一条依赖到底承载了什么
 
@@ -285,6 +291,7 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 
 ```bash
 codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描 + 交叉引用；默认切面按规模自动拆分
+codestrata app [--port 8930] [--no-browser]     # 主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图
 codestrata serve <repo> [--hot RUN[@阶段]]     # 本地部署前端；--hot 只是打开时先选哪个 run，页面上随时换
 codestrata trace <repo> --case NAME [--events] [--timeout S] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
                                               # 跑一个 case，记录真实调用（子进程一并 trace），存成新的 run

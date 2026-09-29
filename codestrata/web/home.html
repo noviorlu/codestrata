@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>codestrata · 项目</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="home.css">
+<!-- 主菜单（codestrata app）：项目清单 + 每个项目的三个按钮（扫描、录制运行、打开图）。
+     两个对话框：挑文件夹、录制表单。数据都来自 /api/*（见 codestrata/app.py） -->
+<main class="home">
+  <header class="hhead">
+    <span class="kick">codestrata</span>
+    <h1>项目</h1>
+    <button class="btn primary" id="addBtn">打开文件夹…</button>
+  </header>
+  <p class="hint" id="err" hidden></p>
+  <div id="list" class="plist" aria-live="polite"></div>
+</main>
+
+<dialog id="pick" class="dlg" aria-labelledby="pickT">
+  <h2 id="pickT">打开文件夹</h2>
+  <p class="sub">选一个 Python 仓库的根目录（有 pyproject.toml / setup.py 或者 .git 的通常就是）。</p>
+  <div class="pathrow">
+    <button class="btn" id="pickUp" title="上一级">↑</button>
+    <input id="pickPath" spellcheck="false" aria-label="路径">
+    <button class="btn" id="pickGo">转到</button>
+  </div>
+  <p class="hint" id="pickErr" hidden></p>
+  <ul id="pickList" class="dirs"></ul>
+  <div class="acts">
+    <span class="sub" id="pickHere"></span>
+    <button class="btn" id="pickCancel">取消</button>
+    <button class="btn primary" id="pickOk">选这个文件夹</button>
+  </div>
+</dialog>
+
+<dialog id="rec" class="dlg wide" aria-labelledby="recT">
+  <h2 id="recT">录制运行</h2>
+  <p class="sub" id="recRepo"></p>
+  <form id="recForm" autocomplete="off">
+    <label class="row" id="fromRow">照着一个已有的 run 填（复刻）
+      <select id="recFrom"><option value="">— 不用，从空白开始 —</option></select>
+    </label>
+    <label class="row">命令 <span class="sub">在仓库根目录执行，相对路径按仓库根目录算</span>
+      <textarea id="recCmd" rows="2" spellcheck="false" placeholder="python examples/demo.py --flag x"></textarea>
+    </label>
+    <div class="cols">
+      <label class="row">case 名 <span class="sub">同一个 case 可以录很多次</span>
+        <input id="recCase" spellcheck="false" placeholder="demo">
+      </label>
+      <label class="row">超时（秒，可空）
+        <input id="recTimeout" type="number" min="1" step="1" placeholder="不限">
+      </label>
+    </div>
+    <fieldset class="row">
+      <legend>阶段 <span class="sub">某个函数第一次被调用时切到新阶段，比如启动 / 处理请求 / 退出；可以不设</span></legend>
+      <div id="recPhases"></div>
+      <button type="button" class="btn small" id="recAddPhase">＋ 加一个阶段</button>
+      <datalist id="symList"></datalist>
+    </fieldset>
+    <label class="row">环境变量 <span class="sub">每行一个 K=V，只给这次录制的命令</span>
+      <textarea id="recEnv" rows="2" spellcheck="false" placeholder="CUDA_VISIBLE_DEVICES=0"></textarea>
+    </label>
+    <details class="row">
+      <summary>更多</summary>
+      <label class="row">备注 <input id="recNote"></label>
+      <label class="row">附带存下的文件 <span class="sub">每行一个（配置文件之类，存进 run 里方便以后看）</span>
+        <textarea id="recAttach" rows="2" spellcheck="false"></textarea>
+      </label>
+      <label class="check"><input type="checkbox" id="recEvents" checked> 录时序事件（时序图要用；很长的运行会多占一些空间）</label>
+    </details>
+    <p class="hint" id="recErr" hidden></p>
+    <div class="acts">
+      <button type="button" class="btn" id="recCancel">取消</button>
+      <button type="submit" class="btn primary">开始录制</button>
+    </div>
+  </form>
+</dialog>
+
+<template id="phaseRow">
+  <div class="phase">
+    <input class="pname" placeholder="阶段名，如 serving" spellcheck="false">
+    <input class="pfunc" placeholder="模块:函数，如 pkg.server:Server.handle" spellcheck="false" list="symList">
+    <button type="button" class="btn small ghost" aria-label="删掉这个阶段">×</button>
+  </div>
+</template>
+
+<script src="home.js"></script>

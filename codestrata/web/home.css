@@ -1,0 +1,78 @@
+/* 主菜单（home.html）。颜色、字体、明暗主题都用 app.css 里的变量，这里只有主菜单自己的部件 */
+.home{max-width:980px;margin:0 auto;padding:28px 20px 60px}
+.hhead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.hhead h1{margin:0}
+.hhead .btn{margin-left:auto}
+#err{color:var(--stale);margin:0 0 10px}
+
+.btn{font:13px/1 inherit;padding:7px 13px;border-radius:7px;border:1px solid var(--line);background:var(--card);
+  color:var(--ink);cursor:pointer}
+.btn:hover:not(:disabled){border-color:var(--sel)}
+.btn:focus-visible{outline:2px solid var(--sel);outline-offset:1px}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.primary{background:var(--sel);border-color:var(--sel);color:#fff}
+.btn.small{font-size:12px;padding:4px 9px}
+.btn.ghost{border-color:transparent;background:none;color:var(--muted)}
+.btn.warn{color:var(--stale)}
+
+/* 项目卡片 */
+.plist{display:grid;gap:12px}
+.empty{padding:40px 20px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+.card .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.card .name{font-size:16px;font-weight:650;color:var(--ink)}
+.card .path{font:12px/1.4 ui-monospace,monospace;color:var(--faint);overflow-wrap:anywhere}
+.card .rm{margin-left:auto}
+.card .facts{margin:6px 0 10px;font-size:13px;color:var(--muted);display:flex;gap:6px 14px;flex-wrap:wrap}
+.card .facts .warn{color:var(--stale)}
+.card .facts .ok{color:var(--cool)}
+.card .btns{display:flex;gap:8px;flex-wrap:wrap}
+
+/* 任务输出 */
+.job{margin-top:12px;border-top:1px solid var(--rule);padding-top:10px}
+.job .jh{display:flex;align-items:center;gap:10px;font-size:13px}
+.job .jh .st{font-weight:600;color:var(--ink)}
+.job .jh .st.run{color:var(--hot)}
+.job .jh .st.bad{color:var(--stale)}
+.job .jh .st.good{color:var(--cool)}
+.job .jh .btn{margin-left:auto}
+.job pre{margin:8px 0 0;max-height:260px;overflow:auto;background:var(--sunk);border-radius:8px;padding:8px 10px;
+  font:11.5px/1.5 ui-monospace,monospace;color:var(--body);white-space:pre-wrap;word-break:break-word}
+.job .cmd{font:11px/1.4 ui-monospace,monospace;color:var(--faint);margin-top:4px;overflow-wrap:anywhere}
+
+/* 对话框 */
+.dlg{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--body);padding:18px 20px;
+  width:min(640px,calc(100vw - 32px));box-shadow:var(--shadow)}
+.dlg.wide{width:min(760px,calc(100vw - 32px))}
+.dlg::backdrop{background:rgba(10,14,20,.45)}
+.dlg h2{margin:0 0 4px;font-size:18px;color:var(--ink)}
+.dlg .sub{color:var(--muted);font-size:12.5px;font-weight:400}
+.dlg input,.dlg textarea,.dlg select{font:13px/1.4 ui-monospace,monospace;width:100%;padding:7px 9px;border-radius:7px;
+  border:1px solid var(--line);background:var(--paper);color:var(--ink)}
+.dlg input:focus,.dlg textarea:focus,.dlg select:focus{outline:2px solid var(--sel);outline-offset:-1px}
+.dlg .acts{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:14px}
+.dlg .acts .sub{margin-right:auto;overflow-wrap:anywhere}
+.dlg .hint{color:var(--stale);margin-top:8px;white-space:pre-wrap}
+
+.pathrow{display:flex;gap:8px;margin:12px 0 8px}
+.pathrow .btn{flex:none;white-space:nowrap}
+.dirs{list-style:none;margin:0;padding:0;max-height:min(50vh,420px);overflow:auto;border:1px solid var(--line);border-radius:8px}
+.dirs li button{all:unset;box-sizing:border-box;display:flex;gap:8px;align-items:center;width:100%;padding:6px 10px;cursor:pointer;
+  font-size:13.5px;color:var(--ink)}
+.dirs li button:hover,.dirs li button:focus-visible{background:var(--sel-bg)}
+.dirs li + li{border-top:1px solid var(--rule)}
+.dirs .none{padding:10px;color:var(--muted);font-size:13px}
+.tag{font:10.5px/1 ui-monospace,monospace;padding:3px 6px;border-radius:5px;background:var(--sunk);color:var(--muted)}
+.tag.py{background:var(--cool-bg);color:var(--cool)}
+.tag.sc{background:var(--hot-bg);color:var(--hot)}
+
+#recForm .row{display:block;margin-top:12px;font-size:13px;color:var(--ink)}
+#recForm .row > input,#recForm .row > textarea,#recForm .row > select{margin-top:4px}
+#recForm .cols{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+#recForm fieldset{border:0;padding:0}
+#recForm legend{padding:0;margin-bottom:4px}
+#recForm summary{cursor:pointer;color:var(--muted)}
+#recForm .check{display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px}
+#recForm .check input{width:auto}
+.phase{display:grid;grid-template-columns:1fr 2fr auto;gap:6px;margin-bottom:6px}
+@media (max-width:560px){#recForm .cols{grid-template-columns:1fr}.phase{grid-template-columns:1fr auto}.phase .pfunc{grid-column:1}}

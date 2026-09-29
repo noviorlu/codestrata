@@ -1,6 +1,7 @@
 """codestrata 命令行。
 
     codestrata scan  <repo>                      静态扫描 → .codestrata/index.json
+    codestrata app                               主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图
     codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 源码 + 解读 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
     codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
@@ -22,6 +23,7 @@ import re
 import sys
 from pathlib import Path
 
+from . import self_command
 from . import cut as _cut
 from . import notes as _notes
 from . import payload as _payload
@@ -583,7 +585,12 @@ _FS = {"changed": "录制后改过", "mismatch": "录制时就和仓库不一致
 
 def cmd_serve(a) -> int:
     from . import serve as _serve
-    return _serve.main(Path(a.repo).resolve(), port=a.port, hot=a.hot)
+    return _serve.main(Path(a.repo).resolve(), port=a.port, hot=a.hot, home=a.home)
+
+
+def cmd_app(a) -> int:
+    from . import app as _app
+    return _app.main(port=a.port, open_browser=not a.no_browser)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -702,7 +709,13 @@ def main(argv: list[str] | None = None) -> int:
     common(v)
     v.add_argument("--port", type=int, default=8900)
     v.add_argument("--hot", default=None, metavar="RUN")
+    v.add_argument("--home", default=None, help=argparse.SUPPRESS)   # 主菜单（codestrata app）起的：回主菜单的链接
     v.set_defaults(fn=cmd_serve)
+
+    m = sub.add_parser("app", help="主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图（浏览器里）")
+    m.add_argument("--port", type=int, default=8930)
+    m.add_argument("--no-browser", action="store_true", help="不自动打开浏览器，只打印地址")
+    m.set_defaults(fn=cmd_app)
 
     # 自己先按第一个 "--" 切开：argparse 的 REMAINDER 和可选位置参数放在一起时
     # 会互相抢参数（`trace . --case X -- cmd` 会报 --case 缺失）。
@@ -730,7 +743,7 @@ def _prog(from_argv: bool) -> list[str]:
     a0 = sys.argv[0] if from_argv and sys.argv else ""
     if a0 and not a0.endswith(("__main__.py", "-c")) and os.path.basename(a0) != "-m":
         return [os.path.abspath(a0)]
-    return [sys.executable, "-m", "codestrata"]
+    return self_command()
 
 
 def _cwd() -> str | None:

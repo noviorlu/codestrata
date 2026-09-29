@@ -642,3 +642,5 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .efold > .call,.efold > .cs,.efold > .csnip{margin-left:4px}
 .tr.ran > .symname{color:var(--hot)}
 .tree-tools .tree-hot{font-size:11.5px;padding:1px 8px}
+.homelink{font-size:12.5px;color:var(--muted);text-decoration:none;margin-right:4px}
+.homelink:hover,.homelink:focus-visible{color:var(--sel)}

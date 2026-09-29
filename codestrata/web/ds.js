@@ -82,7 +82,8 @@ window.CS = window.CS || {};
     reveal: function () { return Promise.reject(new Error('导出的单文件是固定切面')); },
     // 谁引用了这个定义：导出版没有全仓的引用表，只在内嵌了全文的文件里找
     refs: function (t) { return Promise.resolve(embeddedRefs(t)); },
-    openEditor: function () { return Promise.resolve(); }
+    openEditor: function () { return Promise.resolve(); },
+    home: function () { return Promise.resolve(null); }
   } : {
     mode: 'live',
     canWrite: true,
@@ -101,6 +102,8 @@ window.CS = window.CS || {};
     run: '',
     canSwitchRun: true,
     runs: function () { return j('/api/runs'); },
+    // 从主菜单（codestrata app）打开的：主菜单的地址（页面上放回去的链接）；直接 serve 的是 null
+    home: function () { return j('/api/app').then(function (r) { return r.home; }); },
     // 时序图：p = {open, t0, t1, max}；run 用当前的
     seq: function (p) {
       var q = ['run=' + encodeURIComponent(this.run)];
