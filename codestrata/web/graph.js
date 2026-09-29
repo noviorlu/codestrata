@@ -15,22 +15,44 @@ window.CS = window.CS || {};
   var NS = 'http://www.w3.org/2000/svg';
   function el(t, a) { var e = document.createElementNS(NS, t); for (var k in a) e.setAttribute(k, a[k]); return e; }
 
-  /* a、b 两个节点之间的路径。同泳道时从顶边拱过去，否则竖向三次贝塞尔。 */
-  function route(a, b) {
-    if (Math.abs(a.cy - b.cy) < 2) {
-      // 早先画成「a 右缘 → b 左缘」的直线，默认 b 在 a 右侧；b 在左侧时
-      // 这条线会反向穿过两个框、被框挡住，箭头也落在 b 的远端。
-      var dir = b.cx >= a.cx ? 1 : -1;
-      var sx = a.cx + dir * a.w * 0.22, ex = b.cx - dir * b.w * 0.22;
-      var top = Math.min(a.cy - a.h / 2, b.cy - b.h / 2);
-      var lift = Math.min(26, 12 + Math.abs(ex - sx) * 0.08);
-      return 'M' + sx + ',' + (a.cy - a.h / 2) + ' C' + sx + ',' + (top - lift) + ' '
-        + ex + ',' + (top - lift) + ' ' + ex + ',' + (b.cy - b.h / 2 - 3);
+  function sameLane(a, b) { return Math.abs(a.cy - b.cy) < 2; }
+
+  /* 每条边在两端节点上的接点：同一个节点同一条边（顶 / 底）上的接点沿宽度摊开，按另一端的横坐标
+     排序——左边来的接在左边、右边来的接在右边，交叉最少。早先都接在正中间，一个节点展开后
+     几十条箭头叠成一根。返回 "a|b" → [起点 x, 终点 x] */
+  function ports(N, pairs) {
+    var sides = {}, out = {};
+    function put(id, side, key, end, other) {
+      (sides[id + '|' + side] = sides[id + '|' + side] || []).push({ key: key, end: end, other: other });
     }
-    var y1 = a.cy + a.h / 2, y2 = b.cy - b.h / 2 - 3;
-    if (b.cy < a.cy) { y1 = a.cy - a.h / 2; y2 = b.cy + b.h / 2 + 3; }
-    var my = (y1 + y2) / 2;
-    return 'M' + a.cx + ',' + y1 + ' C' + a.cx + ',' + my + ' ' + b.cx + ',' + my + ' ' + b.cx + ',' + y2;
+    pairs.forEach(function (p) {
+      var a = N[p[0]], b = N[p[1]]; if (!a || !b) return;
+      var key = p[0] + '|' + p[1], down = b.cy > a.cy && !sameLane(a, b);
+      put(p[0], down ? 'b' : 't', key, 0, b.cx);     // 箭头一律从顶边进入目标（route）
+      put(p[1], 't', key, 1, a.cx);
+      out[key] = [a.cx, b.cx];
+    });
+    Object.keys(sides).forEach(function (k) {
+      var L = sides[k], n = N[k.slice(0, k.lastIndexOf('|'))];
+      if (L.length < 2) return;
+      L.sort(function (x, y) { return x.other - y.other || x.end - y.end; });
+      var span = Math.min(n.w * 0.8, 9 * (L.length - 1));      // 接点间距最多 9px，少的时候聚在中间
+      L.forEach(function (x, i) { out[x.key][x.end] = n.cx - span / 2 + span * i / (L.length - 1); });
+    });
+    return out;
+  }
+
+  /* a、b 两个节点之间的路径（sx、ex 是两端的接点横坐标）。箭头一律从顶边进入 b：
+     b 在下面时从 a 的底边竖着下去；b 在上面或同一泳道时从 a 的顶边出发，拱到 b 的上方再落进去 */
+  function route(a, b, sx, ex) {
+    var bt = b.cy - b.h / 2, ey = bt - 3;
+    if (b.cy > a.cy && !sameLane(a, b)) {
+      var y1 = a.cy + a.h / 2, my = (y1 + ey) / 2;
+      return 'M' + sx + ',' + y1 + ' C' + sx + ',' + my + ' ' + ex + ',' + my + ' ' + ex + ',' + ey;
+    }
+    var at = a.cy - a.h / 2, top = Math.min(at, bt);
+    var lift = Math.min(40, 14 + Math.abs(ex - sx) * 0.08);
+    return 'M' + sx + ',' + at + ' C' + sx + ',' + (top - lift) + ' ' + ex + ',' + (top - lift) + ' ' + ex + ',' + ey;
   }
 
   CS.graph = {
@@ -142,9 +164,10 @@ window.CS = window.CS || {};
       this.edges = [];
       var cnt = { ref: 0, imp: 0, warm: 0, dyn: 0 };
 
+      var P = ports(N, G.edges.concat(rtOnly));
       function add(src, dst, kind, hits, info) {
         var a = N[src], b = N[dst]; if (!a || !b) return;
-        var d = route(a, b);
+        var px = P[src + '|' + dst], d = route(a, b, px[0], px[1]);
         var ab = cmp ? (cmp.edges[src + '|' + dst] || [0, 0]) : null;
         var dab = cmp ? ((cmp.dyn || {})[src + '|' + dst] || [0, 0]) : null;
         var E = { a: src, b: dst, kind: kind, hits: hits, info: info, ab: ab,
