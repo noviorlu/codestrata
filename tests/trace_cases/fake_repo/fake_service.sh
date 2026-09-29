@@ -25,7 +25,7 @@ stop_group() {
 
 phase() { [[ -n "${CODESTRATA_OUT:-}" ]] && { echo "$1" > "$CODESTRATA_OUT/PHASE"; sleep 1.5; } || true; }
 
-for _ in $(seq 1 100); do [[ -s "$READY" ]] && break; sleep 0.1; done
+for _ in $(seq 1 300); do [[ -s "$READY" ]] && break; sleep 0.1; done   # 机器忙时服务起得慢：最多等 30 秒
 [[ -s "$READY" ]] || { echo "服务没起来" >&2; exit 1; }
 phase serving
 "$PY" -m fakesvc.client --port "$PORT" --n 3 || exit 1

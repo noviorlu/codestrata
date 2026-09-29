@@ -11,6 +11,33 @@
 
 点任意节点可以看到该符号的源码（带真实行号），本地模式下还能一键跳进编辑器。
 
+## 安装
+
+要 Python ≥ 3.10，只用标准库（Pygments 可选，用来给源码上色）：
+
+```bash
+git clone https://github.com/noviorlu/codestrata && cd codestrata
+python3 -m venv .venv && .venv/bin/pip install -e '.[highlight]'
+# 系统 Python 缺 venv 模块（Debian / Ubuntu 没装 python3-venv）时用 uv：
+#   uv venv .venv && VIRTUAL_ENV=.venv uv pip install -e '.[highlight]'
+```
+
+也可以不 clone：`pip install 'git+https://github.com/noviorlu/codestrata'`。
+**别 `pip install codestrata`**——PyPI 上的同名包是别人的，不是这个工具。
+
+## 三步上手
+
+```bash
+codestrata scan  /path/to/repo                    # 静态扫描：小仓库不到 1 秒，1600 个文件约 13 秒
+codestrata serve /path/to/repo --port 8930        # 浏览器打开 http://127.0.0.1:8930/ 看总图
+codestrata trace /path/to/repo --case demo -- python your_script.py   # 录一次真实运行
+codestrata serve /path/to/repo --port 8930 --hot demo                 # 同一张图上叠这次跑到的调用
+```
+
+`--` 后面是你平时跑它的命令（脚本、pytest、起服务的 sh 都行）。想按阶段看（启动 / 处理请求 / 退出），
+加 `--phase serving=模块:函数`：这个函数第一次被调到时切到新阶段，不用改脚本。
+录下的 run 存在目标仓库的 `.codestrata/runs/`，**只有这一份**；`.codestrata/` 里别的东西都能随时重建。
+
 ## 箭头：一条依赖到底承载了什么
 
 import 了不等于用了，用了不等于这次跑到了。每条边都拿「静态引用 × runtime 调用」交叉，

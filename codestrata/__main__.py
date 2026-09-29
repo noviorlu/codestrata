@@ -360,8 +360,11 @@ def cmd_trace(a) -> int:
         print("  （还没 scan，跑 codestrata scan 之后再 graph --hot 就能叠图）")
         return 0 if run["status"] != "failed" else 1
     hp = _trace.to_package_graph(tr, idx)
+    # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人
+    extra = "，".join(x for x in (f"{hp['anon']} 次在 lambda / 生成器表达式里" if hp.get("anon") else "",
+                                  f"{hp['module_frames']} 次是 import 时的模块顶层执行" if hp.get("module_frames") else "") if x)
     print(f"  映射到 {len(hp['packages'])} 个包 / {len(hp['symbols'])} 个符号"
-          f"（未映射调用 {hp['unmapped']}）")
+          + (f"（另有 {extra}：算到文件上，不单列函数）" if extra else ""))
     for k, v in sorted(hp["packages"].items(), key=lambda kv: -kv[1])[:12]:
         print(f"    {v:8d}  {k}")
     # 分了阶段、有 serving 的，默认建议只看 serving（启动时的初始化会淹没请求本身）

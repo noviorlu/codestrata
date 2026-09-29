@@ -443,7 +443,7 @@ window.CS = window.CS || {};
             + (ms.length ? '<button class="tg" aria-label="展开方法">' + (open ? '▾' : '▸') + '</button>' : '<span class="tg sp"></span>')
             + '<span class="k' + (isC ? ' c' : '') + '">' + (isC ? 'C' : 'f') + '</span>'
             + '<button class="tn-name symname" data-tsym="' + esc(x.key) + '" data-f="' + esc(f) + '" data-l="' + x.l + '">' + esc(x.n) + '</button>'
-            + '<span class="tn-meta">:' + x.l + (ms.length ? ' · ' + (T.onlyHot ? ms.length + ' 个方法被调到' : ms.length + ' 方法') : '') + '</span>'
+            + '<span class="tn-meta">:' + x.l + (ms.length ? ' · ' + ms.length + (isC ? ' 个方法' : ' 个内部函数') + (T.onlyHot ? '被调到' : '') : '') + '</span>'
             + (hx ? '<span class="rt">' + hx + '</span>' : '') + '</div>'
             + '<div class="snip"></div>'
             + (ms.length ? '<div class="tc">' + ms.map(function (m) {
