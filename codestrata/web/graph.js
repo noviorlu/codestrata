@@ -443,6 +443,8 @@ window.CS = window.CS || {};
         [E.p, E.x, E.halo, E.gap].forEach(function (x) { x.style.display = show ? '' : 'none'; });
         E.halo.classList.toggle('on', !!s.selEdge && mine);
         E.gap.classList.toggle('on', !!s.selEdge && mine);
+        // 选中的边挪到各自那一层的最上面：线可以叠在一起，但选中时要看得出哪根指到哪
+        if (mine) [E.halo, E.gap, E.p, E.x].forEach(function (x) { x.parentNode.appendChild(x); });
       });
       Object.keys(this.nodes).forEach(function (id) {
         var g = self.nodes[id];
