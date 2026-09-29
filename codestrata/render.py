@@ -23,11 +23,11 @@ def export(payload: dict, *, title: str | None = None, fragment: bool = False) -
     css = (WEB / "app.css").read_text(encoding="utf-8")
     js = "\n".join(f"/* ---- {n} ---- */\n" + (WEB / n).read_text(encoding="utf-8")
                    for n in SCRIPTS)
-    # 源码从 GitHub 取的导出（site.py）要在浏览器里高亮：多带一个 hl.js（别的导出是服务端高亮好的）。
+    # hl.js：浏览器里高亮。源码从 GitHub 取的导出（site.py）靠它高亮全文；所有模式下边详情里的代码片段
+    # （from 调用那一行、to 签名）也靠它——payload 只带纯文本，导出不会因为片段变大。
     # 单独一个 <script>：它用了正则的后行断言，老浏览器（Safari 16.4 之前）解析不了会整段报错——
-    # 和别的放在一起就整页都没了；分开的话只是没高亮（ds.js 退回纯文本）
-    hl = (f"<script>\n/* ---- hl.js ---- */\n{(WEB / 'hl.js').read_text(encoding='utf-8')}\n</script>\n"
-          if payload.get("link") else "")
+    # 和别的放在一起就整页都没了；分开的话只是没高亮（退回纯文本）
+    hl = f"<script>\n/* ---- hl.js ---- */\n{(WEB / 'hl.js').read_text(encoding='utf-8')}\n</script>\n"
     data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
 
     html = html.replace('<link rel="stylesheet" href="app.css">', f"<style>\n{css}\n</style>")

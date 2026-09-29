@@ -619,3 +619,26 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .eb2.warmb{color:var(--hotb);border-color:var(--hotb)}.eb2.both{color:var(--ink);border-color:var(--ink)}
 .rtA{color:var(--hot)}
 .ecount .only_b{color:var(--hotb)}
+
+/* 边详情：一对调用一张卡片（被调函数 + from 调用那一行 + to 签名） */
+.call{margin:8px 0;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.call .ch{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.call .ch b{color:var(--ink);font-family:ui-monospace,monospace;font-size:12.5px}
+.call .ch .rt{color:var(--hot);font-size:11.5px;font-weight:700}
+.call .ch .rtb{color:var(--hotb);font-size:11.5px;font-weight:700}
+.call .ch .cls{color:var(--faint);font-size:11px;font-family:ui-monospace,monospace;overflow-wrap:anywhere}
+.call .dtag{margin-left:auto;font-size:10.5px;color:var(--hot);border:1px dashed var(--hot);border-radius:4px;padding:0 4px;cursor:help}
+.call .cs{display:flex;align-items:baseline;gap:8px;margin-top:5px;font-size:11.5px;color:var(--muted)}
+.call .cs .lab{flex:none;width:28px;color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+.call .cs .who{color:var(--faint);font-family:ui-monospace,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.call .site{all:unset;cursor:pointer;color:var(--muted);font-family:ui-monospace,monospace;border-bottom:1px dotted var(--line)}
+.call .site:hover,.call .site:focus-visible{color:var(--sel);border-bottom-color:var(--sel)}
+.csnip{margin:3px 0 0 36px;padding:4px 7px;background:var(--sunk);border-radius:5px;font-size:11.5px;line-height:1.45;
+       white-space:pre-wrap;word-break:break-word;overflow:hidden}
+.call .via{margin:2px 0 0 36px;font-size:10.5px;color:var(--faint)}
+.efold{margin:10px 0 0}
+.efold summary{cursor:pointer;font-size:12.5px;color:var(--muted)}
+.efold summary .n{color:var(--faint);margin-left:5px;font-family:ui-monospace,monospace;font-size:11px}
+.efold > .call,.efold > .cs,.efold > .csnip{margin-left:4px}
+.tr.ran > .symname{color:var(--hot)}
+.tree-tools .tree-hot{font-size:11.5px;padding:1px 8px}

@@ -26,71 +26,65 @@ window.CS = window.CS || {};
       + esc(text) + '</button>' : '<span>' + esc(text) + '</span>';
   }
 
-  /* 动态分派：调用方函数体里调到它的那一行（payload._add_call_sites 按名字找的）。
-     一行都没找到（sites 是 []）说明中间隔了 __call__、回调或仓库外的代码——照实说 */
-  function callSites(r) {
-    return r.callers.map(function (c) {
-      if (!c.sites) return '';
-      if (!c.sites.length)
-        return '<div class="row csite"><span class="lab">调用处</span><span class="lab">' + esc(symLabel(c.sym))
-          + ' 里没直接写 ' + esc(c.callee) + '(…)：中间隔了一层 __call__、回调，或仓库外的代码</span></div>';
-      return c.sites.map(function (t) {
-        return '<div class="row csite"><span class="lab">调用处</span>' + jump(t, t.f.split('/').pop() + ':' + t.l)
-          + '<code>' + esc(t.s) + '</code></div>';
-      }).join('');
+  /* 一小段代码：浏览器里有 hl.js 就高亮，没有就纯文本 */
+  function code(lines) {
+    if (!lines || !lines.length) return '';
+    var t = lines.join('\n'), h = CS.hl ? CS.hl.lines(t, 'python') : null;
+    return '<pre class="csnip"><code>' + (h ? h.join('\n') : esc(t)) + '</code></pre>';
+  }
+  function fname(f) { return f.split('/').pop(); }
+
+  /* 边详情的主体：每一对「谁调了谁」一张卡片——被调的函数、from（调用方里调它的那一行）、
+     to（被调函数的签名）。按次数排；对比时写 A / B。 */
+  function callCards(E) {
+    var pairs = [], by = {};
+    E.items.forEach(function (x) {
+      if (x.status === 'static') return;
+      function add(rs, side) {
+        (rs || []).forEach(function (r) {
+          r.callers.forEach(function (c) {
+            var k = r.sym + '|' + c.sym, P = by[k];
+            if (!P) { P = by[k] = { r: r, c: c, n: 0, nb: 0, dyn: x.status === 'dynamic' || (x.status === 'only_b' && !x.n_uses) }; pairs.push(P); }
+            if (side === 'a') P.n += c.n; else P.nb += c.n;
+            if (!P.c.sites && c.sites) P.c = c;
+          });
+        });
+      }
+      add(x.runtime, 'a'); add(x.runtime_b, 'b');
+    });
+    pairs.sort(function (p, q) { return Math.max(q.n, q.nb) - Math.max(p.n, p.nb); });
+    var cmp = !!E.has_runtime_b, MAX = 40;
+    return { n: pairs.length, html: pairs.slice(0, MAX).map(function (P) {
+      var r = P.r, c = P.c, q = r.sym.slice(r.sym.indexOf(':') + 1), parts = q.split('.');
+      var site = c.sites && c.sites[0];
+      var from = site ? jump(site, fname(site.f) + ':' + site.l) : jump(c.def, fname(c.def ? c.def.f : '') + ':' + (c.def ? c.def.l : ''));
+      var more = site && c.sites.length > 1 ? c.sites.slice(1).map(function (t) { return jump(t, ':' + t.l); }).join('') : '';
+      var cnt = cmp ? '<span class="rt">A ' + P.n + '</span><span class="rtb">B ' + P.nb + '</span>' : '<span class="rt">×' + P.n + '</span>';
+      return '<div class="call' + (P.dyn ? ' dyn' : '') + '">'
+        + '<div class="ch">' + cnt + '<b>' + esc(parts.pop()) + '</b>'
+        + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '')
+        + (P.dyn ? '<span class="dtag" title="动态分派：调用方手里的对象要到运行时才知道是哪个类（self.model、注册表、getattr），'
+            + '代码里没有 import 或引用这个类">动态</span>' : '') + '</div>'
+        + '<div class="cs"><span class="lab">from</span>' + from + more
+        + '<span class="who">' + esc(symLabel(c.sym)) + '</span></div>'
+        + (site ? code([site.s]) : code(c.sig) + (c.sites ? '<div class="via">没直接写 ' + esc(c.callee) + '(…)：中间经过 __call__、回调或仓库外的代码</div>' : ''))
+        + '<div class="cs"><span class="lab">to</span>' + jump(r.def, r.def ? fname(r.def.f) + ':' + r.def.l : '（没找到定义）') + '</div>'
+        + code(r.sig)
+        + '</div>';
+    }).join('') + (pairs.length > MAX ? '<p class="hint">…还有 ' + (pairs.length - MAX) + ' 对，调用次数更少</p>' : '') };
+  }
+
+  /* 引用了但没跑到（没有 runtime 数据时就是全部静态引用）：from 第一处引用，to 被引用的定义 */
+  function refCards(items) {
+    return items.map(function (x) {
+      var u = x.uses[0];
+      return '<div class="call ref">'
+        + '<div class="ch"><b>' + esc(x.name.split('.').pop()) + '</b>'
+        + (x.n_uses > 1 ? '<span class="cls">引用 ' + x.n_uses + ' 处</span>' : '') + '</div>'
+        + (u ? '<div class="cs"><span class="lab">from</span>' + jump(u, fname(u.f) + ':' + u.l) + '</div>' + code(x.use_s ? [x.use_s] : null) : '')
+        + '<div class="cs"><span class="lab">to</span>' + jump(x.def, x.def ? fname(x.def.f) + ':' + x.def.l : '（没找到定义）') + '</div>'
+        + code(x.sig) + '</div>';
     }).join('');
-  }
-
-  /* 动态分派调到的类：仓库里用字符串写着它名字的地方（payload._add_wiring）——注册表、配置、插件表 */
-  function wiring(w) {
-    if (!w) return '';
-    var loose = w.same_name > 1 && w.refs.some(function (t) { return !t.exact; });
-    return w.refs.map(function (t) {
-      return '<div class="row csite"><span class="lab">按名字登记</span>' + jump(t, t.f.split('/').pop() + ':' + t.l)
-        + '<code>' + esc(t.s) + '</code></div>';
-    }).join('')
-      + (w.n > w.refs.length ? '<div class="row"><span class="lab">…还有 ' + (w.n - w.refs.length) + ' 处</span></div>' : '')
-      + (loose ? '<div class="row"><span class="lab">仓库里有 ' + w.same_name
-         + ' 个同名的类：只写了类名的字符串不一定指这一个</span></div>' : '');
-  }
-
-  function sec(title, items, why, E) {
-    if (!items.length) return '';
-    return '<div class="esec"><h4>' + esc(title) + '<span class="n">' + items.length + '</span></h4>'
-      + '<p class="why">' + esc(why) + '</p>' + items.map(function (x) {
-        var d = x.def, isC = d && d.k === 'class';
-        var head = '<div class="eh"><span class="k' + (isC ? ' c' : '') + '">' + (isC ? 'C' : 'f') + '</span>'
-          + jump(d, x.name, 'lk')
-          + (d ? '<span class="loc">' + esc(d.f + ':' + d.l) + '</span>' : '<span class="loc">（没找到定义）</span>')
-          + '<span class="cnt">' + (x.n_uses ? '引用 ' + x.n_uses + ' 处' : '') + '</span>'
-          + (x.calls_b != null
-             ? '<span class="rt" title="A：主 run　B：对比的 run">A ' + x.calls + ' / <span class="rtb">B ' + x.calls_b + '</span></span>'
-             : (x.calls ? '<span class="rt">调用 ' + x.calls + '</span>' : '')) + '</div>';
-        var body = '';
-        if (x.uses.length)
-          body += '<div class="row"><span class="lab">在 ' + esc(short(E.a)) + ' 里：</span>'
-            + x.uses.map(function (u) { return jump(u, u.f.split('/').pop() + ':' + u.l); }).join('')
-            + (x.n_uses > x.uses.length ? '<span>…</span>' : '') + '</div>';
-        body += wiring(x.wiring);
-        (x.runtime_b || []).forEach(function (r) {       // 对比的 run（B）谁调了它
-          var nm = r.sym === x.sym ? '直接调用' : r.sym.slice(r.sym.indexOf(':') + 1);
-          body += '<div class="row"><span class="lab rtb">B</span>'
-            + (r.sym === x.sym ? '<span>' + esc(nm) + '</span>' : jump(r.def, nm))
-            + '<span class="rtb">×' + r.n + '</span><span class="lab">←</span>'
-            + r.callers.map(function (c) { return jump(c.def, symLabel(c.sym)) + '<span class="lab">×' + c.n + '</span>'; }).join(' ')
-            + '</div>' + callSites(r);
-        });
-        x.runtime.forEach(function (r) {
-          // 类被调用时，runtime 看到的是具体方法；把「哪个方法被谁调了几次」摊开
-          var nm = r.sym === x.sym ? '直接调用' : r.sym.slice(r.sym.indexOf(':') + 1);
-          body += '<div class="row"><span class="lab">runtime</span>'
-            + (r.sym === x.sym ? '<span>' + esc(nm) + '</span>' : jump(r.def, nm))
-            + '<span class="rt">×' + r.n + '</span><span class="lab">←</span>'
-            + r.callers.map(function (c) { return jump(c.def, symLabel(c.sym)) + '<span class="lab">×' + c.n + '</span>'; }).join(' ')
-            + '</div>' + callSites(r);
-        });
-        return '<div class="ei ' + x.status + '">' + head + (body ? '<div class="eb">' + body + '</div>' : '') + '</div>';
-      }).join('') + '</div>';
   }
 
   var WHY = {
@@ -245,13 +239,22 @@ window.CS = window.CS || {};
       var byFile = {};
       syms.forEach(function (x) { (byFile[x.f] = byFile[x.f] || []).push(x); });
       Object.keys(byFile).forEach(function (f) { byFile[f].sort(function (a, b) { return a.l - b.l; }); });
-      var T = { id: id, files: files, byFile: byFile, pkg: id };
+      // hot 视图里默认只看调用到的文件和函数：点进一个模块，先看到的就是这次真正跑了哪些函数
+      var hotF = (D.hot && D.hot.files) || {};
+      var ran = files.some(function (f) { return hotF[f]; });
+      var T = { id: id, files: files, byFile: byFile, pkg: id, onlyHot: ran };
       this._tree = T;
       box.innerHTML = '<div class="tree-tools"><input type="search" class="tree-q" placeholder="筛选文件 / 类 / 函数…">'
+        + (ran ? '<button class="chip tree-hot" aria-pressed="true" title="只列这次 case 调用到的文件、类和函数">只看调用到的</button>' : '')
         + '<button class="linkbtn" data-tree="open">全部展开</button><button class="linkbtn" data-tree="close">全部折叠</button>'
         + '<span class="tree-sum"></span></div><div class="tree-body"></div>';
-      var self = this;
-      box.querySelector('.tree-q').oninput = function () { self._renderTree(this.value.trim().toLowerCase()); };
+      var self = this, qEl = box.querySelector('.tree-q');
+      qEl.oninput = function () { self._renderTree(this.value.trim().toLowerCase()); };
+      var th = box.querySelector('.tree-hot');
+      if (th) th.onclick = function () {
+        T.onlyHot = !T.onlyHot; th.setAttribute('aria-pressed', String(T.onlyHot));
+        self._renderTree(qEl.value.trim().toLowerCase());
+      };
       [].forEach.call(box.querySelectorAll('[data-tree]'), function (b) {
         b.onclick = function () {
           var open = b.dataset.tree === 'open';
@@ -270,7 +273,7 @@ window.CS = window.CS || {};
         if (f.toLowerCase().indexOf(q) !== -1) return true;
         return (T.byFile[f] || []).some(function (x) { return x.n.toLowerCase().indexOf(q) !== -1; });
       };
-      var files = T.files.filter(match);
+      var files = T.files.filter(function (f) { return match(f) && (!T.onlyHot || hotF[f]); });
       // 目录树：以所有文件的最长公共目录为根
       var pre = null;
       files.forEach(function (f) {
@@ -308,7 +311,7 @@ window.CS = window.CS || {};
           + (a.cls ? ' · ' + a.cls + ' 类' : '') + (a.fn ? ' · ' + a.fn + ' 函数' : '');
       };
       var hotB = function (n) { return n ? '<span class="rt" title="这次 case 里的调用次数">' + n + '</span>' : ''; };
-      var openDirs = !!q || total.files <= 40, openFiles = !!q || total.files <= 3;
+      var openDirs = !!q || T.onlyHot || total.files <= 40, openFiles = !!q || total.files <= 3 || (T.onlyHot && total.files <= 6);
       var LANG = { py: 'Py', pyi: 'Py', cu: 'CUDA', cuh: 'CUDA', c: 'C', cc: 'C++', cpp: 'C++', cxx: 'C++',
                    h: 'C++', hh: 'C++', hpp: 'C++', inl: 'C++', md: 'MD' };
       function fileRow(f, depth) {
@@ -331,7 +334,7 @@ window.CS = window.CS || {};
         n.files.forEach(function (f) { h += fileRow(f, depth + 1); });
         return h + '</div></div>';
       }
-      box.querySelector('.tree-sum').textContent = files.length + (q ? ' / ' + T.files.length : '') + ' 个文件';
+      box.querySelector('.tree-sum').textContent = files.length + (q || T.onlyHot ? ' / ' + T.files.length : '') + ' 个文件';
       var body = box.querySelector('.tree-body');
       body.innerHTML = files.length ? dirHtml(root, 0, true) : '<p class="hint">没有匹配的文件或符号</p>';
       var self = this;
@@ -363,7 +366,14 @@ window.CS = window.CS || {};
     /* 从搜索栏过来：在当前模块的文件树里展开到这个文件（给了 key 就再展开到这个类 / 函数，
        在它下面放源码片段），标出来。返回标出来的那一行，调用方决定要不要滚过去 */
     focusIn: function (rel, key, line) {
-      var self = this, box = document.getElementById('tree'), n = null;
+      var self = this, box = document.getElementById('tree'), n = null, T0 = this._tree;
+      // 要去的文件 / 函数这次没跑到：「只看调用到的」会把它藏起来，先关掉
+      var hot0 = D.hot || {};
+      if (T0 && T0.onlyHot && box && (!(hot0.files || {})[rel] || (key && !(hot0.symbols || {})[key]))) {
+        T0.onlyHot = false;
+        var th = box.querySelector('.tree-hot'); if (th) th.setAttribute('aria-pressed', 'false');
+        var qe = box.querySelector('.tree-q'); this._renderTree(qe ? qe.value.trim().toLowerCase() : '');
+      }
       [].forEach.call(box ? box.querySelectorAll('.tn.file') : [], function (x) { if (x.dataset.file === rel) n = x; });
       if (!n) {                                   // 这个模块的文件树里没有它（不该发生）：片段放在最下面
         if (key) this.showSource(this._tree && this._tree.pkg, key, null, { f: rel, l: line });
@@ -413,26 +423,35 @@ window.CS = window.CS || {};
           if (parts.length === 2) (kids[parts[0]] = kids[parts[0]] || []).push(x);
         });
         var list = all ? all.filter(function (x) { return x.n.indexOf('.') === -1; }) : top;
+        // 一个类跑了多少次：它自己加上它的方法。有方法被调到的类默认展开，被调到的名字标橙
+        var hits = function (x) {
+          return (hotS[x.key] || 0) + (kids[x.n] || []).reduce(function (a, m) { return a + (hotS[m.key] || 0); }, 0);
+        };
+        if (T.onlyHot) list = list.filter(function (x) { return hits(x) > 0; });
         if (q) {
           var hit = list.filter(function (x) { return x.n.toLowerCase().indexOf(q) !== -1; });
           if (hit.length) list = hit;
         }
-        if (!list.length) { tc.innerHTML = '<div class="tr empty" style="--d:' + depth + '">（没有类或函数）</div>'; return; }
+        if (!list.length) { tc.innerHTML = '<div class="tr empty" style="--d:' + depth + '">（' + (T.onlyHot ? '这次没有调用到这里的类或函数' : '没有类或函数') + '）</div>'; return; }
         tc.innerHTML = list.map(function (x) {
-          var ms = kids[x.n] || [], isC = x.k === 'class';
-          return '<div class="tn sym' + (ms.length ? ' closed' : '') + '">'
-            + '<div class="tr" style="--d:' + depth + '">'
-            + (ms.length ? '<button class="tg" aria-label="展开方法">▸</button>' : '<span class="tg sp"></span>')
+          var ms = kids[x.n] || [], isC = x.k === 'class', hx = hits(x);
+          var msHot = ms.filter(function (m) { return hotS[m.key]; });
+          if (T.onlyHot) ms = msHot;
+          var open = ms.length && msHot.length;
+          return '<div class="tn sym' + (ms.length && !open ? ' closed' : '') + '">'
+            + '<div class="tr' + (hx ? ' ran' : '') + '" style="--d:' + depth + '">'
+            + (ms.length ? '<button class="tg" aria-label="展开方法">' + (open ? '▾' : '▸') + '</button>' : '<span class="tg sp"></span>')
             + '<span class="k' + (isC ? ' c' : '') + '">' + (isC ? 'C' : 'f') + '</span>'
             + '<button class="tn-name symname" data-tsym="' + esc(x.key) + '" data-f="' + esc(f) + '" data-l="' + x.l + '">' + esc(x.n) + '</button>'
-            + '<span class="tn-meta">:' + x.l + (ms.length ? ' · ' + ms.length + ' 方法' : '') + '</span>'
-            + (hotS[x.key] ? '<span class="rt">' + hotS[x.key] + '</span>' : '') + '</div>'
+            + '<span class="tn-meta">:' + x.l + (ms.length ? ' · ' + (T.onlyHot ? ms.length + ' 个方法被调到' : ms.length + ' 方法') : '') + '</span>'
+            + (hx ? '<span class="rt">' + hx + '</span>' : '') + '</div>'
             + '<div class="snip"></div>'
             + (ms.length ? '<div class="tc">' + ms.map(function (m) {
-                return '<div class="tn sym"><div class="tr" style="--d:' + (depth + 1) + '"><span class="tg sp"></span>'
+                var hm = hotS[m.key] || 0;
+                return '<div class="tn sym"><div class="tr' + (hm ? ' ran' : '') + '" style="--d:' + (depth + 1) + '"><span class="tg sp"></span>'
                   + '<span class="k">' + (isC ? 'm' : 'f') + '</span><button class="tn-name symname" data-tsym="' + esc(m.key) + '" data-f="' + esc(f) + '" data-l="' + m.l + '">'
                   + esc(m.n.split('.').pop()) + '</button><span class="tn-meta">:' + m.l + '</span>'
-                  + (hotS[m.key] ? '<span class="rt">' + hotS[m.key] + '</span>' : '') + '</div><div class="snip"></div></div>';
+                  + (hm ? '<span class="rt">' + hm + '</span>' : '') + '</div><div class="snip"></div></div>';
               }).join('') + '</div>' : '')
             + '</div>';
         }).join('');
@@ -564,53 +583,32 @@ window.CS = window.CS || {};
 
     _renderEdge: function (E) {
       var c = E.counts, rt = E.has_runtime;
-      var sub = (E.static_edge ? E.n_sites + ' 条 import 语句' : '静态 import 图里<b>没有</b>这条边')
-        + (rt ? '　·　runtime 跨这条边调用 <b>' + c.calls + '</b> 次'
-                + (E.has_runtime_b ? '（对比的 run：<b class="rtb">' + (c.calls_b || 0) + '</b> 次）' : '')
-              : E.note ? '　·　' + esc(E.note)
-              : '　·　没有 runtime 数据：只能说「引用了」，不能说「调用了」')
-        + (E.import_exec ? '<br>另有 ' + E.import_exec + ' 次是 import 触发的模块顶层执行，不算调用' : '')
-        + (rt ? '<br><span class="lab">「调用方」是最近的仓库内的帧：中间经过仓库外的代码（比如 vLLM 内部）时，会显示成直接调用。</span>' : '');
-      var pills = [];
-      if (rt) {
-        pills.push(['confirmed', '确认调用', c.confirmed]);
-        if (c.dynamic) pills.push(['dynamic', '动态分派', c.dynamic]);
-        if (c.only_b) pills.push(['only_b', '只有对比的 run 调到', c.only_b]);
-        pills.push(['static', '引用了没跑到', c.static]);
-      } else pills.push(['static', '引用', c.static]);
-      pills.push(['import_only', '只 import', c.import_only]);
-
-      var groups = { confirmed: [], dynamic: [], static: [], only_b: [] };
-      E.items.forEach(function (x) { groups[x.status].push(x); });
+      var calls = callCards(E), stat = E.items.filter(function (x) { return x.status === 'static'; });
+      var wired = E.items.filter(function (x) { return x.wiring; });
+      var sub = rt ? 'runtime <b>' + c.calls + '</b> 次' + (E.has_runtime_b ? ' / B <b class="rtb">' + (c.calls_b || 0) + '</b> 次' : '')
+                     + ' · ' + calls.n + ' 对调用' + (E.static_edge ? '' : ' · 没有 import')
+                   : (E.note ? esc(E.note) : stat.length + ' 个被引用的符号 · 没有 runtime 数据');
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'
-        + '<div class="sub">' + esc(E.a) + ' → ' + esc(E.b) + '</div>'
-        + '<p class="hint" style="margin-bottom:9px">' + sub + '</p>'
-        + '<div class="ecount">' + pills.map(function (p) {
-            return '<span class="' + p[0] + (p[2] ? '' : ' z') + '">' + p[1] + '<b>' + p[2] + '</b></span>'; }).join('')
-        + '<span class="dep" style="margin-left:auto"><button class="chip" data-go="' + esc(E.a) + '">'
-        + esc(short(E.a)) + '</button><button class="chip" data-go="' + esc(E.b) + '" style="border-radius:0 999px 999px 0">'
-        + esc(short(E.b)) + '</button></span></div>';
-
-      h += sec('确认：引用了，这次也真的调到了', groups.confirmed,
-               '代码里有静态引用，runtime 也走到了。这是这条边真正承载的调用。', E);
-      h += sec('动态分派：调到了，但代码里没有指向它的引用', groups.dynamic,
-               '静态分析的盲区：调用方拿到的是一个运行时才定类型的对象（self.model.xxx(…)、getattr、注册表、插件、回调），'
-               + '代码里写的是调用，却没有 import 或引用这个类。「调用处」是调用方函数体里对应的那一行；'
-               + '「按名字登记」是仓库里用字符串写着这个类的地方（注册表、配置、插件表），接线多半在那里。', E);
-      h += sec('只有对比的 run（B）调到', groups.only_b,
-               '这个 run 没调，对比的那个 run 调到了：两个 run 走的路在这里分开。', E);
-      h += sec(rt ? '引用了，但这次 case 没走到' : '静态引用', groups.static,
-               rt ? '代码里写了，但记录的这次运行没有调用。可能是别的分支、错误处理，或只在别的 case 用到。'
-                  : '代码里对 ' + short(E.b) + ' 的符号有引用。要知道会不会真的被调用，录一个 trace。', E);
-      h += deadSec(E);
+        + '<div class="sub">' + sub
+        + '<span class="dep" style="margin-left:10px"><button class="chip" data-go="' + esc(E.a) + '">' + esc(short(E.a))
+        + '</button><button class="chip" data-go="' + esc(E.b) + '" style="border-radius:0 999px 999px 0">' + esc(short(E.b)) + '</button></span></div>';
+      h += rt ? calls.html || '<p class="hint">这次运行没有跨这条边的调用</p>' : refCards(stat);
+      // 次要的都折叠在下面
+      function fold(title, n, body) {
+        return n ? '<details class="efold"><summary>' + esc(title) + '<span class="n">' + n + '</span></summary>' + body + '</details>' : '';
+      }
+      if (rt) h += fold('引用了，这次没跑到', stat.length, refCards(stat));
+      h += fold('按名字登记', wired.length, wired.map(function (x) {
+        return '<div class="call"><div class="ch"><b>' + esc(x.name) + '</b>'
+          + (x.wiring.same_name > 1 ? '<span class="cls">仓库里有 ' + x.wiring.same_name + ' 个同名类</span>' : '') + '</div>'
+          + x.wiring.refs.map(function (t) {
+              return '<div class="cs">' + jump(t, fname(t.f) + ':' + t.l) + '</div>' + code([t.s]); }).join('') + '</div>';
+      }).join(''));
+      h += fold('只 import、没引用', E.import_only.length, deadSec(E));
       if (E.sites.length)
-        h += '<details class="esites"><summary>全部 import 语句（' + E.n_sites + '）</summary>'
-          + E.sites.map(function (x) {
-              return '<div class="ei"><button class="site" data-view="' + esc(x.f) + '" data-line="' + x.l + '">'
-                + esc(x.f + ':' + x.l) + '</button><code class="src">' + esc(x.s) + '</code></div>';
-            }).join('')
-          + (E.n_sites > E.sites.length ? '<p class="hint">…只列前 ' + E.sites.length + ' 条</p>' : '')
-          + '</details>';
+        h += fold('全部 import 语句', E.n_sites, E.sites.map(function (x) {
+            return '<div class="cs">' + jump(x, fname(x.f) + ':' + x.l) + '</div>' + code([x.s]); }).join('')
+          + (E.n_sites > E.sites.length ? '<p class="hint">…只列前 ' + E.sites.length + ' 条</p>' : ''));
       det.innerHTML = h;
       this._wireDet(E.a);
     },

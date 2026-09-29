@@ -267,10 +267,14 @@ _DEF_LINE = re.compile(r"\s*(?:async\s+)?(?:def|class)\s")
 
 
 def _add_call_sites(repo: Path, idx: dict, items: list) -> None:
-    """动态分派的每个调用方：在它的函数体里找出调用那一行，记在 caller["sites"]（找过但没找到是 []）。
-    静态分析连不上的原因多半就写在这一行上——self.model.compute_logits(…)、getattr(mod, 'lookup')(…)：
-    代码里有调用，只是对象的类型要到运行时才定。找不到说明中间隔了一层 __call__、回调或仓库外的代码。
-    只在仓库里扫描过的文件里找；只按名字匹配（`名字(` 或 `'名字'`），不做类型推断。"""
+    """点开一条边时要给看的代码：每个调到的函数 from（调用方里调它的那一行）和 to（它自己的签名）。
+
+    - caller["sites"]：在调用方的函数体里按名字找调用那一行（`名字(` 或 `'名字'`，getattr 的写法），
+      最多 3 处；找过但没找到是 []——中间隔了 __call__、回调或仓库外的代码，这时 caller["sig"] 是调用方
+      自己的签名，页面上拿它当 from。动态分派多半就写在这一行上：self.model.compute_logits(…)。
+    - runtime 条目的 r["sig"]：被调函数的签名（def 那一行到冒号为止，最多 6 行）
+    - 没跑到的静态引用：item["sig"] 是被引用符号的签名，item["use_s"] 是第一处引用那一行
+    只在仓库里扫描过的文件里找；只按名字匹配，不做类型推断。"""
     syms, files = idx.get("symbols") or {}, idx.get("files") or {}
 
     def span(sym: str):
@@ -288,10 +292,33 @@ def _add_call_sites(repo: Path, idx: dict, items: list) -> None:
         except OSError:
             return None
 
+    def sig(d: dict | None) -> list[str] | None:
+        ls = lines(d["f"]) if d else None
+        if not ls or not 0 < d["l"] <= len(ls):
+            return None
+        out = []
+        for t in ls[d["l"] - 1:d["l"] + 5]:
+            out.append(t.rstrip())
+            if t.split("#", 1)[0].rstrip().endswith(":"):
+                break
+        if len(out) == 1:
+            return [out[0].strip()[:200]]
+        # 多行签名压成一行（面板窄）：def forward(self, input_ids: …, positions: …) -> …:
+        one = re.sub(r"\(\s+", "(", re.sub(r",?\s*\)", ")", " ".join(t.strip() for t in out)))
+        closed = out[-1].split("#", 1)[0].rstrip().endswith(":")
+        return [one[:200] + ("" if closed else " …")]
+
     for it in items:
-        if it["status"] != "dynamic":
+        if not it["runtime"]:
+            if it.get("def"):
+                it["sig"] = sig(it["def"])
+            if it.get("uses"):
+                ls = lines(it["uses"][0]["f"])
+                l = it["uses"][0]["l"]
+                it["use_s"] = ls[l - 1].strip()[:200] if ls and 0 < l <= len(ls) else None
             continue
         for r in it["runtime"]:
+            r["sig"] = sig(r.get("def"))
             parts = r["sym"].partition(":")[2].split(".")
             if not parts[-1] or parts[-1].startswith("<"):
                 continue                                 # 闭包、模块顶层：没有名字可找
@@ -306,6 +333,8 @@ def _add_call_sites(repo: Path, idx: dict, items: list) -> None:
                               for i in range(sp[0] - 1, min(sp[1], len(ls)))
                               if pat.search(ls[i]) and not _DEF_LINE.match(ls[i])][:3]
                 c["callee"] = names[0]
+                if not c["sites"]:
+                    c["sig"] = sig(c["def"])
 
 
 def _add_wiring(repo: Path, idx: dict, items: list) -> None:
