@@ -83,15 +83,20 @@ class Viewers:
             self._kill(v)
             raise ViewerError("主菜单正在退出")
 
-    def ensure(self, repo: str) -> str:
-        """起（或复用）这个仓库的 serve，等它能接连接了返回地址；起不来 ViewerError"""
+    def ensure(self, repo: str) -> int:
+        """起（或复用）这个仓库的 serve，等它能接连接了返回端口；起不来 ViewerError"""
         with self._repo_lock(repo):
             v = self._get(repo)
             if v and v.alive:
-                return v.url
+                return v.port
             v = self._start(repo)                  # 死掉的那份的端口可能已被别人占了：挑新的
             self._set(repo, v)
-            return v.url
+            return v.port
+
+    def serves(self, port: int) -> bool:
+        """这个端口上是不是这里起的、还活着的图服务（主菜单只转发给它们，不转发到任意端口）"""
+        with self._lock:
+            return any(v.port == port and v.alive for v in self._v.values())
 
     def _start(self, repo: str, port: int | None = None) -> _Viewer:
         """port：沿用原来的端口（重启时，页面上开着的标签刷新一下就行）；None 就挑一个空闲的"""

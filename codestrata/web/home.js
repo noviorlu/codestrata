@@ -116,7 +116,8 @@
     // 录过的就直接叠最近一次录成的 run（刚录完点「打开图」，想看的就是它）
     var last = p.runs.filter(function (r) { return r.loadable; })[0];
     api('/api/open', 'POST', { repo: p.path }).then(function (r) {
-      var url = r.url + (last ? '#run=' + encodeURIComponent(last.id) : '');
+      // 地址是 /v/<端口>/（经主菜单转发）：写成完整地址——新开的空白标签里相对地址不按主菜单解析
+      var url = new URL(r.url, location.href).href + (last ? '#run=' + encodeURIComponent(last.id) : '');
       if (w) w.location.href = url; else location.href = url;
       refresh();
     }, function (e) {

@@ -13,7 +13,9 @@
     POST   /api/trace {表单}           起一个录制任务（字段见 jobs.TraceSpec）
     GET    /api/jobs/<id>?since=N     任务状态 + 第 N 行之后的输出
     POST   /api/jobs/<id>/stop        停任务（SIGINT，和终端里 Ctrl+C 一样）
-    POST   /api/open {repo}           起（或复用）这个仓库的图服务（codestrata serve），返回地址
+    POST   /api/open {repo}           起（或复用）这个仓库的图服务（codestrata serve），返回地址 /v/<端口>/
+    *      /v/<端口>/…                转发给这里起的图服务：只转发到 1 个端口（ssh -L 8930:…）就够了，
+                                      图服务自己的端口不用对外。只转发到这里起的、还活着的图服务
 
 这里只做 HTTP：路由、鉴权、JSON 进出。数据在 projects，任务在 jobs，图服务在 viewers。
 
@@ -23,9 +25,11 @@
     带不上前者，跨源也设不了后者（这里不回 CORS），知道端口也调不动
   - 口令存在配置目录（只有自己能读），用启动时打印的链接（/?t=口令）打开一次就设进了 cookie
   - 扫描、录制、打开图只接受清单里的项目
+  - /v/ 下的页面和接口（仓库的代码）也要口令 cookie；图服务自己的检查（Host、X-Codestrata）照旧在它那边做
 """
 from __future__ import annotations
 
+import http.client
 import os
 import re
 import secrets
@@ -42,11 +46,13 @@ from . import projects as _projects
 from . import runs as _runs
 from . import scan as _scan
 from .jobs import Busy, JobError, JobManager, TraceSpec, scan_argv
-from .serve import BaseHandler
+from .serve import HEADER, BaseHandler
 from .viewers import ViewerError, Viewers
 
 COOKIE = "codestrata_app"
 _JOB = re.compile(r"^/api/jobs/(\d+)(/stop)?$")
+_VIEW = re.compile(r"^/v/(\d+)(/.*)?$")
+PROXY_TIMEOUT = 300.0     # 大仓库第一次算切面、搜索索引要十几秒
 
 _LOGIN_PAGE = """<!doctype html><meta charset="utf-8"><title>codestrata</title>
 <body style="font:15px/1.6 system-ui,sans-serif;max-width:560px;margin:15vh auto;padding:0 16px">
@@ -136,6 +142,44 @@ class AppHandler(BaseHandler):
         if path.startswith("/api/") and not (self._cookie_ok() and self._from_page()):
             self._json({"error": "未授权：请用启动时打印的链接打开主菜单"}, 403)
             return False
+        # 图服务的页面是直接打开的（带不了自定义头），只要口令 cookie
+        if path.startswith("/v/") and not self._cookie_ok():
+            self._send(403, _LOGIN_PAGE.encode())
+            return False
+        return True
+
+    # ---- /v/<端口>/…：转发给图服务 ----
+    def _view(self, method: str) -> bool:
+        """是 /v/ 下的请求就转发并返回 True"""
+        raw = self.path
+        path, _, query = raw.partition("?")
+        m = _VIEW.match(path)
+        if not m:
+            return False
+        port, rest = int(m.group(1)), m.group(2)
+        if not rest:                             # /v/123 → /v/123/：页面里的相对地址才对
+            self._send(301, b"", headers={"Location": f"/v/{port}/"})
+            return True
+        if not self.app.viewers.serves(port):
+            self._json({"error": "没有这个图服务（主菜单重启过？回主菜单再点一次「打开图」）"}, 404)
+            return True
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n) if n > 0 else None
+        headers = {"Host": f"127.0.0.1:{port}"}          # 图服务查 Host（防 DNS rebinding）
+        for k in ("Content-Type", HEADER):
+            if self.headers.get(k):
+                headers[k] = self.headers[k]
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=PROXY_TIMEOUT)
+        try:
+            c.request(method, rest + (f"?{query}" if query else ""), body=body, headers=headers)
+            r = c.getresponse()
+            data = r.read()
+        except OSError as e:
+            self._json({"error": f"图服务没有响应：{e}"}, 502)
+            return True
+        finally:
+            c.close()
+        self._send(r.status, data, r.getheader("Content-Type") or "application/octet-stream")
         return True
 
     def _registered(self, repo: str | None) -> str | None:
@@ -147,7 +191,7 @@ class AppHandler(BaseHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         path = u.path
-        if not self._guard(path):
+        if not self._guard(path) or self._view("GET"):
             return
         if path in ("/", ""):
             t = _arg(q, "t")
@@ -208,7 +252,7 @@ class AppHandler(BaseHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        if not self._guard(path):
+        if not self._guard(path) or self._view("POST"):
             return
         m = _JOB.match(path)
         if m and m.group(2):
@@ -232,11 +276,11 @@ class AppHandler(BaseHandler):
         if path == "/api/trace":
             return self._start("trace", repo, lambda: self._trace_argv(repo, body))
         try:                                     # /api/open
-            url = self.app.viewers.ensure(repo)
+            port = self.app.viewers.ensure(repo)
         except ViewerError as e:
             return self._json({"error": str(e)}, 500)
         self.app.registry.touch(Path(repo))
-        return self._json({"url": url})
+        return self._json({"url": f"/v/{port}/"})   # 经主菜单转发：只要主菜单这一个端口能访问
 
     def _scan_argv(self, repo: str, body: dict) -> list[str]:
         """勾选的目录 → scan 的命令行；没勾、或者勾了不在候选里的（手改的请求）就 ValueError"""
@@ -275,10 +319,16 @@ class AppHandler(BaseHandler):
                 return self._json({"error": str(e)}, 500)
         return self._json(job.snapshot())
 
+    # ---- PUT（只有图服务有：写解读）----
+    def do_PUT(self):
+        path = urllib.parse.urlparse(self.path).path
+        if self._guard(path) and not self._view("PUT"):
+            self._json({"error": "not found"}, 404)
+
     # ---- DELETE ----
     def do_DELETE(self):
         u = urllib.parse.urlparse(self.path)
-        if not self._guard(u.path):
+        if not self._guard(u.path) or self._view("DELETE"):
             return
         if u.path != "/api/projects":
             return self._json({"error": "not found"}, 404)

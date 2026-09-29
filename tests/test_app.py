@@ -403,9 +403,25 @@ def test_app_http():
         assert c.req("GET", f"/api/template?repo={raw}")[1]["case"] == "demo"
         # 打开图：起 serve（带 --home），页面能拿到主菜单地址
         st, o, _ = c.req("POST", "/api/open", {"repo": str(raw)})
-        assert st == 200 and o["url"].startswith("http://127.0.0.1:"), o
-        vport = int(o["url"].rsplit(":", 1)[1].strip("/"))
+        assert st == 200 and o["url"].startswith("/v/") and o["url"].endswith("/"), o
+        vport = int(o["url"].split("/")[2])
         assert _get_json(vport, "/api/app") == {"home": f"http://127.0.0.1:{port}/"}
+        # 经主菜单转发（ssh -L 只转主菜单一个端口）：页面、接口都能用；要口令；只转发给这里起的图服务
+        st, page, _ = c.req("GET", o["url"], header=False)
+        assert st == 200 and "ds.js" in page, (st, page[:200])
+        st, graph, r = c.req("GET", o["url"] + "api/graph?w=900", header=False)
+        assert st == 200 and graph["graph"]["nodes"] and r.getheader("Content-Type").startswith("application/json")
+        assert c.req("GET", o["url"] + "api/app")[1] == {"home": f"http://127.0.0.1:{port}/"}
+        st, _, r = c.req("GET", o["url"][:-1], header=False)
+        assert st == 301 and r.getheader("Location") == o["url"]
+        assert anon.req("GET", o["url"], header=False)[0] == 403
+        assert anon.req("GET", o["url"] + "api/graph", header=False)[0] == 403
+        assert c.req("GET", o["url"], host="evil.example")[0] == 403
+        assert c.req("GET", f"/v/{port}/api/projects", header=False)[0] == 404        # 不转发到任意端口（包括主菜单自己）
+        st, saved, _ = c.req("PUT", o["url"] + "api/notes/_overview", {"md": "经主菜单写的总览"}, header=False)
+        assert st == 200 and (raw / "notes" / "overview.md").read_text().find("经主菜单写的总览") >= 0, saved
+        # 图服务的 /api/open（开编辑器）要 X-Codestrata：转发时带不带头照原样传过去（这里不带：不会真的开编辑器）
+        assert c.req("GET", o["url"] + "api/open?f=does-not-exist.py&l=1", header=False)[0] == 403
         assert _status(vport, "GET", "/api/app", host="evil.example") == 403          # 图服务自己也挡 DNS rebinding
         assert c.req("POST", "/api/open", {"repo": str(raw)})[1]["url"] == o["url"]     # 再点一次：复用
         assert "fakesvc.newmod" not in _node_ids(vport)
@@ -492,7 +508,7 @@ def test_cli_app():
         assert c.req("POST", "/api/projects", {"path": str(repo)})[0] == 200
         st, o, _ = c.req("POST", "/api/open", {"repo": str(repo)})
         assert st == 200, o
-        vport = int(o["url"].rsplit(":", 1)[1].strip("/"))
+        vport = int(o["url"].split("/")[2])
         assert _listening(vport)
         assert (cfg / "codestrata" / "app-token").stat().st_mode & 0o077 == 0     # 口令文件只有自己能读
     finally:

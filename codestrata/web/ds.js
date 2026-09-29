@@ -1,5 +1,6 @@
 /* 数据访问层。整套前端只通过这一层拿数据，于是同一份 UI 能跑两种模式：
- *   live      —— codestrata serve：fetch /api/*，可写解读、可跳编辑器
+ *   live      —— codestrata serve：fetch api/*，可写解读、可跳编辑器。地址都是相对的：页面可能
+ *                不在根上（经主菜单转发时在 /v/<端口>/ 下，见 app.py）
  *   embedded  —— 单文件导出：读内嵌 JSON，只读、离线、可分享
  * 这和「总图 / hot 图」是同一个思路：一套渲染，换数据源。 */
 window.CS = window.CS || {};
@@ -94,59 +95,59 @@ window.CS = window.CS || {};
       if (w) q.push('w=' + Math.round(w));
       if (this.run) q.push('run=' + encodeURIComponent(this.run));
       if (this.run && this.cmp) q.push('cmp=' + encodeURIComponent(this.cmp));
-      return j('/api/graph' + (q.length ? '?' + q.join('&') : ''));
+      return j('api/graph' + (q.length ? '?' + q.join('&') : ''));
     },
     canCut: true,
     // 当前叠在图上的 run（「完整 id@阶段」，空 = 只看静态图）。叠加相关的请求（图、边、引用、
     // 输入包）都带上它，app 只管改这一个值
     run: '',
     canSwitchRun: true,
-    runs: function () { return j('/api/runs'); },
+    runs: function () { return j('api/runs'); },
     // 从主菜单（codestrata app）打开的：主菜单的地址（页面上放回去的链接）；直接 serve 的是 null
-    home: function () { return j('/api/app').then(function (r) { return r.home; }); },
+    home: function () { return j('api/app').then(function (r) { return r.home; }); },
     // 时序图：p = {open, t0, t1, max}；run 用当前的
     seq: function (p) {
       var q = ['run=' + encodeURIComponent(this.run)];
       if (p.open) q.push('open=' + encodeURIComponent(p.open.join(',')));
       ['t0', 't1', 'max', 'fold'].forEach(function (k) { if (p[k] != null) q.push(k + '=' + Math.round(+p[k])); });
-      return j('/api/seq?' + q.join('&'));
+      return j('api/seq?' + q.join('&'));
     },
-    seqOverview: function () { return j('/api/seq/overview?run=' + encodeURIComponent(this.run)); },
+    seqOverview: function () { return j('api/seq/overview?run=' + encodeURIComponent(this.run)); },
     seqFind: function (a, b, after, open) {
-      return j('/api/seq/find?run=' + encodeURIComponent(this.run) + '&a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
+      return j('api/seq/find?run=' + encodeURIComponent(this.run) + '&a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
                + '&after=' + (after == null ? -1 : Math.round(after)) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
     },
-    note: function (t) { return j('/api/notes/' + encodeURIComponent(t)); },
+    note: function (t) { return j('api/notes/' + encodeURIComponent(t)); },
     // 一批节点的解读状态（noted / stale / todo），不核对内容，给图上的徽标用
-    status: function (ids) { return j('/api/status?ids=' + encodeURIComponent(ids.join(','))); },
+    status: function (ids) { return j('api/status?ids=' + encodeURIComponent(ids.join(','))); },
     saveNote: function (t, md) {
-      return j('/api/notes/' + encodeURIComponent(t),
+      return j('api/notes/' + encodeURIComponent(t),
         { method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ md: md }) });
     },
-    tasks: function () { return j('/api/tasks'); },
+    tasks: function () { return j('api/tasks'); },
     pack: function (t) {
-      return fetch('/api/pack/' + encodeURIComponent(t) + (this.run ? '?run=' + encodeURIComponent(this.run) : ''))
+      return fetch('api/pack/' + encodeURIComponent(t) + (this.run ? '?run=' + encodeURIComponent(this.run) : ''))
         .then(function (r) { return r.text(); });
     },
-    source: function (k) { return j('/api/symbol/' + encodeURIComponent(k)); },
-    file: function (f) { return j('/api/file?f=' + encodeURIComponent(f)); },
-    outline: function (f) { return j('/api/outline?f=' + encodeURIComponent(f)); },
+    source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
+    file: function (f) { return j('api/file?f=' + encodeURIComponent(f)); },
+    outline: function (f) { return j('api/outline?f=' + encodeURIComponent(f)); },
     edge: function (a, b) {
-      return j('/api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
+      return j('api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
                + (this.run ? '&run=' + encodeURIComponent(this.run) : '')
                + (this.run && this.cmp ? '&cmp=' + encodeURIComponent(this.cmp) : ''));
     },
     cmp: '',
-    refs: function (t) { return j('/api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
+    refs: function (t) { return j('api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     hasFile: function () { return true; },
-    searchIndex: function () { return j('/api/search-index'); },
+    searchIndex: function () { return j('api/search-index'); },
     reveal: function (node, open) {
-      return j('/api/reveal?node=' + encodeURIComponent(node) + '&open=' + encodeURIComponent(open.join(',')));
+      return j('api/reveal?node=' + encodeURIComponent(node) + '&open=' + encodeURIComponent(open.join(',')));
     },
     openEditor: function (f, l) {
       // 带 X-Codestrata 头：serve 只认我们自己的页面发的（别的网页触发不了本机编辑器）
-      return fetch('/api/open?f=' + encodeURIComponent(f) + '&l=' + l, { headers: { 'X-Codestrata': '1' } }).catch(function () {});
+      return fetch('api/open?f=' + encodeURIComponent(f) + '&l=' + l, { headers: { 'X-Codestrata': '1' } }).catch(function () {});
     }
   };
 
