@@ -33,13 +33,14 @@ def _cli(*args: str) -> list[str]:
     return [cmd[0], "-u", *cmd[1:]]
 
 
-def scan_argv(repo: Path) -> list[str]:
-    return _cli("scan", str(repo))
+def scan_argv(repo: Path, roots: list[str]) -> list[str]:
+    """扫描任务：只扫用户勾的这些目录（scan --roots 照单全收，不再替用户去掉 tests/ 之类）"""
+    return _cli("scan", str(repo), "--roots", *roots)
 
 
 @dataclass
 class TraceSpec:
-    """「录制运行」表单。command 是一行 shell 风格的命令（在仓库根目录执行，和 trace 一样），
+    """「录制运行」表单。command 是一行 shell 风格的命令，在 cwd 执行（None：仓库根目录，和 trace 默认一样），
     phases 是 [[阶段名, 函数], …]（trace --phase 的 名字=函数），env 是 trace --env 的 K=V。
     tags / roots / stop_grace 表单上不显示，只是从一个 run 复刻时原样带过去"""
     repo: str
@@ -54,6 +55,7 @@ class TraceSpec:
     tags: list = field(default_factory=list)
     roots: list | None = None
     stop_grace: float | None = None
+    cwd: str | None = None
 
     @classmethod
     def from_json(cls, d: dict) -> "TraceSpec":
@@ -81,17 +83,28 @@ class TraceSpec:
                    env={str(k).strip(): str(v) for k, v in env.items() if str(k).strip()},
                    timeout=seconds("timeout"), events=bool(d.get("events", True)), note=str(d.get("note") or ""),
                    attach=[str(a) for a in attach if str(a).strip()], tags=[str(t) for t in tags],
-                   roots=[str(r) for r in roots] if roots is not None else None, stop_grace=seconds("stop_grace"))
+                   roots=[str(r) for r in roots] if roots is not None else None, stop_grace=seconds("stop_grace"),
+                   cwd=cls._run_dir(str(d.get("repo") or ""), str(d.get("cwd") or "").strip()))
+
+    @staticmethod
+    def _run_dir(repo: str, raw: str) -> str | None:
+        """表单里的执行目录：相对路径按仓库根目录算（任务在仓库根目录起，trace 的 --cwd 也是按那里解析），
+        在这里一次解析成绝对路径，校验和命令行用的就是同一个目录。空着就是仓库根目录（None）"""
+        return str((Path(repo) / raw).resolve()) if raw else None
 
     @classmethod
     def from_run(cls, repo: Path, run: dict) -> "TraceSpec":
         """一个已有 run 的 run.json → 同样的录制参数（「复刻」：表单预先填好，改改再录）"""
         rec = run.get("rec") or {}
+        # run 里的 cwd 是命令实际执行的目录；就是仓库根目录的（默认）就不写
+        cwd = run.get("cwd")
+        cwd = cwd if cwd and Path(cwd).resolve() != Path(repo).resolve() else None
         return cls(repo=str(repo), case=run.get("case") or "", command=shlex.join(run.get("cmd") or []),
                    phases=[[p["name"], p["func"]] for p in rec.get("phase_at") or []],
                    env=dict(run.get("env") or {}), timeout=rec.get("timeout"),
                    events=bool(rec.get("events")), note="", attach=list(rec.get("attach") or []),
-                   tags=list(run.get("tags") or []), roots=rec.get("roots"), stop_grace=rec.get("stop_grace"))
+                   tags=list(run.get("tags") or []), roots=rec.get("roots"), stop_grace=rec.get("stop_grace"),
+                   cwd=cwd)
 
     def validate(self, symbols: dict | None) -> None:
         """内容检查，错了就 ValueError（中文说明直接给页面看）。阶段用 trace 自己的 resolve_phase_at
@@ -111,6 +124,8 @@ class TraceSpec:
                 resolve_phase_at(Path(self.repo), [f"{n}={f}" for n, f in self.phases], symbols)
             except SystemExit as e:
                 raise ValueError(str(e)) from None
+        if self.cwd and not Path(self.cwd).is_dir():
+            raise ValueError(f"执行目录不存在：{self.cwd}")
         if any("=" in k or not k.strip() for k in self.env):
             raise ValueError("环境变量名里不能有 =")
         for k, what in (("timeout", "超时"), ("stop_grace", "停止的宽限时间")):
@@ -121,6 +136,8 @@ class TraceSpec:
     def argv(self) -> list[str]:
         """拼成 codestrata trace 的命令行。值一律写成 --x=值：以 - 开头的值不会被当成选项"""
         a = ["trace", self.repo, f"--case={self.case}"]
+        if self.cwd:
+            a.append(f"--cwd={self.cwd}")
         if self.events:
             a.append("--events")
         if self.timeout is not None:

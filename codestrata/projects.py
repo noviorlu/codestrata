@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import payload as _payload
 from . import runs as _runs
+from . import scan as _scan
 
 MAX_DIRS = 500          # 一个目录里列出来的子目录上限（再多就是 node_modules 这种，不是要找的仓库）
 MAX_RUNS = 20           # 项目卡片上列出来的 run 个数
@@ -110,6 +111,26 @@ def status(repo: Path) -> dict:
             out["n_runs"] = len(rs)
             out["runs"] = [_run_brief(r) for r in rs[:MAX_RUNS]]
     return out
+
+
+def scan_choices(repo: Path) -> dict:
+    """「静态扫描」对话框：能选的目录（scan.candidate_roots，只列不挑）和上次扫描时选的（重新扫描时预先勾上；
+    没扫描过是空列表——第一次扫哪些由用户自己勾）。上次选的不在候选里（命令行 scan --roots 给了更深的目录）
+    也并进来，标 previous：用户上次的选择不能在对话框里丢掉。每项带 name（模块名用的最后一段），
+    同名的一次只能选一个（scan.root_clashes）"""
+    repo = Path(repo)
+    cands = _scan.candidate_roots(repo)
+    chosen = (_payload.index_summary(repo) or {}).get("roots") or []
+    have = {c["path"] for c in cands}
+    for r in chosen:
+        d = repo / r
+        if r not in have and d.is_dir():
+            n = sum(1 for _ in _scan.iter_py_files(d))
+            if n:
+                cands.append({"path": r, "files": n, "package": (d / "__init__.py").exists(), "previous": True})
+    for c in cands:
+        c["name"] = c["path"].rstrip("/").split("/")[-1]
+    return {"candidates": sorted(cands, key=lambda c: c["path"]), "chosen": chosen}
 
 
 def _looks_like_repo(d: Path) -> dict:

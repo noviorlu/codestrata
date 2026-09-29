@@ -58,18 +58,21 @@ window.CS = window.CS || {};
   CS.graph = {
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
     zoom: 1, panMode: false,   // 缩放倍数（相对「适应宽度」）；移动模式：按住任意位置拖动
-    state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, hot: true, dyn: true,
+    state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, type: false, hot: true, dyn: true,
              onlyHot: false, onlyNoted: false },
     noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
-    counts: { ref: 0, imp: 0, warm: 0, dyn: 0 },
+    counts: { ref: 0, imp: 0, type: 0, warm: 0, dyn: 0 },
 
     draw: function (svg, G, hot, extra) {
       extra = extra || {};
       this.G = G; this.hot = hot || null;
       // 对比（另一个 run）：节点、边上带 [A, B] 两个次数，画三种颜色（只有 A 橙、只有 B 紫、两边都跑到前景色）
       this.cmp = (extra && extra.cmp) || null;
-      var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [], dynOnly = {};
+      var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [], dynOnly = {}, rtKey = {};
       (extra.dynOnly || []).forEach(function (k) { dynOnly[k] = 1; });
+      rtOnly.forEach(function (e) { rtKey[e[0] + '|' + e[1]] = 1; });
+      // 仅类型（TYPE_CHECKING 里的 import）：这次跑到了的，由 runtime 那条边代表，不再叠一条
+      var typeOnly = (extra.typeOnly || []).filter(function (e) { return !rtKey[e[0] + '|' + e[1]]; });
       svg.textContent = '';
       svg.setAttribute('viewBox', '0 0 ' + G.width + ' ' + G.height);
       this.svg = svg;
@@ -162,9 +165,13 @@ window.CS = window.CS || {};
         if (w) h._count.setAttribute('x', h._tx + w + 8);
       });
       this.edges = [];
-      var cnt = { ref: 0, imp: 0, warm: 0, dyn: 0 };
+      var cnt = { ref: 0, imp: 0, type: 0, warm: 0, dyn: 0 };
 
-      var P = ports(N, G.edges.concat(rtOnly));
+      // 仅类型默认不显示：关着就不画、也不占接点（开关一动整张图重画，见 app.controls）。
+      // 节点详情里照样列出来（typeOnly），不管开关
+      this.typeOnly = typeOnly;
+      var types = this.state.type ? typeOnly : [];
+      var P = ports(N, G.edges.concat(rtOnly, types));
       function add(src, dst, kind, hits, info) {
         var a = N[src], b = N[dst]; if (!a || !b) return;
         var px = P[src + '|' + dst], d = route(a, b, px[0], px[1]);
@@ -181,6 +188,7 @@ window.CS = window.CS || {};
         var tip = el('title', {});
         tip.textContent = src + ' → ' + dst + '\n'
           + (kind === 'dyn' ? '静态 import 图里没有这条边（动态分派）'
+             : kind === 'type' ? '只在 if TYPE_CHECKING: 里 import（仅类型）：运行时不存在，不算进架构高度'
              : (info.uses ? '用到对方 ' + info.uses + ' 个符号' : '只 import，没用到任何符号')
                + (info.dead ? '　·　' + info.dead + ' 个 import 没被引用' : ''))
           + (ab ? '\nruntime 调用 A ' + ab[0] + ' / B ' + ab[1] : (hits ? '\nruntime 调用 ' + hits + ' 次' : ''))
@@ -188,7 +196,7 @@ window.CS = window.CS || {};
              : kind === 'dyn' ? ''
              : dab && (dab[0] || dab[1]) ? '\n其中动态分派 A ' + dab[0] + ' / B ' + dab[1] + ' 次'
              : !cmp && hotDyn[src + '|' + dst] ? '\n其中 ' + hotDyn[src + '|' + dst] + ' 次是动态分派（代码里看不到引用）' : '')
-          + '\n点击看具体是哪些函数';
+          + (kind === 'type' ? '\n点击看 import 语句' : '\n点击看具体是哪些函数');
         E.x.appendChild(tip);
         E.x.onclick = function (ev) {
           ev.stopPropagation();
@@ -205,6 +213,8 @@ window.CS = window.CS || {};
         add(e[0], e[1], info.uses ? 'ref' : 'imp', hotEd[key] || 0, info);
       });
       rtOnly.forEach(function (e) { add(e[0], e[1], 'dyn', e[2], {}); });
+      types.forEach(function (e) { add(e[0], e[1], 'type', 0, {}); });
+      cnt.type = typeOnly.length;              // 关着也要数：图例上的开关靠它出现
       this.counts = cnt;
 
       var ng = el('g', {}); svg.appendChild(ng); this.nodes = {};
@@ -418,17 +428,24 @@ window.CS = window.CS || {};
 
     paint: function () {
       var s = this.state, self = this, keep = null;
+      this.edges.forEach(function (E) {
+        // 有 import、但跑到的调用全是动态分派的边：「动态分派」开着就画成橙虚线，关了就退回没跑到的静态边
+        E._dyn = E.kind === 'dyn' || (E.dynOnly && s.dyn);
+        E._warm = E.hits > 0 && s.hot && E.kind !== 'dyn' && !E.dynOnly;
+        E._show = (E.kind === 'dyn' ? s.dyn : E.kind === 'type' ? s.type
+                   : (E._warm || E._dyn || (E.kind === 'ref' ? s.refs : s.imp))) && self.vis(E.a) && self.vis(E.b);
+      });
+      // 选中节点时留亮的：它自己和看得见的边连着的节点（关掉的那类边不算）
       if (s.selEdge) { keep = {}; var ab = s.selEdge.split('|'); keep[ab[0]] = keep[ab[1]] = 1; }
       else if (s.sel) {
         keep = {}; keep[s.sel] = 1;
-        this.edges.forEach(function (E) { if (E.a === s.sel) keep[E.b] = 1; if (E.b === s.sel) keep[E.a] = 1; });
+        this.edges.forEach(function (E) {
+          if (!E._show) return;
+          if (E.a === s.sel) keep[E.b] = 1; if (E.b === s.sel) keep[E.a] = 1;
+        });
       }
       this.edges.forEach(function (E) {
-        // 有 import、但跑到的调用全是动态分派的边：「动态分派」开着就画成橙虚线，关了就退回没跑到的静态边
-        var dyn = E.kind === 'dyn' || (E.dynOnly && s.dyn);
-        var warm = E.hits > 0 && s.hot && E.kind !== 'dyn' && !E.dynOnly;
-        var show = E.kind === 'dyn' ? s.dyn : (warm || dyn || (E.kind === 'ref' ? s.refs : s.imp));
-        show = show && self.vis(E.a) && self.vis(E.b);
+        var dyn = E._dyn, warm = E._warm, show = E._show;
         var mine = s.selEdge ? s.selEdge === E.a + '|' + E.b
                  : !!s.sel && (E.a === s.sel || E.b === s.sel);
         // hot 视图里没被调用的静态边退到背景：要看的是这个 case 走过的路

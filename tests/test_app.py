@@ -12,13 +12,15 @@ import shutil
 import sys
 import threading
 import time
+import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from common import FAKE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
 from codestrata import app as app_mod  # noqa: E402
-from codestrata import payload, projects, runs  # noqa: E402
+from codestrata import payload, projects, runs, serve  # noqa: E402
+from codestrata import scan as scan_mod  # noqa: E402
 from codestrata.jobs import Busy, JobManager, TraceSpec, scan_argv  # noqa: E402
 
 PHASE = ["generate", "fakesvc.offline:Engine.generate"]
@@ -110,6 +112,69 @@ def test_status_browse_symbols():
     assert projects.find_symbols(half, "generate") == []
 
 
+def test_scan_roots():
+    """能选的目录只列不挑：包、src/<包> 这种布局下一层的包、放零散脚本的目录、tests/ 都列出来；
+    scan 给了 roots 就照单全收（tests/ 也扫），不再替用户去掉"""
+    repo = tmpdir("cs-app-") / "lay"
+    for rel in ("src/pkg/__init__.py", "src/pkg/core.py", "python/other/__init__.py", "tests/__init__.py",
+                "tests/test_core.py", "scripts/run.py", "lib/__init__.py", "docs/conf.py", ".hidden/x.py",
+                "build/gen.py", "empty/README"):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("import os\n" if rel.endswith(".py") else "x\n")
+    got = {c["path"]: (c["files"], c["package"]) for c in projects.scan_choices(repo)["candidates"]}
+    assert got == {"src/pkg": (2, True), "python/other": (1, True), "tests": (2, True), "scripts": (1, False),
+                   "lib": (1, True), "docs": (1, False)}, got
+    assert projects.scan_choices(repo)["chosen"] == []
+    cs("scan", repo, "--roots", "tests", "src/pkg")
+    assert payload.index_summary(repo)["roots"] == ["tests", "src/pkg"]
+    assert projects.scan_choices(repo)["chosen"] == ["tests", "src/pkg"]
+    assert "（--roots 指定）" in cs("scan", repo, "--roots", "tests").stdout
+    assert "（自动探测的" in cs("scan", repo).stdout
+    # 上次命令行里给的更深的目录不在候选里：并进来、标 previous，对话框里不会把它丢了
+    cs("scan", repo, "--roots", "src/pkg", "docs")
+    cs("scan", repo, "--roots", "src")
+    ch = projects.scan_choices(repo)
+    assert ch["chosen"] == ["src"] and {"path": "src", "files": 2, "package": False, "previous": True, "name": "src"} \
+        in ch["candidates"], ch
+    assert not any(c.get("previous") for c in ch["candidates"] if c["path"] != "src"), ch
+
+
+def test_candidate_roots_layouts():
+    """候选目录：嵌套的子项目（有自己的 pyproject）往下找它的包；虚拟环境 / conda 环境整个跳过；
+    没有 __init__.py 的 tests/ 按零散脚本列；同名（最后一段一样）的两个目录报撞名，scan 直接拒绝"""
+    repo = tmpdir("cs-app-") / "nest"
+    for rel in ("sub/pyproject.toml", "sub/src/inner/__init__.py", "sub/src/inner/m.py", "sub/tools/t.py",
+                "py311/pyvenv.cfg", "py311/lib/site.py", "miniconda/conda-meta/history", "miniconda/lib/x.py",
+                "tests/test_a.py", "tests/data/case.py", "lib/__init__.py", "src/lib/__init__.py"):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("import os\n" if rel.endswith(".py") else "x\n")
+    got = {c["path"]: (c["files"], c["package"]) for c in scan_mod.candidate_roots(repo)}
+    assert got == {"sub/src/inner": (2, True), "sub/tools": (1, False), "tests": (2, False),
+                   "lib": (1, True), "src/lib": (1, True)}, got
+    assert scan_mod.root_clashes(["lib", "src/lib", "tests"]) == {"lib": ["lib", "src/lib"]}
+    for bad in (["lib", "src/lib"], ["sub", "sub/tools"]):          # 同名；一个在另一个里面
+        r = cs("scan", repo, "--roots", *bad, check=False)
+        assert r.returncode != 0 and bad[1] in r.stderr, r.stdout + r.stderr
+    assert not (repo / ".codestrata" / "index.json").exists()
+    r = cs("trace", repo, "--case", "x", "--roots", "lib", "src/lib", "--", "true", check=False)
+    assert r.returncode != 0 and "同名" in r.stderr and not (repo / ".codestrata" / "runs").exists(), r.stderr
+    # 软链的目录（数据、模型放在别的盘上）不进去找
+    data = tmpdir("cs-app-") / "data"
+    (data / "gen").mkdir(parents=True)
+    (data / "gen" / "x.py").write_text("")
+    (repo / "data").symlink_to(data)
+    assert "data/gen" not in {c["path"] for c in scan_mod.candidate_roots(repo)}
+    # 命令行的写法归一：结尾的 /（shell 补全带的）、./、重复的；归一之前 pkg/ 的模块名对不上，边全丢
+    assert scan_mod.clean_roots(["lib/", "./lib", "src/lib/"]) == ["lib", "src/lib"]
+    one = tmpdir("cs-app-") / "one"
+    for rel, src in (("pkg/__init__.py", ""), ("pkg/a.py", "from pkg import b\n"), ("pkg/b.py", "X = 1\n")):
+        (one / rel).parent.mkdir(parents=True, exist_ok=True)
+        (one / rel).write_text(src)
+    cs("scan", one, "--roots", "pkg/", "./pkg")
+    idx = payload.load_index(one)
+    assert idx["repo"]["roots"] == ["pkg"] and ["pkg.a", "pkg.b", 1] in idx["edges"], (idx["repo"], idx["edges"])
+
+
 # ---------------------------------------------------------------- jobs
 
 def test_trace_spec():
@@ -151,6 +216,21 @@ def test_trace_spec():
     assert spec.command == f"{PY} -m fakesvc.offline" and spec.phases == [PHASE] and spec.env == {"FOO": "bar"}, spec
     assert spec.events and spec.timeout == 60 and TraceSpec.from_json(spec.to_json()) == spec
     assert spec.tags == ["model=x"] and spec.stop_grace == 5 and spec.roots == ["fakesvc"], spec
+    assert spec.cwd is None                               # 在仓库根目录录的：不写 --cwd
+    other = tmpdir("cs-app-")
+    moved = TraceSpec.from_run(repo, {**orig, "cwd": str(other)})
+    assert moved.cwd == str(other) and f"--cwd={other}" in moved.argv(), moved.argv()
+    # 表单里的相对执行目录按仓库根目录算（任务在那里起），不是按 app 进程自己的当前目录
+    rel = TraceSpec.from_json({"repo": str(repo), "case": "x", "command": OFFLINE, "cwd": "fakesvc"})
+    assert rel.cwd == str((repo / "fakesvc").resolve()), rel.cwd
+    rel.validate(syms)
+    assert TraceSpec.from_json({"repo": str(repo), "case": "x", "command": OFFLINE, "cwd": " "}).cwd is None
+    try:
+        TraceSpec(repo=str(repo), case="x", command=OFFLINE, cwd=str(other / "nope")).validate(syms)
+    except ValueError as e:
+        assert "执行目录不存在" in str(e)
+    else:
+        raise AssertionError("执行目录不存在也过了")
     spec.validate(syms)
     job = wait(JobManager().start("trace", str(repo), spec.argv()))
     assert job.returncode == 0, list(job.lines)
@@ -171,9 +251,9 @@ def test_job_manager():
         done.append((job, job.running))
         job.add("回调写的一行")
     jm = JobManager(on_done=on_done)
-    job = jm.start("scan", str(raw), scan_argv(raw))
+    job = jm.start("scan", str(raw), scan_argv(raw, ["fakesvc"]))
     try:
-        jm.start("scan", str(raw), scan_argv(raw))
+        jm.start("scan", str(raw), scan_argv(raw, ["fakesvc"]))
     except Busy:
         pass
     else:
@@ -199,7 +279,7 @@ def test_job_manager():
     # 仓库目录没了：起不来，报 JobError（不是没头没尾的 OSError）
     from codestrata.jobs import JobError
     try:
-        jm.start("scan", str(raw / "gone"), scan_argv(raw / "gone"))
+        jm.start("scan", str(raw / "gone"), scan_argv(raw / "gone", ["fakesvc"]))
     except JobError as e:
         assert not isinstance(e, Busy) and "起不来" in str(e)
     else:
@@ -230,7 +310,7 @@ class Client:
         if self.cookie:
             h["Cookie"] = self.cookie
         if header:
-            h[app_mod.HEADER] = "1"
+            h[serve.HEADER] = "1"
         data = None
         if body is not None:
             data = json.dumps(body).encode()
@@ -288,10 +368,14 @@ def test_app_http():
         assert st == 200 and card["index"] is None and card["job"] is None, card
         assert c.req("POST", "/api/projects", {"path": str(raw / "nope")})[0] == 400
         assert c.req("POST", "/api/open", {"repo": str(raw)})[0] == 500           # 没 scan 过：serve 起不来，报原因
-        # 扫描
-        st, snap, _ = c.req("POST", "/api/scan", {"repo": str(raw)})
+        # 扫描：扫哪些目录由用户勾（第一次一个都不预选）；没勾、勾了不在候选里的都不行
+        st, ch, _ = c.req("GET", f"/api/scan-roots?repo={raw}")
+        assert st == 200 and ch["chosen"] == [] and "fakesvc" in {x["path"] for x in ch["candidates"]}, ch
+        assert c.req("POST", "/api/scan", {"repo": str(raw)})[0] == 400
+        assert c.req("POST", "/api/scan", {"repo": str(raw), "roots": ["../etc"]})[0] == 400
+        st, snap, _ = c.req("POST", "/api/scan", {"repo": str(raw), "roots": ["fakesvc"]})
         assert st == 200 and snap["kind"] == "scan", snap
-        assert c.req("POST", "/api/scan", {"repo": str(raw)})[0] == 409            # 同一个仓库同时只跑一个
+        assert c.req("POST", "/api/scan", {"repo": str(raw), "roots": ["fakesvc"]})[0] == 409   # 同一个仓库同时只跑一个
         assert c.req("POST", "/api/trace", {"repo": str(raw), "case": "t", "command": OFFLINE})[0] == 409
         # 有任务在跑时先回 409，不去读（可能正被扫描重写的）索引、不校验表单
         assert c.req("POST", "/api/trace", {"repo": str(raw), "case": "t", "command": OFFLINE,
@@ -300,6 +384,8 @@ def test_app_http():
         assert j["returncode"] == 0 and any("扫描" in x for x in j["lines"]), j
         st, cards, _ = c.req("GET", "/api/projects")
         assert cards[0]["index"]["n_files"] >= 5 and cards[0]["job"]["returncode"] == 0, cards
+        assert cards[0]["index"]["roots"] == ["fakesvc"]
+        assert c.req("GET", f"/api/scan-roots?repo={raw}")[1]["chosen"] == ["fakesvc"]   # 重新扫描时预先勾上
         # 补全、录制（表单错了当场报；对了就起任务）、从 run 还原表单
         assert c.req("GET", f"/api/symbols?repo={raw}&q=generate")[1][0] == PHASE[1]
         st, e, _ = c.req("POST", "/api/trace", {"repo": str(raw), "case": "t", "command": OFFLINE,
@@ -325,7 +411,7 @@ def test_app_http():
         assert "fakesvc.newmod" not in _node_ids(vport)
         # 重新扫描：图服务在原端口重启、读到新的 index（开着的标签刷新一下就是新的）
         (raw / "fakesvc" / "newmod.py").write_text("def f():\n    return 1\n")
-        c.job(c.req("POST", "/api/scan", {"repo": str(raw)})[1])
+        c.job(c.req("POST", "/api/scan", {"repo": str(raw), "roots": ["fakesvc"]})[1])
         assert "fakesvc.newmod" in _node_ids(vport)
         # 有任务在跑的项目不能移除；移除后图服务也停了，仓库里的东西都还在
         long = c.req("POST", "/api/trace", {"repo": str(raw), "case": "long",
@@ -378,6 +464,11 @@ def test_serve_guard_and_home():
         assert _get_json(port, "/api/app") == {"home": None}
         assert _status(port, "GET", "/", host="evil.example:80") == 403
         assert _status(port, "PUT", "/api/notes/_overview", body=b"[1]") == 400
+        # 开编辑器：没带 X-Codestrata 头（别的网页用 <img src> 发的 GET 就是这样）一律 403。
+        # 请求一个不存在的文件：万一守卫失效，拿到的是 400（找不到文件），也不会真的在桌面上开编辑器
+        assert _status(port, "GET", "/api/open?f=does-not-exist.py&l=1") == 403
+        page = urllib.request.urlopen(f"http://127.0.0.1:{port}/code/fakesvc/work.py?l=1").read().decode()
+        assert f"'{serve.HEADER}':'1'" in page, "代码页的「在编辑器打开」要带上页面的头，不然永远 403"
     finally:
         p.terminate()
         p.wait(10)

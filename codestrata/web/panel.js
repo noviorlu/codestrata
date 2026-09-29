@@ -11,7 +11,9 @@ window.CS = window.CS || {};
 
   function short(id) {
     id = String(id);
-    return /\.\*$/.test(id) ? id.slice(0, -2).split('.').pop() + '/ 本层' : id.split('.').pop();
+    // 同一个切面上撞了名的（flask.app / flask.sansio.app）：用补过父目录段的名字，和图上一致
+    var r = /\.\*$/.test(id), d = r ? id.slice(0, -2) : id, a = (D && D.alias) || {};
+    return (Object.prototype.hasOwnProperty.call(a, d) ? a[d] : d.split('.').pop()) + (r ? '/ 本层' : '');
   }
   var KIND = { dir: '目录（整棵子树收成一个节点）', residual: '目录里直接放着的文件（不含子目录）', unit: '单个文件' };
   /* 符号键 codestrata.payload:Handler.do_GET → payload:Handler.do_GET；兜底键（文件:行）原样显示 */
@@ -33,6 +35,18 @@ window.CS = window.CS || {};
     return '<pre class="csnip"><code>' + (h ? h.join('\n') : esc(t)) + '</code></pre>';
   }
   function fname(f) { return f.split('/').pop(); }
+
+  /* 调用方里没找到调它的那一行（sites 是空的）：为什么。payload 的 how 是怎么找的、form 是那种写法 */
+  function via(c) {
+    var f = esc(c.form || c.callee + '(…)');
+    if (c.how === 'implicit') return f + ' 隐式调到它：看不出是调用方里的哪一行';
+    // 按语法找也只认得出写在明面上的记号：说不准是哪种，两种可能都列出来
+    if (c.how === 'syntax') return '调用方里没找到 ' + f + ' 这种写法：可能是仓库外的代码触发的（contextlib、sorted 之类），'
+      + '也可能是没有记号的隐式触发（解包、当参数传进内置函数、容器里比较之类）';
+    return '没直接写 ' + f + '：' + ({
+      attr: '这个属性是经由 getattr、代理对象或仓库外的代码取的'
+    }[c.how] || '是经由变量或别名（cls(…)）、__call__、装饰器、回调或仓库外的代码调到的');
+  }
 
   /* 边详情的主体：每一对「谁调了谁」一张卡片——被调的函数、from（调用方里调它的那一行）、
      to（被调函数的签名）。按次数排；对比时写 A / B。 */
@@ -68,7 +82,7 @@ window.CS = window.CS || {};
             + '代码里没有 import 或引用这个类">动态</span>' : '') + '</div>'
         + '<div class="cs"><span class="lab">from</span>' + from + more
         + '<span class="who">' + esc(symLabel(c.sym)) + '</span></div>'
-        + (site ? code([site.s]) : code(c.sig) + (c.sites ? '<div class="via">没直接写 ' + esc(c.callee) + '(…)：中间经过 __call__、回调或仓库外的代码</div>' : ''))
+        + (site ? code([site.s]) : code(c.sig) + (c.sites ? '<div class="via">' + via(c) + '</div>' : ''))
         + '<div class="cs"><span class="lab">to</span>' + jump(r.def, r.def ? fname(r.def.f) + ':' + r.def.l : '（没找到定义）') + '</div>'
         + code(r.sig)
         + '</div>';
@@ -117,6 +131,7 @@ window.CS = window.CS || {};
   }
 
   CS.panel = {
+    short: short,      // 节点的短名（撞名的用补过父目录段的别名，和图上一致）：抽屉标题也用它
     _sideTok: 0, _detTok: 0,      // 面板每换一次内容加一：异步请求回来时据此判断还要不要画
     init: function (detEl, sideEl, data) { det = detEl; side = sideEl; D = data; this.reset(); },
 
@@ -148,21 +163,26 @@ window.CS = window.CS || {};
       this._detTok++;
       var v = (D.pkgs || {})[id] || {}, x = CS.graph.nb(id);
       // 静态 import 图里没有、只在 runtime 出现的依赖（按名字加载、注册表、鸭子类型）
-      var dyn = { i: [], o: [] };
+      // 仅类型的（TYPE_CHECKING 里的 import）：图上默认不画，这里照样列出来
+      var dyn = { i: [], o: [] }, typ = { i: [], o: [] };
       CS.graph.edges.forEach(function (E) {
         if (E.kind !== 'dyn') return;
         if (E.a === id) dyn.o.push(E.b); if (E.b === id) dyn.i.push(E.a);
       });
+      (CS.graph.typeOnly || []).forEach(function (e) {
+        if (e[0] === id) typ.o.push(e[1]); if (e[1] === id) typ.i.push(e[0]);
+      });
       var list = (D.pkgSyms || {})[id] || [];
       var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0, cmp = CS.graph.cmp;
       var nab = cmp ? (cmp.nodes[id] || [0, 0]) : null;
-      function pills(a, l, out) {
+      function pills(a, l, out, kind) {       // kind：图上没画出来的边（关着的仅类型）是哪种
         if (!a.length) return '';
         return '<div class="kv"><span>' + l + '</span>' + a.map(function (i) {
-          var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || {}, inf = E.info || {};
+          var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || { kind: kind }, inf = E.info || {};
           // 对比时：次数写成 A/B，颜色按哪边跑到（只有 B 的紫色），不拿两边的较大值冒充 A 的
           var ab = E.ab, tone = ab ? (ab[0] && ab[1] ? ' both' : ab[0] ? ' warm' : ab[1] ? ' warmb' : '') : (E.hits ? ' warm' : '');
           var tag = E.kind === 'dyn' ? (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次'
+                  : E.kind === 'type' ? '仅类型'
                   : (inf.uses ? inf.uses + ' 符号' : '只 import')
                     + (E.dynOnly ? ' · 动态分派 ' + (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次' : '');
           return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(short(i))
@@ -183,6 +203,7 @@ window.CS = window.CS || {};
         + this._cutRow(id, v)
         + pills(x.o, '依赖 →', true) + pills(x.i, '← 被依赖', false)
         + pills(dyn.o, 'runtime 才出现 →', true) + pills(dyn.i, '← runtime 才出现', false)
+        + pills(typ.o, '仅类型 →', true, 'type') + pills(typ.i, '← 仅类型', false, 'type')
         + this._docs(id)
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
@@ -589,18 +610,23 @@ window.CS = window.CS || {};
         return x.status === 'static' && !(x.runtime_b || []).length;
       });
       var wired = E.items.filter(function (x) { return x.wiring; });
+      // 两端之间只有 if TYPE_CHECKING: 里的 import：运行时不存在，不是依赖（图上的「仅类型」）
+      var typeOnly = !E.static_edge && E.type_edge;
       var sub = rt ? (E.has_runtime_b ? 'runtime A <b>' + c.calls + '</b> 次 · 对比的 run B <b class="rtb">' + (c.calls_b || 0) + '</b> 次'
                                       : 'runtime <b>' + c.calls + '</b> 次')
-                     + ' · ' + calls.n + ' 对调用' + (E.static_edge ? '' : ' · 没有 import')
+                     + ' · ' + calls.n + ' 对调用' + (E.static_edge ? '' : typeOnly ? ' · 只有 TYPE_CHECKING 里的 import' : ' · 没有 import')
                    : (E.note ? esc(E.note) : stat.length + ' 个被引用的符号 · 没有 runtime 数据');
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'
         + '<div class="sub">' + sub
         + '<span class="dep" style="margin-left:10px"><button class="chip" data-go="' + esc(E.a) + '">' + esc(short(E.a))
         + '</button><button class="chip" data-go="' + esc(E.b) + '" style="border-radius:0 999px 999px 0">' + esc(short(E.b)) + '</button></span></div>';
-      h += rt ? calls.html || '<p class="hint">这次运行没有跨这条边的调用</p>' : refCards(stat);
-      // 次要的都折叠在下面
-      function fold(title, n, body) {
-        return n ? '<details class="efold"><summary>' + esc(title) + '<span class="n">' + n + '</span></summary>' + body + '</details>' : '';
+      if (typeOnly && !calls.n)
+        h += '<p class="hint">仅类型：只在 if TYPE_CHECKING: 里 import，给类型标注用，运行时不存在，不算依赖。import 语句在下面。</p>';
+      else h += rt ? calls.html || '<p class="hint">这次运行没有跨这条边的调用</p>' : refCards(stat);
+      // 次要的都折叠在下面；仅类型的边要看的就是 import 语句，那一栏直接展开
+      function fold(title, n, body, open) {
+        return n ? '<details class="efold"' + (open ? ' open' : '') + '><summary>' + esc(title) + '<span class="n">' + n + '</span></summary>'
+          + body + '</details>' : '';
       }
       if (rt) h += fold('引用了，这次没跑到', stat.length, refCards(stat));
       h += fold('按名字登记', wired.length, wired.map(function (x) {
@@ -613,7 +639,7 @@ window.CS = window.CS || {};
       if (E.sites.length)
         h += fold('全部 import 语句', E.n_sites, E.sites.map(function (x) {
             return '<div class="cs">' + jump(x, fname(x.f) + ':' + x.l) + '</div>' + code([x.s]); }).join('')
-          + (E.n_sites > E.sites.length ? '<p class="hint">…只列前 ' + E.sites.length + ' 条</p>' : ''));
+          + (E.n_sites > E.sites.length ? '<p class="hint">…只列前 ' + E.sites.length + ' 条</p>' : ''), typeOnly && !calls.n);
       det.innerHTML = h;
       this._wireDet(E.a);
     },

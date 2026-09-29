@@ -173,6 +173,31 @@ def view(index: dict, open_: set) -> dict:
             "members": mem, "node_of": of}
 
 
+def disambiguate(index: dict, ids) -> dict[str, str]:
+    """切面上短名（点分名的最后一段）撞了的节点 / 框：{id: 补上父目录段、在这一组里分得开的名字}。
+    flask.app 和 flask.sansio.app 都叫 app → app、sansio.app；vllm 的 kernels 和 model_executor.kernels
+    同理。没撞的不在结果里（照旧只写最后一段）。本层文件节点 x.y.* 跟它的目录 x.y 算一个名字；
+    单根仓库的根包名不算一段。"""
+    roots = roots_of(index)
+    pre = roots[0] + "." if len(roots) == 1 else ""
+
+    def path(d: str) -> list[str]:
+        return (d[len(pre):] if pre and d.startswith(pre) else d).split(".")
+
+    by: dict[str, list] = {}
+    for d in {n[:-2] if is_residual(n) else n for n in ids}:
+        by.setdefault(path(d)[-1], []).append(d)
+    out: dict[str, str] = {}
+    for grp in by.values():
+        if len(grp) < 2:
+            continue
+        k, top = 2, max(len(path(d)) for d in grp)
+        while k < top and len({".".join(path(d)[-k:]) for d in grp}) < len(grp):
+            k += 1
+        out.update({d: ".".join(path(d)[-k:]) for d in grp})
+    return out
+
+
 def visible(v: dict) -> list[str]:
     """切面上真正会画出来的节点：既没符号又没连边的（只有空 __init__.py 的目录）不画。"""
     return [n for n, x in v["nodes"].items()

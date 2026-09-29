@@ -108,17 +108,21 @@ def build(index: dict, *, lanes: int | str = "auto", min_files: int = 1,
     fparent = {f: (v.get("parent") if v.get("parent") in fr_in else None) for f, v in fr_in.items()}
     kinds = {p: v.get("kind") for p, v in pkgs.items()}
     kinds.update({f: v.get("kind") for f, v in fr_in.items()})
+    alias = index.get("alias") or {}          # 切面上撞了名的：补过父目录段的名字（cut.disambiguate）
 
     def name_in(p: str, f: str | None) -> str:
         """框里的节点只写相对于框的名字：框头已经写了 diffusion/，
-        里面的 diffusion.executor/ 写成 executor/，框就窄得多。"""
+        里面的 diffusion.executor/ 写成 executor/，框就窄得多。同一张图上撞了名的（两个 app）
+        不管在哪个框里都写补过父目录段的名字——框头离得远，只看节点分不出来。"""
         kind = kinds.get(p)
+        own = p[:-2] if kind == "residual" else p
+        if f is not None and own == (f[:-2] if f.endswith(".*") else f):
+            return "本层文件"
+        if own in alias:
+            return alias[own] + ("/ 本层" if kind == "residual" else "/" if kind == "dir" else "")
         if f is None:
             return _display(p, kind, root_prefix)
         base = f[:-2] if f.endswith(".*") else f
-        own = p[:-2] if kind == "residual" else p
-        if own == base:
-            return "本层文件"
         if not own.startswith(base + "."):
             return _display(p, kind, root_prefix)
         return own[len(base) + 1:] + ("/ 本层" if kind == "residual" else "/" if kind == "dir" else "")

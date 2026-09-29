@@ -392,6 +392,63 @@ def test_rerun_command_reproduces():
     assert run2["env"] == {"CUDA_VISIBLE_DEVICES": "0"}, run2["env"]
 
 
+def test_trace_cwd():
+    """命令默认在仓库根目录执行；脚本写的是当前目录下的相对路径时，开录之前就说清楚（不留失败的 run），
+    --cwd 换执行目录，run 里记下实际的执行目录，复刻命令照样重跑"""
+    repo = fresh()
+    here = tmpdir("cs-runs-") / "work"
+    here.mkdir()
+    (here / "case.py").write_text("from fakesvc import work\nwork.init_model()\n")
+    env = dict(os.environ)
+    base = [PY, "-m", "codestrata", "trace", str(repo), "--case", "cwd", "--env", f"PYTHONPATH={repo}"]
+    r = subprocess.run(base + ["--", PY, "case.py"], cwd=here, capture_output=True, text=True, timeout=120,
+                       env={**env, "PYTHONPATH": str(HERE.parent)})
+    assert r.returncode != 0 and "--cwd ." in r.stderr and "case.py" in r.stderr, r.stdout + r.stderr
+    assert not any((repo / ".codestrata" / "runs").glob("*-cwd")), "开录之前就停，不该留下 run"
+    r = subprocess.run(base + ["--cwd", ".", "--", PY, "case.py"], cwd=here, capture_output=True, text=True,
+                       timeout=120, env={**env, "PYTHONPATH": str(HERE.parent)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    run, _, rd = latest(repo)
+    assert run["cwd"] == str(here) and run["status"] == "ok", (run["cwd"], run["status"])
+    cmd = runs.rerun_command(run, repo)
+    assert "--cwd ." in cmd and cmd.startswith(f"cd {here}"), cmd
+    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=120, cwd="/",
+                       env={**env, "PYTHONPATH": str(HERE.parent)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    again, _, rd2 = latest(repo)
+    assert rd2 != rd and again["cwd"] == str(here) and again["status"] == "ok"
+    # 只看路径在哪边存在：两边都有、两边都没有（比如输出目录）、以 - 开头的，都不算
+    (repo / "case.py").write_text("")
+    assert trace.misplaced_paths(["python", "case.py", "--out", "out/x", "-m", "a/b"], repo, here) == []
+    assert trace.misplaced_paths(["bash", "./case.py"], repo / "fakesvc", here) == ["./case.py"]
+
+
+def test_trace_roots_and_attach():
+    """trace 不给 --roots：用上次 scan 选的目录（不是重新自动探测）。--attach 的相对路径按执行目录（--cwd）找，
+    不是按仓库根目录"""
+    repo = fresh()
+    (repo / "extra").mkdir()
+    (repo / "extra" / "__init__.py").write_text("")
+    (repo / "extra" / "m.py").write_text("def f():\n    return 1\n")
+    from codestrata import scan as scan_mod
+    assert scan_mod.detect_roots(repo) != ["fakesvc"], scan_mod.detect_roots(repo)
+    cs("scan", repo, "--roots", "fakesvc")
+    here = tmpdir("cs-runs-")
+    (here / "sub").mkdir()
+    (here / "sub" / "cfg.yaml").write_text("a: 1\n")
+    r = subprocess.run([PY, "-m", "codestrata", "trace", str(repo), "--case", "rt", "--cwd", "sub", "--attach", "cfg.yaml",
+                        "--env", f"PYTHONPATH={repo}", "--", PY, "-c",
+                        "import os; from fakesvc import work; work.init_model(); "
+                        "open('pkgs.txt', 'w').write(os.environ['CODESTRATA_PKGS'])"],
+                       cwd=here, capture_output=True, text=True, timeout=120, env={**os.environ, "PYTHONPATH": str(HERE.parent)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    run, det, _ = latest(repo)
+    assert (here / "sub" / "pkgs.txt").read_text() == "fakesvc=fakesvc"        # 顶层包 → 仓库里的目录
+    assert run["rec"]["roots"] is None, run["rec"]                              # 没给 --roots：复刻时照样按索引
+    assert run["cwd"] == str((here / "sub").resolve()), run["cwd"]
+    assert any(f["why"] == "attach" and f["path"].endswith("sub/cfg.yaml") for f in det["files"]), det["files"]
+
+
 def test_rerun_command_legacy():
     """老 run 没存原始命令：按 run 里的参数拼（仓库写绝对路径，--phase / --events / --roots 都带上），
     并注明是拼的。"""
@@ -402,8 +459,10 @@ def test_rerun_command_legacy():
     run.pop("invocation")
     run.pop("env_inherited")
     (rd / "run.json").write_text(json.dumps(run))
-    cmd = runs.rerun_command(run, Path("relative/somewhere"))
+    cmd = runs.rerun_command(run, Path(os.path.relpath(repo)))          # 相对路径也写成绝对的
     assert cmd.startswith("codestrata trace " + str(repo.resolve()) + " --case=old"), cmd
+    assert "--cwd" not in cmd, cmd                                        # 在仓库根目录录的
+    assert f"--cwd={repo.resolve() / 'fakesvc'}" in runs.rerun_command({**run, "cwd": str(repo / "fakesvc")}, repo)
     for x in ("--events", "--phase=g=fakesvc/offline.py:Engine.generate", "--roots fakesvc", "--timeout=60",
               f"--attach={repo.resolve() / 'fake_service.sh'}", f"-- {PY} -m fakesvc.offline"):
         assert x in cmd, (x, cmd)
@@ -1515,6 +1574,79 @@ def decorated():
     assert h3["files"]["fakesvc/work.py"] >= before["files"]["fakesvc/work.py"] - 1, (h3["files"], before["files"])
 
 
+_CLS = {
+    "cb/__init__.py": "",
+    "cb/util.py": "def deco(cls):\n    return cls\n",
+    # 只定义、方法一次都没调到的类：import 过（类体跑过），但这个模块不能算「跑到了」
+    "cb/idle.py": "class Idle:\n    def work(self):\n        return 0\n",
+    "cb/lazy.py": (
+        "from cb import idle\n"
+        "from cb.util import deco\n\n\n"
+        "@deco\n"                                   # 装饰过的类：类体帧的 co_firstlineno 是装饰器那一行
+        "class Pool:\n"
+        "    class Options:\n"                       # 嵌套的类
+        "        retries = 1\n\n"
+        "    def request(self):\n"
+        "        return 1\n\n\n"
+        "def factory():\n"
+        "    class Local:\n"                         # 函数里定义的类：每调一次 factory 跑一次类体
+        "        pass\n"
+        "    return Local\n"),
+    "cb/main.py": (
+        "def late():\n"
+        "    from cb import lazy\n"                  # 惰性 import（httpx 的 HTTPTransport.__init__ 里 import httpcore 就是这样）
+        "    lazy.Pool().request()\n"
+        "    for _ in range(3):\n"
+        "        lazy.factory()\n\n\n"
+        "if __name__ == '__main__':\n"
+        "    late()\n"),
+}
+
+
+def test_class_body_is_definition_not_call():
+    """类体（class 语句执行时跑一次的帧）和模块顶层一样是定义、不是调用：不算到类符号、文件、模块上，
+    否则惰性 import 进来的一堆类会让那个阶段「跑到了」它们（httpx 试用：sync 阶段 import httpcore，
+    AsyncConnectionPool 等等的类体被算成 sync 调了 async 的类）。装饰过的、嵌套的、函数里的类都一样；
+    按行号在加载时分，录制之后改过行号（remap）的也一样。"""
+    t = tmpdir("cs-cls-")
+    repo = t / "repo"
+    for rel, src in _CLS.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "cls", "--phase", "late=cb.main:late", "--", PY, "-m", "cb.main")
+    # 时序图和模块图用同一个「定义时的执行」判断（trace.defining）
+    from codestrata import seq
+    idx0 = payload.load_index(repo)
+    sm = seq._Map(idx0, ["cb"])
+    S = idx0["symbols"]
+    for k, want in (("cb.lazy:Pool", True), ("cb.lazy:Pool.Options", True), ("cb.lazy:Pool.request", False),
+                    ("cb.lazy:factory", False)):
+        assert sm.defining(S[k]["f"], S[k].get("dl", S[k]["l"])) is want, k
+    assert sm.defining("cb/lazy.py", 0) and not sm.defining("cb/lazy.py", 3)
+
+    def check(idx):
+        classes = {k for k, s in idx["symbols"].items() if s["k"] == "class"}
+        h, m = payload.load_hot(repo, idx, "cls@late")
+        assert not classes & set(h["symbols"]), h["symbols"]
+        assert h["symbols"] == {"cb.main:late": 1, "cb.util:deco": 1, "cb.lazy:Pool.request": 1,
+                                "cb.lazy:factory": 3}, h["symbols"]
+        assert "cb.idle" not in h["packages"] and "cb/idle.py" not in h["files"], (h["packages"], h["files"])
+        assert h["packages"]["cb.lazy"] == 4 and h["files"]["cb/lazy.py"] == 4, (h["packages"], h["files"])
+        assert set(h["module_exec"]) == {"cb/idle.py", "cb/lazy.py", "cb/util.py"}, h["module_exec"]
+        assert h["class_frames"] == 6, h["class_frames"]        # Pool、Options、Idle、Local × 3
+        g = payload.graph_payload(repo, idx, hot=h, open_=["cb"])
+        assert "cb.idle" not in {n["id"] for n in g["graphHot"]["nodes"]}, g["hot"]["packages"]
+        return m
+    check(payload.load_index(repo))
+    # 录制之后行号变了：类体的键按 qualname 挪到类现在的行上，照样认得出
+    lz = repo / "cb" / "lazy.py"
+    lz.write_text("# 插两行\n\n" + lz.read_text())
+    cs("scan", repo)
+    m = check(payload.load_index(repo))
+    assert m["file_state"].get("cb/lazy.py") == "changed" and m["unmatched"] == 0, (m["file_state"], m["unmatched"])
+
+
 _DD = {
     "dd/__init__.py": "",
     "dd/registry.py": ('MODELS = {"Net": ("impl", "net", "Net")}\n'
@@ -1627,6 +1759,405 @@ def test_dynamic_dispatch_consistent_across_cuts():
     alone = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=p["open"])
     assert MR in by["dynOnlyEdges"] and by["dynOnlyEdges"] == alone["dynOnlyEdges"], (by["dynOnlyEdges"], p["open"])
     assert by["dyn"] == alone["hot"]["dyn"], (by["dyn"], alone["hot"]["dyn"])
+
+
+_SYN = {
+    "sx/__init__.py": "",
+    "sx/box.py": (
+        "import functools\n\n\n"
+        "class Box:\n"
+        "    @property\n"
+        "    def value(self):\n        return 1\n\n"
+        "    @property\n"
+        "    def size(self):\n        return 2\n\n"
+        "    @size.setter\n"
+        "    def size(self, v):\n        pass\n\n"
+        "    @functools.cached_property\n"
+        "    def heavy(self):\n        return 3\n\n"
+        "    def __enter__(self):\n        return self\n\n"
+        "    def __exit__(self, *exc):\n        return False\n\n"
+        "    def __iter__(self):\n        return iter([1])\n\n"
+        "    def __getitem__(self, i):\n        return i\n\n"
+        "    def __add__(self, o):\n        return self\n\n"
+        "    def __call__(self, x):\n        return x\n\n"
+        "    def __len__(self):\n        return 1\n\n"
+        "    def __contains__(self, x):\n        return True\n\n"
+        "    def __hash__(self):\n        return 1\n\n"
+        "    def __sub__(self, o):\n        return self\n\n\n"
+        "class Made:\n"
+        "    def __new__(cls):\n        return super().__new__(cls)\n\n\n"
+        "def deco(f):\n    return f\n"),
+    "sx/use.py": (
+        "from sx.box import Box, Made, deco\n\n\n"
+        "def run(b):\n"
+        '    """Enter it with care: for all items in b, a + b is fine."""\n'
+        "    # v = b.value 写在注释里的不算\n"
+        "    v = b.value\n"
+        "    b.size = 3\n"
+        "    s = b.size\n"
+        "    k = b.heavy\n"
+        "    with b:\n        pass\n"
+        "    for x in b:\n        pass\n"
+        "    y = b[0]\n"
+        "    z = b + b\n"
+        "    return b(5)\n\n\n"
+        "def typed(\n"                              # 多行、带标注的签名：list[int]、-> 不是调用处
+        "    b: 'Box',\n"
+        "    items: list[int],\n"
+        "    lookup: dict[str, int] | None = None,\n"
+        ") -> int:\n"
+        "    cache: dict[str, int] = {}\n"               # 标注里的 [] 也不是
+        "    if b:\n"                                    # 真值判断 → __len__
+        "        pass\n"
+        "    if 3 in b:\n"                               # in → __contains__
+        "        pass\n"
+        "    d = {b: 1}\n"                               # 字典的键 → __hash__
+        "    w = b - b\n"
+        "    Made()\n"                                   # 类名(…) → __new__
+        "    return b[1]\n\n\n"
+        "def wrap():\n"
+        "    @deco\n"                                    # 装饰器应用：调用方里写的是 @deco
+        "    def inner():\n"
+        "        pass\n"
+        "    return inner\n\n\n"
+        "if __name__ == '__main__':\n"
+        "    run(Box())\n"
+        "    typed(Box(), [1])\n"
+        "    wrap()\n"),
+}
+
+
+def test_call_sites_by_syntax():
+    """不写名字的调用：property 取属性就是调用（`.名字`，有 setter 的也要认得 getter），特殊方法由
+    with / for / [] / + 触发；边详情的 from 要落在调用方里写这些的那一行上（docstring 和注释里的不算），
+    落不了的（对象(…) 调 __call__）说清楚是怎么调到的，而不是「没直接写 __call__(…)」。"""
+    repo = tmpdir("cs-syn-") / "repo"
+    for rel, src in _SYN.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "syn", "--", PY, "-m", "sx.use")
+    idx = payload.load_index(repo)
+    hot, _ = payload.load_hot(repo, idx, "syn")
+    d = payload.edge_detail(repo, idx, "sx.use", "sx.box", hot)
+    got = {r["sym"].split(":")[1]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
+           if c["sym"] == "sx.use:run"}
+    assert not any("<L" in k for k in got), sorted(got)           # getter 不能成了「Box 里的某个闭包」
+    use = _SYN["sx/use.py"].splitlines()
+    want = {"Box.value": ["v = b.value"], "Box.size": ["b.size = 3", "s = b.size"], "Box.heavy": ["k = b.heavy"],
+            "Box.__enter__": ["with b:"], "Box.__exit__": ["with b:"], "Box.__iter__": ["for x in b:"],
+            "Box.__getitem__": ["y = b[0]"], "Box.__add__": ["z = b + b"]}
+    for q, lines in want.items():
+        c = got[q]
+        assert [x["s"] for x in c["sites"]] == lines, (q, c)
+        assert all(use[x["l"] - 1].strip() == x["s"] for x in c["sites"]), (q, c)
+    assert got["Box.value"]["how"] == "attr" and got["Box.value"]["form"] == ".value", got["Box.value"]
+    assert got["Box.__enter__"]["how"] == "syntax" and got["Box.__enter__"]["form"] == "with …", got["Box.__enter__"]
+    call = got["Box.__call__"]
+    assert call["sites"] == [] and call["how"] == "implicit" and call["form"] == "对象(…)", call
+    # 按语法树认，不按文本：签名的续行、标注里的 list[int]、dict[str, int] | None、-> 都不算调用处
+    typed = {r["sym"].split(":")[1]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
+             if c["sym"] == "sx.use:typed"}
+    for q, lines in {"Box.__getitem__": ["return b[1]"], "Box.__len__": ["if b:"], "Box.__contains__": ["if 3 in b:"],
+                     "Box.__hash__": ["d = {b: 1}"], "Box.__sub__": ["w = b - b"], "Made.__new__": ["Made()"]}.items():
+        assert [x["s"] for x in typed[q]["sites"]] == lines, (q, typed[q])
+    deco = next(c for it in d["items"] for r in it["runtime"] for c in r["callers"]
+                if r["sym"] == "sx.box:deco" and c["sym"] == "sx.use:wrap")
+    assert [x["s"] for x in deco["sites"]] == ["@deco"], deco
+    # 符号表：函数也记装饰器；同名的 def 照旧留最后一个（setter），getter 的位置记在 "a" 里
+    size, box = idx["symbols"]["sx.box:Box.size"], _SYN["sx/box.py"].splitlines()
+    assert size["d"] == ["setter"] and [a[0] for a in size["a"]] == [box.index("    def size(self):") + 1], size
+
+
+_CALLBACK = {                                   # 仓库：Flask 的形状，视图由使用者注册、由 dispatch_request 回调
+    "web/__init__.py": "",
+    "web/ctx.py": "from contextlib import contextmanager\n\n\n@contextmanager\ndef request_ctx():\n    yield\n",
+    "web/app.py": (
+        "from web.ctx import request_ctx\n\n\n"
+        "class App:\n"
+        "    def __init__(self):\n        self.views = {}\n\n"
+        "    def route(self, path):\n"
+        "        def deco(fn):\n            self.views[path] = fn\n            return fn\n"
+        "        return deco\n\n"
+        "    def dispatch_request(self, path):\n"
+        "        with request_ctx():\n            return self.views[path]()\n"),
+    "web/json.py": "def jsonify(obj):\n    return repr(obj)\n",
+    "web/templating.py": "def render(s, **kw):\n    return s.format(**kw)\n",
+    "web/model.py": "class Model:\n    def forward(self, x):\n        return x + 1\n",
+    "web/worker.py": ("from extlib import runner\nfrom web.model import Model\n\n\n"
+                      "def run():\n    return runner.execute(Model().forward, 1)\n"),
+}
+_CB_LIB = {"extlib/__init__.py": "", "extlib/runner.py": "def execute(fn, x):\n    return fn(x)\n"}
+_CB_CASE = {                              # case 脚本和它旁边的模块：放在仓库外，或者仓库里 scan 不扫的 examples/
+    "case.py": ("from web.app import App\nfrom web.json import jsonify\nfrom web.templating import render\n"
+                "from web import worker\nimport views\n\napp = App()\n\n\n"
+                "@app.route('/a')\ndef view_a():\n    return jsonify({'a': 1})\n\n\n"
+                "@app.route('/b')\ndef view_b():\n    return render('hi {x}', x=1)\n\n\n"
+                "app.route('/c')(views.view_c)\nfor p in ('/a', '/b', '/c'):\n    app.dispatch_request(p)\n"
+                "worker.run()\n"),
+    "views.py": "from web.json import jsonify\n\n\ndef view_c():\n    return jsonify([3])\n",
+}
+
+
+def test_callbacks_from_case_code():
+    """case 脚本（仓库外）里定义、被仓库代码回调的函数（Flask 的视图）调到的仓库函数，调用方是 case 的
+    代码，不是最近的仓库帧：dispatch_request → jsonify 这条边并不存在，不能画成动态分派。穿过安装包 /
+    标准库的调用照旧记到最近的仓库帧上（worker.run 经由 site-packages 里的 runner 调 Model.forward、
+    dispatch_request 经由 contextlib 进 request_ctx）。同一份 case 放在仓库外和放在仓库里 scan 不扫的
+    examples/，图上一样；被调的次数照算，funcs 里只有仓库代码。"""
+    t = tmpdir("cs-cb-")
+    repo, case, sp = t / "repo", t / "case", t / "lib" / "site-packages"
+    for base, files in ((repo, _CALLBACK), (sp, _CB_LIB), (case, _CB_CASE), (repo / "examples", _CB_CASE)):
+        for rel, src in files.items():
+            (base / rel).parent.mkdir(parents=True, exist_ok=True)
+            (base / rel).write_text(src)
+    cs("scan", repo)
+    env = ["--env", f"PYTHONPATH={repo}{os.pathsep}{sp}"]
+    cs("trace", repo, "--case", "out", "--events", *env, "--", PY, str(case / "case.py"))
+    cs("trace", repo, "--case", "in", *env, "--", PY, "examples/case.py")
+    idx = payload.load_index(repo)
+    assert "examples/case.py" not in idx["files"], "examples/ 应当不在 index 里"
+    ho, mo = payload.load_hot(repo, idx, "out")
+    hi, mi = payload.load_hot(repo, idx, "in")
+    want = {"web.app|web.ctx": 3, "web.worker|web.model": 1}
+    assert ho["edges"] == want and hi["edges"] == want, (ho["edges"], hi["edges"])
+    assert ho["symbols"] == hi["symbols"] and ho["symbols"]["web.json:jsonify"] == 2, (ho["symbols"], hi["symbols"])
+    assert list(ho["edge_calls"]["web.worker|web.model"]["web.model:Model.forward"]["callers"]) == ["web.worker:run"]
+    g = payload.graph_payload(repo, idx, hot=ho, hot_meta=mo)
+    assert not g["runtimeOnlyEdges"] and not g["hot"]["dyn"], (g["runtimeOnlyEdges"], g["hot"]["dyn"])
+    # 数据里：调用方记成仓库外的 case 代码（index 之外，和 examples/ 里的一样不上图）；funcs 只有仓库代码
+    out_run, rd_out, _ = runs.resolve(repo, "out")
+    c = runs.load_counts(rd_out, None)
+    assert all(k.startswith("web/") for k in c["funcs"]), sorted(c["funcs"])
+    into = {k.split("|")[0].rpartition(":")[0] for k in c["func_edges"] if k.split("|")[1].startswith("web/json.py:")}
+    assert into == {"<外部代码>/case.py", "<外部代码>/views.py"}, into
+    assert out_run["status"] == "ok" and out_run["summary"]["n_procs_active"] == 1, out_run
+    # 时序事件和计数同一个口径：没有 dispatch_request → jsonify 这种 span
+    sp_, _ = _spans(rd_out)
+    assert not [s for s in sp_ if s["a"].startswith("web/app.py") and s["b"].startswith(("web/json", "web/templ"))], sp_
+    xf = sum(v for e, v in c["func_edges"].items()
+             if e.split("|")[0].rpartition(":")[0] != e.split("|")[1].rpartition(":")[0])
+    assert out_run["events"]["n_calls"] == xf, (out_run["events"], xf)
+
+
+_CASEPKG = {                            # python -m casepkg.main：包的 __init__.py 在 __main__ 有 __file__ 之前就跑了
+    "casepkg/__init__.py": ("from web.app import App\nfrom web.json import jsonify\n\napp = App()\n\n\n"
+                            "@app.route('/a')\ndef view_a():\n    return jsonify(1)\n"),
+    "casepkg/helpers.py": "def twice(f):\n    return f() + f()\n",
+    "casepkg/main.py": ("from casepkg import app\nfrom casepkg.helpers import twice\n\n"
+                        "for _ in range(50):\n    twice(lambda: 1)\n"
+                        "app.dispatch_request('/a')\n"),
+}
+_UCASE = {                              # python -m unittest：__main__ 是标准库里的，只能靠执行目录认 case 的代码
+    "test_views.py": ("import unittest\n\nfrom web.app import App\nfrom web.json import jsonify\n\napp = App()\n\n\n"
+                      "@app.route('/x')\ndef view_x():\n    return jsonify(2)\n\n\n"
+                      "class T(unittest.TestCase):\n    def test_a(self):\n        app.dispatch_request('/x')\n"),
+}
+
+
+def test_case_code_detection():
+    """case 的代码怎么认：python -m 包.模块 时包的 __init__.py（先跑、那时还没有入口文件）事后补认；入口是库
+    （python -m unittest）时按执行目录（--cwd，经 CODESTRATA_CASE_DIRS 传给 hook）认。认出来的 case 代码只在
+    栈上当调用方：它回调仓库函数不画成动态分派；case 里自己调来调去不记边、不计数"""
+    t = tmpdir("cs-case-")
+    repo = t / "repo"
+    for base, files in ((repo, _CALLBACK), (t / "m", _CASEPKG), (t / "u", _UCASE)):
+        for rel, src in files.items():
+            (base / rel).parent.mkdir(parents=True, exist_ok=True)
+            (base / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "m", "--cwd", t / "m", "--env", f"PYTHONPATH={repo}", "--", PY, "-m", "casepkg.main")
+    cs("trace", repo, "--case", "u", "--cwd", t / "u", "--env", f"PYTHONPATH={repo}", "--", PY, "-m", "unittest", "test_views")
+    idx = payload.load_index(repo)
+    for case, src in (("m", "<外部代码>/__init__.py"), ("u", "<外部代码>/test_views.py")):
+        hot, meta = payload.load_hot(repo, idx, case)
+        g = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta)
+        assert not g["runtimeOnlyEdges"] and not g["hot"]["dyn"], (case, g["runtimeOnlyEdges"], g["hot"]["dyn"])
+        _, rd, _ = runs.resolve(repo, case)
+        c = runs.load_counts(rd, None)
+        into = {k.split("|")[0].rpartition(":")[0] for k in c["func_edges"] if k.split("|")[1].startswith("web/json.py:")}
+        assert into == {src}, (case, into)
+        assert all(k.startswith("web/") for k in c["funcs"]), (case, sorted(c["funcs"]))
+        assert not [k for k in c["func_edges"] if k.split("|")[1].startswith("<")], (case, c["func_edges"])
+
+
+_GP = {
+    "gp/__init__.py": "",
+    "gp/core.py": ("def ident[T](x: T) -> T:\n    return x\n\n\n"
+                   "class Box[T]:\n    def get(self):\n        return 1\n"),
+    "gp/main.py": ("def run():\n    from gp import core\n    core.ident(1)\n    core.Box().get()\n\n\n"
+                   "if __name__ == '__main__':\n    run()\n"),
+}
+
+
+def test_generic_defs_are_definitions():
+    """PEP 695 的 def f[T] / class C[T]：定义时先跑一帧 <generic parameters of …>，它和模块顶层一样是定义，
+    不算成对 f / C 的调用（3.12 起才有这种写法）"""
+    if sys.version_info < (3, 12):
+        print("    （跳过：要 Python 3.12）")
+        return
+    repo = tmpdir("cs-gp-") / "repo"
+    for rel, src in _GP.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "gp", "--phase", "run=gp.main:run", "--", PY, "-m", "gp.main")
+    h, _ = payload.load_hot(repo, payload.load_index(repo), "gp@run")
+    assert h["symbols"] == {"gp.main:run": 1, "gp.core:ident": 1, "gp.core:Box.get": 1}, h["symbols"]
+    assert h["files"]["gp/core.py"] == 2 and h["class_frames"] == 1, (h["files"], h["class_frames"])
+    assert set(h["module_exec"]) == {"gp/core.py"}, h["module_exec"]
+
+
+_RX = {
+    "rx/__init__.py": "from rx.executor import Executor\nfrom .models import LIMIT as DEFAULT_LIMIT\n",
+    "rx/executor/__init__.py": "from .abstract import Executor\n",
+    "rx/executor/abstract.py": "class Executor:\n    def run(self):\n        return 1\n",
+    "rx/models.py": ("LIMIT: int = 30\nSTATI = (301, 302)\ntry:\n    FAST = True\nexcept ImportError:\n"
+                     "    FAST = False\n\n\nclass Request:\n    pass\n"),
+    "rx/sessions.py": ("from .models import LIMIT, STATI, FAST, Request\nfrom rx.executor import Executor\n"
+                       "from rx import DEFAULT_LIMIT\n\n\n"
+                       "def go():\n    return LIMIT, STATI, FAST, Request(), Executor().run(), DEFAULT_LIMIT\n"),
+}
+
+
+def test_edge_defs_vars_and_reexports():
+    """边详情的「to」：模块级变量（带标注的 `LIMIT: int = 30` 也算）、__init__ 再导出的类 / 改了名的变量
+    都要有定义，而且和 Ctrl+点击（xref）落在同一处；老的 xref.json 没有 names：照旧没有定义、不报错。"""
+    repo = tmpdir("cs-defs-") / "repo"
+    for rel, src in _RX.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    idx = payload.load_index(repo)
+
+    def defs(a, b):
+        items = payload.edge_detail(repo, idx, a, b)["items"]
+        return {it["name"]: it["def"] and (it["def"]["f"], it["def"]["l"], it["def"]["k"], it.get("sig"))
+                for it in items}
+    assert defs("rx.sessions", "rx.models") == {
+        "LIMIT": ("rx/models.py", 1, "var", ["LIMIT: int = 30"]),
+        "STATI": ("rx/models.py", 2, "var", ["STATI = (301, 302)"]),
+        "FAST": ("rx/models.py", 4, "var", ["FAST = True"]),          # try 里的第一次
+        "Request": ("rx/models.py", 9, "class", ["class Request:"])}, defs("rx.sessions", "rx.models")
+    ex = defs("rx.sessions", "rx.executor.__init__")
+    assert ex == {"Executor": ("rx/executor/abstract.py", 1, "class", ["class Executor:"])}, ex
+    alias = defs("rx.sessions", "rx.__init__")
+    assert alias == {"DEFAULT_LIMIT": ("rx/models.py", 1, "var", ["LIMIT: int = 30"])}, alias
+    # 和 Ctrl+点击同一处
+    x = payload.xref_for(repo, "rx/sessions.py")
+    ctrl = {t.rsplit(":", 1)[1]: tuple(w) for t, w in x["targets"].values() if t[0] in "sv"}
+    assert ctrl["Executor"] == ex["Executor"][:2] and ctrl["LIMIT"] == alias["DEFAULT_LIMIT"][:2], ctrl
+    # 目录级的边（合并了几对单元）照样带着
+    d = payload.edge_detail(repo, idx, "rx.sessions", "rx.executor")
+    assert [it["def"]["f"] for it in d["items"]] == ["rx/executor/abstract.py"], d["items"]
+    # 老的 xref.json（没有 names）：没有定义，面板照旧说没找到
+    p = repo / ".codestrata" / "xref.json"
+    X = json.loads(p.read_text())
+    del X["names"]
+    p.write_text(json.dumps(X))
+    os.utime(p, ns=(time.time_ns() + 10**9,) * 2)
+    assert defs("rx.sessions", "rx.models")["LIMIT"] is None
+
+
+# TYPE_CHECKING 里的 import：tc.ctx 只在标注里用 App（from __future__ 下是 Name，不是字符串）；
+# tc.sub.util 用字符串标注；tc.cli 同一个名字函数里再运行时 import 一次；运行时 ctx 经 self.app 调到 app
+_TC = {
+    "tc/__init__.py": "",
+    "tc/app.py": ("from .ctx import Ctx\n\n\n"
+                  "class App:\n"
+                  "    def run(self):\n        return Ctx(self).push()\n\n"
+                  "    def hook(self):\n        return 1\n"),
+    "tc/ctx.py": ("from __future__ import annotations\n\nfrom typing import TYPE_CHECKING\n\n"
+                  "if TYPE_CHECKING:\n    from .app import App\n\n\n"
+                  "class Ctx:\n"
+                  "    def __init__(self, app: App) -> None:\n        self.app: App = app\n\n"
+                  "    def push(self) -> int:\n        return self.app.hook()\n"),
+    "tc/sub/__init__.py": "",
+    "tc/sub/util.py": ("import typing\n\nif typing.TYPE_CHECKING:\n    from ..ctx import Ctx\n\n\n"
+                   "def depth(c: 'Ctx') -> int:\n    return 0\n"),
+    "tc/cli.py": ("from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .app import App\n\n\n"
+                  "def main() -> 'App':\n    from .app import App\n    App().run()\n    return App()\n"),
+    "tc/__main__.py": "from .cli import main\n\nmain()\n",
+}
+
+
+def test_type_checking_imports_are_not_dependencies():
+    """if TYPE_CHECKING: 里的 import 运行时不执行：不算依赖、不进架构高度、不画成实线——不管名字在标注里
+    有没有被引用（早先 from __future__ 下的标注引用会把它变成「1 符号」的实线回边）。它另记在 type_edges，
+    边详情里是「仅类型」；函数里再运行时 import 同一个名字的，照旧是依赖。Ctrl+点击标注里的名字照样能跳。"""
+    t = tmpdir("cs-tc-")
+    repo = t / "repo"
+    for rel, src in _TC.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    idx = payload.load_index(repo)
+    E = {(a, b): w for a, b, w in idx["edges"]}
+    T = {(a, b): w for a, b, w in idx.get("type_edges") or []}
+    assert ("tc.ctx", "tc.app") not in E and T[("tc.ctx", "tc.app")] == 1, (E, T)
+    assert ("tc.sub.util", "tc.ctx") not in E and T[("tc.sub.util", "tc.ctx")] == 1, (E, T)
+    assert E[("tc.cli", "tc.app")] == 1 and T[("tc.cli", "tc.app")] == 1, (E, T)      # 函数里的那条是真依赖
+    # 高度只看运行时的 import：ctx 只被 app import，是叶子
+    assert idx["packages"]["tc.ctx"]["alt"] == -1.0, idx["packages"]["tc.ctx"]
+    assert "tc.ctx|tc.app" not in idx["edge_uses"], idx["edge_uses"]
+    why = lambda k: sorted((x["n"], x["why"]) for x in idx["edge_dead"].get(k, []))
+    assert why("tc.ctx|tc.app") == [("App", "type")] and why("tc.sub.util|tc.ctx") == [("Ctx", "type")]
+    assert why("tc.cli|tc.app") == [] and "tc.app:App" in idx["edge_uses"]["tc.cli|tc.app"], idx["edge_uses"]
+    g = payload.graph_payload(repo, idx, open_=["tc"])
+    assert "tc.ctx|tc.app" not in g["edgeKinds"] and ["tc.ctx", "tc.app", 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]
+    assert "tc.cli|tc.app" in g["edgeKinds"] and not any(e[:2] == ["tc.cli", "tc.app"] for e in g["typeOnlyEdges"])
+    assert g["pkgs"]["tc.ctx"]["alt"] == -1.0 and g["pkgs"]["tc.ctx"]["out"] == 0, g["pkgs"]["tc.ctx"]
+    assert ["tc.sub", "tc.ctx", 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]         # 收起的目录 → 文件
+    for a, b, n in (("tc.ctx", "tc.app", "App"), ("tc.sub", "tc.ctx", "Ctx")):
+        d = payload.edge_detail(repo, idx, a, b)
+        assert not d["static_edge"] and d["type_edge"] and d["items"] == [] and d["n_sites"] == 1, d
+        assert [(x["n"], x["why"]) for x in d["import_only"]] == [(n, "type")], d["import_only"]
+    d = payload.edge_detail(repo, idx, "tc.cli", "tc.app")
+    assert d["static_edge"] and d["type_edge"], d                     # 两样都有：是依赖
+    ex = payload.export_payload(repo, idx, code=False)["edges"]
+    assert ex["tc.ctx|tc.app"]["type_edge"] and not ex["tc.ctx|tc.app"]["static_edge"], ex.keys()
+    # runtime：ctx 经 self.app 调到 app 的 hook——两端之间运行时没有 import，是只在 runtime 出现的边
+    cs("trace", repo, "--case", "tc", "--", PY, "-m", "tc")
+    hot, meta = payload.load_hot(repo, idx, "tc")
+    g = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["tc"])
+    assert any(e[:2] == ["tc.ctx", "tc.app"] for e in g["runtimeOnlyEdges"]), g["runtimeOnlyEdges"]
+    d = payload.edge_detail(repo, idx, "tc.ctx", "tc.app", hot)
+    assert [(it["name"], it["status"]) for it in d["items"]] == [("App", "dynamic")], d["items"]
+    assert [x["why"] for x in d["import_only"]] == ["type"], d["import_only"]
+    # 标注里的名字 Ctrl+点击照样跳到定义（xref 自己解析 import，不看边）
+    x = json.loads((repo / ".codestrata" / "xref.json").read_text())
+    lines = _TC["tc/ctx.py"].splitlines()
+    hits = [x["targets"][k[3]] for k in x["files"]["tc/ctx.py"] if lines[k[0] - 1][k[1]:k[2]] == "App"]
+    assert hits and set(hits) == {"s:tc.app:App"}, hits
+
+
+def test_duplicate_short_labels():
+    """同一个切面上最后一段相同的节点（flask.app 和 flask.sansio.app、vllm 的两个 kernels/）：图上、面板里
+    补上父目录段分开；没撞的照旧只写最后一段；框里的「本层文件」不动。"""
+    t = tmpdir("cs-lb-")
+    repo = t / "repo"
+    for rel in ("lb/__init__.py", "lb/app.py", "lb/cli.py", "lb/sansio/__init__.py", "lb/sansio/app.py",
+                "lb/sansio/scaffold.py", "lb/kernels/__init__.py", "lb/kernels/k.py",
+                "lb/ops/__init__.py", "lb/ops/kernels/__init__.py", "lb/ops/kernels/k.py", "lb/ops/util.py",
+                "lb/sansio/big.py", "lb/big/sub/__init__.py", *(f"lb/big/m{i}.py" for i in range(13))):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(f"def f_{rel.replace('/', '_')[:-3]}():\n    return 1\n")
+    cs("scan", repo)
+    idx = payload.load_index(repo)
+    g = payload.graph_payload(repo, idx, open_=["lb", "lb.sansio", "lb.ops"])
+    lab = {n["id"]: n["label"] for n in g["graph"]["nodes"]}
+    assert lab["lb.app"] == "app" and lab["lb.sansio.app"] == "sansio.app", lab
+    assert lab["lb.kernels"] == "kernels/" and lab["lb.ops.kernels"] == "ops.kernels/", lab
+    assert lab["lb.cli"] == "cli" and lab["lb.sansio.scaffold"] == "scaffold" and lab["lb.ops.util"] == "util", lab
+    assert len(set(lab.values())) == len(lab), lab
+    assert g["alias"]["lb.sansio.app"] == "sansio.app" and "lb.cli" not in g["alias"], g["alias"]
+    # 文件多（又有子目录）、合成了「本层文件」的 lb.big 和 lb.sansio.big 撞名：框里的本层文件节点照旧写「本层文件」
+    g3 = payload.graph_payload(repo, idx, open_=["lb", "lb.sansio", "lb.big"])
+    lab3 = {n["id"]: n["label"] for n in g3["graph"]["nodes"]}
+    assert lab3["lb.big.*"] == "本层文件" and lab3["lb.sansio.big"] == "sansio.big", lab3
+    # 收起 sansio：只剩一个 app，不再补
+    g2 = payload.graph_payload(repo, idx, open_=["lb", "lb.ops"])
+    assert {n["id"]: n["label"] for n in g2["graph"]["nodes"]}["lb.app"] == "app" and "lb.app" not in g2["alias"]
 
 
 def test_compare_and_multi_export():

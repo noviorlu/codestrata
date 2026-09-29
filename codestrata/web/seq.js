@@ -116,7 +116,7 @@ window.CS = window.CS || {};
       } else if (!rows.length) {
         body.innerHTML = '<div class="sq-empty">这个时间窗里没有跨节点的调用'
           + (d.stat && d.stat.internal ? '（有 ' + d.stat.internal + ' 次调用发生在同一个节点内部：在模块图上展开这个节点就能看到）' : '')
-          + (d.stat && d.stat.unmapped ? '（' + d.stat.unmapped + ' 次落在 index 之外的文件上）' : '') + '。</div>';
+          + (d.stat && d.stat.unmapped ? '（' + d.stat.unmapped + ' 次落在 index 之外的代码上，包括 case 自己的代码）' : '') + '。</div>';
       } else {
         this._draw(body, d, W, sel, selEdge);
       }

@@ -64,6 +64,8 @@ def cmd_scan(a) -> int:
     idx = _scan.scan(repo, depth=depth, roots=a.roots, expand=a.expand)
     p = _scan.write_index(repo, idx, _outdir(repo))
     r = idx["repo"]
+    print(f"扫描的目录：{'、'.join(r['roots'])}"
+          + ("（--roots 指定）" if a.roots else "（自动探测的；要换就用 --roots 指定）"))
     v = _cut.view(idx, set(idx["default_open"]))
     shown = _cut.visible(v)
     print(f"扫描 {r['n_files']} 文件（解析失败 {r['n_parse_errors']}），{len(idx['packages'])} 个模块、"
@@ -264,11 +266,26 @@ def cmd_trace(a) -> int:
     for t in a.tag:
         if not _TAG_RE.match(t):
             raise SystemExit(f"tag 只能用字母、数字和 . _ : = / + -：{t!r}")
-    # --attach 的相对路径和命令一样按仓库根目录算（命令在那里跑）；那里没有再按当前目录
+    # 命令的执行目录：默认仓库根目录（case 脚本、复刻命令都按它写）；--cwd 可以换
+    run_dir = Path(a.cwd).resolve() if a.cwd else repo
+    if not run_dir.is_dir():
+        raise SystemExit(f"--cwd 不是一个目录：{a.cwd}")
+    here = _cwd()                            # 当前目录可能已经被删了
+    if not a.cwd and here:
+        lost = _trace.misplaced_paths(a.cmd, run_dir, Path(here))
+        if lost:
+            raise SystemExit(f"命令在仓库根目录 {repo} 执行，这些相对路径在那里没有、在当前目录下有："
+                             f"{'、'.join(lost)}\n要在当前目录执行就加 --cwd .（或者写成绝对路径）")
+    if a.roots:                              # 录之前就挡：别留下一个失败的 run
+        try:
+            _scan.check_roots(a.roots)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+    # --attach 的相对路径和命令一样按执行目录算；那里没有再按当前目录
     attach = []
     for f in a.attach:
         p = Path(f)
-        cand = [p] if p.is_absolute() else [repo / p, Path.cwd() / p]
+        cand = [p] if p.is_absolute() else [run_dir / p] + ([Path(here) / p] if here else [])
         hit = next((c for c in cand if c.is_file()), None)
         if hit is None:
             raise SystemExit(f"--attach 的文件不存在：{f}")
@@ -288,12 +305,13 @@ def cmd_trace(a) -> int:
     _outdir(repo)
     _runs.catalog(repo)                      # 先把老格式的 trace 迁进 runs/
     # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
-    roots = a.roots or _scan.detect_roots(repo)
+    # 默认用 scan 时选的目录（主菜单里用户勾的、或者 scan --roots 给的）：录制和图对的是同一批代码
+    roots = a.roots or (_payload.index_summary(repo) or {}).get("roots") or _scan.detect_roots(repo)
     pkgs = {r.split("/")[-1]: r for r in roots}
     # 行数上限是从 shell 继承来的：记进 run 的 env（在建 run 之前放进去，run.json 里才有、重录命令才带上）
     if a.events and os.environ.get("CODESTRATA_EV_MAX") and "CODESTRATA_EV_MAX" not in env:
         env["CODESTRATA_EV_MAX"] = os.environ["CODESTRATA_EV_MAX"]
-    rd = _runs.new_run(repo, case=a.case, cmd=a.cmd, cwd=repo, env=env, tags=a.tag, note=a.note or "",
+    rd = _runs.new_run(repo, case=a.case, cmd=a.cmd, cwd=run_dir, env=env, tags=a.tag, note=a.note or "",
                        rec={"timeout": a.timeout, "stop_grace": a.stop_grace, "attach": attach,
                             "events": bool(a.events), "roots": a.roots,
                             "phase_at": [{k: t[k] for k in ("name", "func", "file", "qualname", "line")}
@@ -312,7 +330,8 @@ def cmd_trace(a) -> int:
                                   phase_times=info["phase_times"], duration_s=info["duration_s"],
                                   leftovers=info["leftovers"], attach=attach)
     tr, run = _trace.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
-                         env_extra=env_run, stop_grace=a.stop_grace, after=after, phase_at=phase_at)
+                         env_extra=env_run, stop_grace=a.stop_grace, after=after, phase_at=phase_at,
+                         cwd=run_dir)
     detail = _runs._read(rd / "detail.json")
     sm = run["summary"]
     print(f"→ run {run['id']}：{_STATUS.get(run['status'], run['status'])}"
@@ -362,11 +381,13 @@ def cmd_trace(a) -> int:
         print("  （还没 scan，跑 codestrata scan 之后再 graph --hot 就能叠图）")
         return 0 if run["status"] != "failed" else 1
     hp = _trace.to_package_graph(tr, idx)
-    # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人
-    extra = "，".join(x for x in (f"{hp['anon']} 次在 lambda / 生成器表达式里" if hp.get("anon") else "",
-                                  f"{hp['module_frames']} 次是 import 时的模块顶层执行" if hp.get("module_frames") else "") if x)
+    # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人；
+    # 定义时的执行（模块顶层、类体）不是调用，哪儿都不算
+    defs = "，".join(x for x in (f"{hp['module_frames']} 次 import 时的模块顶层执行" if hp.get("module_frames") else "",
+                                 f"{hp['class_frames']} 次类体执行（class 语句定义类）" if hp.get("class_frames") else "") if x)
     print(f"  映射到 {len(hp['packages'])} 个包 / {len(hp['symbols'])} 个符号"
-          + (f"（另有 {extra}：算到文件上，不单列函数）" if extra else ""))
+          + (f"（另有 {hp['anon']} 次在 lambda / 生成器表达式里：算到文件上，不单列函数）" if hp.get("anon") else "")
+          + (f"（{defs}：是定义、不算调用）" if defs else ""))
     for k, v in sorted(hp["packages"].items(), key=lambda kv: -kv[1])[:12]:
         print(f"    {v:8d}  {k}")
     # 分了阶段、有 serving 的，默认建议只看 serving（启动时的初始化会淹没请求本身）
@@ -453,7 +474,7 @@ def cmd_runs(a) -> int:
         print(f"  状态  {run.get('status_shown') or run.get('status')}"
               + (f"（{'；'.join(run.get('problems') or [])}）" if run.get("problems") else ""))
         for k, label in (("created", "录制于"), ("duration_s", "用时（秒）"), ("returncode", "退出码"),
-                         ("stop", "怎么停的"), ("host", "机器"), ("cwd", "目录"), ("migrated_from", "迁移自")):
+                         ("stop", "怎么停的"), ("host", "机器"), ("cwd", "执行目录"), ("migrated_from", "迁移自")):
             if run.get(k) is not None:
                 print(f"  {label:<6}{run[k]}")
         print(f"  命令  {' '.join(run.get('cmd') or [])}")
@@ -599,10 +620,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="which", required=True)   # 不能叫 cmd：
                                                        # trace 的位置参数也叫 cmd，会互相覆盖
 
-    def common(p):
+    def common(p, roots_help="要扫描的目录，相对仓库根（给了就照单全收；不给就自动探测，跳过 tests/examples 这类）"):
         p.add_argument("repo", nargs="?", default=".")
-        p.add_argument("--roots", nargs="*", default=None,
-                       help="手动指定顶层包（默认自动探测，并排除 tests/examples 等）")
+        p.add_argument("--roots", nargs="*", default=None, help=roots_help)
 
     s = sub.add_parser("scan", help="静态扫描")
     common(s)
@@ -659,10 +679,12 @@ def main(argv: list[str] | None = None) -> int:
     c.set_defaults(fn=cmd_check)
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")
-    common(t)
+    common(t, "仓库代码在哪些目录（安装包映射回仓库用）；默认用 scan 时选的目录，没 scan 过才自动探测")
     t.add_argument("--case", required=True,
                    help="这个 case 的名字（字母、数字和 . _ -）。同名 case 重录不覆盖，每次都是新的 run")
     t.add_argument("--timeout", type=float, default=None, help="超过这么多秒就按三级顺序停掉命令")
+    t.add_argument("--cwd", default=None, metavar="DIR",
+                   help="命令在哪个目录执行（默认仓库根目录；--cwd . 是当前目录）")
     t.add_argument("--stop-grace", type=float, default=90.0,
                    help="停的时候发 SIGINT 之后等多久再发 SIGTERM（默认 90 秒）")
     t.add_argument("--tag", action="append", default=[], help="给 run 打标签，比如 model=Qwen2.5-Omni-7B（可重复）")
@@ -732,6 +754,8 @@ def main(argv: list[str] | None = None) -> int:
         i = raw.index("--")
         raw, tail = raw[:i], raw[i + 1:]
     a = ap.parse_args(raw)
+    if getattr(a, "roots", None):
+        a.roots = _scan.clean_roots(a.roots)
     a.invocation = invocation               # trace 存进 run：原样的命令 + 在哪个目录跑的，复刻用
     if a.which == "trace":
         a.cmd = tail or a.cmd

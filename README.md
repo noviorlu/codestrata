@@ -34,12 +34,18 @@ codestrata trace /path/to/repo --case demo -- python your_script.py   # 录一�
 codestrata serve /path/to/repo --hot demo                             # 同一张图上叠这次跑到的调用
 ```
 
-`--` 后面是你平时跑它的命令（脚本、pytest、起服务的 sh 都行），**在仓库根目录执行**——相对路径按仓库根目录算。想按阶段看（启动 / 处理请求 / 退出），
+`--` 后面是你平时跑它的命令（脚本、pytest、起服务的 sh 都行），**默认在仓库根目录执行**——相对路径按仓库根目录算；
+要在别的目录执行就加 `--cwd DIR`（`--cwd .` 是当前目录）。命令里的相对路径在仓库根目录下没有、在当前目录下有时，
+trace 开录之前就会停下来说明，不会留下一个失败的 run。
+
+`scan` 不给 `--roots` 时自动探测要扫的目录（跳过 tests/、examples/ 这类），并打印扫了哪些；给了 `--roots` 就照单全收
+（最后一段同名的、一个在另一个里面的不能一起扫：模块名会撞）。`trace` 用上次 `scan` 选的目录。想按阶段看（启动 / 处理请求 / 退出），
 加 `--phase serving=模块:函数`：这个函数第一次被调到时切到新阶段，不用改脚本。
 录下的 run 存在目标仓库的 `.codestrata/runs/`，**只有这一份**；`.codestrata/` 里别的东西都能随时重建。
 
 不想敲命令也行：`codestrata app` 在浏览器里打开一个主菜单——「打开文件夹…」挑仓库，每个项目三个按钮：
-**静态扫描**、**录制运行…**（填命令、case 名、阶段，阶段的函数名能补全；录过的会按最近一次预先填好）、
+**静态扫描**（先勾要扫的目录：仓库里的包、src/ 下的包、tests/、examples/ 都列出来，扫哪些你自己选；
+重新扫描时按上次的选择勾好）、**录制运行…**（填命令、case 名、阶段，阶段的函数名能补全；录过的会按最近一次预先填好）、
 **打开图**（替你起 `codestrata serve`，页面左上角有回主菜单的链接）。扫描和录制的输出实时显示，能中途停止。
 主菜单能在本机执行命令，所以只监听 127.0.0.1、要带口令：第一次用终端里打印的链接打开（带 `?t=…`），
 浏览器记住之后直接访问 `http://127.0.0.1:8930/` 就行。项目清单在 `~/.config/codestrata/projects.json`。
@@ -165,8 +171,11 @@ codestrata runs <repo> tag|untag|note|merge …
 codestrata runs <repo> rm <run id>… [--yes]   # 只认完整的 run id；还在录的不删
 ```
 
-读 hot 图要知道两件事：「调用方」是最近的仓库内的帧，穿过仓库外代码（如 vLLM 内部）的调用
-会显示成直接调用；调用次数高的多半是轮询，不等于重要。
+读 hot 图要知道两件事：「调用方」是最近的仓库内的帧，穿过仓库外代码（框架的事件循环、库里的回调）的调用
+会显示成直接调用；调用次数高的多半是轮询，不等于重要。case 自己的代码（入口脚本那一层目录里的 .py）
+例外：它在栈上当调用方——case 里定义、被仓库回调的函数（Flask 的视图）再调仓库函数，调用方记成
+`<外部代码>/脚本名`，和仓库里 scan 不扫的 examples/ 一样不上图，不会画成 dispatch_request → jsonify
+这种并不存在的动态分派边。
 
 ## 大仓库：图是目录树的一个切面，节点能就地展开 / 收起
 
@@ -293,7 +302,7 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描 + 交叉引用；默认切面按规模自动拆分
 codestrata app [--port 8930] [--no-browser]     # 主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图
 codestrata serve <repo> [--hot RUN[@阶段]]     # 本地部署前端；--hot 只是打开时先选哪个 run，页面上随时换
-codestrata trace <repo> --case NAME [--events] [--timeout S] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
+codestrata trace <repo> --case NAME [--events] [--timeout S] [--cwd DIR] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
                                               # 跑一个 case，记录真实调用（子进程一并 trace），存成新的 run
 codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   # 管理录下的 run
 codestrata tasks <repo> [--write]             # 待解读 + 输入包

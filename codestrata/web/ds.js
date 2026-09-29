@@ -145,7 +145,8 @@ window.CS = window.CS || {};
       return j('/api/reveal?node=' + encodeURIComponent(node) + '&open=' + encodeURIComponent(open.join(',')));
     },
     openEditor: function (f, l) {
-      return fetch('/api/open?f=' + encodeURIComponent(f) + '&l=' + l).catch(function () {});
+      // 带 X-Codestrata 头：serve 只认我们自己的页面发的（别的网页触发不了本机编辑器）
+      return fetch('/api/open?f=' + encodeURIComponent(f) + '&l=' + l, { headers: { 'X-Codestrata': '1' } }).catch(function () {});
     }
   };
 

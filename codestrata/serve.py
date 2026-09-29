@@ -26,7 +26,7 @@
     GET  /api/search-index        搜索栏要的全部名字（模块、文件、类 / 函数），前端自己搜
     GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
     GET  /api/edge?a=&b=          一条边承载了什么：用到了对方哪些符号、runtime 调了哪些
-    GET  /api/open?f=&l=          让本机编辑器跳到 file:line
+    GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
 只用标准库。只监听 127.0.0.1，Host 头必须是本机这个端口（防 DNS rebinding）；所有路径 realpath 后
@@ -52,6 +52,9 @@ from . import runs as _runs
 from . import seq as _seq
 
 WEB = Path(__file__).resolve().parent / "web"
+# 页面自己发的请求带着它：别的网页跨源设不了自定义头（这里不回 CORS），所以带着它的请求一定来自我们的页面。
+# 会在本机做事的接口（开编辑器、主菜单的一切）都要它——光看 Host 挡不住普通网页用 <img src> 发的 GET
+HEADER = "X-Codestrata"
 EDITORS = ("code", "cursor", "codium", "code-insiders", "subl")
 
 
@@ -82,7 +85,7 @@ header a{{color:inherit}}.sp{{margin-left:auto}}table{{border-collapse:collapse;
 td.n{{text-align:right;color:var(--mut);padding:0 10px 0 14px;user-select:none;width:1%;border-right:1px solid var(--line)}}
 td.n a{{color:inherit;text-decoration:none}}td.c{{padding:0 14px;white-space:pre}}tr.hi{{background:var(--hi)}}</style>
 <header><b>{html.escape(rel)}</b>:{line}<span class="sp"></span>
-<a href="/api/open?f={q}&l={line}" onclick="fetch(this.href);return false">在编辑器打开</a>
+<a href="/api/open?f={q}&l={line}" onclick="fetch(this.href,{{headers:{{'{HEADER}':'1'}}}});return false">在编辑器打开</a>
 <a href="/">← 回到图</a></header><table>{rows}</table>
 <script>location.hash||(location.hash='#L{line}');</script>"""
 
@@ -118,6 +121,10 @@ class BaseHandler(BaseHTTPRequestHandler):
 
     def _json(self, obj, code: int = 200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+
+    def _from_page(self) -> bool:
+        """请求是我们自己的页面发的（带着 HEADER）"""
+        return self.headers.get(HEADER) == "1"
 
     def _host_ok(self) -> bool:
         """Host 头必须是本机的这个端口：防 DNS rebinding（别的域名解析到 127.0.0.1，浏览器就会把
@@ -406,6 +413,8 @@ class Handler(BaseHandler):
             return self._json(fv) if fv else self._json({"error": "不是已扫描的文件"}, 404)
 
         if path == "/api/open":
+            if not self._from_page():            # 会在本机启动编辑器：只认我们自己的页面
+                return self._send(403, b"forbidden", "text/plain")
             rel = (q.get("f") or [""])[0]
             try:
                 line = int((q.get("l") or ["1"])[0])

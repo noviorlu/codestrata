@@ -53,7 +53,7 @@ window.CS = window.CS || {};
           self.expand(id);
         };
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
-                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, cmp: d.cmp });
+                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
         self.edgeChips();
         self.controls();
         self.cutBar();
@@ -175,8 +175,9 @@ window.CS = window.CS || {};
         t.textContent = id;
         s.textContent = v ? v.files + ' 个文件 · ' + v.classes + ' 个类 · ' + v.funcs + ' 个函数' : '';
       } else if (a) {
-        t.textContent = a.split('.').pop() + ' → ' + b.split('.').pop();
-        s.textContent = '这条依赖具体用了对方哪些函数 / 类';
+        t.textContent = CS.panel.short(a) + ' → ' + CS.panel.short(b);
+        s.textContent = (CS.graph.edgeInfo(a, b) || {}).kind === 'type' ? '只在 if TYPE_CHECKING: 里 import：运行时不存在，不算依赖'
+                      : '这条依赖具体用了对方哪些函数 / 类';
         var pm = CS.seq && CS.seq.picked;
         if (this.view === 'seq' && pm && pm.a === a && pm.b === b) s.textContent = this._msgText(pm);
         if (this.view !== 'seq' && this._runHasEvents()) {
@@ -222,7 +223,7 @@ window.CS = window.CS || {};
           + '<button class="chip copy" data-copy="rerun" title="复制这条命令（在终端里粘贴就能重录一次）">复制</button></div>'
           + '<pre class="rerun-cmd">' + esc(m.rerun) + '</pre>'
           + (m.rerun_exact ? '' : '<div class="lab warn">这个 run 录的时候还没存原始命令：上面是按 run 里存的参数拼的，'
-             + 'codestrata 按 PATH 找，仓库路径是录制时的绝对路径</div>')
+             + 'codestrata 按 PATH 找，仓库路径是现在这个仓库的，执行目录不是仓库根目录的写成 --cwd</div>')
           + (CS.ds.public ? '<div class="lab warn">这是公开页：路径里的主目录写成了 ~，PATH 这类目录列表里项目以外的部分'
              + '省略成了 …，所以命令不能原样执行；原样的在录制的机器上用 <code>codestrata runs &lt;repo&gt; show '
              + esc(m.run_id) + '</code> 看</div>' : '')
@@ -771,9 +772,11 @@ window.CS = window.CS || {};
                  return esc(k) + ' ' + m.phases[k] + ' 个函数'; }).join(' / ')
                + (m.phase ? '' : '；现在显示的是全部') + '）</span>　' : '')
           + (m.n_procs ? '跨 ' + m.n_procs + ' 个进程　' : '')
-          + (m.unmapped ? '<span title="lambda、闭包、生成器表达式和模块顶层执行没有自己的符号，'
+          + (m.unmapped ? '<span title="lambda、闭包、生成器表达式没有自己的符号：算到文件上，'
              + '不计入符号的调用次数（闭包的调用在边详情里会归到外层函数）">未归到命名符号的调用 '
              + m.unmapped + '</span>　' : '')
+          + (m.defs ? '<span title="import 时模块顶层的执行、class 语句跑类体：是定义，不算调用，'
+             + '只定义过的类和只被 import 过的模块不算「跑到了」">定义时的执行 ' + m.defs + '（不算调用）</span>　' : '')
           + (m.mapped_from ? '运行的是安装包 <code>' + esc(m.mapped_from) + '</code>，已映射回仓库 ' + m.n_mapped + ' 个文件'
              + (m.mapped_mismatch && m.mapped_mismatch.length
                 ? '，<span style="color:var(--stale)">其中 ' + m.mapped_mismatch.length + ' 个与仓库内容不一致（已按函数名对到仓库里的位置）</span>'
@@ -795,7 +798,9 @@ window.CS = window.CS || {};
       var c = CS.graph.counts, hot = !!CS.graph.hot, s = CS.graph.state;
       var defs = [['refs', 'e ref', '引用', c.ref, 'import 了，并且真的用到了对方的符号', false],
                   ['imp', 'e imp', '只 import', c.imp,
-                   '一个符号都没用到：再导出 / 只做类型标注 / 为了副作用 / 死 import', false]];
+                   '一个符号都没用到：再导出 / 为了副作用 / 死 import', false]];
+      if (c.type) defs.push(['type', 'e type', '仅类型', c.type,
+                             '两端之间只有 if TYPE_CHECKING: 里的 import：只给类型标注用，运行时不存在，不算进架构高度', false]);
       if (hot && CS.graph.cmp) {
         defs.push(['hot', 'e ref warm', 'runtime', c.warm, '对比：橙色只有 A 跑到、紫色只有 B 跑到、前景色两边都跑到，粗细 ∝ 两边的较大值', true]);
         if (c.dyn) defs.push(['dyn', 'e dyn warm', '动态分派', c.dyn,
@@ -978,7 +983,7 @@ window.CS = window.CS || {};
     redraw: function () {
       var d = this.data, s = CS.graph.state;
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
-                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, cmp: d.cmp });
+                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();
@@ -988,7 +993,7 @@ window.CS = window.CS || {};
 
     controls: function () {
       var s = CS.graph.state, self = this;
-      var KEY = { refs: 'refs', imp: 'imp', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted' };
+      var KEY = { refs: 'refs', imp: 'imp', type: 'type', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
         if (key === 'onlyHot') {                 // 换 run 时会来回切：没叠 runtime 就藏起来
@@ -998,8 +1003,9 @@ window.CS = window.CS || {};
         b.onclick = function () {
           s[key] = b.getAttribute('aria-pressed') !== 'true';
           b.setAttribute('aria-pressed', s[key]);
-          // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
-          if (key === 'onlyHot' && self.data.graphHot) self.redraw();
+          // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置；
+          // 仅类型的边关着时不画（不占接点），开关一动也要重画
+          if ((key === 'onlyHot' && self.data.graphHot) || key === 'type') self.redraw();
           else CS.graph.paint();
         };
       });

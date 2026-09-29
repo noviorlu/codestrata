@@ -2,85 +2,111 @@
 written_by: claude-opus-5-5
 target: codestrata.scan
 kind: package
-code_sha: acd50be45564786b
+code_sha: ecb484711391d122
 status: draft
-refs: scan.py:116@e3529493,scan.py:589@f74f5b17,scan.py:608@2a8f89e3,scan.py:610@c176b6f0,payload.py:51@d6513e46,scan.py:617@ae396e12,scan.py:580@bd8a6524,scan.py:361@10b3177a,codestrata/__main__.py:83@d89a80ca,scan.py:1@5f7a6e1c,scan.py:277@255e30bf,scan.py:298@2fd7b37d,scan.py:309@e7e68c0d,scan.py:301@1920e340,scan.py:312@5e10daf1,runs.py:90@fb413b11,trace.py:111@0685df0e,scan.py:303@c8d01747,runs.py:709@2e266090,scan.py:539@2373040a,scan.py:51@b93afa5e,scan.py:425@b2d3284a,scan.py:447@22a9f949,scan.py:416@74e4ca0b,scan.py:63@04872629,scan.py:349@0ee68e12,scan.py:386@5898f2be,scan.py:474@b9696986,scan.py:521@6f938f80,scan.py:458@8526611d,scan.py:196@a99d3e2d
+refs: scan.py:157@e3529493,scan.py:360@8f7062c3,scan.py:709@f74f5b17,scan.py:714@cdb35e3c,scan.py:730@c176b6f0,payload.py:52@d6513e46,scan.py:737@ae396e12,scan.py:699@bd8a6524,scan.py:479@31448101,codestrata/__main__.py:85@d89a80ca,scan.py:1@5f7a6e1c,scan.py:362@ece62725,scan.py:389@255e30bf,scan.py:410@2fd7b37d,scan.py:421@e7e68c0d,scan.py:134@f82da3ef,scan.py:154@0bc6bd97,scan.py:142@2de4d4d6,scan.py:364@c19aae48,scan.py:163@0f390eab,scan.py:413@1920e340,scan.py:424@5e10daf1,runs.py:90@fb413b11,trace.py:148@0685df0e,scan.py:417@e256ee8e,runs.py:709@2e266090,scan.py:429@6e455720,scan.py:436@47fa472f,scan.py:658@2373040a,scan.py:51@29d84015,scan.py:539@b2d3284a,scan.py:565@22a9f949,scan.py:530@74e4ca0b,scan.py:557@bb22c4ee,scan.py:634@c7b7aa70,scan.py:64@04872629,scan.py:462@0ee68e12,scan.py:595@cfc7e49e,scan.py:640@6f938f80,scan.py:576@8526611d,scan.py:304@a99d3e2d
 ---
 
 ## 是什么
-静态扫描器：用 `ast` 遍历仓库里的每个 `.py`，产出总图需要的全部事实——**文件级**的模块（单元）、单元间 import 边、架构高度、目录树、每个类/函数的位置，每条边背后「具体引用了对方哪些符号 / 哪些 import 根本没用」，以及每个 `.py` 文件的内容哈希（`file_sha`，给 runtime 的 run 判断「录制之后这个文件改过没有」）。
+静态扫描器：用 `ast` 遍历选定目录里的每个 `.py`，产出总图需要的全部事实——**文件级**的模块（单元）、单元间 import 边（运行时依赖 `edges` 和只在 `if TYPE_CHECKING:` 里的 `type_edges` 分开记）、架构高度、目录树、每个类/函数的位置，每条边背后「具体引用了对方哪些符号 / 哪些 import 运行时根本没用」，以及每个 `.py` 文件的内容哈希（`file_sha`，给 runtime 的 run 判断「录制之后这个文件改过没有」）。
+
+它还回答扫描之前的问题「扫哪些目录」：`candidate_roots` 给主菜单的勾选框列出能选的目录，`root_clashes` 挡住会撞模块名的组合，`detect_roots` 只在没人给 roots 时兜底去猜。
 
 ## 为什么这样切
-它是整个工具的**事实来源**，而且只做这一件事：不画图、不读 trace、不碰解读，也不建交叉引用。产出落到 `.codestrata/` 下两个 JSON（index.json、symbols.json），别的模块只读这两个文件，所以这两个文件随时能删掉重跑。同一目录下的 runs/ 不是 scan 的产物，而是录制数据，删了就没了；scan 不碰它，`iter_py_files` 跳过以点开头的目录（scan.py:116），runs/ 里存的 `.py` 快照也不会被扫进 index。
+它是整个工具的**事实来源**，而且只做这一件事：不画图、不读 trace、不碰解读，也不建交叉引用。产出落到 `.codestrata/` 下两个 JSON（index.json、symbols.json），别的模块只读这两个文件，所以这两个文件随时能删掉重跑。同一目录下的 runs/ 不是 scan 的产物，而是录制数据，删了就没了；scan 不碰它，`iter_py_files` 跳过以点开头的目录（scan.py:157），runs/ 里存的 `.py` 快照也不会被扫进 index。
 
-它只记**最细的粒度**：每个 `.py` 文件一个单元（包的 `__init__.py` 记成 `<包>.__init__`，把目录本身的名字留给图上「整个目录收起来」的那个节点）。图上显示哪一层不是它的事——它只把目录树（`dirs`）和默认切面（`default_open`，由 `cut.default_open` 按规模算，scan.py:589）写进 index；展开 / 收起时由 `cut` 在单元数据上重新汇总，不用重扫。早先它在扫描时就按「二级包」聚合，粒度一旦定下来，图上就没法再往里看。
+**扫哪些目录是用户的决定**。`scan` 拿到 roots 只用 `clean_roots` 归一写法（结尾的 /、开头的 ./、重复的），然后照单全收（scan.py:360），包括 tests/、examples/——早先它会替用户把 `NON_LIB_DIRS` 里的目录去掉，于是用户在对话框里勾了 tests/ 也扫不进来。现在只有没给 roots 时才调 `detect_roots`：命令行 `scan` 不带 `--roots`，或 `trace` 找不到上一次 scan 选的目录时（`trace` 默认用 index 里记下的 roots，录制和图对的是同一批代码）。主菜单里是用户自己勾（`projects.scan_choices` 把上一次的选择并进候选、标 previous，`app` 的 `_scan_argv` 要求至少勾一个）。
 
-`write_index` 把结果拆成 index.json（单元、边、目录树，画图用，小）和 symbols.json（符号、文件映射、行数、哈希、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:608）。`file_sha` 和 `files`、`file_loc` 一样是按文件的数据，放进 symbols.json（scan.py:610）；`payload.load_index` 读回来时，老的 symbols.json 没有这个键就是 None（payload.py:51），`runs.file_state` 据此决定怎么比。写完它会把拆出去的键塞回 index（scan.py:617 的「调用方还要用」），因为调用方接着还要在同一个字典上算切面、建交叉引用。
+它只记**最细的粒度**：每个 `.py` 文件一个单元（包的 `__init__.py` 记成 `<包>.__init__`，把目录本身的名字留给图上「整个目录收起来」的那个节点）。图上显示哪一层不是它的事——它只把目录树（`dirs`）和默认切面（`default_open`，由 `cut.default_open` 按规模算，scan.py:709）写进 index；展开 / 收起时由 `cut` 在单元数据上重新汇总，不用重扫。
 
-同样放在 symbols.json 里的还有 `name_refs`（scan.py:580）：字符串常量里写着的仓库内类名——大写开头的标识符，或者 `"pkg.mod.Cls"` / `"pkg.mod:Cls"` 这种带模块的类路径（后者连模块一起记下）；`__all__` 里的是再导出清单，不收（scan.py:361）。它回答的是动态分派的「在哪儿按名字接上的」：注册表 `{"Arch": ("pkg", "mod", "Cls")}`、插件表、配置里的 worker_cls。扫的时候先把所有像类名的字符串收下，扫完再只留仓库里真有这个类名的。
+`write_index` 把结果拆成 index.json（单元、边、`type_edges`、目录树，画图用，小）和 symbols.json（符号、文件映射、行数、哈希、边的明细，大）——渲染总图时不需要全量加载符号表（scan.py:714）。`file_sha` 和 `files`、`file_loc` 一样是按文件的数据，放进 symbols.json（scan.py:730）；`payload.load_index` 读回来时，老的 symbols.json 没有这个键就是 None（payload.py:52），`runs.file_state` 据此决定怎么比。写完它会把拆出去的键塞回 index（scan.py:737 的「调用方还要用」），因为调用方接着还要在同一个字典上算切面、建交叉引用。
 
-交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用的 xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:83）。放在同一条命令里、紧跟着写 index，是为了让 xref 和符号表是同一时刻的快照，两边的行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」，xref 那套带作用域的第二遍解析不拖进来。
+同样放在 symbols.json 里的还有 `name_refs`（scan.py:699）：字符串常量里写着的仓库内类名——大写开头的标识符，或者 `"pkg.mod.Cls"` / `"pkg.mod:Cls"` 这种带模块的类路径（后者连模块一起记下）；`__all__` 里的是再导出清单，不收（scan.py:479）。它回答的是动态分派的「在哪儿按名字接上的」：注册表、插件表、配置里的 worker_cls。扫的时候先把所有像类名的字符串收下，扫完再只留仓库里真有这个类名的。
+
+交叉引用（xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:85）。放在同一条命令里，是为了让 xref 和符号表是同一时刻的快照，行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」。
 
 ## 读法
-1. 模块 docstring（scan.py:1）——两个产出文件各有什么，「架构高度」的定义和为什么不用 SCC
-2. `Symbol` —— 一个定义点有哪些字段；注意 `dline`（第一个装饰器行）和 `end`（结束行），它们都是给 runtime 反查用的
-3. `detect_roots` / `NON_LIB_DIRS` —— 哪些目录算库、哪些不进图
-4. `scan` —— 主流程：先建 `unit_of_module`（模块名 → 单元，scan.py:277），再按文件循环，每个文件四步：读字节、解码并解析（scan.py:298），记行数和哈希（scan.py:309）→ 收符号（`walk`）→ 收 import 边 → 第二遍找实际引用
-5. `scan` 末尾算高度、挂 C++ 文件、收文档（`collect_docs`）、建目录树和默认切面；最后看 `write_index`，再去 `cmd_scan` 看它之后接着建 xref
+1. 模块 docstring（scan.py:1）——两个产出文件各有什么（含 `type_edges`），「架构高度」的定义和为什么不用 SCC
+2. `Symbol` —— 一个定义点有哪些字段；`dline`（第一个装饰器行）、`end`（结束行）、`also`（同名的另几个 def）都是给 runtime 反查用的，`decos` 给 payload 判断调用的写法
+3. 选目录：`_is_env` / `_subdirs` → `candidate_roots`（对话框的候选）→ `clean_roots` / `check_roots`（含 `root_clashes`）→ `detect_roots`（兜底）
+4. `scan` —— 主流程：先用 `check_roots` 挡撞名和嵌套（scan.py:362），建 `unit_of_module`（模块名 → 单元，scan.py:389），再按文件循环，每个文件四步：读字节、解码并解析（scan.py:410），记行数和哈希（scan.py:421）→ 收符号（`walk` + `add`）→ 收 import 边 → 第二遍找实际引用
+5. `scan` 末尾算高度、挂 C++ 文件、收文档（`collect_docs`）、建目录树和默认切面；最后看 `write_index`
 
 ## 关键算法
+### 候选目录：只列不挑，列出来的互不重叠
+`candidate_roots` 从每个顶层子目录往下找（最多三层），每条路径上停在第一个能当根的目录：
+- 有 `__init__.py`：是包，列它，不再往下；
+- 有工程文件（`PROJECT_MARKERS`：pyproject.toml / setup.py / setup.cfg）：是仓库里嵌套的另一个工程，进去接着找它的包，它自己的 setup.py 不算「零散脚本」。模块名按根目录的最后一段起，把整个嵌套工程当根，里面的包就成了 `<工程目录>.<包>`，import 全对不上；
+- 直接放着 `.py`（examples/、scripts/、没有 `__init__.py` 的 tests/）：列它本身，它下面的包也算在里面；
+- 没有子目录可进、或到了第三层还不是包：列它本身。
+
+一个 `.py` 都没有的目录不列；列出的目录互不重叠：同一个文件只会落在一个根下、只有一个模块名。每项带 `.py` 文件数和是不是包，挑哪些全交给用户——tests/ 也列，扫进来会把高度冲掉（见下面），但那是用户知情的选择。
+
+### 环境目录按内容认，不按名字认
+仓库里的 venv / conda 环境名字不固定（envs/xxx、venv-hx），`SKIP_DIRS` 按名字挡不住；里面是装好的第三方库和标准库，扫进来既慢又全是噪声。`_is_env` 看目录里有没有 pyvenv.cfg 或 conda-meta/（scan.py:134），`_subdirs`（候选）、`iter_py_files`（真正扫描，scan.py:154）和 `collect_docs` 都跳过这种目录。`_subdirs` 还不进软链的目录（scan.py:142）：数据、模型目录常软链到大盘上，进去数文件很慢，而扫描用的 `os.walk` 本来也不跟软链。
+
+### 同名或嵌套的根不能一起扫
+模块名相对根目录的**父目录**算（见 src-layout 一节），所以最后一段相同的两个根（src/foo 和 tests/foo、hw1/tests 和 hw2/tests）会产出同一批模块名，`unit_of_module`、符号表按名字互相覆盖；一个根在另一个里面（src 和 src/pkg）时，里面的文件按两个模块名各扫一遍。`check_roots` 查这两种（同名的交给 `root_clashes` 按最后一段分组），不行就抛 `ValueError` 说明原因；`scan` 把它转成 `SystemExit`、什么都不写（scan.py:364）。`app` 的 `_scan_argv`、`trace` 显式给的 `--roots` 在起任务前调同一个函数，对话框也按 `name` 限制同名的只能勾一个。命令行上的写法先经 `clean_roots` 归一（CLI 在 `main` 里做一次）：模块名按最后一段起，`pkg/` 不去掉结尾的 / 最后一段就是空的，仓库内的 import 全对不上。
+
+### 自动探测的顺序
+`detect_roots` 依次试：顶层的库包（跳过 `NON_LIB_DIRS`）→ src/<包>（同样先跳过 tests 之类，全是才留）→ 只有 tests 之类的顶层包 → 含 `.py` 最多的顶层目录（scan.py:163）。src-layout 排在「只有测试包」前面：早先顺序反过来，src-layout 仓库只要有一个带 `__init__.py` 的 tests/，就只扫到 tests/。
+
 ### 字节只读一次：解码给 ast，原样哈希给 run
-每个 `.py` 先 `read_bytes`（scan.py:298），同一份字节派两个用处：
+每个 `.py` 先 `read_bytes`（scan.py:410），同一份字节派两个用处：
 
-- **解码**（scan.py:301）：用 `utf-8-sig`。Windows 编辑器存的文件开头常带 BOM，按普通 utf-8 解码时 BOM 会变成源码里的一个 U+FEFF 字符，`ast.parse` 直接报 `SyntaxError`——早先这种文件整个被算进解析失败（`n_parse_errors`），它的单元、符号、边全从图上消失。utf-8-sig 在解码时就去掉 BOM，行号不受影响（BOM 不占行）。`bytes.decode` 不像 `read_text` 那样做通用换行转换，所以这里手动把 CRLF 和单独的 CR 换成 LF：行数（`src.count("\n")`，scan.py:309）和第二遍查 noqa 用的 `src_lines` 与改用字节读之前完全一样，只用 CR 换行的老文件也不会被算成一行。xref 那边用 `read_text` 读、再手动去掉开头的 BOM，两边对同一个文件看到的仍是同一份文本。
-- **哈希**（scan.py:312）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:90）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:111）是同一种，三边能直接比。必须哈希原始字节而不是解码后的文本：另外两边哈希的都是磁盘上的字节，改成哈希文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，不再多读一遍（docs/design/runs.md 3.5）；这也保证了哈希和 index 里的行号出自同一份内容——分两次读的话，两次之间文件被改，就会记下一个版本的哈希、另一个版本的行号。
+- **解码**（scan.py:413）：用 utf-8-sig。Windows 编辑器存的文件开头常带 BOM，按普通 utf-8 解码时 `ast.parse` 直接报 `SyntaxError`——早先这种文件整个算进解析失败（`n_parse_errors`），单元、符号、边全从图上消失。`bytes.decode` 不做通用换行转换，所以手动把 CRLF 和单独的 CR 换成 LF：行数（scan.py:421）和查 noqa 用的 `src_lines` 与 `read_text` 读时完全一样。xref 那边用 `read_text` 读、再手动去掉开头的 BOM，两边看到的仍是同一份文本。
+- **哈希**（scan.py:424）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:90）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:148）是同一种，三边能直接比。哈希解码后的文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，也保证哈希和 index 里的行号出自同一份内容（docs/design/runs.md 3.5）。
 
-`file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:303 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
+`file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:417 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
 
 ### 为什么过期判断要和 index 比
-run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:709）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；老办法 `trace.stale_files` 拿 run 去比工作区，这种时候会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
+run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:709）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；拿 run 去比工作区（`trace.stale_files`）这时会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
+
+### 同名的几个 def：留最后一个，前面的记进 also
+符号按 `模块:限定名` 存，property 的 getter 和 setter、`overload`、if/else 里的两个版本是同一个键。`add`（scan.py:429）照旧留最后一个，把前面几个的 [行, 装饰器行, 末行] 记在 `also`（JSON 里的 "a"，scan.py:436）：trace 按「文件:首行」记，getter 跑到了也要对回这个符号（`trace.sym_locs` 把它们都建进索引），payload 找调用方函数体时也把这几段算上。只合并同一个文件里、同一种的：不同文件同名是模块名撞了（`root_clashes` 挡着）；一个函数一个类的不合，trace 靠种类区分「调用」和「定义」。
+
+函数现在也记装饰器名（`_deco_names`，只留最后一段，JSON 里的 "d"）：property / setter 这类访问器在调用方写的是 `.名字` 而不是 `名字(`，payload 的 `_call_form` 靠它换找调用处的写法。类的装饰器（dataclass 之类）照旧记。
 
 ### 架构高度而不是拓扑分层
-`alt = (出 − 入) / (出 + 入)`（scan.py:539）。docstring 里记了为什么：Python 仓库普遍循环 import，在 vllm-omni 上 30 个包有 20 个塌进同一个强连通分量，缩点后分层信息全丢；最长路径分层又会退化成 19 层的链。出入度比值不需要无环。这里算的是单元的高度；图上节点的高度由 `cut.view` 在切面上重算（节点内部的边不算）。
+`alt = (出 − 入) / (出 + 入)`（scan.py:658），只数 `edges`，不数 `type_edges`。docstring 里记了为什么：Python 仓库普遍循环 import，在 vllm-omni 上 30 个包有 20 个塌进同一个强连通分量，缩点后分层信息全丢；最长路径分层又会退化成 19 层的链。出入度比值不需要无环。图上节点的高度由 `cut.view` 在切面上重算。
 
-### tests / examples 不进图
-它们 import 一切、几乎没人 import 它们，算进来会把高度冲掉：vllm-omni 的 entrypoints 会从 +0.85 掉到 −0.33（scan.py:51 的注释）。
+tests / examples 这类目录 import 一切、几乎没人 import 它们，算进来会把高度冲掉：vllm-omni 的 entrypoints 会从 +0.85 掉到 −0.33（scan.py:51 的注释）。所以 `detect_roots` 不自动选它们；用户明确选了就照扫。
 
 ### src-layout：模块名相对包根的父目录算
-src-layout 下，文件 src/mypkg/core/x.py 的模块名是 mypkg.core.x，不是 src.mypkg.core.x——代码里写的是 import mypkg.core。所以模块名相对 `mod_base = base.parent` 算，文件路径仍相对仓库根（trace 用的是后者）。早先两者都相对仓库根，src-layout 仓库的每条边都指向一个不存在的包，图上一条边也画不出来。
+src/mypkg/core/x.py 的模块名是 mypkg.core.x，不是 src.mypkg.core.x——代码里写的是 import mypkg.core。所以模块名相对 `mod_base = base.parent` 算，文件路径仍相对仓库根（trace 用的是后者）。早先两者都相对仓库根，src-layout 仓库的每条边都指向不存在的包。
 
 ### import 解析：精确到文件，每个导入名单独解析
-文件级之后，import 的目标必须精确落到某个单元上：`import a.b` / `from a.b import X` 的目标是 `a.b` 这个模块（是包就落到 `a.b.__init__`）。`from pkg import a, b` 里每个名字**各自**判断（scan.py:425）：`pkg.a` 是仓库里的模块就是导入子模块，否则是 `pkg` 里的名字。早先整条语句只算一个目标，一行导入多个名字时绑定会被最后一个覆盖，「用了对方哪个符号」就记错了地方。同一条语句指向同一个单元只记一条边。
+`import a.b` / `from a.b import X` 的目标是 `a.b` 这个模块（是包就落到 `a.b.__init__`）。`from pkg import a, b` 里每个名字**各自**判断（scan.py:539）：`pkg.a` 是仓库里的模块就是导入子模块，否则是 `pkg` 里的名字。早先整条语句只算一个目标，一行导入多个名字时绑定会被最后一个覆盖。同一条语句指向同一个单元只记一条边。
 
-找不到对应文件的目标（构建时才生成的 `_version.py`、可选依赖的桩）不进图，只记数（scan.py:447），scan 结束时打印成 `repo.unresolved_imports`——它们没有节点可画，却会虚增源头的出边、把高度算偏。
+找不到对应文件的目标（构建时才生成的 `_version.py`、可选依赖的桩）不进图，只记数（scan.py:565），打印成 `repo.unresolved_imports`——它们没有节点可画，却会虚增出边、把高度算偏。
 
 ### 相对 import 的「点」和 `__init__.py`
-`from . import layout, render` 的目标是 `<base>.layout`、`<base>.render`，不是 `<base>` 本身；早先只取 base，所有这类 import 都塌成指向包自己的边。codestrata 自己全是这种写法，这个 bug 会让自扫描一条边都没有。
+`from . import layout, render` 的目标是 `<base>.layout`、`<base>.render`，不是 `<base>` 本身；早先只取 base，codestrata 自扫描一条边都没有。`__init__.py` 的模块名就是包本身，所以「一个点」指的是它自己，不用往上退（scan.py:530）；早先按普通模块处理，vllm-omni 上凭空多出 15 条指向不存在的包的边。
 
-`__init__.py` 还要再特殊一层：它的模块名就是包本身，所以「一个点」指的是它自己，不用往上退（scan.py:416）。早先按普通模块处理，某个包的 `__init__.py` 里写 `from .x import` 被解析成兄弟包 x——vllm-omni 上凭空多出 15 条指向不存在的包的边。
-
-### 作者写的文档挂到目录上
-`collect_docs` 找三类文档：包目录里的 README；frontmatter 用 `primary_code_paths` / `related_code_paths` 声明了自己管哪些代码的设计文档（vllm-omni 的 docs/design 就是这样）；没有 frontmatter 的文档，开头 40 行里用反引号写出的仓库路径（最弱的一档，标「提到」）。README 挂到它所在的目录，图上显示在包含这个目录的节点里。解读层最缺的是「为什么」，而作者往往在文档里写过——输入包和详情面板都会列出它们。
+### TYPE_CHECKING 里的 import 不是依赖
+`if TYPE_CHECKING:`（或 `typing.TYPE_CHECKING`）里的 import 运行时根本不执行。scan 把它们整个分流（scan.py:557）：边权记进 `type_edges` 而不是 `edges`，绑定的名字记进 `typed` 而不是 `bound` / `chains`——第二遍不看 `typed`，所以标注里引用了也不算「用到」。早先它和普通 import 一样进 `edges`，`from __future__ import annotations` 下标注里的名字是普通 `Name`，被算成「用了 1 个符号」，图上凭空多一条实线回边、高度也被带偏。现在 `typed` 里的名字一律进 `edge_dead`、why 是 `type`；只有同一个本地名字还有运行时 import（函数里再 import 一次）时不记，引用归到运行时那条上（scan.py:634）。`edge_sites` 照旧记这条语句（带 "type" 标记），边详情里还能看到它；payload 只在切面上两端之间没有运行时 import 时才把它画成「仅类型」（默认不显示）。
 
 ### 收符号只下潜语句容器
-`walk` 只递归进 `_STMT_CONTAINERS`（scan.py:63）。def/class 只能出现在语句位置，所以不用遍历表达式子树；早先只白名单了 If/Try/With，for 循环体里的嵌套函数全漏了，换成全树递归又在 vllm-omni 上慢一个量级（scan.py:349 的注释）。
+`walk` 只递归进 `_STMT_CONTAINERS`（scan.py:64）。def/class 只能出现在语句位置，所以不用遍历表达式子树；早先只白名单了 If/Try/With，for 循环体里的嵌套函数全漏了，换成全树递归又在 vllm-omni 上慢一个量级（scan.py:462 的注释）。
 
 ### 「import 了」和「用了」分两遍
-第一遍记下每条 import 在本文件绑定的本地名字（`bound`，以及 `import a.b.c` 这种只绑定根名的 `chains`）；第二遍扫所有 `Name` / `Attribute` 读取，命中哪个绑定就算用了对方哪个符号，记进 `edge_uses`（经 `_use`，同一行只记一次）。一次都没被读到的绑定进 `edge_dead`，并按原因分类：
-- `type`：在 `if TYPE_CHECKING:` 里（scan.py:386）——常配字符串标注，AST 里看不到引用，不能判死
+第一遍记下每条运行时 import 在本文件绑定的本地名字（`bound`，以及 `import a.b.c` 这种只绑定根名的 `chains`）；第二遍扫所有 `Name` / `Attribute` 读取，命中哪个绑定就算用了对方哪个符号，记进 `edge_uses`（经 `_use`，同一行只记一次）。运行时一次都没被读到的绑定进 `edge_dead`，按原因分类：
+- `type`：在 `if TYPE_CHECKING:` 里（见上一节）
 - `reexport`：写在 `__init__.py` 里，是给包外用的
-- `sideeffect`：`import a.b.c` 且从没出现 `a.b.c.X`——要的是模块顶层执行（scan.py:474）
-- `intentional`：行上带 `noqa: F401`（scan.py:521）
+- `sideeffect`：`import a.b.c` 且从没出现 `a.b.c.X`——要的是模块顶层执行（scan.py:595）
+- `intentional`：行上带 `noqa: F401`（scan.py:640）
 - 其余才是 `unused`
 
-这个区分是前端「灰实线 / 灰虚线」和边详情的数据来源。
+这个区分是前端「灰实线 / 灰虚线」和边详情的数据来源。每条 import 是不是函数内的延迟 import、是不是只在 `TYPE_CHECKING` 下，也记在 `edge_sites` 里（scan.py:576）。
 
-### 顺带记下的事实
-每个文件的行数（scan.py:309，详情面板的文件树按目录汇总），每条 import 是不是函数内的延迟 import、是不是只在 `TYPE_CHECKING` 下（scan.py:458），以及类的装饰器名。它们都是直接从代码里读出的事实，不带任何判断。
+### 作者写的文档挂到目录上
+`collect_docs` 找三类文档：包目录里的 README；frontmatter 用 `primary_code_paths` / `related_code_paths` 声明了自己管哪些代码的设计文档；没有 frontmatter 的文档，开头 40 行里用反引号写出的仓库路径（最弱的一档，标「提到」）。解读层最缺的是「为什么」，而作者往往在文档里写过——输入包和详情面板都会列出它们。
 
 ## 局限
+- 候选只从顶层子目录开始找：直接放在仓库根目录下的 `.py` 不会出现在勾选框里。
 - `from x import *` 无法追踪（直接跳过）。
-- `from pkg import Name` 里 Name 是包的 `__init__.py` 再导出的符号时，边指向 `pkg.__init__`，不是真正定义它的文件；目录收起时看不出差别，展开后会看到很多边汇到 `__init__`。（xref 会顺着再导出追到真正的定义，但那是跳转层的事，不改这里的边。）
+- `from pkg import Name` 里 Name 是 `__init__.py` 再导出的符号时，边指向 `pkg.__init__`，不是真正定义它的文件；展开后会看到很多边汇到 `__init__`（xref 会顺着再导出追到定义，但不改这里的边）。
+- 只认 `if TYPE_CHECKING:` 的 if 分支；`if not TYPE_CHECKING: … else:` 这种写法的 else 分支仍算运行时依赖。
 - C/C++/CUDA 文件只挂在所在目录下供浏览（`aux`），不参与 import 图；pybind / `torch.ops` 这类跨语言边需要真正的 C++ 解析。
-- 只有 `.py` 改成了 utf-8-sig；`collect_docs` 读 Markdown 仍是普通 utf-8（scan.py:196）。带 BOM 的设计文档开头不是 `---`，frontmatter 里声明的代码路径会被漏掉，只剩「开头 40 行里提到」那一档。
-- 解析失败的文件既不在 `files` 里也没有 `file_sha`。某个 run 跑过的文件如果现在有语法错误，`runs.file_state` 看它不在 index 里、工作区里却还在，会标成 `outside`（不叠加、不算过期），而不是 `changed`。
+- `collect_docs` 读 Markdown 仍是普通 utf-8（scan.py:304）。带 BOM 的设计文档开头不是 `---`，frontmatter 里声明的代码路径会被漏掉。
+- 解析失败的文件既不在 `files` 里也没有 `file_sha`。某个 run 跑过的文件如果现在有语法错误，`runs.file_state` 会标成 `outside`（不叠加、不算过期），而不是 `changed`。

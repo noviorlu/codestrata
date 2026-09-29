@@ -277,7 +277,7 @@ def capture(repo: Path, rd: Path, tr: dict, run: dict, *, leftovers: list | None
             pythons[exe] = {"version": py.get("version"), "dists": _dists(py.get("site"))}
 
     procs = _procs_of(tr, (run.get("clock") or {}).get("mono0_ns"))
-    script = _trace.case_script(repo, run.get("cmd") or [])
+    script = _trace.case_script(cwd, run.get("cmd") or [])
     files = _collect_files(repo, cwd, procs, script, attach or [])
     (rd / "files").mkdir(exist_ok=True)
     stored = []
@@ -777,13 +777,15 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         script = {"path": sc["path"], "text": (rd / sc["stored"]).read_text(encoding="utf-8", errors="replace"),
                   "saved": True}
     else:                                        # 老的 run 没存脚本：读现在的文件，标明是现在的
-        s = _trace.case_script(Path(repo), run.get("cmd") or [])
+        s = _trace.case_script(Path(run.get("cwd") or repo), run.get("cmd") or [])
         script = {**s, "saved": False} if s else None
     phases = run.get("phases") or []
     meta = {"case": run.get("case"), "cmd": _redact_argv(run.get("cmd") or []), "phase": phase,
             # 和老的 trace 一样：只有一个阶段时是空的（前端据此判断「分没分阶段」）
             "phases": {p["name"]: p["n_funcs"] for p in phases} if len(phases) > 1 else {},
-            "n_procs": (run.get("summary") or {}).get("n_procs"), "unmapped": hot.get("unmapped"),
+            "n_procs": (run.get("summary") or {}).get("n_procs"), "unmapped": hot.get("anon"),
+            # 定义时的执行（import 时的模块顶层、class 语句的类体）：不是调用，和上面的分开说
+            "defs": (hot.get("module_frames") or 0) + (hot.get("class_frames") or 0),
             # 录制之后改过或删掉的文件（前端的「⚠ 录制后有文件改过」）；安装包和仓库不一致的
             # 另有 mapped_mismatch 那句话，不算在这里
             "stale_files": sorted(r for r, s in fs.items() if s in ("changed", "gone")),
@@ -1013,7 +1015,10 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
         cmd = pre + " ".join(_q(x) for x in argv)
         return (f"cd {_q(inv['cwd'])} && " if inv.get("cwd") else "") + cmd
     rec = run.get("rec") or {}
-    parts = ["codestrata", "trace", str(Path(run.get("cwd") or repo).resolve()), f"--case={run['case']}"]
+    parts = ["codestrata", "trace", str(Path(repo).resolve()), f"--case={run['case']}"]
+    # run 里的 cwd 是命令实际执行的目录（老 run 里就是仓库根目录）：不是仓库根目录才要写 --cwd
+    if run.get("cwd") and Path(run["cwd"]).resolve() != Path(repo).resolve():
+        parts.append(f"--cwd={Path(run['cwd']).resolve()}")
     if rec.get("timeout"):
         parts.append(f"--timeout={fmt_seconds(rec['timeout'])}")
     if rec.get("events"):

@@ -3,6 +3,7 @@
  *   cards    —— 项目卡片：状态、三个按钮（扫描 / 录制运行 / 打开图）、最近一个任务的输出
  *   jobs     —— 轮询在跑的任务，把新输出接到卡片上；结束后刷新卡片
  *   picker   —— 「打开文件夹」对话框：逐级浏览子目录
+ *   scanner  —— 「静态扫描」对话框：勾选要扫描的目录（只列不挑，扫哪些由用户决定）
  *   recorder —— 「录制运行」对话框：表单 ↔ /api/template、/api/trace
  * 页面上的状态只有 projects（最近一次 /api/projects）和每个任务已经收到的行数。 */
 (function () {
@@ -52,7 +53,8 @@
     if (!p.exists) return '<span class="warn">目录不在了</span>';
     var f = [];
     if (p.index) {
-      f.push('<span class="ok">已扫描</span>', p.index.n_files + ' 个文件', '扫描于 ' + ago(p.index.scanned_at));
+      f.push('<span class="ok">已扫描</span>', esc((p.index.roots || []).join('、')) + '：' + p.index.n_files + ' 个文件',
+             '扫描于 ' + ago(p.index.scanned_at));
       if (p.lag) f.push('<span class="warn">之后改过 ' + p.lag + ' 个文件，建议重新扫描</span>');
     } else f.push('<span class="warn">还没扫描</span>');
     if (p.runs_error) f.push('<span class="warn">' + esc(p.runs_error) + '</span>');
@@ -96,7 +98,7 @@
     var b = ev.target.closest('[data-act]'); if (!b) return;
     var path = b.closest('.card').dataset.path, p = projects.find(function (x) { return x.path === path; });
     var act = b.dataset.act;
-    if (act === 'scan') start('/api/scan', { repo: path });
+    if (act === 'scan') scanner.open(p);
     else if (act === 'record') recorder.open(p);
     else if (act === 'open') openGraph(p);
     else if (act === 'remove' && confirm('从清单里去掉 ' + path + '？\n（不会删仓库里的任何文件，录下的 run 也都还在）'))
@@ -229,6 +231,64 @@
   })();
   $('addBtn').onclick = picker.open;
 
+  /* ---- scanner ---- */
+  var scanner = (function () {
+    var repo = null;
+
+    function chosen() {
+      return [].filter.call($('scanList').querySelectorAll('input'), function (i) { return i.checked; })
+        .map(function (i) { return i.value; });
+    }
+    // 同名（最后一段一样）的目录一次只能扫一个：模块名按它起，会撞在一起（服务端 scan.root_clashes 也挡）
+    function clashes() {
+      var by = {};
+      [].forEach.call($('scanList').querySelectorAll('input:checked'), function (i) {
+        (by[i.dataset.name] = by[i.dataset.name] || []).push(i.value);
+      });
+      return Object.keys(by).filter(function (k) { return by[k].length > 1; }).map(function (k) { return by[k].join('、'); });
+    }
+    function sum() {
+      var n = chosen().length, c = clashes();
+      $('scanOk').disabled = !n || c.length > 0;
+      $('scanSum').textContent = c.length ? '同名的一次只能选一个：' + c.join('；')
+        : n ? '勾了 ' + n + ' 个目录' : '至少勾一个';
+    }
+    function setAll(on) {
+      [].forEach.call($('scanList').querySelectorAll('input'), function (i) { i.checked = on; });
+      sum();
+    }
+
+    $('scanList').addEventListener('change', sum);
+    $('scanAll').onclick = function () { setAll(true); };
+    $('scanNone').onclick = function () { setAll(false); };
+    $('scanCancel').onclick = function () { $('scanDlg').close(); };
+    $('scanOk').onclick = function () {
+      start('/api/scan', { repo: repo, roots: chosen() }).then(function () { $('scanDlg').close(); },
+        function (e) { showErr($('scanErr'), e.message); });
+    };
+
+    return {
+      open: function (p) {
+        repo = p.path;
+        $('scanRepo').textContent = p.path;
+        showErr($('scanErr'), '');
+        api('/api/scan-roots?' + q({ repo: repo })).then(function (d) {
+          var on = {};
+          d.chosen.forEach(function (r) { on[r] = 1; });
+          $('scanList').innerHTML = d.candidates.length ? d.candidates.map(function (c) {
+            return '<li><label><input type="checkbox" value="' + esc(c.path) + '" data-name="' + esc(c.name) + '"'
+              + (on[c.path] ? ' checked' : '') + '>'
+              + '<code>' + esc(c.path) + '/</code>' + (c.package ? ' <span class="tag py">Python 包</span>' : '')
+              + (c.previous ? ' <span class="tag">上次选的</span>' : '')
+              + '<span class="n">' + c.files + ' 个 .py</span></label></li>';
+          }).join('') : '<li class="none">没有含 .py 的子目录（直接放在仓库根目录下的 .py 目前不支持扫描）</li>';
+          sum();
+          $('scanDlg').showModal();
+        }, function (e) { showErr($('err'), '读取可扫描的目录失败：' + e.message); });
+      }
+    };
+  })();
+
   /* ---- recorder ---- */
   var recorder = (function () {
     // current：最近一次填进表单的初始值。表单上不显示的字段（tags、roots、stop_grace）从它原样带回去，
@@ -250,6 +310,7 @@
       $('recTimeout').value = t.timeout == null ? '' : t.timeout;
       $('recEnv').value = Object.keys(t.env || {}).map(function (k) { return k + '=' + t.env[k]; }).join('\n');
       $('recNote').value = t.note || '';
+      $('recCwd').value = t.cwd || '';
       $('recAttach').value = (t.attach || []).join('\n');
       $('recEvents').checked = t.events !== false;
       $('recPhases').innerHTML = '';
@@ -273,6 +334,7 @@
       return {
         repo: repo, case: $('recCase').value.trim(), command: $('recCmd').value.trim(),
         timeout: $('recTimeout').value.trim() || null, env: env, note: $('recNote').value.trim(),
+        cwd: $('recCwd').value.trim() || null,
         attach: lines($('recAttach').value), events: $('recEvents').checked,
         tags: current.tags || [], roots: current.roots || null, stop_grace: current.stop_grace || null,
         phases: [].map.call($('recPhases').querySelectorAll('.phase'), function (r) {

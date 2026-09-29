@@ -38,6 +38,9 @@
   attrs    {属性名: [[文件, 行, 起, 止, 种类], ...]}   解析不了的 `<表达式>.属性名`（种类只有 0 / 1），
            只收和仓库里某个类的成员（方法、嵌套类、类属性、实例属性）同名、而且接收者的类型确实拿不准的
            （字面量、模块、函数、MRO 全在仓库里的类都不算）：引用面板据此列出「同名调用，接收者类型没核实」
+  names    {"模块:名字": 目标下标}   scan 的边明细（edge_uses）引用了、却不在符号表里的名字——模块级变量、
+           __init__ 等处再导出的类 / 函数 / 变量——按 `from 模块 import 名字` 追到的类 / 函数 / 变量（s: / v:）。
+           边详情的「to」据此和 Ctrl+点击落在同一个地方
 种类：0 引用、1 调用、2 import、3 定义本身。
 """
 from __future__ import annotations
@@ -1356,6 +1359,16 @@ def _build(root: Path, index: dict) -> dict:
         if toks:
             toks.sort()
             files[rel] = toks
+    # 边详情引用的名字按 `from 模块 import 名字` 的语义追到定义（和 Ctrl+点击同一套解析）
+    names = {}
+    for uses in (index.get("edge_uses") or {}).values():
+        for key in uses:
+            if key in repo.symbols or key in names:
+                continue
+            mod, _, name = key.partition(":")
+            t = repo.from_import(mod, name)
+            if t and t[:2] in ("s:", "v:") and repo.where(t):
+                names[key] = repo.t(t)
     # 「同名的 .xxx」只对罕见的名字有用：仓库里叫这个名字的成员超过 3 个（get、shape、to、append……），
     # 按名字列出来的一大半都不是它，还占掉 xref.json 的三分之一。这些就不记了
     same: dict[str, int] = {}
@@ -1369,7 +1382,7 @@ def _build(root: Path, index: dict) -> dict:
     for v in attrs.values():
         v.sort()
     return {"targets": repo.targets, "where": [repo.where(t) for t in repo.targets], "files": files,
-            "fp": fp, "attrs": attrs}
+            "fp": fp, "attrs": attrs, "names": names}
 
 
 def write(outdir: Path, xref: dict) -> Path:

@@ -4,7 +4,8 @@
 
   index.json（画总图要的，小）
     packages   单元：每个 .py 文件一个（包的 __init__.py 是 <包>.__init__），含「架构高度」
-    edges      单元之间的 import 边，权重 = import 语句条数
+    edges      单元之间的 import 边，权重 = import 语句条数（不含 TYPE_CHECKING 里的）
+    type_edges 只在 `if TYPE_CHECKING:` 里的 import：运行时不执行，不是依赖——不算架构高度，图上是「仅类型」
     dirs       目录树；default_open 是默认切面（图上显示哪一层，见 cut.py）
   symbols.json（按需加载，大）
     symbols    每个类/函数的 file:line、结束行、基类、所属单元
@@ -12,7 +13,7 @@
     aux        包目录里的 C/C++/CUDA 文件 → 所在目录
     edge_sites 每条边背后的 import 语句
     edge_uses  每条边上实际引用了对方的哪些符号、在哪一行
-    edge_dead  导入了但从没引用的名字，以及原因
+    edge_dead  导入了但运行时没引用的名字，以及原因（TYPE_CHECKING 里的都在这里，只在标注里引用也算）
     docs       作者写的文档 → 目录 / 单元（包内 README、frontmatter 声明了代码路径的设计文档）
 
 「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
@@ -83,7 +84,8 @@ class Symbol:
     pkg: str             # 聚合用的包名
     bases: list[str] = field(default_factory=list)
     end: int = 0         # 最后一行；runtime 里的闭包 / lambda 靠它归到外层符号
-    decos: list[str] = field(default_factory=list)   # 类的装饰器名（dataclass 之类，结构层判断纯声明用）
+    decos: list[str] = field(default_factory=list)   # 装饰器名（最后一段）：类的 dataclass 之类，函数的 property 之类
+    also: list[list[int]] = field(default_factory=list)  # 同名的另几个 def（property 的 setter、overload）：[[行, 装饰器行, 末行]]
 
     def key(self) -> str:
         return f"{self.module}:{self.name}"
@@ -99,7 +101,22 @@ class Symbol:
             d["e"] = self.end
         if self.decos:
             d["d"] = self.decos
+        if self.also:
+            d["a"] = self.also
         return d
+
+
+def _deco_names(node) -> list[str]:
+    """装饰器的名字，只留最后一段：@dataclass(frozen=True) → dataclass，@x.setter → setter，
+    @functools.cached_property → cached_property"""
+    out = []
+    for d in node.decorator_list:
+        fn = d.func if isinstance(d, ast.Call) else d
+        try:
+            out.append(ast.unparse(fn).split(".")[-1])
+        except Exception:
+            pass
+    return out
 
 
 def _use(store: dict, a: str, b: str, sym: str, f: str, line: int) -> None:
@@ -111,8 +128,32 @@ def _use(store: dict, a: str, b: str, sym: str, f: str, line: int) -> None:
         lst.append([f, line])
 
 
+def _is_env(files, dirs) -> bool:
+    """虚拟环境（pyvenv.cfg）或 conda 环境（conda-meta/）：里面是装好的第三方库和标准库，不是仓库代码。
+    名字不固定（envs/xxx、venv-hx），SKIP_DIRS 按名字挡不住，按里面有什么认"""
+    return "pyvenv.cfg" in files or "conda-meta" in dirs
+
+
+def _subdirs(d: Path) -> list[Path]:
+    """能进去找代码的子目录：不是隐藏目录、不在 SKIP_DIRS 里、不是环境目录，也不是软链（数据、模型目录
+    常软链到大盘上，进去数文件会很慢；扫描本身（os.walk）也不跟软链）"""
+    out = []
+    for p in sorted(d.iterdir()):
+        if p.is_dir() and not p.is_symlink() and p.name not in SKIP_DIRS and not p.name.startswith("."):
+            try:
+                names = os.listdir(p)
+            except OSError:
+                continue
+            if not _is_env(names, names):
+                out.append(p)
+    return out
+
+
 def iter_py_files(root: Path) -> Iterable[Path]:
     for dp, dn, fn in os.walk(root):
+        if _is_env(fn, dn):
+            dn[:] = []
+            continue
         dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
         for f in fn:
             if f.endswith(".py"):
@@ -120,32 +161,96 @@ def iter_py_files(root: Path) -> Iterable[Path]:
 
 
 def detect_roots(root: Path) -> list[str]:
-    """猜仓库里哪些顶层目录是 Python 包。
-
-    优先取带 __init__.py 的顶层目录；没有就退化为「含 .py 最多的顶层目录」，
-    这样 src-layout 和扁平 layout 都能覆盖。
-    """
-    pkgs = [p.name for p in root.iterdir()
-            if p.is_dir() and p.name not in SKIP_DIRS and not p.name.startswith(".")
-            and (p / "__init__.py").exists()]
+    """不给 --roots 时猜要扫哪些目录（只在命令行 scan 不指定、trace 找不到 scan 结果时用；主菜单里
+    是用户自己勾）。依次：顶层的库包（跳过 tests/、examples/ 这类）→ src/<包> → 只有测试之类的包也行 →
+    含 .py 最多的顶层目录"""
+    pkgs = [p.name for p in _subdirs(root) if (p / "__init__.py").exists()]
     lib = [n for n in pkgs if n not in NON_LIB_DIRS]
     if lib:
-        return sorted(lib)          # 只要有真正的库包，就忽略 tests/examples
-    if pkgs:
-        return sorted(pkgs)
-    # src-layout: root/src/<pkg>/__init__.py
+        return sorted(lib)
     src = root / "src"
     if src.is_dir():
-        inner = [p.name for p in src.iterdir()
-                 if p.is_dir() and (p / "__init__.py").exists()]
+        inner = [p.name for p in _subdirs(src) if (p / "__init__.py").exists()]
+        inner = [n for n in inner if n not in NON_LIB_DIRS] or inner
         if inner:
             return sorted(f"src/{n}" for n in inner)
+    if pkgs:
+        return sorted(pkgs)
     counts: dict[str, int] = {}
     for f in iter_py_files(root):
         rel = f.relative_to(root).parts
         if len(rel) > 1:
             counts[rel[0]] = counts.get(rel[0], 0) + 1
     return [max(counts, key=counts.get)] if counts else []
+
+
+def clean_roots(roots: list[str]) -> list[str]:
+    """命令行给的目录写法归一：去掉结尾的 /（shell 补全会带上）、开头的 ./，重复的只留一个。
+    模块名按最后一段起：pkg/ 的最后一段是空的，仓库内的 import 就全对不上了"""
+    out: list[str] = []
+    for r in roots:
+        r = os.path.normpath(r)
+        if r not in out:
+            out.append(r)
+    return out
+
+
+def check_roots(roots: list[str]) -> None:
+    """这几个目录能不能一起扫，不能就 ValueError（说明为什么）：最后一段同名的（root_clashes），
+    或者一个在另一个里面的（src 和 src/pkg：里面的文件会按两个模块名各扫一遍）"""
+    clash = root_clashes(roots)
+    if clash:
+        raise ValueError("这些目录的最后一段同名，模块名会撞在一起、互相覆盖，一次只能扫其中一个："
+                         + "；".join(f"{k}：{'、'.join(v)}" for k, v in clash.items()))
+    nested = [(a, b) for a in roots for b in roots if a != b and b.startswith(a + "/")]
+    if nested:
+        raise ValueError("这些目录一个在另一个里面，里面的文件会按两个模块名各扫一遍，只能选其中一个："
+                         + "；".join(f"{a} 包含 {b}" for a, b in nested))
+
+
+def root_clashes(roots: list[str]) -> dict[str, list[str]]:
+    """最后一段同名的几个目录（src/foo 和 tests/foo、hw1/tests 和 hw2/tests）：模块名按目录名起，
+    一起扫会撞成同一批模块、互相覆盖。返回 {名字: [目录, …]}，没有冲突是空的"""
+    by: dict[str, list[str]] = {}
+    for r in roots:
+        by.setdefault(r.rstrip("/").split("/")[-1], []).append(r)
+    return {k: v for k, v in by.items() if len(v) > 1}
+
+
+PROJECT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
+
+
+def candidate_roots(root: Path, depth: int = 3) -> list[dict]:
+    """仓库里能选来扫描的目录（主菜单「静态扫描」的勾选框）。只列不挑——扫哪些由用户决定。
+    从每个顶层目录往下找（最多 depth 层），列出的目录互不重叠：
+      - 是 Python 包（有 __init__.py）：列它，不再往下
+      - 是嵌套的工程（有 pyproject.toml / setup.py，比如仓库里 src/<项目>/）：进去接着找，里面的
+        setup.py 不算「零散脚本」
+      - 直接放着 .py（examples/、scripts/、放测试文件的 tests/）：列它本身（它下面的包也在里面）
+      - 别的：进去接着找；到了 depth 层还不是包就列它本身
+    环境目录（venv、conda env）不进去。返回 [{path（相对仓库根）, files（.py 文件数）, package}]"""
+    root = root.resolve()
+    out: list[dict] = []
+
+    def add(d: Path, package: bool) -> None:
+        n = sum(1 for _ in iter_py_files(d))
+        if n:
+            out.append({"path": str(d.relative_to(root)), "files": n, "package": package})
+
+    def visit(d: Path, level: int) -> None:
+        if (d / "__init__.py").exists():
+            return add(d, True)
+        kids = _subdirs(d)
+        project = any((d / m).exists() for m in PROJECT_MARKERS)
+        loose = not project and any(f.suffix == ".py" and f.is_file() for f in d.iterdir())
+        if loose or not kids or level >= depth:
+            return add(d, False)
+        for k in kids:
+            visit(k, level + 1)
+
+    for d in _subdirs(root):
+        visit(d, 1)
+    return out
 
 
 # 设计文档在 frontmatter 里声明自己管哪些代码（vllm-omni 的 docs/design 就是这样），
@@ -181,6 +286,9 @@ def collect_docs(root: Path, files: dict[str, str]) -> dict[str, list]:
 
     n = 0
     for dp, dn, fn in os.walk(root):
+        if _is_env(fn, dn):
+            dn[:] = []
+            continue
         dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
         for f in fn:
             if not f.lower().endswith(".md"):
@@ -240,7 +348,7 @@ def module_of(rel: Path) -> str:
 
 
 def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
-         include_non_lib: bool = False, expand: list[str] | None = None) -> dict:
+         expand: list[str] | None = None) -> dict:
     """扫描仓库，返回 index 字典。
 
     记录的是最细的粒度（每个 .py 文件一个单元）和目录树；图上显示哪一层是 cut.py 的事。
@@ -248,9 +356,12 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     「二级包」）；不给就按规模自动拆分。expand 额外展开指定的目录。
     """
     root = root.resolve()
-    roots = roots or detect_roots(root)
-    if not include_non_lib:
-        roots = [r for r in roots if r.split("/")[-1] not in NON_LIB_DIRS] or roots
+    # 用户给了 roots 就照单全收（包括 tests/ 这类：要不要扫是用户的决定）；没给才自动探测
+    roots = clean_roots(roots) if roots else detect_roots(root)
+    try:
+        check_roots(roots)
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
     if not roots:
         raise SystemExit(f"在 {root} 下没找到 Python 包；用 --roots 手动指定")
     # 顶层包名集合，用来判断一条 import 是不是「内部依赖」
@@ -263,6 +374,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     pkg_cls: dict[str, int] = {}
     pkg_fn: dict[str, int] = {}
     edges: dict[tuple[str, str], int] = {}
+    type_edges: dict[tuple[str, str], int] = {}
     edge_sites: dict[tuple[str, str], list] = {}
     edge_uses: dict[tuple[str, str], dict] = {}
     edge_dead: dict[tuple[str, str], list] = {}
@@ -314,6 +426,16 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             pkg_loc[pkg] = pkg_loc.get(pkg, 0) + src.count("\n") + 1
 
             # 符号：类与顶层/类内函数，带限定名
+            def add(s: Symbol) -> None:
+                # 同一个名字又定义了一次（property 的 setter、overload、if/else 里的两个版本）：符号表照旧
+                # 留最后一个，前面几个的位置记在 also 里——trace 按「文件:首行」记，哪一个跑到都是这个符号
+                # 只合并同一个文件里、同一种（都是函数或都是类）的：不同文件同名是模块名撞了（root_clashes 挡着），
+                # 一个是函数一个是类的，trace 要靠种类分「调用」和「定义」，不能混成一个
+                old = symbols.get(s.key())
+                if old is not None and old.file == s.file and old.kind == s.kind:
+                    s.also = old.also + [[old.line, old.dline, old.end]]
+                symbols[s.key()] = s
+
             def walk(node: ast.AST, prefix: str = "") -> None:
                 for child in ast.iter_child_nodes(node):
                     if isinstance(child, ast.ClassDef):
@@ -325,24 +447,15 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                             except Exception:
                                 pass
                         dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
-                        decos = []
-                        for d in child.decorator_list:
-                            fn = d.func if isinstance(d, ast.Call) else d
-                            try:
-                                decos.append(ast.unparse(fn).split(".")[-1])
-                            except Exception:
-                                pass
-                        s = Symbol(qn, "class", str(rel), child.lineno, dl, module, pkg, bases,
-                                   child.end_lineno or 0, decos)
-                        symbols[s.key()] = s
+                        add(Symbol(qn, "class", str(rel), child.lineno, dl, module, pkg, bases,
+                                   child.end_lineno or 0, _deco_names(child)))
                         pkg_cls[pkg] = pkg_cls.get(pkg, 0) + 1
                         walk(child, qn + ".")
                     elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         qn = f"{prefix}{child.name}"
                         dl = min([d.lineno for d in child.decorator_list] + [child.lineno])
-                        s = Symbol(qn, "func", str(rel), child.lineno, dl, module, pkg,
-                                   end=child.end_lineno or 0)
-                        symbols[s.key()] = s
+                        add(Symbol(qn, "func", str(rel), child.lineno, dl, module, pkg,
+                                   end=child.end_lineno or 0, decos=_deco_names(child)))
                         pkg_fn[pkg] = pkg_fn.get(pkg, 0) + 1
                         walk(child, qn + ".")
                     elif isinstance(child, _STMT_CONTAINERS):
@@ -377,8 +490,9 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
 
             # 单元间 import 边（只算内部依赖）
             bound: dict[str, dict] = {}
-            # `if TYPE_CHECKING:` 里的 import 只服务于类型标注，而且常写成字符串标注，
-            # AST 里看不到 Name 引用——不能因此判成死 import
+            typed: dict[str, dict] = {}       # TYPE_CHECKING 里绑定的名字（本地名 / import a.b.c 的点分名）
+            # `if TYPE_CHECKING:` 里的 import 只服务于类型标注，运行时根本不执行：引用它的名字（标注、
+            # 字符串标注、TYPE_CHECKING 块里的定义）都不算运行时的依赖
             typeonly: set[int] = set()
             for n2 in ast.walk(tree):
                 if isinstance(n2, ast.If):
@@ -438,6 +552,10 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                 # 记下这条 import 在本文件里引入的本地名字，第二遍用来找「实际用到了什么」
                 why = ("type" if id(node) in typeonly
                        else "reexport" if is_init else None)
+                # TYPE_CHECKING 里的：绑定的名字另记（typed，引用它的只有类型标注，不算「用到」），
+                # 边也另记（type_edges，不算依赖、不进架构高度）
+                into, into_chain, weights = ((typed, typed, type_edges) if why == "type"
+                                             else (bound, chains, edges))
                 seen_dst: set[str] = set()
                 for target, a, how in entries:
                     dst = unit_of_module.get(target)
@@ -450,7 +568,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         continue
                     if dst not in seen_dst:
                         seen_dst.add(dst)
-                        edges[(pkg, dst)] = edges.get((pkg, dst), 0) + 1
+                        weights[(pkg, dst)] = weights.get((pkg, dst), 0) + 1
                         # 点开一条边时要看到「具体用了对方的哪些东西、在哪一行」
                         edge_sites.setdefault((pkg, dst), []).append({
                             "f": str(rel), "l": node.lineno, "s": stmt[:200],
@@ -458,28 +576,28 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                             "lazy": id(node) in lazy, "type": id(node) in typeonly})
                     if how == "mod":
                         # from . import payload as _payload → _payload 是模块别名
-                        bound[a.asname or a.name] = {"kind": "mod", "sym": target, "dst": dst,
-                                                     "line": node.lineno, "orig": a.name, "why": why}
+                        into[a.asname or a.name] = {"kind": "mod", "sym": target, "dst": dst,
+                                                    "line": node.lineno, "orig": a.name, "why": why}
                     elif how == "name":
                         if a.name == "*":
                             continue                    # 通配导入无法追踪
-                        bound[a.asname or a.name] = {"kind": "name", "sym": f"{target}:{a.name}",
-                                                     "dst": dst, "line": node.lineno,
-                                                     "orig": a.name, "why": why}
+                        into[a.asname or a.name] = {"kind": "name", "sym": f"{target}:{a.name}",
+                                                    "dst": dst, "line": node.lineno,
+                                                    "orig": a.name, "why": why}
                     elif a.asname:
-                        bound[a.asname] = {"kind": "mod", "sym": a.name, "dst": dst,
-                                           "line": node.lineno, "orig": a.name, "why": why}
+                        into[a.asname] = {"kind": "mod", "sym": a.name, "dst": dst,
+                                          "line": node.lineno, "orig": a.name, "why": why}
                     elif "." in a.name:
                         # import a.b.c：绑定的是根名 a，使用形如 a.b.c.X。
                         # 没有任何这样的使用时，几乎总是为了副作用（注册、打补丁）。
-                        chains[a.name] = {"kind": "chain", "sym": a.name, "dst": dst,
-                                          "line": node.lineno, "orig": a.name,
-                                          "why": why or "sideeffect"}
+                        into_chain[a.name] = {"kind": "chain", "sym": a.name, "dst": dst,
+                                              "line": node.lineno, "orig": a.name,
+                                              "why": why or "sideeffect"}
 
             # 第二遍：本地名字的实际使用点。`_payload.graph_payload(...)` → 用了 graph_payload；
             # `Orchestrator(...)` → 用了 Orchestrator。这才回答得了「具体用了对方哪些函数」。
+            used: set[str] = set()
             if bound or chains:
-                used: set[str] = set()
                 for node in ast.walk(tree):
                     if chains and isinstance(node, ast.Attribute):
                         # 还原 a.b.c.X 这条链，前缀命中某个 import a.b.c 就算用了 X
@@ -510,18 +628,19 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                             used.add(node.id)
                             if b["kind"] == "name":
                                 _use(edge_uses, pkg, b["dst"], b["sym"], str(rel), node.lineno)
-                # 导入了但本文件从没引用过
-                for local, b in list(bound.items()) + list(chains.items()):
-                    if local in used:
-                        continue
-                    why = b["why"]
-                    if not why:
-                        ln = src_lines[b["line"] - 1] if 0 < b["line"] <= len(src_lines) else ""
-                        # 作者用 noqa: F401 明确说了「这个没用的 import 是故意的」
-                        why = "intentional" if ("noqa" in ln and "F401" in ln) else "unused"
-                    edge_dead.setdefault((pkg, b["dst"]), []).append({
-                        "f": str(rel), "l": b["line"], "n": b["orig"],
-                        "sym": b["sym"], "why": why})
+            # 导入了但本文件运行时从没引用过。TYPE_CHECKING 里的一律在这里（why=type）——除非同一个名字
+            # 还有运行时的 import（函数里再 import 一次），那时引用算在运行时的那个上
+            dead = [(k, b) for k, b in list(bound.items()) + list(chains.items()) if k not in used]
+            dead += [(k, b) for k, b in typed.items() if k not in bound and k not in chains]
+            for local, b in dead:
+                why = b["why"]
+                if not why:
+                    ln = src_lines[b["line"] - 1] if 0 < b["line"] <= len(src_lines) else ""
+                    # 作者用 noqa: F401 明确说了「这个没用的 import 是故意的」
+                    why = "intentional" if ("noqa" in ln and "F401" in ln) else "unused"
+                edge_dead.setdefault((pkg, b["dst"]), []).append({
+                    "f": str(rel), "l": b["line"], "n": b["orig"],
+                    "sym": b["sym"], "why": why})
 
     # 架构高度
     out: dict[str, int] = {}
@@ -580,6 +699,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
         "name_refs": {k: v for k, v in sorted(str_refs.items()) if k in class_names},
         "packages": packages,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
+        "type_edges": [[a, b, w] for (a, b), w in sorted(type_edges.items())],
         "symbols": {k: s.as_json() for k, s in symbols.items()},
         "files": files,
         "file_sha": file_sha,

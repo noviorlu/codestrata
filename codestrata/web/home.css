@@ -76,3 +76,11 @@
 #recForm .check input{width:auto}
 .phase{display:grid;grid-template-columns:1fr 2fr auto;gap:6px;margin-bottom:6px}
 @media (max-width:560px){#recForm .cols{grid-template-columns:1fr}.phase{grid-template-columns:1fr auto}.phase .pfunc{grid-column:1}}
+
+/* 「静态扫描」对话框：每个能扫的目录一个勾选框 */
+.rtools{display:flex;gap:6px;margin:10px 0 8px}
+.roots label{display:flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;font-size:13.5px;color:var(--ink)}
+.roots label:hover{background:var(--sel-bg)}
+.roots input{width:auto;margin:0}
+.roots code{font:12.5px/1.4 ui-monospace,monospace}
+.roots .n{margin-left:auto;color:var(--faint);font-size:12px}

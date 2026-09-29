@@ -7,8 +7,9 @@
     DELETE /api/projects?path=        从清单里去掉（不动仓库本身）
     GET    /api/browse?path=          列一个目录下的子目录（挑文件夹）
     GET    /api/symbols?repo=&q=      「录制运行」里阶段输入框的函数补全
+    GET    /api/scan-roots?repo=      「静态扫描」对话框：能选的目录、上次选的
     GET    /api/template?repo=&run=   录制表单的初始值：给了 run 就照它还原（复刻），没给是空白的
-    POST   /api/scan {repo}           起一个扫描任务
+    POST   /api/scan {repo, roots}    起一个扫描任务：只扫勾选的目录（必须从能选的目录里挑，至少一个）
     POST   /api/trace {表单}           起一个录制任务（字段见 jobs.TraceSpec）
     GET    /api/jobs/<id>?since=N     任务状态 + 第 N 行之后的输出
     POST   /api/jobs/<id>/stop        停任务（SIGINT，和终端里 Ctrl+C 一样）
@@ -39,12 +40,12 @@ from pathlib import Path
 from . import payload as _payload
 from . import projects as _projects
 from . import runs as _runs
+from . import scan as _scan
 from .jobs import Busy, JobError, JobManager, TraceSpec, scan_argv
 from .serve import BaseHandler
 from .viewers import ViewerError, Viewers
 
 COOKIE = "codestrata_app"
-HEADER = "X-Codestrata"
 _JOB = re.compile(r"^/api/jobs/(\d+)(/stop)?$")
 
 _LOGIN_PAGE = """<!doctype html><meta charset="utf-8"><title>codestrata</title>
@@ -132,7 +133,7 @@ class AppHandler(BaseHandler):
         if not self._host_ok():
             self._send(403, b"bad host", "text/plain")
             return False
-        if path.startswith("/api/") and not (self._cookie_ok() and self.headers.get(HEADER) == "1"):
+        if path.startswith("/api/") and not (self._cookie_ok() and self._from_page()):
             self._json({"error": "未授权：请用启动时打印的链接打开主菜单"}, 403)
             return False
         return True
@@ -172,6 +173,10 @@ class AppHandler(BaseHandler):
             return self._json(_projects.find_symbols(Path(repo), _arg(q, "q")) if repo else [])
         if path == "/api/template":
             return self._template(_arg(q, "repo"), _arg(q, "run"))
+        if path == "/api/scan-roots":
+            repo = self._registered(_arg(q, "repo"))
+            return self._json(_projects.scan_choices(Path(repo)) if repo else {"error": "不是清单里的项目"},
+                              200 if repo else 404)
         m = _JOB.match(path)
         if m and not m.group(2):
             job = self.app.jobs.get(m.group(1))
@@ -223,7 +228,7 @@ class AppHandler(BaseHandler):
         if not repo:
             return self._json({"error": "不是清单里的项目"}, 404)
         if path == "/api/scan":
-            return self._start("scan", repo, lambda: scan_argv(Path(repo)))
+            return self._start("scan", repo, lambda: self._scan_argv(repo, body))
         if path == "/api/trace":
             return self._start("trace", repo, lambda: self._trace_argv(repo, body))
         try:                                     # /api/open
@@ -232,6 +237,19 @@ class AppHandler(BaseHandler):
             return self._json({"error": str(e)}, 500)
         self.app.registry.touch(Path(repo))
         return self._json({"url": url})
+
+    def _scan_argv(self, repo: str, body: dict) -> list[str]:
+        """勾选的目录 → scan 的命令行；没勾、或者勾了不在候选里的（手改的请求）就 ValueError"""
+        roots = body.get("roots")
+        if not (isinstance(roots, list) and roots and all(isinstance(r, str) for r in roots)):
+            raise ValueError("至少勾一个要扫描的目录")
+        allowed = {c["path"] for c in _projects.scan_choices(Path(repo))["candidates"]}
+        bad = [r for r in roots if r not in allowed]
+        if bad:
+            raise ValueError(f"这些不是能扫描的目录：{'、'.join(bad)}")
+        roots = sorted(set(roots))
+        _scan.check_roots(roots)
+        return scan_argv(Path(repo), roots)
 
     def _trace_argv(self, repo: str, body: dict) -> list[str]:
         """表单 → trace 的命令行；表单不对就 ValueError。只有设了阶段才去读索引（大仓库的索引有十几 MB）"""

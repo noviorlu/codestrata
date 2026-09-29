@@ -26,6 +26,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from . import cut as _cut
+from . import trace as _trace
 
 MAX_ROWS = 300
 MAX_ROWS_HARD = 2000
@@ -124,17 +125,13 @@ class _Map:
         self.v = _cut.view(idx, set(open_) if open_ is not None else set(idx.get("default_open") or []))
         self.files = idx.get("files") or {}
         self.node_of = self.v["node_of"]
-        loc: dict[tuple, str] = {}
-        spans: dict[str, list] = {}
         self.syms = idx.get("symbols") or {}
-        for k, s in self.syms.items():
-            loc.setdefault((s["f"], s["l"]), k)
-            if "dl" in s:
-                loc.setdefault((s["f"], s["dl"]), k)
-            if s.get("e"):
-                spans.setdefault(s["f"], []).append((s.get("dl", s["l"]), s["e"], k))
-        self.loc, self.sspans = loc, spans
+        self.loc, self.sspans = _trace.sym_locs(self.syms)
         self._memo: dict[str, tuple] = {}
+
+    def defining(self, rel: str, line: int) -> bool:
+        """这一帧是定义时的执行（模块顶层、类体），不是调用：和模块图同一个判断（trace.defining）"""
+        return bool(_trace.defining(self.syms, self.loc, rel, line))
 
     def of(self, key: str) -> tuple:
         """(节点 或 None, 显示名, 符号键 或 None, rel, 行)"""
@@ -166,8 +163,8 @@ class _Map:
 
 def _messages(raw: list[tuple], keys: list[str], m: _Map) -> tuple[list[dict], list[tuple]]:
     """span → 消息（两端落在不同节点上的）。没画的也按时刻记下来（t, 为什么, 次数），
-    窗口收窄之后才好按真正显示的那一段数：internal 节点内部、imports import 触发的模块顶层执行
-    （模块图也不把它算作调用）、unmapped 落在 index 之外的文件上。"""
+    窗口收窄之后才好按真正显示的那一段数：internal 节点内部、imports 定义时的执行（import 触发的模块
+    顶层、类体；模块图也不把它算作调用）、unmapped 落在 index 之外的代码上（包括 case 自己的代码）。"""
     out, skipped = [], []
     for pid, t0, dur, tid, depth, a, b, rep, n_susp in raw:
         ka, kb = keys[a] if 0 <= a < len(keys) else "?", keys[b] if 0 <= b < len(keys) else "?"
@@ -175,7 +172,7 @@ def _messages(raw: list[tuple], keys: list[str], m: _Map) -> tuple[list[dict], l
         nb, nameB, skB, relB, lineB = m.of(kb)
         if na is None or nb is None:
             skipped.append((t0, "unmapped", rep))
-        elif lineB == 0:
+        elif m.defining(relB, lineB):
             skipped.append((t0, "imports", rep))
         elif na == nb:
             skipped.append((t0, "internal", rep))
@@ -498,7 +495,7 @@ def find(idx: dict, rd: Path, *, open_, a: str, b: str, after: int = -1,
                     break
                 ka = keys[r[4]] if 0 <= r[4] < len(keys) else "?"
                 kb = keys[r[5]] if 0 <= r[5] < len(keys) else "?"
-                if kb.endswith(":0"):
+                if m.defining(*m.of(kb)[3:5]):
                     continue
                 if m.of(ka)[0] == a and m.of(kb)[0] == b:
                     best = {"t": r[0], "pid": c["pid"], "tid": r[2], "d": r[1]}

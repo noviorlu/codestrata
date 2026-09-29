@@ -18,7 +18,8 @@ hot 图和总图共用节点与坐标，差别只在数据来源：总图是 ast
 
 3. **调用者要对。** 要知道「谁调了谁」就得维护调用栈：进（PY_START / PY_RESUME / PY_THROW）和出
    （PY_RETURN / PY_YIELD / PY_UNWIND）都要订阅。只订阅 PY_START 的话，调用者会变成
-   「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。
+   「上一个开始执行的函数」——A 调 B、B 返回、A 再调 C 会被记成 B→C。栈上只有仓库帧和 case 自己的
+   代码（见 _case_rel）：穿过库的调用记到最近的仓库帧上，case 里被回调的函数调的记到 case 头上。
 
 4. **启动和请求要分开。** 起一个服务再发请求时，启动阶段的初始化会淹没请求本身。
    两种分阶段的办法，可以一起用：case 脚本往 $CODESTRATA_OUT/PHASE 写阶段名（如服务就绪后
@@ -57,6 +58,7 @@ from pathlib import Path
 ENV_ROOT = "CODESTRATA_ROOT"
 ENV_OUT = "CODESTRATA_OUT"
 ENV_PKGS = "CODESTRATA_PKGS"      # "顶层包=仓库内目录;..."，把安装包里的代码映射回仓库
+ENV_CASE_DIRS = "CODESTRATA_CASE_DIRS"   # 仓库外的执行目录（--cwd）：直接放在里面的 .py 也算 case 的代码
 
 # ---------------------------------------------------------------- 被注入的一侧
 
@@ -79,8 +81,41 @@ if _root and _out:
     # 顶层包名 → 它在仓库里的目录（src-layout 下是 src/pkg）
     _pkgs = dict(x.split("=", 1) for x in os.environ.get("CODESTRATA_PKGS", "").split(";") if "=" in x)
 
+    # case 自己的代码：入口脚本（__main__；spawn 的子进程里重新执行的那份叫 __mp_main__）同一层目录里的
+    # .py。它不在仓库里，但要在栈上当调用方：case 里定义、被仓库代码回调的函数（Flask 的视图）再调仓库
+    # 函数时，调用方是它，不是最近的仓库帧（dispatch_request）——否则会画出并不存在的动态分派边。
+    # 键是 "<外部代码>/文件名:行"，不在 index 里，和仓库里 scan 不扫的 examples/ 一样不上图；不计数
+    # （funcs 里只有仓库代码）。别的仓库外代码——标准库、site-packages、~/.cache 里的 trust_remote_code
+    # 和编译缓存、可编辑安装的依赖——照旧透明：穿过它们的调用记到最近的仓库帧上
+    _EXT = "<外部代码>/"
+    _std = os.path.dirname(os.path.realpath(os.__file__)) + os.sep
+    _mains = [None, ()]
+    # 执行目录在仓库外时（--cwd），driver 把它传进来：入口是库的时候（python -m pytest / -m unittest，
+    # __main__ 在 site-packages 里）靠它认 case 的代码。只认直接放在里面的，不往子目录找——执行目录
+    # 可能是个大目录，下面有可编辑安装的依赖
+    _casedirs = tuple(os.path.realpath(d) for d in os.environ.get("CODESTRATA_CASE_DIRS", "").split(os.pathsep) if d)
+    _later = {}                                # 文件名 → realpath：当时还不能算 case 的（见 _case_rel）
+
+    def _case_rel(rp, fn):
+        if rp.startswith(_std) or "/site-packages/" in rp or "/dist-packages/" in rp:
+            return None                        # python -m pytest / -m unittest：入口本身是库
+        fs = tuple(getattr(sys.modules.get(m), "__file__", None) for m in ("__main__", "__mp_main__"))
+        if fs != _mains[0]:
+            _mains[:] = [fs, tuple({os.path.dirname(os.path.realpath(f)) for f in fs if f})]
+            # __main__ 换了（python -m 包.模块：包的 __init__.py 在 __main__ 有 __file__ 之前就跑了）：
+            # 之前判成「不是 case」的文件，按新的入口目录再认一次
+            for f, r in list(_later.items()):
+                if os.path.dirname(r) in _mains[1]:
+                    _relc[f] = _EXT + os.path.basename(r)
+                    del _later[f]
+        d = os.path.dirname(rp)
+        if d in _mains[1] or d in _casedirs:
+            return _EXT + os.path.basename(rp)
+        _later[fn] = rp
+        return None
+
     def _rel(code):
-        # 只记仓库内的代码，仓库外（stdlib、torch…）一律忽略。
+        # 只记仓库内的代码（和 case 自己的代码，见 _case_rel），仓库外（stdlib、torch…）一律忽略。
         # 缓存必须按文件名、不能按 code 对象：code 对象按内容比较相等且不比 co_filename，
         # 两个空 __init__.py、或不同文件里同名同行同体的小函数会撞成同一个键。
         fn = code.co_filename
@@ -105,7 +140,9 @@ if _root and _out:
                             r = _pkgs[top] + tail[len(top):]
                             _mapped[r] = rp
                         break
-            if r is not None and r not in _shas:
+            if r is None:
+                r = _case_rel(rp, fn)
+            elif r not in _shas:
                 try:
                     with open(rp, "rb") as f:
                         _shas[r] = hashlib.sha256(f.read()).hexdigest()[:16]
@@ -121,8 +158,12 @@ if _root and _out:
         return s
 
     def _key(code, rel):
-        # 模块顶层记成第 0 行：模块 code 的 firstlineno 是 1，会和写在第 1 行的函数撞键
-        return rel + ":" + ("0" if code.co_name == "<module>" else str(code.co_firstlineno))
+        # 模块顶层记成第 0 行：模块 code 的 firstlineno 是 1，会和写在第 1 行的函数撞键。
+        # 3.12 泛型（def f[T]、class C[T]）定义时跑一次的「<generic parameters of f>」帧，首行和 f 自己
+        # 一样，会和 f 的真调用撞键：它也是定义、不是调用，一样记成第 0 行
+        n = code.co_name
+        return rel + ":" + ("0" if n[0] == "<" and (n == "<module>" or n.startswith("<generic parameters of "))
+                            else str(code.co_firstlineno))
 
     # ---- 时序事件（CODESTRATA_EVENTS=1，只有 sys.monitoring 才有）：只记跨文件的调用，
     # 口径和 func_edges 相同（调用方是栈顶的仓库帧、和被调方不在同一个文件）。每次调用给一个
@@ -209,18 +250,20 @@ if _root and _out:
         k = _key(code, rel)
         st = _stack()
         if count:
-            n = _funcs.get(k)
-            if n is None:
-                n = 0
-                q = getattr(code, "co_qualname", None)      # 3.10 没有：不记（拿短名字去对会对到同名的别的函数上）
-                if q:
-                    _names[k] = q
-                if _trig_q:                                 # 在计数之前切：触发的这次调用算进新阶段
-                    n = _trig_check(code, rel, q, k, n)
-            elif _trig_watch and k in _trig_watch:
-                n = _trig_check(code, rel, getattr(code, "co_qualname", None), k, n)
-            _funcs[k] = n + 1
-            if st and st[-1] != k:                 # 递归自调用不算边
+            if rel[0] != "<":                           # case 的代码（<外部代码>/…）只当调用方，不计数
+                n = _funcs.get(k)
+                if n is None:
+                    n = 0
+                    q = getattr(code, "co_qualname", None)  # 3.10 没有：不记（拿短名字去对会对到同名的别的函数上）
+                    if q:
+                        _names[k] = q
+                    if _trig_q:                             # 在计数之前切：触发的这次调用算进新阶段
+                        n = _trig_check(code, rel, q, k, n)
+                elif _trig_watch and k in _trig_watch:
+                    n = _trig_check(code, rel, getattr(code, "co_qualname", None), k, n)
+                _funcs[k] = n + 1
+            if st and st[-1] != k and rel[0] != "<":   # 递归自调用不算边；被调的是 case 的代码也不记
+                                                       # （不上图，只在栈上当调用方；它自己调来调去不能耗掉事件额度）
                 ek = st[-1] + "|" + k
                 _fedges[ek] = _fedges.get(ek, 0) + 1
                 if _EV and st[-1].rpartition(":")[0] != rel:
@@ -850,12 +893,25 @@ def _group_alive(pgid: int) -> bool:
         return False
 
 
+def misplaced_paths(cmd: list[str], run_dir: Path, here: Path) -> list[str]:
+    """命令里的相对路径（带 / 的，或 .py / .sh 结尾的参数）在命令的执行目录下没有、在 here（敲命令时的
+    当前目录）下有：多半是以为命令在当前目录跑。trace 默认在仓库根目录跑命令，开录之前就指出来，
+    不要等命令起不来、留下一个失败的 run。只按「这个路径在哪边存在」判断，不猜意图"""
+    out = []
+    for a in cmd:
+        if a.startswith("-") or os.path.isabs(a) or not ("/" in a or a.endswith((".py", ".sh", ".bash"))):
+            continue
+        if not (run_dir / a).exists() and (here / a).exists():
+            out.append(a)
+    return out
+
+
 def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         timeout: float | None = None, pkgs: dict[str, str] | None = None,
         env_extra: dict[str, str] | None = None, stop_grace: float = 90.0, after=None,
-        phase_at: list[dict] | None = None):
+        phase_at: list[dict] | None = None, cwd: Path | None = None):
     """在 hook 下跑一条命令，合并各进程的分片。返回 after(trace, 录制信息) 的结果
-    （没给 after 就返回 (trace, 录制信息)）。
+    （没给 after 就返回 (trace, 录制信息)）。cwd 是命令的执行目录，默认仓库根目录 root。
 
     cmd 就是你平时怎么跑那个 case，比如
         ["python", "examples/online_serving/minicpmo/realtime_duplex_demo.py", "--input-wav", "..."]
@@ -872,7 +928,7 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
 
     phase_at 是 resolve_phase_at 解析好的 --phase：[{name, file, qualname, line, dl}]。
 
-    录制信息：{stop: exit|timeout|interrupt, returncode, phase_times: [(阶段, t_us)],
+    录制信息：{stop: exit|timeout|interrupt, returncode, phase_times: [(阶段, t_us, 来源)],
               duration_s, leftovers: [{pid, argv, signal}]}，t_us 相对 mono0_ns。
     """
     root = root.resolve()
@@ -889,6 +945,9 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
                                              for t in phase_at or []])
     if pkgs:
         env[ENV_PKGS] = ";".join(f"{k}={v}" for k, v in pkgs.items())
+    run_dir = (cwd or root).resolve()
+    # 明确写上（仓库里执行就是空的）：shell 里继承来的旧值不能生效
+    env[ENV_CASE_DIRS] = "" if run_dir == root or root in run_dir.parents else str(run_dir)
     env["PYTHONPATH"] = str(boot) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
     _say(f"[codestrata] 跑: {' '.join(cmd)}")
@@ -941,9 +1000,9 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         stop, rc, t_start = "exit", None, time.monotonic()
         left: list[dict] = []
         try:
-            proc = subprocess.Popen(cmd, cwd=str(root), env=env, start_new_session=True)
+            proc = subprocess.Popen(cmd, cwd=str(cwd or root), env=env, start_new_session=True)
         except OSError as e:
-            _say(f"[codestrata] 命令起不来：{e}")
+            _say(f"[codestrata] 命令起不来（在 {cwd or root} 执行）：{e}")
             proc = None
             rc = 127
         deadline = t_start + timeout if timeout else None
@@ -1238,14 +1297,15 @@ def _inherited(symbols: dict, mod: str, q: str) -> tuple[dict | str | None, str 
     return None, None
 
 
-def case_script(root: Path, cmd: list[str]) -> dict | None:
+def case_script(run_dir: Path, cmd: list[str]) -> dict | None:
     """case 命令里的脚本（bash case.sh、python demo.py 里那个文件）：把它的内容一起存下来。
     hot 图的帮助里要能看到「这次到底跑了什么」——光一句 bash ../../trace_case.sh 看不出
-    起了什么服务、跑的是哪个 demo / benchmark、带了什么参数。命令从仓库根目录开始跑。"""
+    起了什么服务、跑的是哪个 demo / benchmark、带了什么参数。相对路径按命令的执行目录 run_dir 算
+    （默认仓库根目录，--cwd 可以换；run.json 里的 cwd）。"""
     for a in cmd:
         if a.startswith("-"):
             continue
-        p = Path(a) if Path(a).is_absolute() else root / a
+        p = Path(a) if Path(a).is_absolute() else run_dir / a
         try:
             if p.is_file() and p.stat().st_size < 200_000 and p.suffix in (".sh", ".bash", ".py", ".zsh", ""):
                 text = p.read_text(encoding="utf-8", errors="replace")
@@ -1323,12 +1383,13 @@ def merge(parts: Path) -> dict:
             names.setdefault(k, v)
         mapped.update(d.get("mapped") or {})
     phases = phases or {"start": {"funcs": {}, "func_edges": {}}}
-    # 文件粒度的边由函数粒度派生（跨文件的才算），只用来打印摘要
+    # 文件粒度的边由函数粒度派生（跨文件的才算），只用来打印摘要；调用方是 case 的代码（<外部代码>/…）
+    # 的不算——图上没有它，摘要里的条数要和图对得上
     edges: dict[str, int] = {}
     for k, v in fedges.items():
         a, _, b = k.partition("|")
         fa, fb = a.rpartition(":")[0], b.rpartition(":")[0]
-        if fa != fb:
+        if fa != fb and fa[:1] != "<":
             ek = f"{fa}|{fb}"
             edges[ek] = edges.get(ek, 0) + v
     procs.sort(key=lambda p: (p["t0"] or 0, p["pid"] or 0))
@@ -1356,6 +1417,37 @@ def stale_files(root: Path, trace: dict) -> list[str]:
     return sorted(r for r in was if was[r] != now.get(r))
 
 
+def sym_locs(symbols: dict) -> tuple[dict, dict]:
+    """trace 的键「文件:首行」怎么对回符号：((文件, 行) → 符号键, 文件 → [(起, 止, 符号键)])。
+    装饰过的函数 co_firstlineno 指向第一个装饰器，所以 def 行和装饰器行都建索引；同名的另几个 def
+    （property 的 setter，scan 记在 "a" 里）也算这个符号。范围给没有名字的帧（闭包、lambda）找外层符号用。"""
+    loc2sym: dict[tuple[str, int], str] = {}
+    spans: dict[str, list] = {}
+    for key, s in symbols.items():
+        for l, dl, e in [(s["l"], s.get("dl", s["l"]), s.get("e"))] + (s.get("a") or []):
+            loc2sym.setdefault((s["f"], l), key)
+            loc2sym.setdefault((s["f"], dl), key)
+            if e:
+                spans.setdefault(s["f"], []).append((dl, e, key))
+    return loc2sym, spans
+
+
+def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
+    """键 rel:ln 的这一帧是定义时的执行、不是调用："module" / "class"，是调用返回 None。模块图（to_package_graph）
+    和时序图（seq）用同一个判断。loc2sym 是 sym_locs(symbols) 的第一项。
+      module —— <module> 帧（第 0 行；老 trace 记成第 1 行，那一行又没有符号），import 触发的模块顶层执行
+      class  —— 类体：class 语句执行时跑一次的帧，co_firstlineno 是 class 行（有装饰器是第一个装饰器那一行），
+                正好落在类符号的 l / dl 上。类不会被「调用」——实例化跑的是 __init__ / __new__，它们有自己的
+                def 行——所以落在类符号上的帧只能是定义（3.12 泛型类的 <generic parameters of X> 帧也在这一行）。
+                按行号认，已经录好的老 run 加载时一样分得出来"""
+    if ln == 0:
+        return "module"
+    sk = loc2sym.get((rel, ln))
+    if sk:
+        return "class" if symbols[sk]["k"] == "class" else None
+    return "module" if ln == 1 else None
+
+
 def to_package_graph(trace: dict, index: dict) -> dict:
     """把函数粒度的 trace 折算到单元（文件）粒度，payload 再按切面汇总叠到图上；同时保留
     每条单元间边上「谁调了谁」的明细，给点开箭头时用。
@@ -1364,49 +1456,47 @@ def to_package_graph(trace: dict, index: dict) -> dict:
           "symbols": {symbol_key: hits},
           "edge_calls": {"a|b": {被调符号: {n, f, l, callers: {调用方: {n, f, l}}}}},
           "edge_import_exec": {"a|b": import 触发的模块执行次数},
-          "module_exec": [顶层代码执行过的文件], "unmapped": n}
+          "module_exec": [顶层代码执行过的文件], "module_frames": n, "class_frames": n,
+          "anon": n, "unmapped": n}
     """
     files = index.get("files") or {}
     symbols = index.get("symbols") or {}
-    # (file, firstlineno) → symbol key。装饰过的函数 co_firstlineno 指向第一个装饰器，
-    # 所以 def 行和装饰器行都建索引。
-    loc2sym: dict[tuple[str, int], str] = {}
-    for key, s in symbols.items():
-        loc2sym.setdefault((s["f"], s["l"]), key)
-        if "dl" in s:
-            loc2sym.setdefault((s["f"], s["dl"]), key)
+    loc2sym, spans = sym_locs(symbols)
 
     pkg_hits: dict[str, int] = {}
     sym_hits: dict[str, int] = {}
-    # 映射不到命名符号的调用分两类，都是正常现象、不是丢数据：
-    #   module  —— 第 0 行（老 trace 是第 1 行），即 import 时的模块级执行（<module> 帧）
-    #   anon    —— 闭包、lambda、生成器表达式，本来就没有自己的符号
-    module_frames = anon = 0
+    file_hits: dict[str, int] = {}
+    module_exec: set[str] = set()       # 哪些模块的顶层代码真的执行过——用来判断「副作用 import」是否在 runtime 生效了
+    # 不算调用的帧（定义时的执行）和映射不到命名符号的调用，都是正常现象、不是丢数据：
+    #   module / class —— 见 defining：只被 import 过的包、只定义过的类不算「跑到了」
+    #   anon           —— 闭包、lambda、生成器表达式，本来就没有自己的符号
+    module_frames = class_frames = anon = 0
     for k, n in trace["funcs"].items():
         rel, _, ln = k.rpartition(":")
         try:
             lineno = int(ln)
         except ValueError:
             continue
-        pkg = files.get(rel)
-        sk = None if lineno <= 0 else loc2sym.get((rel, lineno))
+        d = defining(symbols, loc2sym, rel, lineno)
+        if d == "module":
+            module_frames += n
+            module_exec.add(rel)
+            continue
+        if d == "class":
+            class_frames += n
+            continue
+        sk = loc2sym.get((rel, lineno))
         if sk:
             sym_hits[sk] = sym_hits.get(sk, 0) + n
-        elif 0 <= lineno <= 1:
-            module_frames += n
-            continue                    # 只被 import 过的包不算「跑到了」
         else:
             anon += n
+        pkg = files.get(rel)
         if pkg:
             pkg_hits[pkg] = pkg_hits.get(pkg, 0) + n
+            file_hits[rel] = file_hits.get(rel, 0) + n
 
     # 没有名字的帧（闭包、lambda、生成器表达式）归到包住它的最内层命名符号，
     # 标成 外层符号.<L行号>，这样面板上能说「scan() 里的某个闭包调了它」。
-    spans: dict[str, list] = {}
-    for key, s in symbols.items():
-        if s.get("e"):
-            spans.setdefault(s["f"], []).append((s.get("dl", s["l"]), s["e"], key))
-
     def label(rel: str, ln: int) -> tuple[str, int]:
         if ln < 0:                      # runs.remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
             return f"{rel}:<改过、对不上>", 1
@@ -1420,7 +1510,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         return (f"{inner[2]}.<L{ln}>" if inner else f"{rel}:{ln}"), ln
 
     # 包间的 runtime 边和函数粒度的明细从同一份 func_edges 算，两边的数字才对得上。
-    # 被调方是 <module> 帧的不算调用——那是 import 语句触发的模块顶层执行，
+    # 被调方是定义时的执行（defining：<module> 帧、类体）的不算调用——那是 import 语句触发的模块顶层执行，
     # 单独记在 edge_import_exec 里；否则每条 import 边都会因为「导入过」而被染成橙色。
     edge_hits: dict[str, int] = {}
     edge_calls: dict[str, dict] = {}
@@ -1437,7 +1527,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         if not pa or not pb or pa == pb:
             continue
         ek = f"{pa}|{pb}"
-        if lb_i == 0 or (lb_i == 1 and (fb, 1) not in loc2sym):
+        if defining(symbols, loc2sym, fb, lb_i):
             import_exec[ek] = import_exec.get(ek, 0) + n
             continue
         edge_hits[ek] = edge_hits.get(ek, 0) + n
@@ -1448,17 +1538,8 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         c = slot["callers"].setdefault(caller, {"n": 0, "f": fa, "l": rl})
         c["n"] += n
 
-    # 哪些模块的顶层代码真的执行过——用来判断「副作用 import」是否在 runtime 生效了
-    module_exec = sorted({k.rpartition(":")[0] for k in trace["funcs"]
-                          if k.endswith(":0") or (k.endswith(":1")
-                              and (k.rpartition(":")[0], 1) not in loc2sym)})
-    file_hits: dict[str, int] = {}
-    for k, n in trace["funcs"].items():
-        rel, _, ln = k.rpartition(":")
-        if rel in files and ln not in ("0",) and not (ln == "1" and (rel, 1) not in loc2sym):
-            file_hits[rel] = file_hits.get(rel, 0) + n
     return {"packages": pkg_hits, "edges": edge_hits, "symbols": sym_hits, "files": file_hits,
             "edge_calls": edge_calls, "edge_import_exec": import_exec,
-            "module_exec": module_exec,
-            "module_frames": module_frames, "anon": anon,
-            "unmapped": module_frames + anon}
+            "module_exec": sorted(module_exec),
+            "module_frames": module_frames, "class_frames": class_frames, "anon": anon,
+            "unmapped": module_frames + class_frames + anon}
