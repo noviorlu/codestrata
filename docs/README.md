@@ -19,7 +19,7 @@
 | **工作流程**（跟着干活改） | [`../CLAUDE.md`](../CLAUDE.md) | agent 怎么干活：开工读什么、收工写什么 |
 | | [`STATUS.md`](STATUS.md) | 定位、范围、能用的、已知问题（开发视角）、交接 |
 | | [`TODO.md`](TODO.md) | 接下来做什么、谁在做、做到什么算完 |
-| | [`DOGFOOD.md`](DOGFOOD.md) | 自己用下来哪里不好，原样记下 |
+| | [`FINDINGS.md`](FINDINGS.md) | 自己用下来哪里不好，原样记下 |
 | | [`log/`](log/) | 某段时间里发生了什么（唯一记历史的地方） |
 | 不再维护 | [`archive/`](archive/) | 过去的设计稿 |
 
@@ -32,8 +32,8 @@
 ```mermaid
 flowchart LR
   FB["用户反馈<br/>外部评价<br/>提交前审查"] -->|"① 记问题"| DF
-  DOG["dogfood"] -->|"① 记问题"| DF
-  DF["DOGFOOD.md<br/>问题"] -->|"② 挑出要修的"| TD["TODO.md<br/>任务"]
+  DOG["自己用一轮"] -->|"① 记问题"| DF
+  DF["FINDINGS.md<br/>问题"] -->|"② 挑出要修的"| TD["TODO.md<br/>任务"]
   DF -.->|"③ 确认的问题摘一行"| ST
   ST["STATUS.md<br/>现状 · 交接"] -->|"④ 范围定优先级"| TD
   TD -->|"⑤ 领一条去做"| CODE["代码 + 测试"]
@@ -67,16 +67,16 @@ flowchart LR
 
 | # | 从 → 到 | 流过去的是什么 | 什么时候 |
 |---|---|---|---|
-| ① | 反馈 / 评价 / 审查 / dogfood → DOGFOOD | 问题原样记下：日期、在做什么、哪里卡住、严重程度。烂就直说 | 发现问题时 |
-| ② | DOGFOOD → TODO | 决定要修的，写成任务：为什么做、做到什么算完（验收标准） | 排任务时 |
-| ③ | DOGFOOD ⇢ STATUS | 确认的问题在「已知问题」摘一行，链到在哪跟进；用户会碰到的限制不放这里，放 usage | 问题确认时 |
+| ① | 反馈 / 评价 / 审查 / 自己用一轮 → FINDINGS | 问题原样记下：日期、在做什么、哪里卡住、严重程度。烂就直说 | 发现问题时 |
+| ② | FINDINGS → TODO | 决定要修的，写成任务：为什么做、做到什么算完（验收标准） | 排任务时 |
+| ③ | FINDINGS ⇢ STATUS | 确认的问题在「已知问题」摘一行，链到在哪跟进；用户会碰到的限制不放这里，放 usage | 问题确认时 |
 | ④ | STATUS → TODO | 定位、范围（核心 / 冻结 / 收缩）、当前里程碑决定 TODO 的优先级；落在冻结区的需求先问用户 | 排任务时 |
 | ⑤ | TODO → 代码 | 一次领一条，移进「进行中」，写上谁在做 | 开工 |
 | ⑥ | 代码 → ARCHITECTURE / run-format / usage | 功能、结构、数据格式变了，受影响的现状文档和代码放**同一个提交** | 每个提交 |
 | ⑦ | 代码 ⇄ decisions | 做了（或推翻了）设计决定就写进去：决定、理由、放弃的方案、在哪；「在哪」指回代码 | 做决定时 |
 | ⑧ | 代码 → git | 一条 TODO 一个提交，带测试 | 做完一条 |
 | ⑨ | git → log | 收工在日志最上面追加一条：做了什么，带提交号 | 收工 |
-| ⑩ | DOGFOOD / decisions ⇢ log | 日志的「发现 / 决定 / 讨论」只写一句并链过去，不复制 | 收工 |
+| ⑩ | FINDINGS / decisions ⇢ log | 日志的「发现 / 决定 / 讨论」只写一句并链过去，不复制 | 收工 |
 | ⑪ | log ⇢ STATUS | STATUS 的「交接」两三行：最近一次链到那条日志、下一步、没提交 / 没验证的 | 收工 |
 | ⑫ | usage → README | README 只摘要 usage：上手、读图须知、重点功能、实测、最要紧的限制 | usage 的这些部分变了时 |
 | ⑬ | README ⇢ usage / STATUS | 给想深入的人的出口 | — |
@@ -90,7 +90,7 @@ flowchart LR
 | 信息 | 唯一的家 | 别处怎么用 |
 |---|---|---|
 | 用户会碰到的限制 | usage「已知限制」 | README 挑几条；STATUS 不重复 |
-| 开发要还的债、现在坏的 | STATUS「已知问题」 | 每条链到 TODO / DOGFOOD |
+| 开发要还的债、现在坏的 | STATUS「已知问题」 | 每条链到 TODO / FINDINGS |
 | 实测数字 | usage「实测数字」 | README 摘要 |
 | 测试怎么跑、覆盖什么 | ARCHITECTURE「测试」 | CLAUDE.md 说提交前全跑；usage 指过去 |
 | 踩过的坑、负面结论 | decisions | usage 指过去 |
@@ -108,7 +108,7 @@ flowchart LR
 - 一句话一件事，带提交号（`f02d662`）。
 
 **发现**
-- 问题一句话，链到 DOGFOOD。
+- 问题一句话，链到 FINDINGS。
 
 **决定**
 - 决定一句话，链到 decisions / STATUS。
