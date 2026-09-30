@@ -37,7 +37,8 @@ from pathlib import Path
 from . import compat as _compat
 from . import events as _events
 from . import seq as _seq
-from . import trace as _trace
+from .trace import analysis as _tana
+from .trace import driver as _tdrv
 
 SCHEMA = 2
 CASE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -96,7 +97,7 @@ def sha16(p: Path) -> str:
         return ""
 
 
-_proc_start = _trace._proc_start     # pid 会被复用：判断「录制的 driver 还活着吗」要连启动时刻一起比
+_proc_start = _tdrv._proc_start     # pid 会被复用：判断「录制的 driver 还活着吗」要连启动时刻一起比
 
 
 def _alive(driver: dict | None) -> bool:
@@ -278,7 +279,7 @@ def capture(repo: Path, rd: Path, tr: dict, run: dict, *, leftovers: list | None
             pythons[exe] = {"version": py.get("version"), "dists": _dists(py.get("site"))}
 
     procs = _procs_of(tr, (run.get("clock") or {}).get("mono0_ns"))
-    script = _trace.case_script(cwd, run.get("cmd") or [])
+    script = _tana.case_script(cwd, run.get("cmd") or [])
     files = _collect_files(repo, cwd, procs, script, attach or [])
     (rd / "files").mkdir(exist_ok=True)
     stored = []
@@ -737,7 +738,7 @@ def file_state(repo: Path, idx: dict, detail: dict) -> dict[str, str]:
                 out[rel] = "changed"
         else:
             if fallback is None:
-                fallback = set(_trace.stale_files(Path(repo), {"file_shas": was}))
+                fallback = set(_tana.stale_files(Path(repo), {"file_shas": was}))
             if rel in fallback:
                 out[rel] = "changed"
     return out
@@ -781,7 +782,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
     fs = file_state(repo, idx, detail)
     # 录制之后改过的文件：按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上
     counts, unmatched = remap(counts, names, fs, idx)
-    hot = _trace.to_package_graph(counts, idx)
+    hot = _tana.to_package_graph(counts, idx)
     hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 输入包里写明数字来自哪个 run
     script = None
     sc = detail.get("script")
@@ -789,7 +790,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         script = {"path": sc["path"], "text": (rd / sc["stored"]).read_text(encoding="utf-8", errors="replace"),
                   "saved": True}
     else:                                        # 老的 run 没存脚本：读现在的文件，标明是现在的
-        s = _trace.case_script(Path(run.get("cwd") or repo), run.get("cmd") or [])
+        s = _tana.case_script(Path(run.get("cwd") or repo), run.get("cmd") or [])
         script = {**s, "saved": False} if s else None
     phases = run.get("phases") or []
     end = _seq.run_end(run, rd)
@@ -875,7 +876,7 @@ def remove_events(repo: Path, run_id: str) -> str:
     run = _read(rd / "run.json")
     if live(run):
         raise SystemExit(f"run {run_id} 还在录制中，不能删")
-    left = _trace.leftovers(rd / "parts") if (rd / "parts").is_dir() else []
+    left = _tdrv.leftovers(rd / "parts") if (rd / "parts").is_dir() else []
     if left:                                  # 还有进程在写：删了它还会写新的日志进来
         raise SystemExit(f"还有进程属于这个 run、可能还在往 {rd / 'parts'} 里写：{left}，先停掉它们")
     shutil.rmtree(rd / "events", ignore_errors=True)
@@ -895,7 +896,7 @@ def merge_run(repo: Path, ref: str) -> dict:
     if live(run):
         raise SystemExit(f"run {run['id']} 还在录制中（pid {run['driver']['pid']}）")
     parts = rd / "parts"
-    left = _trace.leftovers(parts) if parts.is_dir() else []
+    left = _tdrv.leftovers(parts) if parts.is_dir() else []
     if left:
         raise SystemExit(f"还有进程属于这个 run、可能还在往 {parts} 里写：{left}，先停掉它们")
     tarball = rd / "parts.tar.gz"
@@ -916,13 +917,13 @@ def merge_run(repo: Path, ref: str) -> dict:
             for f in parts.iterdir():
                 if f.is_file() and not f.name.endswith(".tmp"):
                     shutil.copy2(f, tmp / f.name)
-        tr = _trace.merge(tmp)
+        tr = _tana.merge(tmp)
         if run.get("status") == "recording" and not run.get("stop"):
             run["stop"] = "driver-lost"
         # --phase 切的阶段：标记在包里，driver 死在收尾之前的 run 也能把时刻补回来
-        run["phase_log"] = _trace.merge_phase_log(
+        run["phase_log"] = _tana.merge_phase_log(
             run.get("phase_log") or [["start", 0, "start"]],
-            _trace.fired_phases(tmp, (run.get("clock") or {}).get("mono0_ns"), sh=True))
+            _tana.fired_phases(tmp, (run.get("clock") or {}).get("mono0_ns"), sh=True))
         detail = (_read(rd / "detail.json") if (rd / "detail.json").is_file() else
                   capture(repo, rd, tr, run, attach=(run.get("rec") or {}).get("attach"), late=True))
         packed = True

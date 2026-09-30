@@ -42,9 +42,9 @@ def test_no_unix_bits_scan_graph_work():
     out = repo / "g.html"
     r = _py(NO_UNIX, f"""
         import importlib, pkgutil, codestrata
-        mods = [m.name for m in pkgutil.iter_modules(codestrata.__path__)]
+        mods = [m.name for m in pkgutil.walk_packages(codestrata.__path__, "codestrata.")]
         for m in mods:
-            importlib.import_module("codestrata." + m)
+            importlib.import_module(m)
         print("IMPORTED", len(mods))
         from codestrata.__main__ import main
         rc = [main(["scan", {str(repo)!r}]), main(["graph", {str(repo)!r}, "--out", {str(out)!r}]),

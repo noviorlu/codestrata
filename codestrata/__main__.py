@@ -31,7 +31,8 @@ from . import payload as _payload
 from . import render as _render
 from . import runs as _runs
 from . import scan as _scan
-from . import trace as _trace
+from .trace import analysis as _tana
+from .trace import driver as _tdrv
 from . import xref as _xref
 
 
@@ -274,7 +275,7 @@ def cmd_trace(a) -> int:
         raise SystemExit(f"--cwd 不是一个目录：{a.cwd}")
     here = _cwd()                            # 当前目录可能已经被删了
     if not a.cwd and here:
-        lost = _trace.misplaced_paths(a.cmd, run_dir, Path(here))
+        lost = _tdrv.misplaced_paths(a.cmd, run_dir, Path(here))
         if lost:
             raise SystemExit(f"命令在仓库根目录 {repo} 执行，这些相对路径在那里没有、在当前目录下有："
                              f"{'、'.join(lost)}\n要在当前目录执行就加 --cwd .（或者写成绝对路径）")
@@ -300,7 +301,7 @@ def cmd_trace(a) -> int:
             symbols = _load_index(repo).get("symbols")
         except SystemExit:
             symbols = None
-        phase_at = _trace.resolve_phase_at(repo, a.phase, symbols)
+        phase_at = _tana.resolve_phase_at(repo, a.phase, symbols)
         for t in phase_at:
             print(f"[codestrata] 阶段 {t['name']}：第一次进入 {t['qualname']}（{t['file']}:{t['line']}）时切过去"
                   + (f"——{t['func']} 是继承来的，定义在 {t['via']}" if t.get("via") else ""), file=sys.stderr)
@@ -331,7 +332,7 @@ def cmd_trace(a) -> int:
         return tr, _runs.finalize(repo, rd, tr, stop=info["stop"], returncode=info["returncode"],
                                   phase_times=info["phase_times"], duration_s=info["duration_s"],
                                   leftovers=info["leftovers"], attach=attach)
-    tr, run = _trace.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
+    tr, run = _tdrv.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
                          env_extra=env_run, stop_grace=a.stop_grace, after=after, phase_at=phase_at,
                          cwd=run_dir)
     detail = _runs._read(rd / "detail.json")
@@ -382,7 +383,7 @@ def cmd_trace(a) -> int:
     except SystemExit:
         print("  （还没 scan，跑 codestrata scan 之后再 graph --hot 就能叠图）")
         return 0 if run["status"] != "failed" else 1
-    hp = _trace.to_package_graph(tr, idx)
+    hp = _tana.to_package_graph(tr, idx)
     # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人；
     # 定义时的执行（模块顶层、类体）不是调用，哪儿都不算
     defs = "，".join(x for x in (f"{hp['module_frames']} 次 import 时的模块顶层执行" if hp.get("module_frames") else "",

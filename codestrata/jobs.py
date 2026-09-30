@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import self_command
 from .runs import CASE_RE, fmt_seconds
-from .trace import resolve_phase_at
+from .trace.analysis import resolve_phase_at
 
 MAX_LINES = 4000        # 每个任务在内存里留的输出行数（更早的丢掉，行号照样往上数）
 KEEP_DONE = 5           # 每个仓库留几个已经结束的任务（页面上只看最近一个；再早的丢掉，免得一直占内存）

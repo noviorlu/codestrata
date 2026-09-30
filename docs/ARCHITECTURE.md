@@ -16,9 +16,9 @@ codestrata 是一个纯标准库的 Python 包（源码高亮用可选的 Pygmen
 flowchart LR
   SRC["仓库源码"] -->|"cmd_scan: scan.scan → scan.write_index"| IDX[".codestrata/index.json + symbols.json"]
   IDX -->|"xref.build → xref.write"| XR[".codestrata/xref.json"]
-  CMD["case 命令"] -->|"cmd_trace: trace.run（hook 注入）"| PARTS["runs/ID/parts/"]
-  PARTS -->|"trace.merge → runs.finalize"| RUN["runs/ID/ run.json · detail.json · counts.json.gz · events/"]
-  RUN -->|"runs.load: remap + trace.to_package_graph"| HOT["hot（单元粒度，对当前 index）"]
+  CMD["case 命令"] -->|"cmd_trace: driver.run（hook 注入）"| PARTS["runs/ID/parts/"]
+  PARTS -->|"analysis.merge → runs.finalize"| RUN["runs/ID/ run.json · detail.json · counts.json.gz · events/"]
+  RUN -->|"runs.load: remap + analysis.to_package_graph"| HOT["hot（单元粒度，对当前 index）"]
   IDX --> HOT
   IDX & HOT -->|"payload.graph_payload: cut.view + layout.build"| PL["payload"]
   XR --> PL
@@ -34,18 +34,18 @@ flowchart LR
    `symbols.json`（`symbols`、`files`、`edge_uses`、`file_sha` 等），紧接着 `xref.build` + `xref.write` 写同一时刻的 `xref.json`。
 2. **layout（分层）**：不落盘，每次请求现算。`cut.view(idx, open_)` 把文件级单元汇总到当前切面的节点上，
    `layout.layers` 按依赖分层（去环后最长路，边尽量往下指），`layout.build` 排出节点和框的坐标。
-3. **trace**：`cmd_trace` 先用 `trace.resolve_phase_at` 解析 `--phase`，`runs.new_run` 建 run 目录和 `run.json`，再交给
-   **driver** `trace.run`：`_make_bootstrap` 把 **hook** `_SITECUSTOMIZE` 写成临时目录里的 `sitecustomize.py` 插到
+3. **trace**（`codestrata/trace/` 包）：`cmd_trace` 先用 `analysis.resolve_phase_at` 解析 `--phase`，`runs.new_run` 建 run 目录和 `run.json`，再交给
+   **driver** `driver.run`：`hook.make_bootstrap` 把 **hook** `_SITECUSTOMIZE` 写成临时目录里的 `sitecustomize.py` 插到
    `PYTHONPATH` 最前面，经 `CODESTRATA_ROOT` / `CODESTRATA_OUT` / `CODESTRATA_EVENTS` / `CODESTRATA_PHASE_AT` 等环境变量配置，
    命令在自己的会话里跑。每个 Python 进程映像往 `parts/` 写 `part-<pid>-<t0ns>.json`（`funcs`、`func_edges`、`names`、
    文件哈希），`--events` 时另写 `ev-<pid>-<t0ns>.log`。停止按 `_levels()`（SIGINT → SIGTERM → SIGKILL）逐级升级，
-   `stop_leftovers` 停残留进程，最后 `trace.merge` 合并分片，经 `after` 回调收尾。
+   `stop_leftovers` 停残留进程，最后 `analysis.merge` 合并分片，经 `after` 回调收尾。
 4. **run**：`runs.finalize` → `capture`（case 脚本、配置文件、环境、git → `detail.json`）→ `_pack_all`（`parts.tar.gz`、
    `events/raw.tar.gz`）→ `_build_events`（`events.build` → `events/spans/`）→ `derive`（`counts.json.gz`：各阶段的
    `funcs` / `func_edges` 和 `names`；定状态）。派生数据可由 `runs merge`（`runs.merge_run`）从原始数据重算。
 5. **映射回当前 index**：`runs.resolve(repo, ref)` 解析 run id / case 名 / `@阶段` / `@t=起-止`；`runs.load` 读计数（`load_counts`，
    时间段则 `seq.window_counts`），`file_state` 拿录制时的文件哈希和 index 的 `file_sha` 比，`remap` 把改过的文件里的键按 qualname
-   挪到函数现在的行号，`trace.to_package_graph(counts, idx)` 折算到单元粒度，返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
+   挪到函数现在的行号，`analysis.to_package_graph(counts, idx)` 折算到单元粒度，返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
 6. **payload**：`payload.load_index` 合并 index.json 和 symbols.json；`graph_payload` 做切面（`cut.view`）、
    叠加（`_hot_on_cut`，对比时 A、B 各一次，返回里带 `cmp`）、排版（`layout.build`）。边详情 `edge_detail` /
    `edge_compare`，源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
@@ -65,7 +65,9 @@ flowchart LR
 | `xref.py` | 1401 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击 |
 | `cut.py` | 288 | 目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 629 | 依赖分层 + 横向排序 + 框，出坐标 |
-| `trace.py` | 1545 | hook 源码（`_SITECUSTOMIZE`）+ driver（`run`、停进程、扫残留）+ 合并与折算（`merge`、`to_package_graph`、`resolve_phase_at`） |
+| `trace/hook.py` | 657 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
+| `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
+| `trace/analysis.py` | 515 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、折算到当前 index（`to_package_graph`、`sym_locs`、`defining`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1062 | run 目录的建、收尾、迁移、解析、加载（`remap`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
@@ -91,9 +93,6 @@ flowchart LR
 | `web/home.js` | 389 | 主菜单页面（`home.html`，不走 ds.js） |
 
 已知的结构问题（`docs/TODO.md` P0 / P2 里有对应条目）：
-- **`trace.py` 混了三样东西**：只在被测进程里跑的 hook（一个字符串常量）、外面的 driver（进程组、信号、`/proc`），
-  以及加载时才用的 `merge` / `to_package_graph` / `sym_locs` / `defining` / `resolve_phase_at`。`runs`、`seq`、`jobs`、
-  `__main__` 都 import 它。
 - **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`）、坐标（`layout`）、源码（`highlight`）、
   交叉引用（`xref`）、解读（`notes`），还有自己的一段 `ast` 分析（`_code_facts`、`_call_form`）。
 - **跨模块用下划线私有名**（`grep` 结果）：`__main__` 用 `_runs._read`（4 处），`serve` 用 `_runs._read`、`_payload._norm_open`，
@@ -107,17 +106,17 @@ flowchart LR
 - run 的存储：`run.json` / `detail.json` / `counts.json.gz`（各阶段 `funcs`、`func_edges`）、阶段日志 `phase_log`、
   `runs` 的建 / 收尾 / 解析 / 管理 / 复刻命令；`events.py` 的日志格式和 span；`seq.py` 的时间窗和边时刻。
 - 切面和排版：`cut.py`（单元 id 是点分名；`unit_dir` 对 `.__init__` 的特判来自 Python 的包约定）、`layout.py`（只吃 id 和带权边）。
-- 叠加、对比：`payload._hot_on_cut`、`graph_payload`、`edge_compare`；`trace.to_package_graph` / `sym_locs` / `defining`
-  虽然放在 `trace.py`，只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`k`），「第 0 行 = 模块顶层」「落在类符号行 = 类体」是约定。
-- driver 的进程管理（`trace.run` 里的会话、信号升级、残留进程），除了注入方式（见下）。
+- 叠加、对比：`payload._hot_on_cut`、`graph_payload`、`edge_compare`；`trace/analysis.py` 的 `to_package_graph` / `sym_locs` / `defining`
+  只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`k`），「第 0 行 = 模块顶层」「落在类符号行 = 类体」是约定。
+- `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
 - 前端全部；`highlight.py` / `hl.js` 本来就认多种语言。
 
 **Python 专用**：
 - `scan.py`（`ast`、import 语义、`TYPE_CHECKING`、`__init__.py`、roots 探测）和 `xref.py`（`ast` 名字解析）。
-- hook（`trace._SITECUSTOMIZE`）：经 `sitecustomize` + `PYTHONPATH` 注入；3.12+ 用 `sys.monitoring`，否则
+- `trace/hook.py`（`_SITECUSTOMIZE`）：经 `sitecustomize` + `PYTHONPATH` 注入；3.12+ 用 `sys.monitoring`，否则
   `sys.setprofile` / `threading.setprofile`；记 `co_qualname`；拦 `os._exit` / `os.exec*`、`os.register_at_fork`；
   `CODESTRATA_PKGS` 把 site-packages 里的路径映射回仓库。时序事件只有 `sys.monitoring` 路径才录。
-- `--phase` 的解析（`trace.resolve_phase_at`、`_qualnames`、`_inherited` 按 MRO 找方法）和 `trace.case_script`。
+- `--phase` 的解析（`trace/analysis.py` 的 `resolve_phase_at`、`_qualnames`、`_inherited` 按 MRO 找方法）和 `case_script`。
 - `runs.remap` 的细节：qualname 去掉 `.<locals>` 再对 symbols 表的 `(文件, 名字)`；`runs._dists` 读 `*.dist-info`。
 - `payload` 里边详情的「调用处」：`_code_facts` / `_call_form` / `_add_call_sites` 按 Python 语法认调用写法。
 

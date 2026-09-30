@@ -40,9 +40,7 @@
 
 - **平台**：录制只支持 Linux，别的系统上 `trace` 直接拒绝（`compat.require_trace`）。scan / serve / graph / runs 在别的系统上
   能 import、能用（`tests/test_platform.py` 模拟没有 fcntl / SIGKILL 的环境），但没在真的 Windows / macOS 上跑过。
-- **god module**：`trace.py` 混了三件事：被测进程里的 hook、外面的 driver，以及加载时才用的分析
-  （`merge`、`to_package_graph`、`sym_locs`、`defining`、`resolve_phase_at`、`case_script`，runs / seq / jobs 都依赖它）；
-  `payload.py`（事实、runtime、坐标、源码、xref、解读全认识）。
+- **god module**：`payload.py`（事实、runtime、坐标、源码、xref、解读全认识）。
 - **模块间用下划线私有名**：`runs._read`（5 处）、`payload._norm_open` / `_inverted` / `_known`、`trace._proc_start`、
   `notes._resolve_ref` / `_REF_RE`，以及函数里的 `from .runs import _q`（payload）、`from .scan import _STMT_CONTAINERS`（trace）。
 - **读图须知埋得太深**：调用方是「最近的仓库内帧」，穿过框架事件循环的调用会显示成直接调用；次数高的多半是轮询；

@@ -69,7 +69,7 @@
 - 为什么：否则每条 import 边都会因为「导入过」被染成橙色，只被 import、一个函数都没调过的包也显示成「跑到了」。
   类体那一半起因是 httpx 的试用：sync 阶段惰性 import 了 httpcore，一堆 Async 类的类体被算成 sync 调了 async 的类。按行号认，已经录好的老 run 加载时一样分得出来。
 - 放弃的方案：把 `<module>` 帧当普通调用。
-- 在哪：`trace.py` 的 `defining`、`to_package_graph`（`module_exec`、`class_frames`）；`seq.py` 的 `_Map.of`。测试 `test_class_body_is_definition_not_call`。
+- 在哪：`trace/analysis.py` 的 `defining`、`to_package_graph`（`module_exec`、`class_frames`）；`seq.py` 的 `_Map.of`。测试 `test_class_body_is_definition_not_call`。
 
 ### 每条边都是「静态引用 × runtime 调用」的交叉
 - 决定：边详情分成 confirmed（引用了也调到了）、static（引用了、这次没走到）、dynamic（调到了、代码里没有静态引用）、
@@ -103,7 +103,7 @@
   （Flask 的视图）再调仓库函数时，调用方会落到最近的仓库帧上，画出 `dispatch_request → jsonify` 这种并不存在的动态分派边。
   代价（已知问题）：穿过框架事件循环的调用显示成直接调用。
 - 放弃的方案：栈上只有仓库帧。
-- 在哪：`trace.py` 的 `_case_rel`、`_rel`、`_enter`。测试 `test_callbacks_from_case_code`、`test_case_code_detection`。
+- 在哪：`trace/hook.py` 的 `_case_rel`、`_rel`、`_enter`。测试 `test_callbacks_from_case_code`、`test_case_code_detection`。
 
 ---
 
@@ -115,7 +115,7 @@
 - 为什么：vLLM 这类框架每个 stage 一个 engine core 进程，只 trace 父进程会丢掉最关键的部分。明确写值是为了 shell 里 export 过的旧值
   不会悄悄生效——否则录出来的 run 和它的重录命令对不上。
 - 放弃的方案：只 trace 父进程。
-- 在哪：`trace.py` 的 `run`、`_SITECUSTOMIZE`；`__main__.py` 的 `cmd_trace`。
+- 在哪：`trace/`（driver / hook） 的 `run`、`_SITECUSTOMIZE`；`__main__.py` 的 `cmd_trace`。
 
 ### 调用栈进出都订阅，按文件名缓存
 - 决定：订阅 `PY_START` / `PY_RESUME` / `PY_THROW` 入栈、`PY_RETURN` / `PY_YIELD` / `PY_UNWIND` 出栈；`PY_UNWIND`、`PY_THROW` 不返回 DISABLE；
@@ -125,7 +125,7 @@
   ValueError（测试里 asyncio 取消崩过）。3.12 起 cProfile 也走 sys.monitoring、占着 `PROFILER_ID`。code 对象按内容比较相等、不比文件名，
   几个空 `__init__.py` 会被当成同一个；模块顶层记第 1 行会和写在第 1 行的函数撞键。
 - 放弃的方案：只订阅 `PY_START`；按 code 对象缓存。
-- 在哪：`trace.py` 的 `_SITECUSTOMIZE`（`_rel`、`_key`、`_enter` / `_leave`、注册回调那一段）。
+- 在哪：`trace/hook.py` 的 `_SITECUSTOMIZE`（`_rel`、`_key`、`_enter` / `_leave`、注册回调那一段）。
 
 ### hook 不装信号处理器，用 STOP 文件换最后一次落盘
 - 决定：被 trace 的程序的信号处理一律不动。driver 升级到 SIGTERM 之前写 `$CODESTRATA_OUT/STOP`，各进程的落盘线程 1 秒内看到就落一次盘
@@ -134,7 +134,7 @@
   解释器才跑，卡在 C 里的进程收到 SIGTERM 不再立刻死，multiprocessing 的退出会挂住；链式调用旧处理器的程序被直接杀掉。
   代价是这份数据截止到发信号前一秒左右。
 - 放弃的方案：给没人接管的 SIGTERM 装处理器。
-- 在哪：`trace.py` 的 `_before_term`、`_flusher`（读 STOP）；测试 `test_program_semantics` 断言 SIGTERM 仍是 `SIG_DFL`。
+- 在哪：`trace/`（driver / hook） 的 `_before_term`、`_flusher`（读 STOP）；测试 `test_program_semantics` 断言 SIGTERM 仍是 `SIG_DFL`。
 
 ### 子进程的数据不能丢、也不能写坏
 - 决定：每个进程映像一份分片 `part-<pid>-<t0ns>.json`；包住 `os._exit` 和 `os.execv` / `os.execve`，先落盘再真的退出 / exec；落盘线程每 10 秒
@@ -144,7 +144,7 @@
   第 10 秒前后退出）。不 makedirs：录制收尾、parts/ 打包删掉之后，还活着的孤儿进程不能把它重新建出来。`os._exit` 的包装无论如何都要真的退出，
   否则 fork 出的子进程会逃进父进程的代码。
 - 放弃的方案：`part-<pid>.json`；两个线程写同一个 `.tmp`；`_dump` 里 `os.makedirs`。
-- 在哪：`trace.py` 的 `_base`、`_write`、`_dump`、`_exit_hook`、`_wrap_exec`、`_flusher`、`_after_fork`（fork 后重建锁）。
+- 在哪：`trace/hook.py` 的 `_base`、`_write`、`_dump`、`_exit_hook`、`_wrap_exec`、`_flusher`、`_after_fork`（fork 后重建锁）。
 
 ### 命令放进自己的会话，按 SIGINT → SIGTERM → SIGKILL 三级停
 - 决定：`Popen(start_new_session=True)`；driver 接管 SIGINT / SIGTERM / SIGHUP / SIGQUIT（已被忽略的保持忽略）。超时或收到信号时对整个进程组
@@ -154,7 +154,7 @@
   和 engine core 成了孤儿、一直占着显存，最后 ≤10 秒的数据也丢了。SIGINT 放最前：Python 进程会抛 KeyboardInterrupt、正常走 atexit，case 的 trap
   也有机会停掉自己的服务。非交互 bash 用 `&` 起的后台进程天生忽略 SIGINT，发多久都没用。保持 SIGHUP 的忽略是为了 nohup 下的录制不被关终端打断。
 - 放弃的方案：`subprocess.call` + 超时。
-- 在哪：`trace.py` 的 `run`、`_stop`、`_LEVELS`、`_ignores`；测试 `test_nohup`、`test_sigquit`。
+- 在哪：`trace/driver.py` 的 `run`、`_stop`、`_levels`、`_ignores`；测试 `test_nohup`、`test_sigquit`。
 
 ### 残留进程按 environ 和 (pid, 启动时刻) 认
 - 决定：命令退出后，扫 `/proc/*/environ` 找 `CODESTRATA_OUT` 等于本 run parts 目录的进程；另外认「分片文件名里的 pid 还活着、`/proc/<pid>/stat` 的
@@ -163,7 +163,7 @@
 - 为什么：vLLM 的 engine core 用 setproctitle，它默认借 environ 那块内存写标题，会把 `/proc/<pid>/environ` 清空；两道防线任一生效都认得出。
   pid 会被复用，不核对启动时刻就会误杀、或把早死的 driver 当成还在录。残留的 bash 在 EXIT trap 里还会起新的子进程，只停第一批会漏。
 - 放弃的方案：只看 environ；只看 pid。
-- 在哪：`trace.py` 的 `leftovers`、`stop_pids`、`stop_leftovers`；`runs.py` 的 `_alive`、`live`、`_proc_start`；测试 `test_leftover_by_part_file`。
+- 在哪：`trace/driver.py` 的 `leftovers`、`stop_pids`、`stop_leftovers`；`runs.py` 的 `_alive`、`live`、`_proc_start`；测试 `test_leftover_by_part_file`。
   只有 Linux 能这样做（已知问题）。
 
 ### `--phase 名字=函数`：进程第一次进入这个函数时切阶段，每个阶段整个 run 只切一次
@@ -175,7 +175,7 @@
   用户要求分段写在 codestrata 的命令上、不改 sh。只在第一次见到键时检查，热路径零开销；标记保证后来才第一次进这个函数的进程不会把阶段切回去；
   停 0.1 秒让工作进程在 generate 期间的活都算进 generate（`test_phase_at`）。
 - 放弃的方案：只靠 case 脚本写 PHASE（仍然支持，两种可以一起用）；按命令行里的先后切。
-- 在哪：`trace.py` 的 `_trig_check`、`_fire`、`resolve_phase_at`、`_qualnames`、`_inherited`、`fired_phases`、`merge_phase_log`。
+- 在哪：`trace/`（analysis / hook） 的 `_trig_check`、`_fire`、`resolve_phase_at`、`_qualnames`、`_inherited`、`fired_phases`、`merge_phase_log`。
 
 ---
 
@@ -209,7 +209,7 @@
   对不上的不留原键：老行号可能正好是另一个函数现在的定义行，数字看着正常其实是别人的；也不改成 0：第 0 行是模块顶层，这些调用就等于丢了。
   3.10 的 `co_name` 只是短名字，方法 `Model.forward` 会被挪到同文件里同名的顶层函数上——错挪比不挪更糟。
 - 放弃的方案：存 index 快照；对不上的保留原行号（设计稿最初的写法）；3.10 退回 `co_name`。
-- 在哪：`runs.py` 的 `load`、`load_counts`、`remap`；`trace.py` 的 `_key`、`_names`、`sym_locs`、`to_package_graph`（-1 落进 `anon`）；测试 `test_remap_moved_functions`。
+- 在哪：`runs.py` 的 `load`、`load_counts`、`remap`；`trace/`（analysis / hook） 的 `_key`、`_names`、`sym_locs`、`to_package_graph`（-1 落进 `anon`）；测试 `test_remap_moved_functions`。
 
 ### 「录制之后改过没有」拿执行时的哈希和 index 比，不和工作区比
 - 决定：hook 在每个进程第一次跑到一个文件时取它内容的 sha256 前 16 位；scan 对同一份原始字节取同一种哈希写进 `file_sha`。`runs.file_state` 逐个文件定
@@ -218,7 +218,7 @@
   收尾时再取的话录制中途改过的文件会被当成没改（这种文件记进 `changed_during`，run 标 partial）。哈希原始字节而不是解码后的文本：
   否则每个带 BOM 或 CRLF 的文件都会被判成改过。examples 这类不在 index 里的文件标 outside，不叠加也不算过期。
 - 放弃的方案：`trace.stale_files` 拿 run 比工作区（只留作老 index 的退路）；收尾时才取哈希。
-- 在哪：`trace.py` 的 `_rel`（`_shas`）；`scan.py` 的 `scan`（`file_sha`）；`runs.py` 的 `sha16`、`capture`、`file_state`。
+- 在哪：`trace/hook.py` 的 `_rel`（`_shas`）；`scan.py` 的 `scan`（`file_sha`）；`runs.py` 的 `sha16`、`capture`、`file_state`。
 
 ### 清单拆成 run.json 和 detail.json，目录扁平，只用文件不用数据库
 - 决定：`runs/<id>/` 一层；列表只读几 KB 的 run.json，procs、哈希、环境在 detail.json；所有写都先写临时文件再 `os.replace`。不用 sqlite，不做就地 schema 升级，
@@ -285,7 +285,7 @@
   先开始的不一定先结束。按父 span 不按深度：两个协程各自的子调用深度相同却不是兄弟；看「段」：中间有过挂起 / 恢复，合出来的时间窗会盖住别的协程的调用。
   上限只管调用行，否则上限前开始的调用会显示成没返回。默认不开：GPU 上的开销还没实测（设计稿第 11 节：serving 变慢不超过 1.3 倍才默认打开）。
 - 放弃的方案：按栈配对；按深度认兄弟；hook 里直接写 span。
-- 在哪：`trace.py` 的 `_ev_call`、`_ev_mark`、`_ev_room`、`_ev_flush`；`events.py` 的 `parse`、`pair`、`fold`、`build`。
+- 在哪：`trace/hook.py` 的 `_ev_call`、`_ev_mark`、`_ev_room`、`_ev_flush`；`events.py` 的 `parse`、`pair`、`fold`、`build`。
 
 ### 调用的先后画在模块图的边上，按名次上色
 - 决定：录了事件的 run 在 serve 里多一个「时间顺序」开关：看得见的、跑到的边按第一次被调用的先后排名 1…N，按名次在三个色标之间插值上色、标序号。
@@ -313,7 +313,7 @@
 
 ### span 读一遍，按切面归很多次
 - 决定：`_pairs` 把整个 run 的 span 解压读一遍，按阶段聚合成「键对 → 首次 / 末次 / 次数」，缓存 8 份；`edge_times` 再把键对经 rel → 单元 → 当前切面节点归一遍。
-  「键 → 符号」和「是不是定义」与模块图共用 `trace.sym_locs`、`trace.defining`。同一个请求同时来只算一次（按键加锁）。
+  「键 → 符号」和「是不是定义」与模块图共用 `analysis.sym_locs`、`analysis.defining`。同一个请求同时来只算一次（按键加锁）。
 - 为什么：解压、读 span 是贵的一步，归到节点很便宜。记录的数字（没复测）：158 万条 span 的 sympy run 第一次 2.2 s，之后换阶段 9 ms、每个新切面约 30 ms。
   共用判断，整个 run 上每条边的次数和 hot 图逐条相等（`test_seq_edge_times`）。
 - 放弃的方案：每次请求按时间窗重读块（时序图时代的 16 块 LRU）。
@@ -437,13 +437,13 @@
 - 在哪：`pyproject.toml`（`dependencies = []`、`highlight` 可选依赖）。
 
 ### 模块边界：录和存分开，seq 和 events 只隔一个文件格式
-- 决定：`trace` 不 import `runs`：`trace.run` 只接收一个 parts 目录和一个 `after` 回调，收尾（打包、写 run.json）在 `run` 的 try/finally 里跑。`seq` 不 import `events`
-  也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块，`trace.py`、`payload.py` 不再加东西。
+- 决定：`trace` 不 import `runs`：`trace.driver.run` 只接收一个 parts 目录和一个 `after` 回调，收尾（打包、写 run.json）在 `run` 的 try/finally 里跑。`seq` 不 import `events`
+  也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块，`payload.py` 不再加东西。
 - 为什么：driver 的信号处理器要一直装到收尾做完，收尾中途按 Ctrl+C 才不会留下半截的 run——所以用回调而不是返回后再收尾。写 run、删 run 的代码全在 `runs` 里，
   审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.edge_times`；代价是 spans/ 的格式两边各认一份（`test_seq_edge_times` 兜底）。
-  `trace.py` 和 `payload.py` 已经是 god module（STATUS 已知问题）。
-- 放弃的方案：`trace.run` 返回后由调用方收尾。
-- 在哪：`trace.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import；`CLAUDE.md` 的「任务的生命周期」。
+  `payload.py` 已经是 god module（STATUS 已知问题）；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
+- 放弃的方案：`driver.run` 返回后由调用方收尾。
+- 在哪：`trace/driver.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import；`CLAUDE.md` 的「任务的生命周期」。
 
 ### 主菜单是另起的进程，按钮背后是 CLI 子进程
 - 决定：`codestrata app` 不在自己进程里调 scan / trace / serve 的函数：扫描、录制是 `python -u -m codestrata scan|trace …` 子进程，每个打开的仓库一个

@@ -4,7 +4,7 @@
 别的语言只要加一套扫描器和录制端，产出本页描述的数据，叠加、对比、阶段、时间轴、时间顺序就都能用。
 
 - 以代码为准：`codestrata/runs.py`（目录、run.json、detail.json、counts.json.gz、引用、对上 index）、
-  `trace.py`（hook 写的分片、合并、阶段标记、叠加到单元）、`events.py`（事件日志 → span）、
+  `trace/`（`hook.py` 写的分片、`analysis.py` 的合并、阶段标记、叠加到单元）、`events.py`（事件日志 → span）、
   `seq.py`（span 的读法、时间段、时间顺序）、`scan.py` / `cut.py` / `payload.py` / `layout.py`（静态索引和它的读法）。
   本页和代码对不上时以代码为准，并改本页。
 - 本页每个字段名都对过代码和真实的 run（vllm-omni 上的一次 GPU 录制、测试用的假仓库）。
@@ -53,7 +53,7 @@
 | `detail.json` | 原始（`procs` 除外） | `runs.capture`（只写一次）；`runs.derive` 只重写 `procs` | `runs.file_state`、`runs.load`、`runs show` | 加载某个 run 时才读。可以没有（加载时当 `{}`）。见 §3 |
 | `counts.json.gz` | 派生 | `runs.derive`；迁移 | `runs.load_counts` | 叠加的主数据。见 §4。**没有它 run 不能加载**（`runs.load` 报「还没有计数」，`/api/runs` 的 `loadable` 为 false） |
 | `parts.tar.gz` | 原始 | `runs._pack_all` | `runs.merge_run` | 录制端写出的全部分片（`part-*.json`、`PHASE`、`PHASE-*.fired`），见 §5。成员是平铺的文件名 |
-| `parts/` | 临时的原始数据 | 各进程的 hook、driver | `trace.merge`、`runs.merge_run` | 录制中各进程往这里写。收尾时打包成 `parts.tar.gz` 和 `events/raw.tar.gz`，打包核对成功才删 |
+| `parts/` | 临时的原始数据 | 各进程的 hook、driver | `analysis.merge`、`runs.merge_run` | 录制中各进程往这里写。收尾时打包成 `parts.tar.gz` 和 `events/raw.tar.gz`，打包核对成功才删 |
 | `files/NN-<文件名>` | 原始 | `runs.capture` | `runs.load`（case 脚本给页面看） | 录制时的 case 脚本、进程命令行里出现的小配置文件、`--attach` 点名的文件。`NN` 是两位序号 |
 | `events/raw.tar.gz` | 原始 | `runs._pack_all` | `runs.merge_run` | 各进程的时序事件日志 `ev-<pid>-<t0ns>.log`，见 §6.1。只有录了事件（`trace --events`）的 run 有 |
 | `events/spans/` | 派生 | `events.build`（finalize、merge 都会重建） | `seq.py` | 配好对、折叠过的 span，见 §6.2 |
@@ -132,7 +132,7 @@
 | `stop` | str | 怎么停的：`exit` / `timeout` / `interrupt` / `driver-lost`（driver 死在收尾之前、由 merge 补上） | — | `finalize`、`merge_run` | `derive` 定状态 |
 | `returncode` | int \| null | 命令的退出码；命令没起来是 127 | — | `finalize` | `derive` |
 | `duration_s` | float \| null | 命令从起到停的秒数（1 位小数） | — | `finalize` | 列表；`seq.run_end`（时间轴终点的候选之一） |
-| `phase_log` | [[name, t_us, source]] | 切阶段的时刻，按时间排。`source`：`start`（开头）/ `sh`（case 脚本写 PHASE 文件切的，driver 每 0.1 秒轮询到的时刻）/ `hook`（`--phase` 切的，取阶段标记里的精确时刻）。同一个名字可以出现多次（切走又切回来）。`t_us` 不知道时是 null | 阶段 / 时间轴要 | `finalize`、`merge_run`（`trace.merge_phase_log`） | `derive`（阶段的 `t_us`）、`seq.phase_segments`（时间轴）、页面（`hook` 来源的阶段提示「从第一次进入某函数开始」） |
+| `phase_log` | [[name, t_us, source]] | 切阶段的时刻，按时间排。`source`：`start`（开头）/ `sh`（case 脚本写 PHASE 文件切的，driver 每 0.1 秒轮询到的时刻）/ `hook`（`--phase` 切的，取阶段标记里的精确时刻）。同一个名字可以出现多次（切走又切回来）。`t_us` 不知道时是 null | 阶段 / 时间轴要 | `finalize`、`merge_run`（`analysis.merge_phase_log`） | `derive`（阶段的 `t_us`）、`seq.phase_segments`（时间轴）、页面（`hook` 来源的阶段提示「从第一次进入某函数开始」） |
 | `phases` | [{name, t_us, n_funcs, n_calls}] | 各阶段：顺序按 `phase_log` 里第一次出现的先后，再补上只在 counts 里有的；只列 counts.json.gz 里有的阶段。`t_us` 取这个名字在 `phase_log` 里第一次出现的时刻；`n_funcs` 是这一阶段被调到的函数键数，`n_calls` 是次数之和 | H（阶段名要能解析） | `derive`；迁移 | `resolve`（`@阶段` 必须在这里）、`/api/runs`、页面（阶段按钮：两个以上才显示）、`seq._phase_log`（老 run 没有 `phase_log` 时用它的 `t_us`） |
 | `summary` | object | `n_funcs`（全部阶段里不同的函数键数）、`n_func_edges`、`n_files`（`detail.file_shas` 的文件数）、`n_procs`（进程映像数）、`n_procs_active`（跑到仓库代码的）、`n_mapped`、`n_leftovers`、`n_unclean`（最后一次落盘是定时或切阶段的——被强杀了） | — | `derive` | 列表、`/api/runs`、页面 |
 | `sizes` | {文件名: 字节} | run 目录下各文件的大小。在最后一次写 run.json **之前**取的，所以 `run.json` 自己的数不准 | — | `derive` | 没有代码读（`runs ls` 的大小是现走目录算的） |
@@ -234,23 +234,23 @@
 | `phases.<名>.func_edges` | {调用边键: int} | 调用方是**栈上最近的仓库帧**（穿过标准库、第三方库的调用记到最近的仓库函数头上），被调方是这个函数。递归自调用不记；同文件内的调用也记 | H（没有它就只有节点、没有边） |
 | `names` | {函数键: qualname} | 录制时的限定名（Python 的 `co_qualname`：嵌套函数是 `outer.<locals>.inner`，模块顶层是 `<module>`）。只用于录制后改过的文件把键挪到函数现在的行号上（§8）；没有它这些文件的次数只算到文件上 | — |
 
-- 阶段的次数是**每个进程**里「切阶段时的累计快照」相邻相减、负数丢掉，再把所有进程加起来（`trace.merge`）。
+- 阶段的次数是**每个进程**里「切阶段时的累计快照」相邻相减、负数丢掉，再把所有进程加起来（`analysis.merge`）。
   所以阶段归属是按各进程看到阶段切换的那一刻：各进程每 0.05 秒看一次 `PHASE`（另外每秒兜底读一次）；`--phase` 切的，
   触发的那个线程当场切、再停 0.1 秒等别的进程跟上。计数的阶段边界和 `phase_log` 的时刻因此可能差几十毫秒。
 - 不带阶段加载（`<id>` 不带 `@`）= 各阶段逐键相加（`runs._sum`）。
 - 加载时从这里算出的东西（`module_frames`、`class_frames`、`anon`、单元间的边、`edge_calls`…）**不存盘**，
-  每次按当前的 index 现算（`trace.to_package_graph`），见 §8。
+  每次按当前的 index 现算（`analysis.to_package_graph`），见 §8。
 
 ## 5 原始分片（parts/，打包后在 parts.tar.gz）
 
-录制端的输出。收尾时 `trace.merge` 把它们合成 §4 的计数。文件都平铺在 `parts/` 里：
+录制端的输出。收尾时 `analysis.merge` 把它们合成 §4 的计数。文件都平铺在 `parts/` 里：
 
 | 文件 | 谁写 | 内容 |
 |---|---|---|
 | `part-<pid>-<t0ns>.json` | 每个进程映像的 hook | 这个进程映像的**累计**计数和元数据，见下表。每次落盘整份覆盖。`t0ns` 是进程映像开始时的 monotonic 纳秒：exec 之后同一个 pid 写新文件 |
 | `part-<pid>-<t0ns>@<n>-<阶段>.json` | hook，切阶段时 | 切换那一刻的累计快照 `{funcs, func_edges}`；`<n>` 从 0 递增，`<阶段>` 是**刚结束**的那个阶段 |
 | `PHASE` | case 脚本或 hook | 当前阶段。第一行是阶段名；hook 切的有第二行（切换那一刻的 monotonic 纳秒）。case 脚本 `echo serving > $CODESTRATA_OUT/PHASE` 就切过去 |
-| `PHASE-<阶段>.fired` | hook（`--phase`）或 driver（替 case 脚本建） | 这个阶段被切过的标记，内容一行 `hook <pid> <monotonic_ns>` 或 `sh <pid> <monotonic_ns>`。`O_EXCL` 建：每个阶段整个 run 只切一次。收尾和 merge 从它取阶段的精确时刻（`trace.fired_phases`） |
+| `PHASE-<阶段>.fired` | hook（`--phase`）或 driver（替 case 脚本建） | 这个阶段被切过的标记，内容一行 `hook <pid> <monotonic_ns>` 或 `sh <pid> <monotonic_ns>`。`O_EXCL` 建：每个阶段整个 run 只切一次。收尾和 merge 从它取阶段的精确时刻（`analysis.fired_phases`） |
 | `ev-<pid>-<t0ns>.log` | hook（`--events`） | 时序事件日志，收尾时打包进 `events/raw.tar.gz`（不进 parts.tar.gz），见 §6.1 |
 | `STOP` | driver | 升级到 SIGTERM 之前建（内容 `stop`）：各进程看到就立刻落一次盘。建过的话也会打进 parts.tar.gz，merge 不读它 |
 
@@ -261,7 +261,7 @@
 | 字段 | 类型 | 含义 | merge 缺了会怎样 |
 |---|---|---|---|
 | `pid` / `ppid` | int | | detail.procs 里是 null |
-| `st` | int | `/proc/self/stat` 的启动时刻 | 只用来认残留进程（`trace.leftovers`） |
+| `st` | int | `/proc/self/stat` 的启动时刻 | 只用来认残留进程（`driver.leftovers`） |
 | `argv` / `argv_cut` / `title` | | 同 detail.procs | null |
 | `t0` / `t` | int | 进程映像开始 / 这次落盘的 monotonic 纳秒 | procs 的 `t0_us` / `t1_us` 是 null |
 | `why` | str | 这次落盘的原因（同 detail.procs） | null；不算强杀 |
@@ -417,11 +417,11 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
    查到的把键改成 `rel:现在的行号`；查不到的、名字里有 `<` 的（lambda、生成器表达式）、没存 qualname 的，键改成 `rel:-1`
    ——次数还算在这个文件和它的单元上，但不算到任何函数上。模块顶层（`:0`）不动。改写后撞到同一个键的相加。
    对不上的键数给页面（`unmatched`）。
-4. **折到单元**（`trace.to_package_graph(counts, idx)`）：
+4. **折到单元**（`analysis.to_package_graph(counts, idx)`）：
    - `rel` → 单元：`idx.files[rel]`；不在里面的键整个不叠。
    - `(rel, 行)` → 符号：index 符号的 `(f, l)`、`(f, dl)` 和同名的另几个 def（`a`）都能对上；对不上的是 `anon`
      （闭包、lambda：算到文件和单元上，明细里归到包住它的最内层符号，写成 `外层符号.<L行号>`）。
-   - **定义时的执行不算调用**（`trace.defining`）：行号 0 → 模块顶层（`module_frames`）；行号正好是某个 `class` 符号的
+   - **定义时的执行不算调用**（`analysis.defining`）：行号 0 → 模块顶层（`module_frames`）；行号正好是某个 `class` 符号的
      `l` / `dl` → 类体（`class_frames`）；行号 1 又对不上任何符号 → 当模块顶层（老格式）。被调方是定义的边记进
      `edge_import_exec`，不画成调用。
    - 单元间的边：两端单元不同的 `func_edges` 相加；同单元的丢掉。
@@ -456,7 +456,7 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 - **行号必须和扫描端的符号对得上**：等于符号的 `l` 或 `dl`（或 `a` 里的另几个 def），否则次数只落到文件和单元上、不落到函数上（`anon`）。
 - **行号 0 专留给「模块 / 文件顶层的执行」**，行号等于某个 `class` 符号的定义行会被当成类体执行：这两种都**不算调用**，
   指向它们的边不画成调用边。一种语言里如果「构造」就发生在类定义那一行（比如构造函数没有自己的定义行），录制端要把键记到构造函数自己的行上，
-  否则所有实例化都会被当成定义丢掉（未核实：目前没有别的语言，这条是按 `trace.defining` 的规则推出来的）。
+  否则所有实例化都会被当成定义丢掉（未核实：目前没有别的语言，这条是按 `analysis.defining` 的规则推出来的）。
 - `rel` 是相对 `CODESTRATA_ROOT` 的路径，和扫描端 `files` 的键逐字一致（大小写、`/`）。
 - 调用方取「栈上最近的仓库帧」：穿过标准库 / 第三方库 / 框架事件循环的调用，要记到最近的仓库函数头上。这决定了图上的边是不是真的。
 - `file_shas` 用 §0 的 `sha16`，和扫描端的 `file_sha` 同一种算法。
@@ -464,7 +464,7 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 ### 9.3 扫描端要产出的静态索引
 
 scan 写两个文件，加载时（`payload.load_index`）合成一个 index。下表是叠加、图、切面实际读到的字段
-（`payload.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace.py` 里查过）；其余的只给冻结区（代码窗口、交叉引用、解读）用。
+（`payload.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace/` 里查过）；其余的只给冻结区（代码窗口、交叉引用、解读）用。
 
 **index.json**
 
@@ -482,8 +482,8 @@ scan 写两个文件，加载时（`payload.load_index`）合成一个 index。�
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
-| `files` | {rel: 单元} | `trace.to_package_graph`、`runs.file_state` / `remap`、`seq._Map`、`payload`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
-| `symbols` | {符号键: {n, k, f, l, m, p, dl?, e?, b?, d?, a?}} | `trace.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`k`）、`runs.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`） | `n` 限定名（`Cls.method`）、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`。符号键是 `<模块>:<限定名>` | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
+| `files` | {rel: 单元} | `analysis.to_package_graph`、`runs.file_state` / `remap`、`seq._Map`、`payload`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
+| `symbols` | {符号键: {n, k, f, l, m, p, dl?, e?, b?, d?, a?}} | `analysis.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`k`）、`runs.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`） | `n` 限定名（`Cls.method`）、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`。符号键是 `<模块>:<限定名>` | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
 | `file_sha` | {rel: sha16} | `runs.file_state` | 录制后哪些文件改过 | 强烈建议（没有时退回和工作区比） |
 | `edge_uses` | {"a\|b": {"模块:名字": [[文件, 行]…]}} | `payload._edge_uses_on_cut`（算动态分派）、边的详情 | 每条边实际引用了对方哪些符号 | 否（没有时所有 runtime 调用都算动态分派） |
 | `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `payload`（纯 import、不承载调用的边画成虚线） | | 否 |

@@ -23,7 +23,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from . import cut as _cut
-from . import trace as _trace
+from .trace import analysis as _tana
 
 _LOCK = threading.Lock()
 _INDEX: "OrderedDict[tuple, dict]" = OrderedDict()     # (spans 目录, index mtime) → index + keys（最近 16 个）
@@ -87,7 +87,7 @@ class _Map:
         self.files = idx.get("files") or {}
         self.node_of = self.v["node_of"]
         self.syms = idx.get("symbols") or {}
-        self.loc = _trace.sym_locs(self.syms)[0]
+        self.loc = _tana.sym_locs(self.syms)[0]
         self._memo: dict[str, tuple] = {}
 
     def of(self, key: str) -> tuple:
@@ -101,7 +101,7 @@ class _Map:
                 line = 0
             unit = self.files.get(rel)
             hit = self._memo[key] = (self.node_of.get(unit) if unit else None,
-                                     bool(_trace.defining(self.syms, self.loc, rel, line)))
+                                     bool(_tana.defining(self.syms, self.loc, rel, line)))
         return hit
 
 

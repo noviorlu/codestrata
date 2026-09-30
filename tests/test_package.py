@@ -51,5 +51,24 @@ def test_export_scripts_match_index():
     assert sorted(f.name for f in web.glob("*.js")) == sorted(used), (sorted(f.name for f in web.glob("*.js")), sorted(used))
 
 
+def test_trace_layering():
+    """录制的三块：driver 用 hook 和 analysis；hook、analysis 不 import driver（analysis 在任何系统上都要能用，
+    hook 里注入被测进程的那段源码不能 import codestrata 自己——被测程序的 Python 里没有它）"""
+    import ast
+    base = HERE.parent / "codestrata" / "trace"
+
+    def rel_imports(name):
+        t = ast.parse((base / f"{name}.py").read_text(encoding="utf-8"))
+        return {(n.module or "") for n in ast.walk(t) if isinstance(n, ast.ImportFrom) and n.level}
+    assert not any("driver" in m for m in rel_imports("hook") | rel_imports("analysis")), (rel_imports("hook"), rel_imports("analysis"))
+    assert rel_imports("hook") == set(), rel_imports("hook")
+    sys.path.insert(0, str(HERE.parent))
+    from codestrata.trace import hook
+    src = ast.parse(hook._SITECUSTOMIZE)
+    mods = {a.name for n in ast.walk(src) if isinstance(n, ast.Import) for a in n.names} | \
+           {n.module for n in ast.walk(src) if isinstance(n, ast.ImportFrom)}
+    assert not any(m and m.split(".")[0] == "codestrata" for m in mods), mods
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

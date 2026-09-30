@@ -16,7 +16,7 @@
 
 ## 任务的生命周期
 1. **领**：把条目移到 TODO 的「进行中」，写上开始日期和谁在做（主会话 / 哪个子 agent / 哪个 workflow）。
-2. **做**：新功能进新模块；不跨模块用下划线私有名；god module（`trace.py`、`payload.py`）不再加东西。
+2. **做**：新功能进新模块；不跨模块用下划线私有名；god module（`payload.py`）不再加东西；录制的三块（`trace/` 下的 hook / driver / analysis）保持依赖方向。
    测试进仓库（`tests/`），不留在临时目录。
 3. **验**：跑 `tests/` 全套（`test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`、`test_platform.py`、`test_browser.py`；动了高亮再跑 `hl_parity.py`），
    界面改动要在 `tests/web/specs/` 里有对应的检查（新交互就加一条），也要自己在浏览器里看过。

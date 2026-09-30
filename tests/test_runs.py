@@ -20,7 +20,8 @@ from pathlib import Path
 
 from common import FAKE, HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
-from codestrata import payload, runs, trace  # noqa: E402
+from codestrata import payload, runs  # noqa: E402
+from codestrata.trace import analysis as trace_analysis, driver as trace_driver, hook as trace_hook  # noqa: E402
 
 
 def trace_fake(repo: Path, case="fake", *extra, env=None, check=True):
@@ -40,7 +41,7 @@ def latest(repo: Path) -> tuple[dict, dict, Path]:
 
 
 def no_live(rd: Path) -> None:
-    left = trace.leftovers(rd / "parts")
+    left = trace_driver.leftovers(rd / "parts")
     assert not left, f"还有进程带着这个 run 的环境：{left}"
 
 
@@ -199,8 +200,8 @@ def test_driver_killed_then_merge():
     assert "中断" in r.stdout, r.stdout
     r = cs("runs", repo, "merge", rd.name, check=False)
     assert r.returncode != 0 and "还有进程" in (r.stdout + r.stderr), r
-    assert trace.leftovers(rd / "parts")
-    trace.stop_leftovers(rd / "parts", 5)
+    assert trace_driver.leftovers(rd / "parts")
+    trace_driver.stop_leftovers(rd / "parts", 5)
     no_live(rd)
     cs("runs", repo, "merge", rd.name)
     run = json.loads((rd / "run.json").read_text())
@@ -277,7 +278,7 @@ def test_hook_template_parses():
     """注入的 sitecustomize 本身是合法的 Python（模板里的 \n 要写成 \\n，少一层就是语法错误，
     所有进程都静默不录）。"""
     import ast
-    ast.parse(trace._SITECUSTOMIZE)
+    ast.parse(trace_hook._SITECUSTOMIZE)
 
 
 def test_phase_at():
@@ -446,8 +447,8 @@ def test_trace_cwd():
     assert rd2 != rd and again["cwd"] == str(here) and again["status"] == "ok"
     # 只看路径在哪边存在：两边都有、两边都没有（比如输出目录）、以 - 开头的，都不算
     (repo / "case.py").write_text("")
-    assert trace.misplaced_paths(["python", "case.py", "--out", "out/x", "-m", "a/b"], repo, here) == []
-    assert trace.misplaced_paths(["bash", "./case.py"], repo / "fakesvc", here) == ["./case.py"]
+    assert trace_driver.misplaced_paths(["python", "case.py", "--out", "out/x", "-m", "a/b"], repo, here) == []
+    assert trace_driver.misplaced_paths(["bash", "./case.py"], repo / "fakesvc", here) == ["./case.py"]
 
 
 def test_trace_roots_and_attach():
@@ -610,7 +611,7 @@ def test_qualnames_and_mro():
         "            def im(self): pass\n"
     )
     (t / "x.py").write_text(src)
-    qs = trace._qualnames(t / "x.py")
+    qs = trace_analysis._qualnames(t / "x.py")
     ns = {}
     exec(compile(src.replace("async for x in y", "async for x in []"), str(t / "x.py"), "exec"), ns)
     real = {ns["in_match"].__code__.co_qualname, ns["gdecl"].__code__.co_qualname} if "gdecl" in ns else set()
@@ -627,13 +628,13 @@ def test_qualnames_and_mro():
           "m:GBase": C("GBase", ["Generic[T]"]), "m:GBase.generate": F("GBase.generate"),
           "m:GEngine": C("GEngine", ["GBase[int]"]),
           "m:Ext1": C("Ext1", ["torch.nn.Module", "Core"]), "m:Ext2": C("Ext2", ["Core", "torch.nn.Module"])}
-    s, via = trace._inherited(sy, "m", "Engine.close")
+    s, via = trace_analysis._inherited(sy, "m", "Engine.close")
     assert via == "m:Core.close", via                                   # MRO：Engine, BaseEngine, Core, Mixin
-    s, via = trace._inherited(sy, "m", "GEngine.generate")
+    s, via = trace_analysis._inherited(sy, "m", "GEngine.generate")
     assert via == "m:GBase.generate", via
-    s, _ = trace._inherited(sy, "m", "Ext1.close")
+    s, _ = trace_analysis._inherited(sy, "m", "Ext1.close")
     assert isinstance(s, str) and "Module" in s, s                       # 先碰到仓库外的基类：不猜
-    s, via = trace._inherited(sy, "m", "Ext2.close")
+    s, via = trace_analysis._inherited(sy, "m", "Ext2.close")
     assert via == "m:Core.close", via
 
 
@@ -670,7 +671,7 @@ def test_phase_at_same_line_genexpr():
 def test_fire_does_not_dump_on_traced_thread():
     """_fire 在被 trace 的程序的线程里跑：不能在那里落盘（_dump 会吞掉程序的信号处理器抛的
     KeyboardInterrupt / SystemExit），只拍内存快照、交给落盘线程写。"""
-    src = trace._SITECUSTOMIZE
+    src = trace_hook._SITECUSTOMIZE
     body = src[src.index("    def _fire(name):"):src.index("    _py = []")]
     assert "_dump(" not in body and "_want_dump[0] = True" in body and "defer=True" in body, body
 
@@ -1028,11 +1029,11 @@ def test_leftover_by_part_file():
     d = tmpdir("cs-runs-")
     p = subprocess.Popen(["sleep", "30"])
     try:
-        st = trace._proc_start(p.pid)
+        st = trace_driver._proc_start(p.pid)
         (d / f"part-{p.pid}-1.json").write_text(json.dumps({"st": st}))
-        assert trace.leftovers(d) == [p.pid]
+        assert trace_driver.leftovers(d) == [p.pid]
         (d / f"part-{p.pid}-1.json").write_text(json.dumps({"st": st + 1}))   # pid 被复用了
-        assert trace.leftovers(d) == []
+        assert trace_driver.leftovers(d) == []
     finally:
         p.kill()
         p.wait()
@@ -1380,7 +1381,7 @@ def test_events_rm_unmerged():
     rd = wait_phase(repo, "hang")
     p.kill()
     p.wait()
-    trace.stop_leftovers(rd / "parts", 5)
+    trace_driver.stop_leftovers(rd / "parts", 5)
     cs("runs", repo, "rm", rd.name, "--events-only", "--yes")
     cs("runs", repo, "merge", rd.name)
     run = json.loads((rd / "run.json").read_text())
@@ -1461,7 +1462,7 @@ def test_seq_edge_times():
         assert (t0 > 0) == bool(phase), r["window"]
         inside = lambda c: any(a <= c < b or c == b == end for a, b in r["intervals"])      # noqa: E731
         v = payload._cut.view(idx, set(opened if opened is not None else idx["default_open"]))
-        loc, _ = trace.sym_locs(idx["symbols"])
+        loc, _ = trace_analysis.sym_locs(idx["symbols"])
         want: dict = {}
         for x in spans:    # 另算一遍：键 → 单元 → 切面节点；同一个节点、定义时的执行、index 外的不算
             cs_ = [c for c in _calls(x) if inside(c)]
@@ -1469,7 +1470,7 @@ def test_seq_edge_times():
                 continue
             (ra, _, la), (rb, _, lb) = x["a"].rpartition(":"), x["b"].rpartition(":")
             na, nb = (v["node_of"].get(idx["files"].get(ra)), v["node_of"].get(idx["files"].get(rb)))
-            if na is None or nb is None or na == nb or trace.defining(idx["symbols"], loc, rb, int(lb)):
+            if na is None or nb is None or na == nb or trace_analysis.defining(idx["symbols"], loc, rb, int(lb)):
                 continue
             f, l = x["t0"] + round(min(cs_) - x["t0"]), x["t0"] + round(max(cs_) - x["t0"])
             w = want.setdefault(f"{na}|{nb}", {"first": f, "last": l, "n": 0})
@@ -1711,7 +1712,7 @@ def test_class_body_is_definition_not_call():
         (repo / rel).write_text(src)
     cs("scan", repo)
     cs("trace", repo, "--case", "cls", "--phase", "late=cb.main:late", "--", PY, "-m", "cb.main")
-    # 「时间顺序」（seq）和模块图用同一个「定义时的执行」判断（trace.defining）
+    # 「时间顺序」（seq）和模块图用同一个「定义时的执行」判断（trace_analysis.defining）
     from codestrata import seq
     idx0 = payload.load_index(repo)
     sm = seq._Map(idx0, ["cb"])
