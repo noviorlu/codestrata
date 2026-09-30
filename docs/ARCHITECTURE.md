@@ -118,6 +118,7 @@ flowchart LR
 加一门语言要提供：一个扫描器，产出同样结构的 index.json / symbols.json（单元、边、目录树、带 `f/l/dl/e/k/n` 的符号、`file_sha`），
 xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写同格式的分片（和可选的事件日志），并有一种注入方式替代
 `PYTHONPATH` + `sitecustomize`；最好再给出等价于 qualname 的名字供 remap。字段级契约见 [`docs/design/run-format.md`](design/run-format.md)。
+多语言（Python、C++、CUDA、Rust）、多仓库的接口设计（草案，还没实现）见 [`docs/design/multi-language.md`](design/multi-language.md)。
 
 ## 前端结构
 
