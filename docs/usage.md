@@ -9,7 +9,7 @@ README 讲 codestrata 是什么、怎么几分钟内跑起来；这份手册讲�
 - **上手**：[安装](#安装) · [第一次用](#第一次用)
 - **用功能**：[扫描](#扫描) · [看图](#看图) · [边的种类](#边的种类) · [录一次运行](#录一次运行) · [分阶段](#分阶段) · [管理 run](#管理-run) · [时间轴和时间顺序](#时间轴和时间顺序) · [对比两个 run](#对比两个-run) · [读代码](#读代码) · [分享给别人](#分享给别人) · [主菜单 codestrata app](#主菜单-codestrata-app) · [解读层](#解读层)
 - **参考**：[命令参考](#命令参考) · [输出文件](#输出文件) · [常见问题](#常见问题) · [实测数字](#实测数字) · [已知限制](#已知限制)
-- **给开发者**：[前端和 API](#前端和-api) · [状态和测试](#状态和测试)（含踩过的坑、一个负面结论）
+- **给开发者**：[前端和 API](#前端和-api) · [给开发者](#给开发者)（测试、设计决策、状态各在哪）
 
 ---
 
@@ -630,34 +630,11 @@ GET  /code/<path>?l=N         整个文件，带行号锚点
 
 ---
 
-## 状态和测试
+## 给开发者
 
-早期版本（0.1.0）。已验证：AST 扫描（vllm-omni 的 `vllm_omni/` 包 1648 个文件、12.8 s、0 个解析失败）、按依赖分层（排序符合架构直觉）、运行时录制（真值测试：返回后再调用、生成器恢复、异常展开三种情况下调用方都正确；动态分派被正确识别为静态盲区）、边的五类归并、解读的写回与过期检测、serve 的路径越权防护。
+这份手册只讲怎么用。开发相关的内容各有一处：
 
-### 测试
-
-都不依赖 pytest：
-
-```bash
-.venv/bin/python tests/test_runs.py      # run 存储和录制的端到端测试，在 CPU 假服务上跑真的 trace（setsid 的服务、multiprocessing、exec、asyncio、分阶段），约 1.5–2 分钟
-.venv/bin/python tests/test_app.py       # 主菜单：清单、录制表单、后台任务、HTTP 鉴权、扫描、录制、打开图
-.venv/bin/python tests/test_web.py       # 前端里不碰 DOM 的纯函数（文件内查找、时间轴的吸附 / 放大），要 node
-.venv/bin/python tests/test_platform.py  # 平台：模拟没有 fcntl / SIGKILL、不是 Linux 的环境
-.venv/bin/python tests/test_browser.py   # 浏览器里的交互（headless Chrome），要 node 22+ 和 Chrome / Chromium
-.venv/bin/python tests/test_package.py   # 非 -e 安装的包里要有前端文件，要 uv
-.venv/bin/python tests/hl_parity.py      # 浏览器端高亮 hl.js 对拍 Pygments，要 node
-```
-
-`test_runs.py` 和 `test_app.py` 后面可以跟几个词，只跑名字里带这些词的用例。
-
-### 踩过的坑
-
-写在这里免得重犯：
-
-- 只订阅 `PY_START`、不订阅返回 / 展开，调用方会变成「上一个开始执行的函数」。
-- 按 code 对象做缓存键是错的：code 对象**按内容**比较相等且不比 `co_filename`，几个空 `__init__.py`、或不同文件里同名同行同体的函数会被当成同一个。要按文件名缓存。
-- 非交互 bash 用 `&` 起的后台进程天生忽略 SIGINT；Python 程序若不自己装处理器（uvicorn 装了，`asyncio.run` 不装），发 SIGINT 等多久都没用。停残留进程时看 `/proc/<pid>/status` 的 SigIgn，忽略 SIGINT 的直接发 SIGTERM。
-
-### 一个负面结论
-
-**SCC 缩点不能用来分层。** Python 的循环 import 会让强连通分量退化：在 vllm-omni 上 30 个包有 20 个塌进同一个环，分层信息全丢。启发式（Eades–Lin–Smyth 贪心去环 + 最长路分层）在这里胜过图论正解。
+- 测试怎么跑、各自覆盖什么、代码怎么组织：[ARCHITECTURE.md](ARCHITECTURE.md)。
+- 设计决策和理由，包括踩过的坑（调用栈进出都要订阅、按文件名缓存、忽略 SIGINT 的进程）和负面结论（SCC 缩点不能用来分层）：
+  [design/decisions.md](design/decisions.md)。
+- 现在的状态、范围和已知问题：[STATUS.md](STATUS.md)。

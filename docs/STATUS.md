@@ -38,13 +38,13 @@
 
 ## 已知问题（如实写，不粉饰）
 
-- **平台**：录制只支持 Linux，别的系统上 `trace` 直接拒绝（`compat.require_trace`）。scan / serve / graph / runs 在别的系统上
-  能 import、能用（`tests/test_platform.py` 模拟没有 fcntl / SIGKILL 的环境），但没在真的 Windows / macOS 上跑过。
-- **god module**：`payload.py`（事实、runtime、坐标、源码、xref、解读全认识）。
-- **读图须知埋得太深**：调用方是「最近的仓库内帧」，穿过框架事件循环的调用会显示成直接调用；次数高的多半是轮询；
-  3.12 以下录制很慢。
-- **对比只有颜色**，没有「只有 A 走到的 / 只有 B 走到的 / 次数差很多的」清单。
-- 本仓库的解读（`notes/`）写得太细、夹着历史叙述，每次改代码维护成本高。
+开发视角：现在坏的、欠的债，一条一行，链到在哪跟进。用户会碰到的限制在 [usage 的已知限制](usage.md#已知限制)，不在这里重复。
+
+- **对比只有颜色**，答不出「两次差在哪」：差别在模块内部，界面只到模块和跨模块的边。→ TODO P1 第 1 条；[DOGFOOD 09-30](DOGFOOD.md)
+- **界面上没有读图须知**（README 里有了）：调用方是最近的仓库内帧、次数高的多半是轮询。→ TODO P1 第 2 条
+- **god module**：`payload.py`（事实、runtime、坐标、源码、xref、解读全认识）。→ TODO P2「拆 `payload.py`」
+- **本仓库的解读**写得太细、夹着历史；11 份因为最近的拆分和改名标着过期。→ TODO P2「本仓库解读瘦身」
+- **平台**：只在 Linux 上实际跑过；别的系统上 scan / serve / graph 只做了模拟测试（`tests/test_platform.py`）。
 
 ## 文档
 

@@ -136,14 +136,24 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 
 ## 测试
 
-不依赖 pytest，每个文件自带运行器（`tests/common.py` 的 `run_tests`，可跟关键词只跑一部分）：`.venv/bin/python tests/test_runs.py`
-（约 1.5 分钟）、`test_app.py`、`test_package.py`（要 uv）、`test_web.py`（要 node），缺工具的自动跳过。
+不依赖 pytest，每个文件自带运行器（`tests/common.py` 的 `run_tests`，后面跟几个词就只跑名字里带这些词的用例），
+缺工具的自动跳过。提交前全跑（`CLAUDE.md`）：
+
+```bash
+.venv/bin/python tests/test_runs.py      # 约 1.5–2 分钟
+.venv/bin/python tests/test_app.py
+.venv/bin/python tests/test_package.py   # 要 uv
+.venv/bin/python tests/test_web.py       # 要 node
+.venv/bin/python tests/test_platform.py
+.venv/bin/python tests/test_browser.py   # 要 node 22+ 和 Chrome / Chromium，约 15 秒
+.venv/bin/python tests/hl_parity.py      # 只在动了高亮时跑；要 node
+```
 
 - `test_runs.py`（71 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 动态分派 / 调用处、
   对比和多 run 导出、公开导出和静态站、分层方向、`notes` 引用修复。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
-- `test_package.py`：wheel 里带着 web/ 每个文件；`index.html` 的脚本清单和 `render.SCRIPTS` 一致。
+- `test_package.py`：wheel 里带着 web/ 每个文件；`index.html` 的脚本清单和 `render.SCRIPTS` 一致；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan / graph 能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
