@@ -8,7 +8,7 @@ refs: site.py:79@3f17ec9e,__main__.py:614@a59b60a3,__main__.py:734@cf7a88fc,__ma
 ---
 
 ## 是什么
-命令行入口：`scan` / `app` / `trace` / `runs` / `serve` / `graph` / `tasks` / `pack` / `note` / `check` 十个子命令。大多数只把参数转交给对应模块；M1（`docs/design/runs.md`）之后多了两块真正的 CLI 逻辑：`cmd_trace` 把每次录制存成一个**新的 run**，`cmd_runs` 管理录下的 run（ls / show / tag / untag / note / rm / merge）。M3 在这两块上各加了一点：`trace --events` 顺带录时序事件（模块图「时间顺序」的数据），`runs rm --events-only` 只删事件；trace 的输出和 `runs show` 报事件的摘要，`runs ls` 标一个「时序」（整理失败的标「时序!」）。它还管 .codestrata/ 目录本身：`_outdir` 建目录时顺带写一份 .gitignore 和一份 README.txt。`scan` 一次写出 index.json、symbols.json，以及给全文窗口 Ctrl+点击用的交叉引用 xref.json。M7 起 `graph` 也有了一点 CLI 逻辑：`--hot` 可以给多个（第一个是主 run，其余在导出的单文件里可切换），`--compare` 让主 run 和第二个对比。
+命令行入口：`scan` / `app` / `trace` / `runs` / `serve` / `graph` / `tasks` / `pack` / `note` / `check` 十个子命令。大多数只把参数转交给对应模块；M1（`docs/archive/runs-design.md`）之后多了两块真正的 CLI 逻辑：`cmd_trace` 把每次录制存成一个**新的 run**，`cmd_runs` 管理录下的 run（ls / show / tag / untag / note / rm / merge）。M3 在这两块上各加了一点：`trace --events` 顺带录时序事件（模块图「时间顺序」的数据），`runs rm --events-only` 只删事件；trace 的输出和 `runs show` 报事件的摘要，`runs ls` 标一个「时序」（整理失败的标「时序!」）。它还管 .codestrata/ 目录本身：`_outdir` 建目录时顺带写一份 .gitignore 和一份 README.txt。`scan` 一次写出 index.json、symbols.json，以及给全文窗口 Ctrl+点击用的交叉引用 xref.json。M7 起 `graph` 也有了一点 CLI 逻辑：`--hot` 可以给多个（第一个是主 run，其余在导出的单文件里可切换），`--compare` 让主 run 和第二个对比。
 
 M8 又加了两样：`trace --phase 名字=函数`——某个进程第一次进入这个函数时切到这个阶段，分段写在 codestrata 的命令上，不用改 case 脚本；以及「复刻」——`main` 把原样的 codestrata 命令和当前目录记下来（`invocation`），`cmd_trace` 另记录制时 shell 里相关的环境变量（`env_inherited`），`runs show` 打印一条能照抄的复刻命令（原来那一行叫「重录」）。
 

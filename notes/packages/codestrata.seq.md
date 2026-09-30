@@ -26,7 +26,7 @@ refs: serve.py:201@cd0d48b0,seq.py:12@259708fd,seq.py:90@1dfe6538,seq.py:104@22e
 **时间段的次数也在这里算**：counts.json.gz 是录制时按阶段切的，分不出任意一段时间，带时刻的只有时序事件。`window_counts` 读同一份 spans/（`_index`、`_chunk`），交出 counts.json.gz 那种形状的 {funcs, func_edges}（键都是 文件:首行），`runs.load` 拿它换掉阶段的计数，后面的 `remap`、`trace.to_package_graph` 一步不改。于是时间段的 hot 图和同一段时间的「时间顺序」出自同一批 span、同一个 `_calls_in`，边次数和 `edge_times` 的 n 逐条相等（test_time_window）。`parse_window` 放在这里，是因为 `runs`（resolve / load）和 `edge_times` 认的是同一种写法。
 
 ## 读法
-1. 模块 docstring（seq.py:1）：两步各做什么、为什么。设计稿 `docs/design/runs.md` 的 7.4 讲的是已经去掉的时序图，只有「键怎么映射到切面」那部分还对得上。
+1. 模块 docstring（seq.py:1）：两步各做什么、为什么。设计稿 `docs/archive/runs-design.md` 的 7.4 讲的是已经去掉的时序图，只有「键怎么映射到切面」那部分还对得上。
 2. `_index`（seq.py:42）、`_chunk`（seq.py:55）：读 span 文件。
 3. `_Map`（seq.py:82）：键 → 节点。
 4. `_phase_log`（seq.py:116）→ `phase_segments`（seq.py:124）→ `phase_intervals`（seq.py:131）→ `run_end`（seq.py:153）→ `_calls_in`（seq.py:173）→ `_pairs`（seq.py:210）→ `_pairs_scan`（seq.py:240）→ `edge_times`（seq.py:279）。

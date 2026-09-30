@@ -32,7 +32,7 @@ refs: runs.py:350@dcfcecf7,events.py:1@2c6ba816,trace.py:222@1d353c75,trace.py:2
 **不和 runs 放在一起**：runs 管 run 目录，以及原始数据留不留。这个模块只做「原始日志 → span」这一步纯计算，除了 out_dir 什么都不写。读 span 的 `seq`（模块图的「时间顺序」）只依赖它写出的格式。
 
 ## 读法
-1. 模块 docstring（events.py:1）：行格式和 span 的字段。和设计稿 `docs/design/runs.md` 的 7.1–7.3 对着读，尤其是 7.1 末尾「实现时的调整（M3）」和「M3 评审后补上的」这两张清单。7.3 正文、清单里讲折叠的那一条、`pair` 的 docstring（events.py:89）现在都是「按 (父 span, 段) 认兄弟」，和 `fold` 一致。落盘重试的去重设计稿里没写，只在 `pair` 的 docstring 末尾（events.py:90）。
+1. 模块 docstring（events.py:1）：行格式和 span 的字段。和设计稿 `docs/archive/runs-design.md` 的 7.1–7.3 对着读，尤其是 7.1 末尾「实现时的调整（M3）」和「M3 评审后补上的」这两张清单。7.3 正文、清单里讲折叠的那一条、`pair` 的 docstring（events.py:89）现在都是「按 (父 span, 段) 认兄弟」，和 `fold` 一致。落盘重试的去重设计稿里没写，只在 `pair` 的 docstring 末尾（events.py:90）。
 2. `parse`（events.py:46）：很短，重点是两条丢行规则。
 3. `pair`（events.py:86）→ `fold`（events.py:133）：这是核心，对着 `tests/trace_cases/fake_repo/fakesvc/truth.py` 里的场景读。
 4. `build`（events.py:155）：跨进程、跨映像地拼接，然后写出。

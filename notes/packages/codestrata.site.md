@@ -37,7 +37,7 @@ refs: __main__.py:137@0ae6d77a,__main__.py:141@5ad6f5c2,payload.py:1161@e58ee8b5
 前端照同样的切法：数据的布局只有 ds.js 的 linkedDs（codestrata/web/ds.js:189）知道。页面启动时看到 EMB.link，就把它的几个方法盖到 embedded 数据源上（codestrata/web/ds.js:145）：hasFile、file、source、outline、edge、searchIndex、refs，外加 linked 标记和 blobUrl；图、解读、run、输入包照旧读内嵌的。UI 代码只多认了几个字段：文件的 mismatch / local / unpublished、引用结果的 more、ds.linked / ds.blobUrl（见下文「前端」）。
 
 ## 读法
-1. 模块 docstring（site.py:1）：布局、为什么按版本分目录、为什么用序号命名、为什么钉提交号。设计的来龙去脉看 `docs/design/runs.md` 的「M8.2」一节，用法看 README 里「源码从 GitHub 取、没有体积上限」那一条。
+1. 模块 docstring（site.py:1）：布局、为什么按版本分目录、为什么用序号命名、为什么钉提交号。设计的来龙去脉看 `docs/archive/runs-design.md` 的「M8.2」一节，用法看 README 里「源码从 GitHub 取、没有体积上限」那一条。
 2. `export_site`（site.py:200），从头读到尾就是整个流程，下文「导出流程」逐步拆开。
 3. `github_origin`（site.py:70）→ `_differs`（site.py:113）：哪些文件要随页面带上。
 4. `_file_meta`（site.py:161）：每个文件带什么，n_lines 为什么要这么数。

@@ -44,7 +44,7 @@ M8.2（源码从 GitHub 取的导出）是 M5 以来 `render.py` 第一次改：
 
 `SCRIPTS` 的顺序就是依赖顺序（render.py:17）：ds 被所有人用，findbar 排在 viewer 前面（viewer 画好一个文件就调 CS.findbar.attach，codestrata/web/viewer.js:226），viewer 定义了 panel 要用的 Ctrl+点击逻辑，app 必须最后——见下面的 fragment 模式，它可能一加载就同步启动。hl.js 不在这个顺序里：它排在主脚本之前的另一个 `<script>` 里，不依赖任何人，也没人在加载时用它。
 
-M8.2 这一块按这个顺序读：先看 `codestrata/site.py` 的模块 docstring，知道 data/ 里每样东西是什么、为什么按序号命名、为什么按版本分目录（设计稿 `docs/design/runs.md` 的「M8.2」一节是同一件事的摘要）；再看 `export` 里 hl 那一段（render.py:26）；然后是 ds.js 里盖上去的那一行（codestrata/web/ds.js:145）和 linkedDs 本身（从 text → file → source → refs）；最后是 viewer.js 里用到 linked / blobUrl / mismatch / local / unpublished / r.more 的几处。hl.js 最后读，读之前最好开着 Pygments 的 PythonLexer / CFamilyLexer 源码对照。验收：Python 这一侧是 `tests/test_runs.py` 的 test_site_export、test_site_export_public_local_home、test_site_export_edges；hl.js 是手动跑的 `tests/hl_parity.py`；ds.js / viewer.js / panel.js 的这些改动没有自动测试（设计稿说前端的变异检查是在浏览器里做的）。
+M8.2 这一块按这个顺序读：先看 `codestrata/site.py` 的模块 docstring，知道 data/ 里每样东西是什么、为什么按序号命名、为什么按版本分目录（设计稿 `docs/archive/runs-design.md` 的「M8.2」一节是同一件事的摘要）；再看 `export` 里 hl 那一段（render.py:26）；然后是 ds.js 里盖上去的那一行（codestrata/web/ds.js:145）和 linkedDs 本身（从 text → file → source → refs）；最后是 viewer.js 里用到 linked / blobUrl / mismatch / local / unpublished / r.more 的几处。hl.js 最后读，读之前最好开着 Pygments 的 PythonLexer / CFamilyLexer 源码对照。验收：Python 这一侧是 `tests/test_runs.py` 的 test_site_export、test_site_export_public_local_home、test_site_export_edges；hl.js 是手动跑的 `tests/hl_parity.py`；ds.js / viewer.js / panel.js 的这些改动没有自动测试（设计稿说前端的变异检查是在浏览器里做的）。
 
 ## 关键算法
 ### 拼装

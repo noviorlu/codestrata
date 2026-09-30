@@ -17,7 +17,7 @@ run 不能重建——一次录制往往要几分钟 GPU（起服务、加载模
   - 录了时序事件的（trace --events）：原始日志在 events/raw.tar.gz（原始数据），整理好的 span
     在 events/spans/（派生，见 events.py）。`runs rm --events-only` 只删这一块。
 
-设计的来龙去脉见 docs/design/runs.md。
+数据格式见 docs/design/run-format.md，设计决策见 docs/design/decisions.md。
 """
 from __future__ import annotations
 

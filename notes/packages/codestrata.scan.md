@@ -63,7 +63,7 @@ refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777
 每个 `.py` 先 `read_bytes`（scan.py:455），同一份字节派两个用处：
 
 - **解码**（scan.py:458）：用 utf-8-sig。Windows 编辑器存的文件开头常带 BOM，按普通 utf-8 解码时 `ast.parse` 直接报 `SyntaxError`——早先这种文件整个算进解析失败（`n_parse_errors`），单元、符号、边全从图上消失。`bytes.decode` 不做通用换行转换，所以手动把 CRLF 和单独的 CR 换成 LF：行数（scan.py:466）和查 noqa 用的 `src_lines` 与 `read_text` 读时完全一样。xref 那边用 `read_text` 读、再手动去掉开头的 BOM，两边看到的仍是同一份文本。
-- **哈希**（scan.py:469）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:91）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:148）是同一种，三边能直接比。哈希解码后的文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，也保证哈希和 index 里的行号出自同一份内容（docs/design/runs.md 3.5）。
+- **哈希**（scan.py:469）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:91）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:148）是同一种，三边能直接比。哈希解码后的文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，也保证哈希和 index 里的行号出自同一份内容（docs/archive/runs-design.md 3.5）。
 
 `file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:462 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
 

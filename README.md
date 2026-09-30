@@ -1,356 +1,168 @@
 # codestrata
 
-给一个 Python 仓库画两张图：
+**仓库的运行路径对比工具：跑一次，看清这次运行在一个陌生的大仓库里走了哪条路、按什么顺序；换个模型或配置再跑一次，看清两次差在哪。**
 
-- **总图（static）** —— 全仓的模块级架构。层次不是手工标的，而是按依赖分层：箭头尽量都从上指向下，
-  import 别人的在上、被 import 的在下；只有循环依赖里打断的少数边会往上指。
-- **hot 图（runtime）** —— 跑一个真实 case（仓库自带的 demo / example），
-  把实际发生的调用叠在同一张图上。叠了 run 时分层按**这次实际的调用**排（调用方在上），
-  runtime 的箭头也就大多往下走——回调、按注册表分派这类和 import 方向相反的调用照样往下。
-  于是「这个 case 走了哪条路」一眼可见。
+codestrata 先静态扫描出一张按依赖分层的模块图，再把一次真实运行（脚本、pytest、起服务的 sh 都行）录下来的调用叠到同一张图上，在本机浏览器里看。每次录制都永久保存，可以随时叠上去、两两对比。适合接手一个大仓库、想知道「一次请求 / 一次推理到底经过了哪些模块」，或者「支持一个新模型要碰哪些代码」的时候用。
 
-两张图共用节点，差别只在数据来源：一个是 AST，一个是运行时 hook。
+![按依赖分层的 vllm-omni 模块图，叠上一次真实运行的调用](docs/images/hero.png)
 
-点任意节点可以看到该符号的源码（带真实行号），本地模式下还能一键跳进编辑器。
+<sub>vllm-omni 的模块图：调用方在上、被依赖的在下，灰线是静态依赖。图里开着「时间顺序」：serving 阶段走过的边按第一次被调用的先后编号，从蓝经紫到橙红上色。</sub>
 
-## 安装
+> [!IMPORTANT]
+> 早期版本（0.1.0）。目前只支持 **Python** 仓库；运行记录的格式、叠加和对比与语言无关，其他语言在计划中。
+> **录制只支持 Linux**；Windows 上目前连命令行都起不来（`fcntl`、`signal.SIGKILL`），macOS 没测过。
+> 要 Python ≥ 3.10，没有必需的第三方依赖；`trace --events`（时间轴上的任意一段、「时间顺序」要用它）要求**被录的程序**跑在 Python 3.12+ 上。
+> 所有服务只监听 `127.0.0.1`，在远程机器上用要走 `ssh -L`。
 
-要 Python ≥ 3.10，只用标准库（Pygments 可选，用来给源码上色）：
+## 亮点
 
-```bash
-git clone https://github.com/noviorlu/codestrata && cd codestrata
-python3 -m venv .venv && .venv/bin/pip install -e '.[highlight]'
-# 系统 Python 缺 venv 模块（Debian / Ubuntu 没装 python3-venv）时用 uv：
-#   uv venv .venv && VIRTUAL_ENV=.venv uv pip install -e '.[highlight]'
-```
+- **静态和运行时在同一张图上。** 每条边都分得清「只 import」「引用了」「这次真调到了」；代码里找不到引用的调用（插件、注册表、`importlib`）单独标成「动态分派」，正好照出静态分析的盲区。
+- **录一次，一直用。** 每次录制存成一个 **run**，不覆盖旧的；代码改了，老 run 照样能叠。子进程、`setsid` 出去的服务、site-packages 里的代码都能录。
+- **能对比。** 两个 run 叠在同一张图上：只有 A 走到的、只有 B 走到的、两边都走到的，一眼分开。
+- **能看先后。** 按阶段（加载 / 处理请求 / 退出）或任意一段时间只看那一段；边按第一次被调用的先后编号。
+- **层次是算出来的。** 按依赖自动分层，调用方在上、被依赖的在下；大仓库先显示到目录树的某一层，能就地展开、收起。
 
-也可以不 clone：`pip install 'git+https://github.com/noviorlu/codestrata'`。
-**别 `pip install codestrata`**——PyPI 上的同名包是别人的，不是这个工具。
+## 快速上手
 
-## 三步上手
+要 Python ≥ 3.10 和 git。下面拿 [flask](https://github.com/pallets/flask) 当例子，扫描和录制加起来不到 1 秒。录服务、分阶段、对比、导出、主菜单、完整的命令参考见 **[docs/usage.md](docs/usage.md)**。
 
 ```bash
-codestrata scan  /path/to/repo                    # 静态扫描：小仓库不到 1 秒，1600 个文件约 13 秒
-codestrata serve /path/to/repo                    # 浏览器打开 http://127.0.0.1:8900/ 看总图
-codestrata trace /path/to/repo --case demo -- python your_script.py   # 录一次真实运行
-codestrata serve /path/to/repo --hot demo                             # 同一张图上叠这次跑到的调用
+# 1. 安装。别用 pip install codestrata：PyPI 上同名的包是别人的
+#    [highlight] 带上 Pygments，代码才有颜色
+python3 -m venv .venv && source .venv/bin/activate
+pip install 'codestrata[highlight] @ git+https://github.com/noviorlu/codestrata'
+
+# 2. 拿一个仓库，静态扫描。pip install -e . 是给第 3 步用的：录的命令得能 import 这个仓库
+git clone --depth 1 https://github.com/pallets/flask && cd flask
+pip install -e .
+codestrata scan
+
+# 3. 录一次真实运行：-- 后面是你平时跑它的命令，在仓库根目录执行
+#    --case 给这次录制起个名字；--events 多录调用的先后（被录的 Python 要 3.12+）
+codestrata trace --case hello --events -- python -c "
+from flask import Flask, jsonify
+app = Flask('demo')
+@app.route('/hi/<name>')
+def hi(name): return jsonify(msg='hi ' + name)
+c = app.test_client()
+for n in ('a','b','c'): print(c.get('/hi/'+n).json)
+"
+
+# 4. 打开图，叠上这次运行。--hot 后面写 case 名，取它最近一次录完的（8900 端口被占就加 --port N）
+codestrata serve --hot hello      # 浏览器打开 http://127.0.0.1:8900/
 ```
 
-`--` 后面是你平时跑它的命令（脚本、pytest、起服务的 sh 都行），**默认在仓库根目录执行**——相对路径按仓库根目录算；
-要在别的目录执行就加 `--cwd DIR`（`--cwd .` 是当前目录）。命令里的相对路径在仓库根目录下没有、在当前目录下有时，
-trace 开录之前就会停下来说明，不会留下一个失败的 run。
+打开页面会看到 22 个节点按依赖分成几层，这次请求走过的边是橙色；点一条橙色的边，再点页面底部的「详情」栏，能看到这条边上调了对方哪些函数、各几次。
+serve 开着时再录的 run，页面上方「运行」菜单里直接能选。不想敲命令，可以用 `codestrata app` 在浏览器里点按钮完成扫描、录制和打开图。
+scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 `.gitignore`）。
 
-`scan` 不给 `--roots` 时自动探测要扫的目录（跳过 tests/、examples/ 这类），并打印扫了哪些；给了 `--roots` 就照单全收
-（最后一段同名的、一个在另一个里面的不能一起扫：模块名会撞）。仓库根目录直接放着的脚本（研究代码的
-`train.py` 这类入口）用 `--roots .` 选，只取这一层，图上装在以仓库名命名的节点里。`trace` 用上次 `scan` 选的目录。想按阶段看（启动 / 处理请求 / 退出），
-加 `--phase serving=模块:函数`：这个函数第一次被调到时切到新阶段，不用改脚本。
-录下的 run 存在目标仓库的 `.codestrata/runs/`，**只有这一份**；`.codestrata/` 里别的东西都能随时重建。
+## 读图须知
 
-不想敲命令也行：`codestrata app` 在浏览器里打开一个主菜单——「打开文件夹…」挑仓库，每个项目三个按钮：
-**静态扫描**（先勾要扫的目录：仓库里的包、src/ 下的包、tests/、examples/ 都列出来，扫哪些你自己选；
-重新扫描时按上次的选择勾好）、**录制运行…**（填命令、case 名、阶段，阶段的函数名能补全；录过的会按最近一次预先填好）、
-**打开图**（替你起 `codestrata serve`，页面左上角有回主菜单的链接）。扫描和录制的输出实时显示，能中途停止。
-主菜单能在本机执行命令，所以只监听 127.0.0.1、要带口令：第一次用终端里打印的链接打开（带 `?t=…`），
-浏览器记住之后直接访问 `http://127.0.0.1:8930/` 就行。项目清单在 `~/.config/codestrata/projects.json`。
-在另一台机器上用（`ssh -L 8930:127.0.0.1:8930 …`）时加 `--proxy`：「打开图」经 8930 转发，只要这一条隧道。
-代价是图页面和主菜单同源，少了一层隔离（图页面里要是有 XSS，就能调主菜单的接口），所以默认不开。
+运行时的图会误导人，看之前先知道这几条：
 
-## 箭头：一条依赖到底承载了什么
+- **「调用方」是最近的一个仓库内的函数。** 穿过框架、事件循环、库里回调的调用，会显示成仓库内两个函数之间的直接调用。
+- **次数高的多半是轮询**，不等于重要；一直在反复调用的边在「时间顺序」里带 ↻。
+- **import 时执行模块顶层代码不算调用**，只被 import、一个函数都没被调过的模块不算「跑到了」。
+- **动态分派有假阳性。** 经 `__init__.py` 再导出、`from x import *`、模块级 `__getattr__` 调到的函数，代码里找不到对应的引用，也会画成动态分派（flask 里橙虚线比实线还多，多数是这个原因）。
 
-import 了不等于用了，用了不等于这次跑到了。每条边都拿「静态引用 × runtime 调用」交叉，
-点箭头能看到具体是哪些函数 / 类、在哪一行、被谁调了几次：
+## 重点功能
 
-| 图上 | 含义 | 来源 |
-|---|---|---|
-| 灰实线 | import 了，并且代码里真的引用了对方的符号 | ast：绑定名的每一次读取 |
-| 灰虚线 | 只 import，一个符号都没引用 | ast，再细分原因（见下） |
-| 橙色，粗细 ∝ log(次数) | 这次 case 真的跨这条边调用过 | runtime：函数粒度的 caller→callee |
-| 橙虚线 | 动态分派：跑到的调用在代码里找不到对应的引用（两端之间没有 import，或者有 import 但 import 的东西一次都没跑到） | 插件 / `importlib` / 注册表 / `self.model` 这类接口——静态分析的盲区 |
+### 一张图，两层数据
 
-「确认调用 / 动态分派」按被调的符号判：方法归到它的类，这个类在这条边的静态引用里就算确认，否则算动态分派。图上的边和点开边看到的明细用的是同一个口径，而且按当前切面算——收起时的一条边如果跑到的调用全是动态分派，也画成橙虚线，不会因为两端之间碰巧有别的 import 就画成实线（那样展开之后实线会「消失」）。
+页首那张图就是主界面。**底下一层是静态依赖**：每个节点是一个模块或目录，纵向按依赖分成一条条横带（**泳道**）。仓库大时图上只画目录树的一个**切面**，默认最多 80 个节点；点节点左上角的 ＋ 就地展开成框，框头的 − 收回去。**上面一层是某次运行**：
 
-「只 import」的原因分五种，面板上逐条列出：`unused`（死 import）、`reexport`（`__init__.py`
-里给包外用的）、`type`（只在 `TYPE_CHECKING` 下）、`sideeffect`（`import a.b.c` 要的是模块顶层
-执行，比如注册解析器）、`intentional`（标了 `noqa: F401`）。有 runtime 数据时，副作用 import
-还会标出对方模块的顶层代码这次到底执行了没有。
+| 图上 | 意思 |
+|---|---|
+| 灰实线 | import 了，并且引用了对方 |
+| 灰虚线 | 只 import，一个符号都没用 |
+| 橙实线 | 这次真的调用过，越粗次数越多 |
+| 橙虚线 | 动态分派：跑到了，但代码里找不到对应的引用 |
 
-**import 触发的模块执行不算调用。** 否则每条 import 边都会因为「导入过」被染成橙色，
-只被 import、一个函数都没被调过的包也会显示成「跑到了」。
+叠了运行之后，分层按这次实际的调用重排，「这次走了哪条路」从上往下读就是。
 
-选中用蓝色光晕，不改边本身的颜色——选中一个节点时，最想看的恰恰是它的边里哪些是真调用。
+### 点一条边：这条依赖到底承载了什么
 
-## trace 真实部署
+![点开 entrypoints → engine 这条边，详情栏列出实际调用的函数、次数、调用处和定义处](docs/images/edge.png)
 
-hot 图的 case 往往是「起一个服务、发一次请求」，被 trace 的是 pip 装好的包、拆成好几个进程。
-codestrata 为此处理了几件事：
+底部的详情栏列出这条边实际用到了对方的哪些函数和类、各被调了几次，并给出调用处和定义处的代码。上图里 `entrypoints → engine` 这次被调了 4383 次，其中 4371 次是 `try_get_output`——一个轮询。只 import 的边会说明原因（死 import、再导出、只用于类型注解……），见[边的种类](docs/usage.md#边的种类)。
 
-- **跑的是安装包也能叠图。** 执行路径落在 `site-packages/<顶层包>/` 下时映射回仓库文件，
-  并逐文件比对内容；不一致会警告行号不可信。
-- **子进程数据不丢。** 拦截 `os._exit`（multiprocessing 的 fork 子进程这样退出）和 `os.exec*`
-  （换程序之前先落盘）、每 10 秒落盘（被 SIGKILL 最多丢 10 秒）、fork 后清零计数（不重复计入
-  父进程）。落盘全部串行，写坏的分片会记成问题，不会悄悄丢掉一个进程。hook 不装信号处理器——
-  那会改变被 trace 的程序的行为；要升级到 SIGTERM 之前，driver 写一个 STOP 文件，各进程的
-  落盘线程看到就先落一次。
-- **停要停干净。** 命令放在自己的会话里；超时、Ctrl+C、终端关掉时按 SIGINT → SIGTERM → SIGKILL
-  三级停整个进程组（`--stop-grace` 秒后才升级，默认 90；再按一次 Ctrl+C 或按 Ctrl+\ 直接升级）。
-  命令退出后再找出还属于本次录制的残留进程（比如 setsid 出去、case 脚本没停掉的服务）同样停掉，
-  记进 run 里：靠 `/proc/<pid>/environ` 里的 `CODESTRATA_OUT`，加上分片里记的 (pid, 启动时刻)——
-  vLLM 用 setproctitle 改进程标题，会清空 environ。
-- **哈希取执行时的。** 每个进程第一次跑到一个文件时就记下它的内容哈希；录制中途改了文件，
-  run 会标出来，之后叠图时这个文件也算「改过」。
-- **分阶段。** 两种办法，可以一起用。① 按函数切：`--phase 名字=函数`，哪个进程第一次进入这个
-  函数，就在那一刻切过去（每个阶段整个 run 只切一次，别的进程 50 ms 内跟上）——不用改被 trace
-  的脚本，离线示例那种「一条阻塞的 python 命令」也能分出加载 / 推理 / 关闭。函数写成
-  `模块:qualname`（查静态索引，继承来的方法也认，`Omni.close` 会认成 `OmniBase.close`）或
-  `文件路径:qualname`（不在索引里的文件也行，比如 examples/ 下的入口）。② case 脚本往
-  `$CODESTRATA_OUT/PHASE` 写一个名字（服务类的 case：健康检查通过后写 serving）。之后
-  `--hot 名字@serving` 只看那一段，启动时的初始化不会混进来。
+### 时间轴：只看某一段时间
 
-```bash
-# 离线脚本：不改脚本，按函数切
-codestrata trace <repo> --case offline \
-    --phase generate=vllm_omni.entrypoints.omni:Omni.generate \
-    --phase shutdown=vllm_omni.entrypoints.omni:Omni.close -- bash run_single_prompt.sh
-# 服务：case 脚本里（服务就绪后）写 PHASE
-[[ -n "${CODESTRATA_OUT:-}" ]] && { echo serving > "$CODESTRATA_OUT/PHASE"; sleep 2; }
-codestrata trace <repo> --case demo -- bash case.sh
-codestrata serve <repo> --hot demo@serving       # 勾「只看跑到的」得到单独排版的 hot 图
+![在时间条上拖出一段，图上只剩这段时间里跑到的模块和边，并按先后编号](docs/images/timebar.png)
+
+- **阶段**：`--phase serving=模块:函数` 表示这个函数第一次被调到时进入 serving 阶段，不用改被录的脚本；页面「时间」一行点一下只看那一段。
+- **时间段**：录了 `--events` 的 run，还能在时间条上拖出任意一段。
+- **时间顺序**：「边」一行里的开关，跑到的边按第一次被调用的先后编号 1…N。
+
+### 对比两个 run
+
+选了一个 run 之后，工具栏「对比」再选一个：只有 A 跑到的橙色、只有 B 跑到的紫色、两边都跑到的前景色，节点上的数是「A/B」，边详情里每个函数都带 B 的次数。比如 MiniCPM@serving 对比 Qwen@serving，看两个模型各走了哪些代码。目前对比只画在图上，「只有 A / 只有 B / 次数差很多」的清单正在做。见[对比两个 run](docs/usage.md#对比两个-run)。
+
+### 其他功能
+
+- **读代码**：从图上点进任意文件打开全文窗口，符号大纲、语法高亮、Ctrl+点击跳定义 / 列引用、Ctrl+F 查找，也能一键在本机编辑器打开（截图见 [读代码](docs/usage.md#读代码)）。
+- **复刻**：每个 run 存下原样的命令、所在目录和相关环境变量，一键复制就能再录一次。见[管理 run](docs/usage.md#管理-run)。
+- **分享**：`codestrata graph` 导出一个离线 HTML；`--link github` 导出从 GitHub 取源码的静态站点。见[分享给别人](docs/usage.md#分享给别人)。
+- **主菜单**：`codestrata app` 在浏览器里选文件夹、点按钮扫描、录制、打开图。见[主菜单](docs/usage.md#主菜单-codestrata-app)。
+- **解读层**：给人或 LLM agent 派活，按依赖自底向上写每个模块的讲解，存进 `notes/`；代码一改自动标「可能过期」，`codestrata check` 核对里面引用的行号和名字。见[解读层](docs/usage.md#解读层)。
+
+## 它是怎么做到的
+
+静态和运行时两份数据分开存、显示时才合并：静态分析随时能重做，运行记录只有一份、永久保留。
+
+```mermaid
+flowchart LR
+  S["scan<br/>静态分析"] --> I[("index / symbols / xref")]
+  T["trace<br/>运行时 hook"] --> R[("runs/")]
+  I --> P["切面 + 分层 + 叠加 / 对比"]
+  R --> P
+  P --> V["serve：本地网页"]
+  P --> E["graph：单文件 HTML / GitHub 站点"]
 ```
 
-### 录一次，一直用：run
+1. **静态分析。** 用标准库的 `ast` 解析每个 `.py`，记下谁 import 谁、实际用了对方哪些名字、类和函数在哪。
+2. **分层。** 先去掉循环依赖里最轻的边，再按最长依赖链排层（Eades–Lin–Smyth 贪心去环 + 最长路分层）；叠了运行时，按这次的调用重排。
+3. **录制。** 往 `PYTHONPATH` 塞一个 `sitecustomize.py`，命令起的**每个** Python 进程都自动挂上 hook。3.12+ 用 `sys.monitoring`，仓库外的代码第一次命中就关掉回调；只记仓库内函数之间的调用。
+4. **叠加。** 打开时才按「文件:行号 + 函数名」把次数对回**当前**代码，函数挪了几行也对得上；被调的函数不在这条边的静态引用里，就算动态分派。
 
-静态分析只有一份，随时 `scan` 重建；runtime 不能重建——一次录制往往是几分钟 GPU。所以每次
-`trace` 都存成一个新的 **run**（`.codestrata/runs/<时刻>-<case>/`），同名 case 重录也不覆盖：
-今天录 MiniCPM、明天录 Qwen，两份都留着，随时叠到图上。
+代码结构和数据格式见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/design/run-format.md](docs/design/run-format.md)。
 
-- run 里存原始数据（各进程的分片、case 脚本和命令里提到的配置文件、Python / 包版本、GPU、git）
-  和由它算出的计数。计数按 `文件:首行号` 存，加载时现映射到当前的 index 上——代码改了之后老 run
-  照样能用，哪些文件在录制之后改过会逐个标出来，而不是整个 run 作废；改过的文件里按录制时记下的
-  函数名（qualname）把次数挪到函数现在的行号上，挪下去几行、加了注释都对得上。
-- `--hot` 接受完整的 run id，或 case 名（取它最新一次录完的），都可以加 `@阶段`。`serve` 的 `--hot`
-  只决定页面打开时先叠哪个；页面上方「运行」随时换（静态图 / 任何一个 run，分了阶段的再选阶段），
-  不用重启，serve 开着时新录的也看得到。选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、分享链接都还是它。
-- **时间轴**（工具栏上「时间」）：阶段按钮 + 一条从 run 开头到结尾的时间条，阶段是条上的色段（切走又切回来
-  的阶段有几段）。点按钮或色段 = 选这个阶段；录了事件的 run 还能拖两头的把手、拖中间平移、在别处拖出一段，
-  看**任意一段时间**（地址里写成 `@t=起-止`，微秒，`--hot` 也认）。拖到和一个阶段对得上就当成它。
-  时间段的次数按这段时间里的时序事件现算：事件只记跨文件的调用，同一个文件里的调用不在里面（横幅上写明）；
-  录制时合成一行的连续调用（轮询这种，一行能盖几十秒）按次数均匀摊在它盖住的时间上。
-  条可以缩放：滚轮以鼠标处为中心缩放、Shift+滚轮平移，点阶段按钮自动放大到它，「全程」回到整个 run。
-- `runs/` 可以是软链（比如指到大盘）。**`.codestrata/` 里除 `runs/` 外都能删**；`runs/` 删了就没了。
-- 老版本的 `trace-<case>.json` 第一次被读到时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）。
-- **时间顺序**（模块图上，录了事件的 run）：边的开关里点「时间顺序」，这次跑到的边按**第一次被调用**的先后
-  上色（早 → 晚，蓝 → 紫 → 橙），边上标序号 1…N——控制流第一次走到这条边的先后，就是讲这条调用链时的顺序。
-  按名次上色而不是按时刻：模型加载这种长时段会把按时刻插值的颜色都挤到一头。同一个进程里从头到尾一直在
-  反复调用的（轮询、每个 token 都走一遍的）序号后面带 ↻，它的序号只说明从什么时候开始。跟着阶段、切面和
-  其他开关（时间轴上选的阶段 / 时间段）变；阶段的起点 / 终点（`--phase` 的触发函数所在的节点）另外描成绿 ▶ / 红 ■。
-- **对比两个 run**：选了一个 run 之后，工具栏上「对比」再选一个（有同名阶段就比同名阶段）：模块图上
-  只有 A 跑到的橙色、只有 B 跑到的紫色、两边都跑到的前景色，节点上的数是「A/B」，边详情里每个函数
-  都带 B 的次数。比如 MiniCPM@serving 对比 Qwen@serving，一眼看出两个模型各走了哪些代码。
-- **导出带多个 run**：`graph <repo> --hot A --hot B [--compare]`——单文件里能在这几个 run 之间切换
-  （别的 run 只带图上的次数，调用明细只有第一个的），`--compare` 带上 A、B 的对比。
-- **放到公网上**：`graph … --public`——主目录写成 `~`（源码行里的也换，Ctrl+点击的列号跟着挪）；
-  run 元数据里 PATH / LD_LIBRARY_PATH / PYTHONPATH 这种目录列表，仓库和录制目录以外的部分省略成 `…`
-  （那些只是本机装了哪些工具）；还剩主目录就拒绝写出。页面上注明命令因此不能原样执行，原样的在录制的
-  机器上 `runs show` 里。导出的单文件没有「时间顺序」（它要 serve 现算）。
-- **源码从 GitHub 取、没有体积上限**：`graph … --link github --out 目录`。单文件导出要把源码塞进 HTML，
-  受单文件宿主 16 MB 的上限（vllm-omni 1600 多个文件只装得下两百多个）；扫的仓库在 GitHub 上时，页面按
-  **扫描时的提交号**从 jsDelivr（不行再 raw.githubusercontent.com）取源码、在浏览器里高亮（`web/hl.js`，
-  和服务端 Pygments 逐字符一致），codestrata 自己算的放在旁边的 `data/<版本>/` 里按需取——所有文件都能看、
-  都能 Ctrl+点击、看全仓的引用，每个文件带「GitHub ↗」。取回来的行数和扫描时对不上就不给跳转并说明；
-  GitHub 上那个提交里没有或不一样的文件（改了没提交、没进 git、skip-worktree、软链接）随页面带上，
-  `--public` 时被 .gitignore 忽略的不带。导出时会试取一个文件，提交没推上去就不导出。
+## 实测
 
-```bash
-codestrata graph . --link github --public --hot qwen-chat@serving --out ../mysite/source/codestrata/myrepo
-```
-- **复刻**：每个 run 存下录制时原样的 codestrata 命令和所在目录（`cd <目录> && <命令>`，照抄就能再录一次），
-  以及 shell 里和跑模型有关的环境变量（CUDA_* / VLLM_* / HF_* / PATH…，名字像密钥的不存）——命令会继承它们，
-  光看命令复刻不出来。网页上 run 按钮旁边的「复刻」、或「?」帮助里「这次跑了什么」都能一键复制；
-  `runs show` 也打印。老 run 没存原始命令的，按 run 里存的参数拼一条并注明。
-- `trace --events` 同时记时序事件（模块图「时间顺序」的数据，要 Python 3.12+）：每次跨文件调用的起止时刻，
-  返回 / 挂起 / 恢复按帧配对，同一线程里交错的 asyncio 协程也配得对。原始日志永久留在
-  `events/raw.tar.gz`，整理好的 span 在 `events/spans/`（`runs merge` 可重建）；
-  不要了用 `runs <repo> rm <id> --events-only`。
+Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 
-```bash
-codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag model=qwen \
-    --attach ../common.sh -- bash case.sh     # --env 传给命令、--attach 把被 source 的文件一起存下
-codestrata runs <repo> ls                     # 按 case 分组列出，状态、时长、git、录制后改过几个文件
-codestrata runs <repo> show qwen-chat         # 详情 + 文件相对当前代码的状态 + 复刻命令
-codestrata runs <repo> tag|untag|note|merge …
-codestrata runs <repo> rm <run id>… [--yes]   # 只认完整的 run id；还在录的不删
-```
-
-读 hot 图要知道两件事：「调用方」是最近的仓库内的帧，穿过仓库外代码（框架的事件循环、库里的回调）的调用
-会显示成直接调用；调用次数高的多半是轮询，不等于重要。case 自己的代码（入口脚本那一层目录里的 .py）
-例外：它在栈上当调用方——case 里定义、被仓库回调的函数（Flask 的视图）再调仓库函数，调用方记成
-`<外部代码>/脚本名`，和仓库里 scan 不扫的 examples/ 一样不上图，不会画成 dispatch_request → jsonify
-这种并不存在的动态分派边。
-
-## 大仓库：图是目录树的一个切面，节点能就地展开 / 收起
-
-scan 记的是最细的粒度——每个 `.py` 文件一个模块，依赖、符号、调用明细都在文件之间。
-图上显示的是目录树的一个**切面**：收起的目录是一个节点（名字带 `/`），展开的目录换成它的
-子目录和文件；直接放在一个目录里的文件多了（> 12 个）会合成一个「本层」节点，也能再展开。
-
-- **默认切面按规模自动算**：从根开始，反复把代码量超过全仓 10%、拆开后不超过 30 个节点的
-  最大节点拆开，直到拆不动或图上到了 80 个节点。宽而平的目录（几十个同类实现，比如 vllm-omni 的 43 个模型族）
-  留成一个节点。vllm-omni 上是 diffusion（41%）拆成 19 块、model_executor（29%）拆成 7 块，
-  58 个节点；scan 会打印拆了哪些。
-- **点节点左上角的 ＋** 就在当前图上把它换成子模块（重新汇总边和高度、重新排版，新出来的节点闪一下）。
-  **展开的目录画成一个框**，把它的子模块框在一起，框头的 **−** 把它收回一个节点；框可以嵌套。
-  纵轴仍然是依赖的层次，所以框不能在纵向上把子模块挪到一起——每个展开的目录在横向上占一段
-  自己的列，框从它最高的子模块画到最低的子模块。只跨一两条泳道的小框不占满整列：别的泳道里
-  那段宽度让给散放的节点，泳道跨度不重叠的框还可以上下叠在同一列。框的左右顺序只取决于框本身，
-  展开一个无关的目录不会让别的框换位置。
-- 展开多了画布会变宽：图框撑宽到窗口，字最多缩到 0.88 倍，再宽就在图框里横向滚动（按住空白处拖动），
-  边缘有渐隐提示那边还有东西。
-- 展开 / 收起不会取消选中：选中的节点还在就还选着它，被收进了框就选中收回来的节点，自己被展开成框
-  就选中那个框。再点一次选中的节点、点空白处或按 Esc 才取消选中。
-  详情面板里也有「展开」和「收起到上一级」，工具栏的「恢复默认层级」回到 scan 算出的切面。
-  切面只是一组展开着的目录（`/api/graph?open=a,b`），不改任何数据。
-- `scan --depth N` 改成固定深度（2 = 老的「二级包」），`scan --expand DIR` 在默认切面上额外展开某个目录。
-- 解读、派活（`tasks`）都按默认切面上的节点；展开出来的节点也能单独写解读，target 就是节点名
-  （目录 `vllm_omni.engine`、本层 `vllm_omni.engine.*`、文件 `vllm_omni.engine.async_omni`）。
-- 导出的单文件是固定切面（框照样画），不能展开 / 收起；要交互用 `serve`。
-- 泳道放不下时折行，框永远装得下标签；hot 视图单独排版，只放跑到的节点。
-- 作者写的文档自动挂到包上：包内 README、frontmatter 用 `primary_code_paths` 声明了代码路径的
-  设计文档、开头用反引号写出仓库路径的文档。它们出现在详情面板和给 agent 的输入包里——
-  「为什么这样切」往往作者已经写过。
-
-## 为什么不用 OpenGrok / Sourcetrail
-
-- OpenGrok 要 Java + Tomcat + universal-ctags，为读代码架一套太重，而且它给的是**搜索与交叉引用**，
-  不给「架构分层」这件事。
-- Sourcetrail 2021 已归档；活着的 fork NumbatUI 明确禁用了 Python 索引。
-- Hound / Zoekt 是搜索引擎，没有可供图链接的 per-symbol URL。
-
-codestrata 只用标准库（Pygments 可选，用于高亮），`pip install` 之后一条命令出图。
-
-## 分工：结构交给自动化，理解留给 agent
-
-| 层 | 谁产出 | 放哪 | 能否重建 |
+| 仓库 | 扫描的 `.py` 文件 / 行数 | `scan` 用时 | 默认切面 |
 |---|---|---|---|
-| 结构：包、import 边、架构高度、符号位置 | `scan`（ast） | `.codestrata/` | 随时 |
-| 运行：哪个 case 实际调到了什么 | `trace`（runtime hook） | `.codestrata/runs/` | **不能**（要重新跑一遍） |
-| **理解：为什么这样切、算法为什么这么写、按什么顺序读** | **人 / LLM agent** | **`notes/`，进版本库** | **不能** |
+| flask | 24 / 9.5k | 0.17 s | 22 个节点 |
+| gsplat | 125 / 40.7k | 0.64 s | 53 个节点 |
+| nerfstudio | 203 / 47.6k | 1.00 s | 35 个节点 |
+| vllm-omni（`vllm_omni/` 包） | 1,648 / 590k | 12.8 s | 60 个节点 |
 
-机器能给出结构，给不出理解。codestrata 把理解那一层**留空**，并告诉 agent 该填什么：
+`trace` 每次仓库内调用约多花 1 µs：flask 测试客户端发 9000 个请求（65 万次仓库内调用）慢 1.36 倍，仓库外的代码几乎不花成本。`--events` 录完要整理事件，调用密的程序整理时间可能比程序本身还长。测法和完整数字见 [docs/usage.md](docs/usage.md#实测数字)。
 
-```bash
-codestrata tasks . --write     # 待解读的模块，自底向上排好序，每个一份输入包
-# 把 .codestrata/tasks/01-xxx.md 交给 agent，它读真源码后产出 Markdown
-codestrata note . <模块> out.md # 写回（自动补 frontmatter 和 code_sha）
-```
+## 已知限制
 
-**派活顺序按架构高度自底向上**：叶子没有内部依赖，可以孤立读懂；写到上层时下层的解读
-已经存在，输入包会把它们一并带上，于是上层能引用下层而不是各说各话。
+- **只支持 Python**：pybind、`torch.ops` 这类跨语言的调用看不到。
+- **录制只支持 Linux**，见上面的说明。3.10 / 3.11 能录但没有 `--events`，仓库外的代码也要付回调的开销。
+- **跳转保守、没有类型推断**：`x = Foo(); x.bar()` 不给跳。
+- **重新 scan 之后要重启 serve**（新录的 run 不用重启）。
+- **导出的页面功能少一些**：切面固定、没有时间轴和时间顺序；单文件约 14 MB，只带一部分文件的全文。
+- **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**，依赖它的程序在录制时行为可能不同。
+- **run 不能重建**：`.codestrata/runs/` 是唯一一份，删了就没了。
+- **自动测试都在 CPU 上的假服务上跑**；浏览器界面还没有进仓库的自动化测试。
 
-**解读会腐烂。** 每份解读的 frontmatter 里存 `code_sha`——它所描述的那些源文件的内容哈希。
-代码一改，前端立刻把它标成「可能过期」。只看所描述的文件：改别的模块不会误报。
+完整列表见 [docs/usage.md](docs/usage.md#已知限制)；现在的状态和计划见 [docs/STATUS.md](docs/STATUS.md)。
 
-**LLM 写的解读要机器核对。** `codestrata check` 核对解读里能核对的部分：
-- `file:line` 引用：文件在不在、行号越没越界；保存时给每处引用记下那一行的内容指纹，
-  代码改了之后能精确指出「`render.py:17` 引用的那一行已经移到第 18 行」；
-- 反引号里的名字（`build`、`Handler.do_GET`、`os._exit`）：代码里（或标准库里）是否真有。
+## 和其他工具的区别
 
-它核对不了「为什么这么写」对不对，但编出来的函数名、写错的行号、引用了已删掉的代码都能抓住。
-前端在每份解读顶上显示核对结果。
+- **OpenGrok / Sourcegraph / Hound / Zoekt** 给的是搜索和交叉引用，不知道一次运行实际走了哪条路。
+- **Sourcetrail** 2021 年已归档；还在维护的 fork NumbatUI 明确禁用了 Python 索引。
+- **profiler（cProfile、py-spy）** 告诉你时间花在哪，但不把调用放回仓库的架构里，也不能两次运行对比着看。
 
-除了每个模块一份，还有一份**仓库总览**（target 名 `_overview`，存在 `notes/overview.md`）：
-这个仓库做什么、主干数据流、为什么这样分层、阅读顺序。它最后写（输入包会带上所有模块解读），
-只在架构骨架（包和依赖）变了时才过期；没选中任何节点时，右侧面板显示的就是它。
+## 致谢
 
-## 前端：一套代码，两种模式
-
-前端在 `codestrata/web/`，普通 HTML/CSS/JS，零构建、不要 npm。`web/ds.js` 一层决定数据从哪来：
-
-```bash
-codestrata serve .              # 本地部署：fetch /api/*，能写解读、能跳编辑器
-codestrata graph .              # 单文件导出：数据内嵌，只读、离线、可以直接发给别人
-```
-
-serve 提供的 API（agent 也可以直接调）：
-
-```
-GET  /api/graph?open=a,b      一个切面上的静态图 + hot 叠加（不给 open 是默认切面）
-GET  /api/tasks               待解读清单（自底向上）
-GET  /api/pack/<模块>          给 agent 的输入包
-GET  /api/notes/<模块>         解读 + 是否过期
-GET  /api/status?ids=a,b      一批节点的解读状态（noted / stale / todo）
-PUT  /api/notes/<模块>         写回解读        ← agent 从这里介入
-GET  /api/symbol/<key>        符号源码
-GET  /api/file?f=             整个文件（高亮）+ 符号大纲 + 能 Ctrl+点击的名字
-GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
-GET  /api/edge?a=&b=          一条边：引用了哪些符号、runtime 调了哪些、哪些只 import
-GET  /api/refs?t=             一个定义被哪些地方引用（Ctrl+点击定义时的列表）
-GET  /api/search-index        搜索栏要的全部名字（模块、文件、类 / 函数）
-GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
-GET  /api/open?f=&l=          让本机编辑器跳到 file:line
-```
-
-## 读代码：Ctrl+点击、文件内查找、搜索栏、缩放
-
-- **Ctrl（Mac 上 ⌘）+ 点击**：全文窗口和详情面板的源码片段里，按住 Ctrl 能点的名字会带下划线。
-  点一个名字跳到它的定义（「← 返回」回到点的地方）；点一个定义，旁边一栏列出所有引用它的地方
-  （调用在前，同一行的几处合成一条），点哪条跳哪条。名字指向哪由 scan 时写下的
-  `.codestrata/xref.json` 给出：import（包括经 `__init__.py` 再导出的）、`模块.函数`、`类.方法`、
-  `self.` / `cls.` / `super()`（按 MRO 在仓库里的基类里找）、`self.x = …` 定义的实例属性；
-  局部变量会遮住同名的全局名字。确定不了的不给链接——宁可不跳，也不跳错。通过别的对象调用的方法
-  （`engine.generate()`）不知道对象类型，引用列表里单列一组「同名的 `.generate`（没确认对象类型）」。
-  文件在 scan 之后改过，行列号就对不上了：那个文件不给 Ctrl+点击，重新 scan 即可。
-- **文件内查找**（全文窗口里 Ctrl / ⌘+F，或头上的「查找」）：和 VS Code 一样，区分大小写（Aa，Alt+C）、
-  全字匹配（ab，Alt+W，按 VS Code 的分隔符算词）、正则（.*，Alt+R）三个开关；Enter / Shift+Enter
-  （F3 / Shift+F3）在匹配之间跳，右边是「第几个 / 共几个」，Esc 关掉。选中一段字再 Ctrl+F 就拿它当词。
-  转到定义、返回换了文件时查找栏留着、按新文件重找。标记用浏览器的 CSS Custom Highlight，不改代码的 DOM，
-  Ctrl+点击照常能用。
-- **搜索栏**（右边一栏，`/` 或 Ctrl+K 跳过去）：按名字找模块、文件、类 / 函数。函数看它自己的名字
-  （方法也看类名），文件看文件名，模块看最后一段；词里写了 `.` 或 `/` 才按路径找（`entrypoints/`、
-  `engine.async`）。点结果先回到图上，展开到它所在的模块并选中，再在下面的详情里展开到它；
-  「代码」按钮直接开全文窗口。图上包含命中项的节点会高亮。
-- **缩放**：图框右上角有放大、缩小、移动三个按钮；按住 Ctrl 滚滚轮以鼠标为中心缩放（不按 Ctrl
-  的滚轮照常滚页面）；移动模式下按住任意位置拖动图。
-
-## 用法
-
-```bash
-codestrata scan  <repo> [--depth N] [--expand DIR]   # 静态扫描 + 交叉引用；默认切面按规模自动拆分
-codestrata app [--port 8930] [--no-browser]     # 主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图
-codestrata serve <repo> [--hot RUN[@阶段|@t=起-止]]   # 本地部署前端；--hot 只是打开时先选哪个 run，页面上随时换
-codestrata trace <repo> --case NAME [--events] [--timeout S] [--cwd DIR] [--tag T] [--note TXT] [--env K=V] [--attach F] -- CMD
-                                              # 跑一个 case，记录真实调用（子进程一并 trace），存成新的 run
-codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   # 管理录下的 run
-codestrata tasks <repo> [--write]             # 待解读 + 输入包
-codestrata note  <repo> <模块> <file.md>       # 写回解读（总览用 _overview）
-codestrata check <repo> [模块 ...] [--fix]     # 机器核对解读：过期、引用漂移、名字 / 路径不存在
-                                              # --fix 把只是挪了位置的引用改到新行号（不去掉过期标记）
-codestrata graph <repo> [--hot RUN[@阶段]]… [--compare]   # 导出单文件；多个 --hot 可在页面上切换
-```
-
-## 状态
-
-早期。已验证：AST 扫描（vllm-omni 1608 文件 / 4.5s / 0 失败）、高度分层（排序符合架构直觉）、
-runtime trace（真值测试：返回后再调用、生成器恢复、异常展开三种情况下调用者都正确；
-动态分派被正确识别为静态盲区）、边的五类归并、解读的写回与过期检测、serve 的路径越权防护。
-
-src-layout（`src/mypkg/...`）的模块名相对 `src/` 算，而不是相对仓库根——否则模块名带上 `src.`
-前缀、和代码里的 `import mypkg.x` 对不上，所有边都会指向不存在的包。
-
-trace 踩过的两个坑，写在这里免得重犯：
-- 只订阅 `PY_START` 不订阅返回/展开，调用者会变成「上一个开始执行的函数」。
-- 按 code 对象做缓存键是错的：code 对象**按内容**比较相等且不比 `co_filename`，
-  几个空 `__init__.py`、或不同文件里同名同行同体的函数会被当成同一个。按文件名缓存。
-- 非交互 bash 用 `&` 起的后台进程天生忽略 SIGINT；Python 程序若不自己装处理器（uvicorn 装了，
-  `asyncio.run` 不装），发 SIGINT 等多久都没用。停残留进程时看 `/proc/<pid>/status` 的 SigIgn，
-  忽略 SIGINT 的直接发 SIGTERM。
-
-录制端的测试在 CPU 假服务上跑（setsid 的服务、multiprocessing、exec、asyncio、分阶段）：
-`.venv/bin/python tests/test_runs.py`。前端里不碰 DOM 的纯函数（文件内查找、时间轴的吸附 / 放大）用 node 测：
-`.venv/bin/python tests/test_web.py`。
-
-一个负面结论值得记下：**SCC 缩点不能用来分层**。Python 的循环 import 会让强连通分量退化——
-在 vllm-omni 上 30 个包有 20 个塌进同一个环，分层信息全丢。启发式在这里胜过图论正解。
+分层用的是 Eades、Lin、Smyth 的贪心去环启发式；源码高亮用 [Pygments](https://pygments.org/)；`--link github` 导出的站点经 [jsDelivr](https://www.jsdelivr.com/) 取源码。
 
 ## License
 
-MIT
+MIT，见 [LICENSE](LICENSE)。
