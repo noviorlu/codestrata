@@ -18,8 +18,8 @@
 1. **领**：把条目移到 TODO 的「进行中」，写上开始日期和谁在做（主会话 / 哪个子 agent / 哪个 workflow）。
 2. **做**：新功能进新模块；不跨模块用下划线私有名；god module（`trace.py`、`payload.py`）不再加东西。
    测试进仓库（`tests/`），不留在临时目录。
-3. **验**：跑 `tests/` 全套（`test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`、`test_platform.py`；动了高亮再跑 `hl_parity.py`），
-   界面改动要在浏览器里看过。
+3. **验**：跑 `tests/` 全套（`test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`、`test_platform.py`、`test_browser.py`；动了高亮再跑 `hl_parity.py`），
+   界面改动要在 `tests/web/specs/` 里有对应的检查（新交互就加一条），也要自己在浏览器里看过。
    做到条目里写的「做到」才算完。
 4. **交**：一个条目一次提交；STATUS / TODO 的更新和代码放在同一个提交里。提交后可以直接 push。
 5. **收**：从 TODO 删掉这一条（历史在 git log）；STATUS 的「能用的 / 已知问题」跟着改。

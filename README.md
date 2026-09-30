@@ -149,7 +149,7 @@ Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 - **导出的页面功能少一些**：切面固定、没有时间轴和时间顺序；单文件约 14 MB，只带一部分文件的全文。
 - **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**，依赖它的程序在录制时行为可能不同。
 - **run 不能重建**：`.codestrata/runs/` 是唯一一份，删了就没了。
-- **自动测试都在 CPU 上的假服务上跑**；浏览器界面还没有进仓库的自动化测试。
+- **自动测试都在 CPU 上的假服务上跑**，没在 GPU 录制上验收过。
 
 完整列表见 [docs/usage.md](docs/usage.md#已知限制)；现在的状态和计划见 [docs/STATUS.md](docs/STATUS.md)。
 

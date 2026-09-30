@@ -152,7 +152,9 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan / graph 能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 
-**浏览器测试还不在仓库里**：图、叠加、时间轴、对比、代码窗口的交互目前只在开发机上手测，见 `docs/TODO.md` P0「前端测试进仓库」。
+- `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
+  （图、叠加、时间轴、时间顺序、对比、代码窗口、查找各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 给对比）。
+  要 node 22+ 和 Chrome / Chromium，没有就跳过；约 15 秒。
 
 ## 平台
 

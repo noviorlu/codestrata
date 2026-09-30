@@ -581,7 +581,7 @@ vllm-omni 的 `vllm_omni/` 包（不叠 run）导出单文件：6.6–6.8 s，14
 | 中 | **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**（不会接着调用它），依赖它的程序（有些 conda / HPC 环境）录制时行为可能不同。 |
 | 中 | **复刻不是万能的**：环境变量只记白名单里的；密钥只按名字的形状认；换一台机器照抄不一定能跑。 |
 | 中 | **run 不能重建。** `.codestrata/runs/` 是唯一一份（可以软链到大盘）。 |
-| 中 | **还没在 GPU 录制上验收过。** 自动测试都在 CPU 上的假服务上跑；事件的开销没在真模型上测过；前端没有自动化的界面测试。 |
+| 中 | **还没在 GPU 录制上验收过。** 自动测试都在 CPU 上的假服务上跑；事件的开销没在真模型上测过。 |
 | 中 | **`check` 只核对「存在」，不核对「指对」。** |
 | 中 | **安全模型：** serve 没有鉴权，自定义头只挡浏览器里别的网页，挡不住本机进程；app 有口令；`--proxy` 让图页面和主菜单同源，少了一层隔离。 |
 | 中 | **`graph`、`tasks`、`serve` 的 `--roots` 不起作用。** |
@@ -643,6 +643,7 @@ GET  /code/<path>?l=N         整个文件，带行号锚点
 .venv/bin/python tests/test_app.py       # 主菜单：清单、录制表单、后台任务、HTTP 鉴权、扫描、录制、打开图
 .venv/bin/python tests/test_web.py       # 前端里不碰 DOM 的纯函数（文件内查找、时间轴的吸附 / 放大），要 node
 .venv/bin/python tests/test_platform.py  # 平台：模拟没有 fcntl / SIGKILL、不是 Linux 的环境
+.venv/bin/python tests/test_browser.py   # 浏览器里的交互（headless Chrome），要 node 22+ 和 Chrome / Chromium
 .venv/bin/python tests/test_package.py   # 非 -e 安装的包里要有前端文件，要 uv
 .venv/bin/python tests/hl_parity.py      # 浏览器端高亮 hl.js 对拍 Pygments，要 node
 ```

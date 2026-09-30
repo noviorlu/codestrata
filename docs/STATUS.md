@@ -32,15 +32,14 @@
 - `trace`：录一次真实运行（子进程、fork / exec、setsid 出去的服务、停进程三级升级），存成可复用的 run；
   `--phase` 按函数切阶段；`--events` 记时序（3.12+）。
 - `serve`：图 + 运行叠加 + 时间轴（阶段 / 任意时间段）+ 时间顺序上色 + 对比两个 run（目前只是图上三种颜色）。
-- 测试：`tests/test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`（node）、`test_platform.py`；`tests/hl_parity.py` 对拍浏览器端高亮和 Pygments，
+- 测试：`tests/test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`（node）、`test_platform.py`、
+  `test_browser.py`（headless Chrome，7 组：图、叠加、时间轴、时间顺序、对比、代码窗口、查找；用假服务当场录的 run）；`tests/hl_parity.py` 对拍浏览器端高亮和 Pygments，
   默认语料是本机的 vllm-omni，别人要自己给目录。
 
 ## 已知问题（如实写，不粉饰）
 
 - **平台**：录制只支持 Linux，别的系统上 `trace` 直接拒绝（`compat.require_trace`）。scan / serve / graph / runs 在别的系统上
   能 import、能用（`tests/test_platform.py` 模拟没有 fcntl / SIGKILL 的环境），但没在真的 Windows / macOS 上跑过。
-- **前端几乎没有进仓库的测试**：约 4800 行 JS，仓库里只有 `test_web.py` 的纯函数测试；浏览器测试写在开发机的临时目录里，
-  依赖本机的 vllm-omni 录制，别人跑不了。
 - **god module**：`trace.py` 混了三件事：被测进程里的 hook、外面的 driver，以及加载时才用的分析
   （`merge`、`to_package_graph`、`sym_locs`、`defining`、`resolve_phase_at`、`case_script`，runs / seq / jobs 都依赖它）；
   `payload.py`（事实、runtime、坐标、源码、xref、解读全认识）。
