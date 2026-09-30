@@ -334,6 +334,24 @@ body.rzing,body.rzing *{user-select:none!important}
 .ln.focus .no{color:var(--hot);background:var(--hot-bg)}
 .ln.pick{box-shadow:inset 3px 0 0 var(--hot)}
 .ln:hover .no{color:var(--body)}
+/* 全文窗口里的查找（findbar.js）：浮在代码栏右上角；匹配用 CSS Custom Highlight 标，不改 DOM */
+.vfind{position:absolute;top:6px;right:22px;z-index:3;display:flex;align-items:center;gap:4px;padding:4px 6px;
+  background:var(--card);border:1px solid var(--line);border-radius:7px;box-shadow:var(--shadow);font-size:12px}
+.vfind[hidden]{display:none}
+.vfind .fi{display:flex;align-items:center;flex:1 1 auto;min-width:0;border:1px solid var(--line);border-radius:5px;background:var(--paper)}
+.vfind .fi:focus-within{border-color:var(--sel)}
+.vfind.bad .fi{border-color:var(--pend)}
+.vfind input{width:210px;min-width:40px;flex:1 1 auto;border:none;background:none;color:var(--ink);padding:4px 6px;font:12px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none}
+.vfind .fo{border:1px solid transparent;background:none;color:var(--muted);border-radius:4px;margin-right:2px;padding:1px 4px;
+  cursor:pointer;font:11.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace}
+.vfind .fo[aria-pressed=true]{color:var(--sel);background:var(--sel-bg);border-color:var(--sel)}
+.vfind .fc{min-width:64px;text-align:center;color:var(--muted);font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
+.vfind.bad .fc{color:var(--pend)}
+.vfind .fb{border:none;background:none;color:var(--body);cursor:pointer;padding:2px 5px;border-radius:4px;font-size:13px;line-height:1}
+.vfind .fb:hover:not(:disabled),.vfind .fo:hover{background:var(--sunk)}
+.vfind .fb:disabled{opacity:.35;cursor:default}
+::highlight(cs-find){background-color:rgba(234,179,8,.35)}
+::highlight(cs-find-cur){background-color:rgba(234,88,12,.55)}
 
 /* ---- 边：工具栏里的图例兼开关 ---- */
 .chip.lg{display:inline-flex;align-items:center;gap:6px}

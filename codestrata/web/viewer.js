@@ -4,7 +4,8 @@
  *
  * Ctrl（Mac 上是 ⌘）+ 点击一个名字跳到它的定义；点一个定义，列出所有引用它的地方。
  * 名字指向哪由 scan 时的交叉引用（xref.py）给出，这里只负责把能点的名字包上一层 span。
- * 跳转有「返回」栈，和编辑器里的「转到定义 / 返回」一样。 */
+ * 跳转有「返回」栈，和编辑器里的「转到定义 / 返回」一样。
+ * Ctrl+F（或头上的「查找」）在当前文件里查找，见 findbar.js。 */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
@@ -113,6 +114,7 @@ window.CS = window.CS || {};
       document.body.style.overflow = 'hidden';
       root.innerHTML = '<div class="vbox"><div class="vhead"><b>' + esc(rel) + '</b>'
         + '<span class="vmeta">读取中…</span></div></div>';
+      CS.findbar.attach(null, null);                     // 读取期间没有代码可找（查找栏开着的话，画好新文件再回来）
       var self = this, seq = this._seq = (this._seq || 0) + 1;
       CS.ds.file(rel).then(function (fv) {
         if (seq !== self._seq || root.hidden) return;     // 读取期间又开了别的文件，或者窗口已经关了
@@ -151,7 +153,7 @@ window.CS = window.CS || {};
       var hl = fv.lines || [], rows = [];   // 服务端（Pygments）已按行高亮好
       for (var i = 0; i < hl.length; i++)
         rows.push('<div class="ln" id="vL' + (i + 1) + '"><span class="no">' + (i + 1)
-          + '</span><span class="tx">' + (hl[i] || ' ') + '</span></div>');
+          + '</span><span class="tx' + (hl[i] ? '' : ' e') + '">' + (hl[i] || ' ') + '</span></div>');   // 空行 .e：查找时当空行
       var hot = CS.graph && CS.graph.hot;
       var outline = syms.map(function (s, k) {
         var h = (hot && hot.symbols && hot.symbols[s.key]) || 0;
@@ -176,6 +178,7 @@ window.CS = window.CS || {};
         + (fv.local ? '<span class="vhint" title="扫描时这个文件本地改过、或者没进 git：GitHub 上没有这个版本，随页面带上的">本地版本</span>' : '')
         + (CS.ds.blobUrl && !fv.local ? '<a class="vbtn" data-gh href="' + esc(CS.ds.blobUrl(fv.file, line)) + '" target="_blank" rel="noopener"'
              + ' title="在 GitHub 上看扫描时那个提交的这个文件">GitHub ↗</a>' : '')
+        + '<button class="vbtn" data-find title="在这个文件里查找（Ctrl+F）">查找</button>'
         + '<button class="vbtn" data-copy="' + esc(fv.file) + '">复制路径</button>'
         + (CS.ds.canOpenEditor ? '<button class="vbtn" data-edit="1">编辑器打开</button>' : '')
         + '<button class="vclose" aria-label="关闭">×</button></div>'
@@ -219,7 +222,9 @@ window.CS = window.CS || {};
       if (at && at.top != null) { codeEl.scrollTop = at.top; this._syncOutline(); }   // 返回：回到跳走前看到的位置
       if (at && at.col != null) this._markAt(line, at.col);
       if (refsOpen) this._renderRefs();
-      root.querySelector('.vclose').focus({ preventScroll: true });
+      root.querySelector('[data-find]').onclick = function () { CS.findbar.show(); };
+      CS.findbar.attach(root.querySelector('.vbody'), codeEl);      // 查找栏开着：按这个文件重找
+      if (!CS.findbar.isOpen()) root.querySelector('.vclose').focus({ preventScroll: true });
     },
 
     /* Ctrl+点击发生在全文窗口里的哪一行：记下来，「返回」回到这里 */
@@ -317,6 +322,7 @@ window.CS = window.CS || {};
       if (!box || !refsOpen) return;
       box.hidden = false;
       root.querySelector('.vbody').classList.add('withrefs');       // 列表是代码旁边的一栏，不盖住代码
+      CS.findbar.place();                                          // 查找栏让开它
       var r = refsOpen.data, self = this, isMember = /^[sv]:[^:]+:.+\./.test(refsOpen.target);
       var h = '<div class="rh"><b>' + esc(refsOpen.name || shortTarget(refsOpen.target)) + '</b> 被引用'
         + '<button class="vclose rx" aria-label="关闭引用列表">×</button></div>';
@@ -392,6 +398,7 @@ window.CS = window.CS || {};
       if (box) { box.hidden = true; box.innerHTML = ''; }
       var vb = root && root.querySelector('.vbody');
       if (vb) vb.classList.remove('withrefs');
+      CS.findbar.place();
     },
 
     /* 提示：窗口开着就放在窗口里，没开（从详情面板的片段点的）就放在页面底部 */
@@ -436,7 +443,8 @@ window.CS = window.CS || {};
       root.onclick = function (ev) { if (ev.target === root) self.close(); };
       document.onkeydown = function (ev) {
         if (ev.key !== 'Escape' || root.hidden) return;
-        // Esc 先关引用列表，再关窗口
+        // Esc 先关查找栏，再关引用列表，最后关窗口
+        if (CS.findbar.isOpen()) { CS.findbar.hide(); return; }
         var rb = root.querySelector('.vrefs');
         if (rb && !rb.hidden) { self._closeRefs(); return; }
         self.close();
@@ -447,6 +455,7 @@ window.CS = window.CS || {};
       if (!root) return;
       root.hidden = true; root.innerHTML = '';
       hist = []; refsOpen = null; curFile = null;
+      CS.findbar.detach();
       document.body.style.overflow = '';
       if (lastFocus && lastFocus.focus) lastFocus.focus();
     }

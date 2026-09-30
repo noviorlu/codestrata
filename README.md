@@ -289,7 +289,7 @@ GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些�
 GET  /api/open?f=&l=          让本机编辑器跳到 file:line
 ```
 
-## 读代码：Ctrl+点击、搜索栏、缩放
+## 读代码：Ctrl+点击、文件内查找、搜索栏、缩放
 
 - **Ctrl（Mac 上 ⌘）+ 点击**：全文窗口和详情面板的源码片段里，按住 Ctrl 能点的名字会带下划线。
   点一个名字跳到它的定义（「← 返回」回到点的地方）；点一个定义，旁边一栏列出所有引用它的地方
@@ -299,6 +299,11 @@ GET  /api/open?f=&l=          让本机编辑器跳到 file:line
   局部变量会遮住同名的全局名字。确定不了的不给链接——宁可不跳，也不跳错。通过别的对象调用的方法
   （`engine.generate()`）不知道对象类型，引用列表里单列一组「同名的 `.generate`（没确认对象类型）」。
   文件在 scan 之后改过，行列号就对不上了：那个文件不给 Ctrl+点击，重新 scan 即可。
+- **文件内查找**（全文窗口里 Ctrl / ⌘+F，或头上的「查找」）：和 VS Code 一样，区分大小写（Aa，Alt+C）、
+  全字匹配（ab，Alt+W，按 VS Code 的分隔符算词）、正则（.*，Alt+R）三个开关；Enter / Shift+Enter
+  （F3 / Shift+F3）在匹配之间跳，右边是「第几个 / 共几个」，Esc 关掉。选中一段字再 Ctrl+F 就拿它当词。
+  转到定义、返回换了文件时查找栏留着、按新文件重找。标记用浏览器的 CSS Custom Highlight，不改代码的 DOM，
+  Ctrl+点击照常能用。
 - **搜索栏**（右边一栏，`/` 或 Ctrl+K 跳过去）：按名字找模块、文件、类 / 函数。函数看它自己的名字
   （方法也看类名），文件看文件名，模块看最后一段；词里写了 `.` 或 `/` 才按路径找（`entrypoints/`、
   `engine.async`）。点结果先回到图上，展开到它所在的模块并选中，再在下面的详情里展开到它；
@@ -340,7 +345,8 @@ trace 踩过的两个坑，写在这里免得重犯：
   忽略 SIGINT 的直接发 SIGTERM。
 
 录制端的测试在 CPU 假服务上跑（setsid 的服务、multiprocessing、exec、asyncio、分阶段）：
-`.venv/bin/python tests/test_runs.py`。
+`.venv/bin/python tests/test_runs.py`。前端里不碰 DOM 的纯函数（文件内查找、时间轴的吸附 / 放大）用 node 测：
+`.venv/bin/python tests/test_web.py`。
 
 一个负面结论值得记下：**SCC 缩点不能用来分层**。Python 的循环 import 会让强连通分量退化——
 在 vllm-omni 上 30 个包有 20 个塌进同一个环，分层信息全丢。启发式在这里胜过图论正解。
