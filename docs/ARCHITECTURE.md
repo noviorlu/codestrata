@@ -1,6 +1,32 @@
 # 架构
 
-代码怎么组织、数据怎么流，只写现状。行数是 2026-09-29 的 `wc -l`。
+代码怎么组织、数据怎么流。开头一节讲核心模型，现在的代码和它对不上的地方在那一节里标出来；其余各节只写现状。行数是 2026-09-29 的 `wc -l`。
+
+## 核心模型：graph
+
+codestrata 围着一个 graph 转：
+
+- **节点**是函数（类、函数，键 `<路径>#<限定名>`），按文件、目录分组；
+- **边**是函数 → 函数的调用（包括构造 `C(...)`）。每条边记两样：**scan 的记录**（代码里写了这个调用，写在哪几行）和 **trace 的记录**（这次运行真的发生了，几次、何时）。
+  只 import、只读常量、只写在类型标注里的都不是调用，不成边。
+
+三步：
+
+| 步 | 做什么 | 现在的代码 |
+|---|---|---|
+| **scan** | 读代码，产出节点和边的 scan 记录 | `scan.py`、`xref.py` |
+| **trace** | 录一次真实运行，得到边的 trace 记录 | `trace/`、`runs.py`、`events.py` |
+| **scan-trace alignment** | 把 trace 的记录放到 graph 现在的节点上（录制之后代码改过也能对上），找出两边的差别：trace 有、scan 没有的（多态、注册表、回调这类代码里看不出的调用），scan 有、trace 没有的（这次没走到） | 散在 `runs.load`、`trace/analysis.py`、`payload.py`、`seq.py` |
+
+界面不是一步：它只读 graph，按当前展开的目录把 graph 收起来画（`cut.py`、`layout.py`）——同一个文件 / 目录里的节点合成一个，边合并、次数相加。
+只有 scan 记录的边画灰色实线，有 trace 记录的画橙色实线、边上标调用次数。
+
+**现在的代码还没做到的**（正在改）：
+
+- scan 的边还是文件对文件的 import 边（`index.json` 的 `edges`），不是函数对函数的调用边；函数这一级的名字解析在 `xref.py`，只给跳转用。
+- 两边的比较在切面上做（被调的方法归到它的类，再看这条切面边底下的静态引用里有没有它），散在 `payload.py` 的好几处；边详情里的调用行在请求时重新解析源码去找。
+- 图上还有「只 import」「仅类型」这类不是调用的边；trace 的边分「确认调用」「动态分派」两种画法。
+- 算首末时刻（`seq.py`）时没有把改过的文件里的键挪到现在的行号。
 
 ## 组成
 
@@ -119,7 +145,6 @@ flowchart LR
 加一门语言要提供：一个扫描器，产出同样结构的 index.json / symbols.json（单元、边、目录树、键是 `<路径>#<限定名>`、带 `f/l/dl/e/k/n/s` 和 `x` 标记的符号、`file_sha`），
 xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写同格式的分片（和可选的事件日志），并有一种注入方式替代
 `PYTHONPATH` + `sitecustomize`；最好再给出等价于 qualname 的名字供 remap。字段级契约见 [`docs/design/run-format.md`](design/run-format.md)。
-多语言（Python、C++、CUDA、Rust）的接口设计（草案，还没实现）见 [`docs/design/multi-language.md`](design/multi-language.md)。
 
 ## 前端结构
 

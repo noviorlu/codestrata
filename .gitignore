@@ -7,7 +7,8 @@ build/
 .venv/
 
 # 内部工作文档：本地留着给开发会话用，不进公开仓库
-# （仓库里只放用户和开发者该看的：README、docs/usage、ARCHITECTURE、design/、images/）
+# （仓库里只放用户和开发者该看的：README、docs/usage、ARCHITECTURE、design/、images/；
+#   design/ 只放长期参考，还没实现的计划放 plans/，实现后并进 ARCHITECTURE / decisions 再删）
 CLAUDE.md
 docs/README.md
 docs/STATUS.md
@@ -15,3 +16,4 @@ docs/TODO.md
 docs/FINDINGS.md
 docs/log/
 docs/archive/
+docs/plans/
