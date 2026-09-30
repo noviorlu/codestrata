@@ -7,7 +7,7 @@ export default async function (t) {
   ok(await waitRun(page, fx.a), '按地址叠上 run A');
   ok((await page.ev(`document.getElementById('runbtn').textContent`)).startsWith('truth'), '运行按钮写 case 名');
   const he = await hotEdges(page);
-  ok(JSON.stringify(Object.keys(he).sort()) === JSON.stringify(['fakesvc.callee|fakesvc.other', 'fakesvc.execd|fakesvc.work', 'fakesvc.truth|fakesvc.callee']),
+  ok(JSON.stringify(Object.keys(he).sort()) === JSON.stringify(['fakesvc/callee.py|fakesvc/other.py', 'fakesvc/execd.py|fakesvc/work.py', 'fakesvc/truth.py|fakesvc/callee.py']),
      '跑到的边正好是三条 ' + JSON.stringify(he));
   ok(await page.ev(`CS.graph.edges.filter(E => E._warm).every(E => E.p.getAttribute('class').includes('warm'))`), '跑到的边画成橙色');
   ok(await page.ev(`CS.graph.edges.filter(E => E.hits === 0 && E._show).every(E => !E.p.getAttribute('class').includes('warm'))`), '没跑到的边不是橙色');
@@ -17,15 +17,15 @@ export default async function (t) {
   await page.click('[data-t="onlyhot"]');
   await sleep(500);
   const only = await drawnNodes(page);
-  ok(only.length < all && only.includes('fakesvc.truth') && only.includes('fakesvc.work') && !only.includes('fakesvc.race'),
+  ok(only.length < all && only.includes('fakesvc/truth.py') && only.includes('fakesvc/work.py') && !only.includes('fakesvc/race.py'),
      `只看跑到的：${all} → ${only.length} 个节点（race 这类没跑到的藏起来）`);
   await page.click('[data-t="onlyhot"]');
   await sleep(400);
   ok((await drawnNodes(page)).length === all, '再点一次：节点都回来');
 
   // 点一条跑到的边：详情里是调用的函数和次数
-  await clickEdge(page, 'fakesvc.truth', 'fakesvc.callee');
-  ok(await page.ev('CS.graph.state.selEdge') === 'fakesvc.truth|fakesvc.callee', '点边：选中它');
+  await clickEdge(page, 'fakesvc/truth.py', 'fakesvc/callee.py');
+  ok(await page.ev('CS.graph.state.selEdge') === 'fakesvc/truth.py|fakesvc/callee.py', '点边：选中它');
   ok(await page.wait(`/leaf|mid/.test(document.getElementById('det').textContent) && /\\d/.test(document.getElementById('det').textContent)`),
      '详情里列出调到的函数（callee 里的 leaf / mid）和次数');
   await page.key('Escape', 'Escape', 27);
@@ -35,7 +35,7 @@ export default async function (t) {
   ok(await waitRun(page, fx.a + '@loop'), '点 loop：换成这个阶段');
   ok((await hash(page)).endsWith('@loop'), '地址里记下阶段');
   const hl = await hotEdges(page);
-  ok(!hl['fakesvc.execd|fakesvc.work'] && hl['fakesvc.truth|fakesvc.callee'] > 0, 'loop 阶段：exec 那条边不在（它在 forks 阶段）');
+  ok(!hl['fakesvc/execd.py|fakesvc/work.py'] && hl['fakesvc/truth.py|fakesvc/callee.py'] > 0, 'loop 阶段：exec 那条边不在（它在 forks 阶段）');
   const marks = await page.ev(`[...document.querySelectorAll('#g .pmark')].map(x => x.textContent)`);
   ok(marks.some(m => m.includes('loop') && m.includes('起点')), '图上标出 loop 阶段的起点 ' + JSON.stringify(marks));
   ok((await page.ev(`(document.querySelector('.pbound') || {}).textContent || ''`)).includes('s_loop'), '工具栏写明从 s_loop 开始');
@@ -46,7 +46,7 @@ export default async function (t) {
   await page.click(`#runpop [data-run^="${fx.b}"]`);
   ok(await page.wait(`CS.app.data.hotMeta && CS.app.data.hotMeta.run_id === '${fx.b}'`, 15000), '换成 B');
   const hb = await hotEdges(page);
-  ok(hb['fakesvc.offline|fakesvc.work'] > 0 && !hb['fakesvc.truth|fakesvc.callee'], '图上换成 B 跑到的边 ' + JSON.stringify(hb));
+  ok(hb['fakesvc/offline.py|fakesvc/work.py'] > 0 && !hb['fakesvc/truth.py|fakesvc/callee.py'], '图上换成 B 跑到的边 ' + JSON.stringify(hb));
   ok((await hash(page)).includes(fx.b), '地址里记下 B');
   await page.click('#runbtn');
   ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run=""]')`), '再打开运行菜单');

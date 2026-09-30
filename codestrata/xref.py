@@ -299,12 +299,14 @@ class _Repo:
         self.symbols = index.get("symbols") or {}
         self.file_of: dict[str, str] = {}            # 模块 → 文件
         self.init: set[str] = set()                  # 是包（__init__.py）的模块
+        units = index.get("packages") or {}
         for rel, unit in (index.get("files") or {}).items():
             if not rel.endswith(".py"):
                 continue
-            m = module_name(unit)
+            lab = (units.get(unit) or {}).get("label") or unit   # 单元 id 是路径，点分的模块名在 label 里
+            m = module_name(lab)
             self.file_of[m] = rel
-            if unit.endswith(".__init__"):
+            if lab.endswith(".__init__"):
                 self.init.add(m)
         # 没有 __init__.py 的目录（命名空间包）：能穿过去找子模块，但它自己没有文件可跳
         self.ns: set[str] = set()

@@ -5,6 +5,7 @@
 测试数据是仓库自带的假服务（tests/trace_cases/fake_repo）当场录的两次 run，不依赖开发机上的任何录制：
   A = truth：--events，--phase 切出 loop / forks 两个阶段（加上开头的 start），跨模块的调用多，时间顺序有得排
   B = offline：另一个 run，给「换 run」用
+另有一个只 scan 的小仓库（_CUT：嵌套目录、一个又有子目录又有十几个文件的目录），给展开 / 收起、搜索定位用（base2）。
 serve 用随机端口，测完关掉；Chrome 由 tests/web/cdp.mjs 自己起、自己关。
 """
 from __future__ import annotations
@@ -42,14 +43,16 @@ def _run_id(repo, case):
     return hits[-1]
 
 
-def fixture() -> dict:
-    """录两次 run、起 serve（整个文件只做一次）"""
-    if _FX:
-        return _FX
-    repo = fresh()
-    cs("trace", repo, "--case", "truth", "--events",
-       "--phase", "loop=fakesvc.truth:s_loop", "--phase", "forks=fakesvc.truth:s_fork", "--", PY, "-m", "fakesvc.truth")
-    cs("trace", repo, "--case", "offline", "--events", "--", PY, "-m", "fakesvc.offline")
+# 切面用的仓库：cx/ 下有子目录、子目录的子目录；big/ 直接放着 14 个文件又有子目录，展开后是「本层文件」节点
+_CUT = {"cx/__init__.py": "", "cx/app.py": "from cx.sansio import app as a\nfrom cx.ops import util\n\n\ndef run():\n    return a.go() + util.u()\n",
+        "cx/sansio/__init__.py": "", "cx/sansio/app.py": "def go():\n    return 1\n",
+        "cx/ops/__init__.py": "", "cx/ops/util.py": "from cx.ops.kernels import k\n\n\ndef u():\n    return k.kk()\n",
+        "cx/ops/kernels/__init__.py": "", "cx/ops/kernels/k.py": "def kk():\n    return 2\n",
+        "cx/big/__init__.py": "", "cx/big/sub/__init__.py": "", "cx/big/sub/s.py": "from cx.ops import util\n\n\ndef s():\n    return util.u()\n",
+        **{f"cx/big/f{i:02d}.py": f"from cx.ops import util\n\n\ndef f{i:02d}():\n    return util.u()\n" for i in range(14)}}
+
+
+def _serve(repo) -> tuple:
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
     srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -60,9 +63,27 @@ def fixture() -> dict:
             break
         except OSError:
             time.sleep(0.1)
-    _FX.update(repo=str(repo), base=base, srv=srv,
+    return srv, base
+
+
+def fixture() -> dict:
+    """录两次 run、起 serve（整个文件只做一次）"""
+    if _FX:
+        return _FX
+    repo = fresh()
+    cs("trace", repo, "--case", "truth", "--events",
+       "--phase", "loop=fakesvc.truth:s_loop", "--phase", "forks=fakesvc.truth:s_fork", "--", PY, "-m", "fakesvc.truth")
+    cs("trace", repo, "--case", "offline", "--events", "--", PY, "-m", "fakesvc.offline")
+    srv, base = _serve(repo)
+    cut = tmpdir("cs-browser-cut-") / "cutrepo"
+    for rel, src in _CUT.items():
+        (cut / rel).parent.mkdir(parents=True, exist_ok=True)
+        (cut / rel).write_text(src)
+    cs("scan", cut)
+    srv2, base2 = _serve(cut)
+    _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
                a=_run_id(repo, "truth"), b=_run_id(repo, "offline"))
-    fx = {k: v for k, v in _FX.items() if k != "srv"}
+    fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))
     _FX["path"] = str(path)
@@ -107,11 +128,16 @@ def test_findbar():
     _spec("findbar")
 
 
+def test_cut():
+    _spec("cut")
+
+
 if __name__ == "__main__":
     try:
         rc = run_tests(globals(), sys.argv[1:])
     finally:
-        if _FX.get("srv"):
-            _FX["srv"].kill()
-            _FX["srv"].wait()
+        for k in ("srv", "srv2"):
+            if _FX.get(k):
+                _FX[k].kill()
+                _FX[k].wait()
     sys.exit(rc)

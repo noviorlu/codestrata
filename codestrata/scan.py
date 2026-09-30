@@ -3,7 +3,9 @@
 只用标准库。产出两个文件：
 
   index.json（画总图要的，小）
-    packages   单元：每个 .py 文件一个（包的 __init__.py 是 <包>.__init__），含「架构高度」
+    format     2（单元、目录按路径认；1 是点分名）
+    packages   单元：每个 .py 文件一个，id 是相对仓库根的路径；label 是点分的模块名（包的 __init__.py 是
+               <包>.__init__），sep 是 "."；含「架构高度」
     edges      单元之间的 import 边，权重 = import 语句条数（不含 TYPE_CHECKING 里的）
     type_edges 只在 `if TYPE_CHECKING:` 里的 import：运行时不执行，不是依赖——不算架构高度，图上是「仅类型」
     dirs       目录树；default_open 是默认切面（图上显示哪一层，见 cut.py）
@@ -432,13 +434,17 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     n_files = n_err = 0
 
     # 最细的粒度：每个 .py 文件是一个「单元」，依赖边、符号、调用明细都记在单元之间。
-    # 包目录的 __init__.py 记成 <包>.__init__，目录本身的名字（vllm_omni.engine）留给
+    # 单元 id 是文件相对仓库根的路径（不认语言，见 cut.py）；点分的模块名只作显示（label）：
+    # 包目录的 __init__.py 显示成 <包>.__init__，目录本身的名字（vllm_omni.engine）留给
     # 图上「整个目录收起来」的那个节点——图上显示哪一层，由 cut.py 在目录树上取切面。
-    unit_of_module: dict[str, str] = {}
+    unit_of_module: dict[str, str] = {}      # 点分模块名 → 单元（文件路径）：import 按模块名解析
+    unit_label: dict[str, str] = {}
     for r in roots:
         for p in root_py_files(root, r):
             m = module_name(r, p)
-            unit_of_module[m] = m + ".__init__" if p.name == "__init__.py" and r != ROOT_SCRIPTS else m
+            u = str(p.relative_to(root))
+            unit_of_module[m] = u
+            unit_label[u] = m + ".__init__" if p.name == "__init__.py" and r != ROOT_SCRIPTS else m
     # 根目录的脚本之间 `import utils`：Python 按脚本所在目录找到的是 utils.py，这里的模块名是
     # <仓库名>.utils。裸名字对上根目录的脚本、又不是仓库里的包时，换成那个模块名
     bare_scripts = {p.stem for p in root_py_files(root, ROOT_SCRIPTS)} - top if ROOT_SCRIPTS in roots else set()
@@ -701,6 +707,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             "classes": pkg_cls.get(p, 0), "funcs": pkg_fn.get(p, 0),
             "out": o, "in": i,
             "alt": round((o - i) / (o + i), 4) if (o + i) else 0.0,
+            "label": unit_label[p], "sep": ".",
         }
 
     # 包目录里的 C++ / CUDA 源文件：挂到所在的包下，供浏览和高亮。
@@ -732,19 +739,20 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
         if r == ROOT_SCRIPTS or not base.is_dir():
             continue
         for p in walk_aux(base, set()):
-            # 挂到所在目录（点分名）；图上显示在包含这个目录的节点里
-            add_aux(p, ".".join(p.relative_to(base.parent).parent.parts))
+            # 挂到所在目录；图上显示在包含这个目录的节点里
+            add_aux(p, _cut.unit_dir(str(p.relative_to(root))))
         # 包在一个嵌套的工程里（submodules/<工程>/<包>，工程目录有 setup.py）：C++ / CUDA 源码常放在
         # 包旁边（3DGS 的 diff-gaussian-rasterization/cuda_rasterizer/），也挂到这个包上。
         # 仓库根目录这一层不这么做：那会把整个仓库的 C 代码都挂到一个包上
         proj = base.parent
         if proj.resolve() != root and any((proj / m).exists() for m in PROJECT_MARKERS):
             for p in walk_aux(proj, chosen):
-                add_aux(p, base.name)
+                add_aux(p, _cut.root_dir(r))
 
     docs = collect_docs(root, files)
     class_names = {s.name.rsplit(".", 1)[-1] for s in symbols.values() if s.kind == "class"}
     index = {
+        "format": _cut.INDEX_FORMAT,
         "docs": docs, "file_loc": file_loc,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
                  "n_files": n_files, "n_parse_errors": n_err,

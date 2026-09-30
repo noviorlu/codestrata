@@ -23,26 +23,28 @@ window.CS = window.CS || {};
   var PER_GROUP = 8, MAX = 300;
   var LS = 'codestrata.search.open';
 
-  function prefix() {                         // 只有一个根时，路径前面那段不用每行都写
-    var r = (CS.app && CS.app.data && CS.app.data.repo.roots) || [];
-    return r.length === 1 ? r[0].split('/').pop() + '.' : '';
+  function rootLabel() {                      // 只有一个根时，显示名前面那段不用每行都写
+    return (CS.app && CS.app.data && CS.app.data.rootLabel) || '';
   }
 
   function build(ix) {
-    var out = [], pre = prefix();
+    var out = [], root = rootLabel();
     ix.mods.forEach(function (m) {
-      var id = m[0], short = id.indexOf(pre) === 0 ? id.slice(pre.length) : id;
+      // m = [id, 种类, 文件数, 显示名, 分隔符]：id 是路径，显示名是点分的模块名（Python）或路径
+      var id = m[0], lab = m[3] || id, sep = m[4] || '/', pre = root ? root + sep : '';
+      var short = pre && lab.indexOf(pre) === 0 ? lab.slice(pre.length) : lab;
+      var bare = id.replace(/\/$/, '');
       // 路径写成点号或斜杠都能找到（entrypoints.openai / entrypoints/openai/）
-      out.push({ t: 'mod', id: id, kind: m[1], nf: m[2], name: id.split('.').pop(),
+      out.push({ t: 'mod', id: id, kind: m[1], nf: m[2], name: lab.split(sep).pop(),
                  show: short + (m[1] === 'dir' ? '/' : ''),
-                 path: id + ' ' + id.replace(/\./g, '/') + (m[1] === 'dir' ? '/' : ''),
-                 exact: [id, short, id.replace(/\./g, '/'), short.replace(/\./g, '/')].map(function (x) { return x.toLowerCase(); }) });
+                 path: id + ' ' + lab,
+                 exact: [id, bare, lab, short].map(function (x) { return x.toLowerCase(); }) });
     });
     ix.files.forEach(function (f, i) {
       out.push({ t: 'file', f: f, unit: ix.units[i], name: f.split('/').pop(), path: f });
     });
     ix.syms.forEach(function (s) {
-      var u = ix.units[s[2]], mod = u.replace(/\.__init__$/, '');
+      var u = ix.units[s[2]], mod = (ix.fmods || [])[s[2]] || '';
       out.push({ t: 'sym', q: s[0], k: s[1], f: ix.files[s[2]], l: s[3], unit: u, key: mod + ':' + s[0],
                  name: s[0].split('.').pop(), path: s[0] + ' ' + mod + ' ' + ix.files[s[2]] });
     });
@@ -51,7 +53,7 @@ window.CS = window.CS || {};
       it.lq = it.t === 'sym' ? it.q.toLowerCase() : '';          // 方法连同类名：Class.method
       it.lp = it.path.toLowerCase();                             // 路径：只有词里带 . 或 / 时才看
       // 同分时浅的在前：顶层的 request 模块排在 diffusion.diffusion_kv.request 前面
-      it.depth = ((it.t === 'mod' ? it.id : it.t === 'file' ? it.f : it.q + ' ' + it.f).match(/[./]/g) || []).length;
+      it.depth = ((it.t === 'mod' ? it.id.replace(/\/$/, '') : it.t === 'file' ? it.f : it.q + ' ' + it.f).match(/[./]/g) || []).length;
       it.sortKey = it.t === 'mod' ? it.id : it.t === 'file' ? it.f : it.key;
     });
     return out;

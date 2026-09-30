@@ -55,7 +55,8 @@
     if (p.index) {
       f.push('<span class="ok">已扫描</span>', esc((p.index.roots || []).join('、')) + '：' + p.index.n_files + ' 个文件',
              '扫描于 ' + ago(p.index.scanned_at));
-      if (p.lag) f.push('<span class="warn">之后改过 ' + p.lag + ' 个文件，建议重新扫描</span>');
+      if (p.index.outdated) f.push('<span class="warn">索引是旧版本的格式，要重新扫描才能看图</span>');
+      else if (p.lag) f.push('<span class="warn">之后改过 ' + p.lag + ' 个文件，建议重新扫描</span>');
     } else f.push('<span class="warn">还没扫描</span>');
     if (p.runs_error) f.push('<span class="warn">' + esc(p.runs_error) + '</span>');
     else if (p.n_runs) {
@@ -72,7 +73,7 @@
       return;
     }
     list.innerHTML = projects.map(function (p) {
-      var busy = !!(p.job && p.job.running), scanned = !!p.index;
+      var busy = !!(p.job && p.job.running), scanned = !!p.index && !p.index.outdated;
       return '<section class="card" data-path="' + esc(p.path) + '">'
         + '<div class="top"><span class="name">' + esc(p.name) + '</span><span class="path">' + esc(p.path) + '</span>'
         + '<button class="btn small ghost rm" data-act="remove" title="从清单里去掉（不动仓库里的任何文件）">移除</button></div>'

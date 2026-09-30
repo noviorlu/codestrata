@@ -31,6 +31,17 @@
 - 在哪：`scan.py` 的 `clean_roots`、`check_roots`、`root_clashes`、`detect_roots`、`candidate_roots`；`app.py` 的 `_scan_argv`；
   `__main__.py` 的 `cmd_trace`（显式 `--roots` 也先过 `check_roots`）。
 
+### 单元、目录按路径认，显示名另给
+- 决定：单元 id 是文件相对仓库根的路径，目录 id 是路径加 `/`，本层文件节点是 `<目录>*`，根目录的脚本在 `./` 里；
+  显示名不从 id 拆，由扫描端给 `label` / `sep`（Python 是点分的模块名和 `.`）。id 之间的关系只用 `cut.py` 和 `web/ids.js` 里的函数判断；
+  页面上的名字来自数据（`names`、`labels`、布局的 `label`）。index.json 带 `format`，旧的点分索引读到时提示重新 scan。
+- 为什么：点分名只对 Python 成立：C++ / CUDA 的文件名里有点（`runtime.cu`）、目录名里有连字符，Rust 的模块也不是点分的；
+  多种语言放进同一张图，id 只能按路径。显示名换成扫描端给，Python 的图看起来和原来一模一样（新旧代码在 codestrata 和 vllm-omni 上
+  scan、排版、叠加、时间顺序逐项对比一致，只有两处列表的先后变了）。run 的函数键本来就是 `文件:行`，不受影响，老 run 照样叠。
+- 放弃的方案：Python 留点分名、别的语言用路径（两套规则，切面、排版、前端都要分情况）；id 用点分、显示名也从 id 拆（C++ 文件名表示不了）。
+- 在哪：`cut.py`（`unit_dir`、`root_dir`、`residual`、`within`、`label`、`find_dir`、`INDEX_FORMAT`）、`scan.py`（`unit_label`）、
+  `layout.py`（`_segs`、`name_in`）、`payload.py`（`names`、`labels`、`search_index`）、`web/ids.js`。
+
 ### 纵轴按依赖分层，不用 SCC 缩点，也不用架构高度
 - 决定：`layout.layers` 直接对边排序：按权重贪心去环（Eades–Lin–Smyth），再 sifting（最多 20 轮）把逆向边的权重压到最小，
   最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。架构高度 `(出 − 入) / (出 + 入)` 只留在详情面板和派活顺序里。

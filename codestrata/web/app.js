@@ -57,7 +57,7 @@ window.CS = window.CS || {};
           if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
         };
         CS.graph.onSelectFrame = function (f) {
-          var t = document.getElementById('dtitle'); if (t) t.textContent = f;
+          var t = document.getElementById('dtitle'); if (t) { t.textContent = CS.panel.full(f); t.title = f; }
           var s = document.getElementById('dsub'); if (s) s.textContent = '已在图上展开成框（框头的 − 收起）';
         };
         self.wireDrawer();
@@ -171,8 +171,9 @@ window.CS = window.CS || {};
       var t = document.getElementById('dtitle'), s = document.getElementById('dsub');
       if (!t) return;
       var v = id && (this.data.pkgs || {})[id];
+      t.title = id || '';
       if (id) {
-        t.textContent = id;
+        t.textContent = CS.panel.full(id);
         s.textContent = v ? v.files + ' 个文件 · ' + v.classes + ' 个类 · ' + v.funcs + ' 个函数' : '';
       } else if (a) {
         t.textContent = CS.panel.short(a) + ' → ' + CS.panel.short(b);
@@ -713,7 +714,7 @@ window.CS = window.CS || {};
     /* 收起一个框：本层文件的框只去掉它自己；目录的框连同它底下所有展开的东西一起去掉 */
     collapseFrame: function (f) {
       var open = this.curOpen().filter(function (x) {
-        return /\.\*$/.test(f) ? x !== f : !(x === f || x.indexOf(f + '.') === 0);
+        return CS.ids.isResidual(f) ? x !== f : !(x === f || CS.ids.within(x, f));
       });
       this.setCut(open, f);
     },
@@ -769,9 +770,8 @@ window.CS = window.CS || {};
       var g = graph || CS.graph.G || this.data.graph, best = null, unit = kind === 'unit';
       for (var i = 0; i < g.nodes.length; i++) if (g.nodes[i].id === id) return id;
       g.nodes.forEach(function (n) {
-        var res = /\.\*$/.test(n.id), base = res ? n.id.slice(0, -2) : n.id;
-        var inside = id.indexOf(base + '.') === 0
-          && (!res || (unit && id.slice(base.length + 1).indexOf('.') < 0));
+        var res = CS.ids.isResidual(n.id), base = CS.ids.base(n.id);
+        var inside = CS.ids.within(id, base) && (!res || (unit && CS.ids.dirOf(id) === base));
         if (inside && (!best || n.id.length > best.length)) best = n.id;
       });
       return best;
@@ -800,8 +800,8 @@ window.CS = window.CS || {};
         return null;
       }
       function frameOf(x) {                      // 画不出来的单元：装着它的框（本层文件的框或目录的框）
-        var d = kind === 'unit' ? x.replace(/\.[^.]+$/, '') : x, ids = frames().map(function (f) { return f.id; });
-        return ids.indexOf(d + '.*') >= 0 ? d + '.*' : ids.indexOf(d) >= 0 ? d : null;
+        var d = kind === 'unit' ? CS.ids.dirOf(x) : x, ids = frames().map(function (f) { return f.id; });
+        return ids.indexOf(CS.ids.residual(d)) >= 0 ? CS.ids.residual(d) : ids.indexOf(d) >= 0 ? d : null;
       }
       function exitHot() {                        // 「只看跑到的」里没有它：退出 hot 视图再找
         st.onlyHot = false;

@@ -17,6 +17,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from . import cut as _cut
+
 
 @dataclass
 class Node:
@@ -46,20 +48,27 @@ def _text_w(s: str) -> float:
     return sum(12.4 if ord(c) >= 0x2E80 else 7.25 for c in s)
 
 
-def _label(pkg: str, root_prefix: str) -> str:
+def _segs(x: dict) -> tuple[list[str], str]:
+    """节点的显示段和分隔符（cut.label 算好放在节点上的 label / sep）。"""
+    sep = x.get("sep") or "/"
+    return (x.get("label") or "").split(sep), sep
+
+
+def _label(segs: list[str], sep: str, pre: list[str]) -> str:
     """去掉共同前缀，vllm_omni.engine → engine。展开出来的深层包只留最后两段
     （model_executor.models.minicpmo_4_5 → models.minicpmo_4_5），否则框宽得装不下。"""
-    if root_prefix and pkg.startswith(root_prefix + "."):
-        pkg = pkg[len(root_prefix) + 1:]
-    parts = pkg.split(".")
-    return ".".join(parts[-2:]) if len(parts) > 2 else pkg
+    if pre and segs[:len(pre)] == pre and len(segs) > len(pre):
+        segs = segs[len(pre):]
+    return sep.join(segs[-2:])
 
 
-def _display(pkg: str, kind: str | None, root_prefix: str) -> str:
+def _suffix(kind: str | None) -> str:
+    return "/ 本层" if kind == "residual" else "/" if kind == "dir" else ""
+
+
+def _display(x: dict, kind: str | None, pre: list[str]) -> str:
     """图上的名字：收起的目录带 /，「本层文件」节点写成 目录/ 本层，单个文件原样。"""
-    if kind == "residual":
-        return _label(pkg[:-2], root_prefix) + "/ 本层"
-    return _label(pkg, root_prefix) + ("/" if kind == "dir" else "")
+    return _label(*_segs(x), pre) + _suffix(kind)
 
 
 MAX_LANES = 16      # 层太多时按比例压到这么多条泳道（会有少数边落在同一条里）
@@ -155,8 +164,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
         items = items[:top]
     keep = {p for p, _ in items}
 
-    roots = index["repo"].get("roots") or []
-    root_prefix = roots[0].split("/")[-1] if len(roots) == 1 else ""
+    pre = index.get("root_label") or []       # 只有一个根时它的显示段：图上的名字不再重复写它
 
     edges = [(a, b, w) for a, b, w in index["edges"] if a in keep and b in keep]
     if lane_of is None:
@@ -178,26 +186,27 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
     # 框：展开着的目录把它底下的节点框在一起。fparent 是框的嵌套，home 是每个节点直接所在的框
     fr_in = index.get("frames") or {}
     fparent = {f: (v.get("parent") if v.get("parent") in fr_in else None) for f, v in fr_in.items()}
-    kinds = {p: v.get("kind") for p, v in pkgs.items()}
-    kinds.update({f: v.get("kind") for f, v in fr_in.items()})
+    info = {**pkgs, **fr_in}
     alias = index.get("alias") or {}          # 切面上撞了名的：补过父目录段的名字（cut.disambiguate）
 
     def name_in(p: str, f: str | None) -> str:
         """框里的节点只写相对于框的名字：框头已经写了 diffusion/，
         里面的 diffusion.executor/ 写成 executor/，框就窄得多。同一张图上撞了名的（两个 app）
         不管在哪个框里都写补过父目录段的名字——框头离得远，只看节点分不出来。"""
-        kind = kinds.get(p)
-        own = p[:-2] if kind == "residual" else p
-        if f is not None and own == (f[:-2] if f.endswith(".*") else f):
+        x = info.get(p) or {}
+        kind = x.get("kind")
+        own = _cut.residual_base(p) if kind == "residual" else p
+        if f is not None and own == (_cut.residual_base(f) if _cut.is_residual(f) else f):
             return "本层文件"
         if own in alias:
-            return alias[own] + ("/ 本层" if kind == "residual" else "/" if kind == "dir" else "")
+            return alias[own] + _suffix(kind)
         if f is None:
-            return _display(p, kind, root_prefix)
-        base = f[:-2] if f.endswith(".*") else f
-        if not own.startswith(base + "."):
-            return _display(p, kind, root_prefix)
-        return own[len(base) + 1:] + ("/ 本层" if kind == "residual" else "/" if kind == "dir" else "")
+            return _display(x, kind, pre)
+        fs, _ = _segs(info.get(f) or {})
+        ps, sep = _segs(x)
+        if len(ps) <= len(fs) or ps[:len(fs)] != fs:
+            return _display(x, kind, pre)
+        return sep.join(ps[len(fs):]) + _suffix(kind)
 
     nodes: dict[str, Node] = {}
     for p, v in items:
@@ -624,6 +633,5 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
         "lane_rows": rows, "top": TOP, "frames": frames,
         "nodes": [vars(n) for n in sorted(nodes.values(), key=lambda n: (n.lane, n.order))],
         "edges": [[a, b, w] for a, b, w in edges],
-        "root_prefix": root_prefix,
     }
 

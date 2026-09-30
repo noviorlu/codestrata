@@ -92,9 +92,12 @@ def cmd_scan(a) -> int:
 
 
 def _short(idx: dict, name: str) -> str:
-    roots = idx["repo"].get("roots") or []
-    pre = roots[0].split("/")[-1] + "." if len(roots) == 1 else ""
-    return name[len(pre):] if pre and name.startswith(pre) else name
+    """节点的显示名，去掉唯一的那个根（vllm_omni.engine → engine）。"""
+    segs, sep = _cut.label(idx, name)
+    pre = _cut.root_label(idx)
+    if pre and segs[:len(pre)] == pre and len(segs) > len(pre):
+        segs = segs[len(pre):]
+    return sep.join(segs)
 
 
 def cmd_graph(a) -> int:

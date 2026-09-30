@@ -12,7 +12,7 @@ export default async function (t) {
   await page.click(chip);
   ok(await page.wait(`CS.graph.edges.filter(E => E._tc).length === 3`, 15000), '开：三条跑到的边都上了色');
   const order = await ranked(page);
-  ok(JSON.stringify(order) === JSON.stringify(['fakesvc.truth|fakesvc.callee', 'fakesvc.callee|fakesvc.other', 'fakesvc.execd|fakesvc.work']),
+  ok(JSON.stringify(order) === JSON.stringify(['fakesvc/truth.py|fakesvc/callee.py', 'fakesvc/callee.py|fakesvc/other.py', 'fakesvc/execd.py|fakesvc/work.py']),
      '按第一次被调用排：truth→callee、callee→other、最后是 exec 出来的进程 ' + JSON.stringify(order));
   const badges = await page.ev(`[...document.querySelectorAll('#g .tord .tn')].map(g => g.textContent)`);
   ok(badges.length === 3 && badges.some(b => b.includes('↻')), '边上有序号，反复调用的 truth→callee 带 ↻ ' + JSON.stringify(badges));

@@ -172,7 +172,7 @@ def test_candidate_roots_layouts():
         (one / rel).write_text(src)
     cs("scan", one, "--roots", "pkg/", "./pkg")
     idx = payload.load_index(one)
-    assert idx["repo"]["roots"] == ["pkg"] and ["pkg.a", "pkg.b", 1] in idx["edges"], (idx["repo"], idx["edges"])
+    assert idx["repo"]["roots"] == ["pkg"] and ["pkg/a.py", "pkg/b.py", 1] in idx["edges"], (idx["repo"], idx["edges"])
 
 
 def test_scan_build_pkg_root_scripts_and_ext_sources():
@@ -195,12 +195,17 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     cs("scan", repo, "--roots", ".", "pkg", "sub/proj/ext")
     idx = payload.load_index(repo)
     units = set(idx["packages"])
-    assert {"pkg.build.wheel", "pkg.env.__init__", "my_repo.train", "my_repo.setup_tools"} <= units, units
+    labels = {v["label"] for v in idx["packages"].values()}
+    assert {"pkg/build/wheel.py", "pkg/env/__init__.py", "train.py", "setup_tools.py"} <= units, units
+    assert {"pkg.build.wheel", "pkg.env.__init__", "my_repo.train", "my_repo.setup_tools"} <= labels, labels
     assert not any("lib" in u for u in units), units
-    assert ["my_repo.train", "pkg.core", 1] in idx["edges"] and ["pkg.build.wheel", "pkg.core", 1] in idx["edges"]
-    assert ["my_repo.setup_tools", "my_repo.train", 2] in idx["edges"], idx["edges"]      # 根目录脚本之间的裸 import
-    assert idx["dirs"]["my_repo"]["parent"] is None and idx["files"]["train.py"] == "my_repo.train"
-    assert idx["aux"] == {"sub/proj/ext/inner.cu": "ext", "sub/proj/csrc/k.cu": "ext", "sub/proj/tests/t.cpp": "ext"}, idx["aux"]
+    assert ["train.py", "pkg/core.py", 1] in idx["edges"] and ["pkg/build/wheel.py", "pkg/core.py", 1] in idx["edges"]
+    assert ["setup_tools.py", "train.py", 2] in idx["edges"], idx["edges"]      # 根目录脚本之间的裸 import
+    # 根目录的脚本在 ./ 这个目录里，显示成仓库名
+    assert idx["dirs"]["./"]["parent"] is None and idx["dirs"]["./"]["label"] == "my_repo"
+    assert idx["files"]["train.py"] == "train.py"
+    assert idx["aux"] == {"sub/proj/ext/inner.cu": "sub/proj/ext/", "sub/proj/csrc/k.cu": "sub/proj/ext/",
+                          "sub/proj/tests/t.cpp": "sub/proj/ext/"}, idx["aux"]
     assert idx["file_loc"]["sub/proj/csrc/k.cu"] == 3
     # 根目录的脚本 trace 得到：函数记在 my_repo.train 上
     cs("trace", repo, "--case", "s", "--phase", "work=my_repo.train:main", "--", PY, "train.py")
@@ -211,7 +216,9 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     for rel in ("pkg/__init__.py", "run.py"):
         (same / rel).parent.mkdir(parents=True, exist_ok=True)
         (same / rel).write_text("")
-    assert set(scan_mod.scan(same, roots=[".", "pkg"])["packages"]) == {"pkg.__init__", "pkg_scripts.run"}
+    pk = scan_mod.scan(same, roots=[".", "pkg"])["packages"]
+    assert set(pk) == {"pkg/__init__.py", "run.py"}, set(pk)
+    assert {v["label"] for v in pk.values()} == {"pkg.__init__", "pkg_scripts.run"}
 
 
 # ---------------------------------------------------------------- jobs
@@ -466,11 +473,11 @@ def test_app_http():
         assert c.req("GET", o["url"] + "api/open?f=does-not-exist.py&l=1", header=False)[0] == 403
         assert _status(vport, "GET", "/api/app", host="evil.example") == 403          # 图服务自己也挡 DNS rebinding
         assert c.req("POST", "/api/open", {"repo": str(raw)})[1]["url"] == o["url"]     # 再点一次：复用
-        assert "fakesvc.newmod" not in _node_ids(vport)
+        assert "fakesvc/newmod.py" not in _node_ids(vport)
         # 重新扫描：图服务在原端口重启、读到新的 index（开着的标签刷新一下就是新的）
         (raw / "fakesvc" / "newmod.py").write_text("def f():\n    return 1\n")
         c.job(c.req("POST", "/api/scan", {"repo": str(raw), "roots": ["fakesvc"]})[1])
-        assert "fakesvc.newmod" in _node_ids(vport)
+        assert "fakesvc/newmod.py" in _node_ids(vport)
         # 有任务在跑的项目不能移除；移除后图服务也停了，仓库里的东西都还在
         long = c.req("POST", "/api/trace", {"repo": str(raw), "case": "long",
                                             "command": SLOW})[1]

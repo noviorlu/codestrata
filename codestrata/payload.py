@@ -27,7 +27,8 @@ def index_summary(repo: Path) -> dict | None:
         return None
     r = idx.get("repo") or {}
     return {"scanned_at": at, "n_files": r.get("n_files"), "n_symbols": idx.get("n_symbols"),
-            "n_parse_errors": r.get("n_parse_errors"), "roots": r.get("roots") or []}
+            "n_parse_errors": r.get("n_parse_errors"), "roots": r.get("roots") or [],
+            "outdated": idx.get("format") != _cut.INDEX_FORMAT}
 
 
 def load_index(repo: Path) -> dict:
@@ -36,6 +37,8 @@ def load_index(repo: Path) -> dict:
     if not p.exists():
         raise SystemExit(f"没有 {p}；先跑 codestrata scan {repo}")
     idx = json.loads(p.read_text(encoding="utf-8"))
+    if idx.get("format") != _cut.INDEX_FORMAT:
+        raise SystemExit(f"{p} 是旧版本的格式（单元按点分名认）；重新跑一次 codestrata scan {repo}")
     sp = d / "symbols.json"
     if sp.exists():
         extra = json.loads(sp.read_text(encoding="utf-8"))
@@ -158,7 +161,9 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
         x["collapsible"] = f is not None
         while f and f not in frames:
             p = _cut.parent_of(idx, f)
-            frames[f] = {"parent": p if p != top else None, "kind": _cut.kind(idx, f), "n": 0}
+            segs, sep = _cut.label(idx, f)
+            frames[f] = {"parent": p if p != top else None, "kind": _cut.kind(idx, f), "n": 0,
+                         "label": sep.join(segs), "sep": sep}
             f = frames[f]["parent"]
     for n in _cut.visible(v):              # 每个框里一共有几个画得出来的节点（hot 视图只画一部分）
         f = v["nodes"][n]["frame"]
@@ -167,7 +172,8 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             f = frames[f]["parent"]
     # 同一个切面上短名撞了的（flask.app 和 flask.sansio.app 都叫 app）：补上父目录段，图上和面板里一样
     alias = _cut.disambiguate(idx, set(_cut.visible(v)) | set(frames))
-    syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames, "alias": alias}
+    syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames, "alias": alias,
+           "root_label": _cut.root_label(idx)}
     # 分层（纵轴）：叠了 run 就按这次实际发生的调用排，调用方在上；
     # 静态 import 只作次要依据——基类回调子类、注册表、回调这些调用和 import 的方向是反的
     rt_calls = _hot_on_cut(hot, v["node_of"])[1] if hot else {}
@@ -252,7 +258,16 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     phase_marks = [{**{k: t.get(k) for k in ("name", "func", "qualname", "file", "line")},
                     "node": v["node_of"].get(files.get(t.get("file")))}
                    for t in (hot_meta or {}).get("phase_at") or []]
-    return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"],
+    # 面板、搜索栏写的短名（不带框的相对部分）：撞了名的用补过父目录段的，其余是显示名的最后一段
+    # labels 是完整的显示名（标题用：vllm_omni.engine.core）
+    names, labels = {}, {}
+    for n in set(v["nodes"]) | set(frames):
+        own = _cut.residual_base(n) if _cut.is_residual(n) else n
+        names[n] = alias.get(own) or _cut.short(idx, own)
+        segs, sep = _cut.label(idx, own)
+        labels[n] = sep.join(segs)
+    return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"], "names": names, "labels": labels,
+            "rootLabel": _cut.sep_join(idx, _cut.root_label(idx)),
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
             "alias": alias, "edgeKinds": kinds, "runtimeOnlyEdges": rt_only, "dynOnlyEdges": dyn_only, "typeOnlyEdges": type_only,
@@ -799,20 +814,29 @@ def symbol_source(repo: Path, idx: dict, key: str, lines: int = 40) -> dict | No
 
 def search_index(idx: dict) -> dict:
     """右边搜索栏要的全部名字，前端自己搜（导出版也能用）：
-      mods   [[模块名, 种类 dir / unit, 文件数], ...]   目录树上的每个目录和每个文件级模块
-      files  [路径, ...]                               Python 文件和包里的 C++ / CUDA 文件
+      mods   [[id, 种类 dir / unit, 文件数, 显示名, 分隔符], ...]   目录树上的每个目录和每个单元
+      files  [路径, ...]                               单元的文件和包里的 C++ / CUDA 文件
       units  [所属单元, ...]                           和 files 对齐（C++ 文件是空串）
+      fmods  [模块名, ...]                             和 files 对齐：符号键的前半段（没有符号的是空串）
       syms   [[限定名, 种类首字母 c / f, 文件下标, 行], ...]   类、函数、方法
-    符号不存完整的键（模块名重复两万多遍）：键 = 文件所属单元去掉 .__init__ + ":" + 限定名。"""
+    符号不存完整的键（模块名重复两万多遍）：键 = fmods[文件下标] + ":" + 限定名。"""
     tree = idx.get("dirs") or {}
-    mods = [[d, "dir", len(_cut.units_of(idx, d))] for d in sorted(tree)]
-    mods += [[u, "unit", v["files"]] for u, v in sorted((idx.get("packages") or {}).items())]
+
+    def mod(x: str, kind: str, n: int) -> list:
+        segs, sep = _cut.label(idx, x)
+        return [x, kind, n, sep.join(segs), sep]
+    mods = [mod(d, "dir", len(_cut.units_of(idx, d))) for d in sorted(tree)]
+    mods += [mod(u, "unit", v["files"]) for u, v in sorted((idx.get("packages") or {}).items())]
     unit_of = idx.get("files") or {}
     files = sorted(set(unit_of) | set(idx.get("aux") or {}))
     at = {f: i for i, f in enumerate(files)}
+    fmod = {}
+    for s in (idx.get("symbols") or {}).values():
+        fmod.setdefault(s["f"], s["m"])
     syms = [[s["n"], s["k"][0], at[s["f"]], s["l"]] for _, s in sorted((idx.get("symbols") or {}).items())
             if s["f"] in at]
-    return {"mods": mods, "files": files, "units": [unit_of.get(f, "") for f in files], "syms": syms}
+    return {"mods": mods, "files": files, "units": [unit_of.get(f, "") for f in files],
+            "fmods": [fmod.get(f, "") for f in files], "syms": syms}
 
 
 def reveal(idx: dict, node: str, open_) -> list[str] | None:

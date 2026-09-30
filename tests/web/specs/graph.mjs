@@ -11,12 +11,12 @@ export default async function (t) {
   ok(!(await page.ev('!!CS.graph.hot')), '没有叠加');
   // 分层：被调的在下面（truth 调 callee，callee 调 other）
   const y = await page.ev(`Object.fromEntries([...document.querySelectorAll('#g .nd')].map(g => [g.dataset.id, g.getBoundingClientRect().top]))`);
-  ok(y['fakesvc.truth'] < y['fakesvc.callee'] && y['fakesvc.callee'] < y['fakesvc.other'], '分层：依赖方在上、被依赖的在下');
+  ok(y['fakesvc/truth.py'] < y['fakesvc/callee.py'] && y['fakesvc/callee.py'] < y['fakesvc/other.py'], '分层：依赖方在上、被依赖的在下');
   ok((await page.ev(`[...document.querySelectorAll('#g text')].map(x => x.textContent).join(' ')`)).includes('第'), '泳道有层号标签');
 
   // 点节点：选中，详情里是它的文件和函数
-  await clickNode(page, 'fakesvc.callee');
-  ok(await page.ev(`CS.graph.state.sel`) === 'fakesvc.callee', '点节点：选中它');
+  await clickNode(page, 'fakesvc/callee.py');
+  ok(await page.ev(`CS.graph.state.sel`) === 'fakesvc/callee.py', '点节点：选中它');
   ok(await page.wait(`document.getElementById('det').textContent.includes('callee')`), '详情里是这个模块');
   ok(await page.ev(`document.getElementById('dtitle').textContent`) === 'fakesvc.callee', '详情栏标题写这个节点');
   await page.key('Escape', 'Escape', 27);

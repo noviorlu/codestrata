@@ -62,7 +62,7 @@ flowchart LR
 | `__main__.py` | 784 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
 | `scan.py` | 806 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1401 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击 |
-| `cut.py` | 288 | 目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
+| `cut.py` | 391 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 629 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 657 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
@@ -79,6 +79,7 @@ flowchart LR
 | `projects.py` | 201 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
+| `web/ids.js` | 29 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 388 | 数据源层：live（fetch `api/*`）/ embedded / linked |
 | `web/app.js` | 1055 | 入口：串起数据源、图、面板、run 选择、时间轴 |
 | `web/graph.js` | 683 | SVG 绘图（纯函数式），边的配色约定 |
@@ -100,7 +101,7 @@ flowchart LR
 **语言无关**（只认 `文件:首行号` 键和单元 id，不认语法）：
 - run 的存储：`run.json` / `detail.json` / `counts.json.gz`（各阶段 `funcs`、`func_edges`）、阶段日志 `phase_log`、
   `runs` 的建 / 收尾 / 解析 / 管理 / 复刻命令；`events.py` 的日志格式和 span；`seq.py` 的时间窗和边时刻。
-- 切面和排版：`cut.py`（单元 id 是点分名；`unit_dir` 对 `.__init__` 的特判来自 Python 的包约定）、`layout.py`（只吃 id 和带权边）。
+- 切面和排版：`cut.py`（单元 id 是文件路径、目录 id 是路径加 `/`，显示名来自扫描端给的 `label` / `sep`；`dir_node` 把展开的目录挂到它的 `__init__.py` 上是 Python 的约定）、`layout.py`（只吃 id、显示名和带权边）。
 - 叠加：`payload._hot_on_cut`、`graph_payload`；`trace/analysis.py` 的 `to_package_graph` / `sym_locs` / `defining`
   只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`k`），「第 0 行 = 模块顶层」「落在类符号行 = 类体」是约定。
 - `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
@@ -123,9 +124,10 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 ## 前端结构
 
 `codestrata/web/` 下是原样发布的静态文件，**没有构建步骤**：普通 `<script>`，每个文件是一个 IIFE，往 `window.CS`
-上挂一个对象（`CS.ds`、`CS.graph`、`CS.findbar`、`CS.viewer` / `CS.xref`、`CS.panel`、`CS.search`、`CS.timebar`、`CS.hl`、`CS.app`）。
+上挂一个对象（`CS.ids`、`CS.ds`、`CS.graph`、`CS.findbar`、`CS.viewer` / `CS.xref`、`CS.panel`、`CS.search`、`CS.timebar`、`CS.hl`、`CS.app`）。
+节点 id 是路径，页面上显示的名字都来自数据（`names` 短名、`labels` 完整名、布局给的 `label`），不从 id 拆；判断 id 之间的关系只用 `CS.ids`。
 
-- **加载顺序**：`index.html` 末尾依次是 `hl.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
+- **加载顺序**：`index.html` 末尾依次是 `hl.js`、`ids.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
   `timebar.js`、`app.js`（`app.js` 最后启动）。导出时 `render.SCRIPTS` 是同一顺序去掉 `hl.js`：`render.export` 把
   `hl.js` 单独放一个 `<script>`（它用了正则后行断言，老浏览器解析失败时只丢高亮）。`tests/test_package.py` 核对两份清单一致。
 - **数据源层 `ds.js`**：UI 只调 `CS.ds.*`。有 `window.CS_EMBEDDED` 时是 embedded（只读、固定切面、没有时序数据），
@@ -158,7 +160,8 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
-  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run）。
+  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run），
+  切面那份另用一个只 scan 的嵌套小仓库（展开 / 收起、本层文件、搜索定位）。
   要 node 22+ 和 Chrome / Chromium，没有就跳过；约 15 秒。
 
 ## 平台

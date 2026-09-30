@@ -24,7 +24,7 @@ export default async function (t) {
   ok(s.win[1] === tl[2] && s.win[0] > tl[1], '终点不变、起点往后 ' + JSON.stringify([s.win, tl]));
   ok(s.pressed.length === 0 && s.banner.includes('时间段') && s.banner.includes('跨文件'), '没有阶段按下，横幅写明时间段、只算跨文件的调用');
   const he = await hotEdges(page);
-  ok(Object.keys(he).length >= 1 && !he['fakesvc.execd|fakesvc.work'], '时间段里跑到的边 ' + JSON.stringify(he));
+  ok(Object.keys(he).length >= 1 && !he['fakesvc/execd.py|fakesvc/work.py'], '时间段里跑到的边 ' + JSON.stringify(he));
 
   // 拖中间：平移，宽度不变
   const w0 = s.win, sel2 = await page.rect('.tsel');
@@ -55,7 +55,7 @@ export default async function (t) {
   const fk = await page.rect('.tseg[data-seg="forks"]');
   await page.mouse('mouseMoved', fk.x, fk.y); await page.mouse('mousePressed', fk.x, fk.y, 1); await page.mouse('mouseReleased', fk.x, fk.y);
   ok(await waitRun(page, fx.a + '@forks'), '点 forks 色段：选 forks');
-  ok((await hotEdges(page))['fakesvc.execd|fakesvc.work'] === 1, 'forks 阶段里有 exec 那条边');
+  ok((await hotEdges(page))['fakesvc/execd.py|fakesvc/work.py'] === 1, 'forks 阶段里有 exec 那条边');
   await page.click('.tph[data-ph=""]');
   ok(await waitRun(page, fx.a), '点「全部」：整个 run');
   ok(!(await hash(page)).includes('@'), '地址里没有 @');

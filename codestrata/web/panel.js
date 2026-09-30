@@ -9,9 +9,16 @@ window.CS = window.CS || {};
 
   function short(id) {
     id = String(id);
-    // 同一个切面上撞了名的（flask.app / flask.sansio.app）：用补过父目录段的名字，和图上一致
-    var r = /\.\*$/.test(id), d = r ? id.slice(0, -2) : id, a = (D && D.alias) || {};
-    return (Object.prototype.hasOwnProperty.call(a, d) ? a[d] : d.split('.').pop()) + (r ? '/ 本层' : '');
+    // 同一个切面上撞了名的（flask.app / flask.sansio.app）：数据里的 names 已经补过父目录段，和图上一致
+    var r = CS.ids.isResidual(id), nm = (D && D.names) || {};
+    var s = Object.prototype.hasOwnProperty.call(nm, id) ? nm[id] : CS.ids.last(id);
+    return s + (r ? '/ 本层' : '');
+  }
+  /* 节点的完整显示名（vllm_omni.engine.core；本层文件写成 目录/ 本层）：标题用。id 是路径，放在悬停提示里 */
+  function full(id) {
+    id = String(id);
+    var L = (D && D.labels) || {};
+    return (Object.prototype.hasOwnProperty.call(L, id) ? L[id] : id) + (CS.ids.isResidual(id) ? '/ 本层' : '');
   }
   var KIND = { dir: '目录（整棵子树收成一个节点）', residual: '目录里直接放着的文件（不含子目录）', unit: '单个文件' };
   /* 符号键 codestrata.payload:Handler.do_GET → payload:Handler.do_GET；兜底键（文件:行）原样显示 */
@@ -19,7 +26,7 @@ window.CS = window.CS || {};
     var i = k.indexOf(':'); if (i < 0) return k;
     var m = k.slice(0, i), q = k.slice(i + 1);
     if (m.indexOf('/') >= 0) return m.split('/').pop() + (q === '<module>' ? ' 顶层' : ':' + q);
-    return short(m) + ':' + q;
+    return m.split('.').pop() + ':' + q;       // 符号键的前半段是点分的模块名，不是节点 id
   }
   function jump(d, text, cls) {
     return d ? '<button class="' + (cls || 'site') + '" data-view="' + esc(d.f) + '" data-line="' + d.l + '">'
@@ -125,6 +132,7 @@ window.CS = window.CS || {};
 
   CS.panel = {
     short: short,      // 节点的短名（撞名的用补过父目录段的别名，和图上一致）：抽屉标题也用它
+    full: full,        // 节点的完整显示名
     _detTok: 0,                   // 面板每换一次内容加一：异步请求回来时据此判断还要不要画
     init: function (detEl, data) { det = detEl; D = data; this.reset(); },
 
@@ -170,7 +178,7 @@ window.CS = window.CS || {};
         }).join('') + '</div>';
       }
       det.dataset.pkg = id;
-      det.innerHTML = '<h2>' + esc(id) + '</h2>'
+      det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
         + '<div class="sub">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
         + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
@@ -572,7 +580,7 @@ window.CS = window.CS || {};
     showEdge: function (a, b) {
       delete det.dataset.pkg;
       det.innerHTML = '<h2>' + esc(short(a)) + '<span class="arr">→</span>' + esc(short(b)) + '</h2>'
-        + '<div class="sub">' + esc(a) + ' → ' + esc(b) + '</div><p class="hint">读取中…</p>';
+        + '<div class="sub">' + esc(full(a)) + ' → ' + esc(full(b)) + '</div><p class="hint">读取中…</p>';
       var self = this, tok = ++this._detTok;
       CS.ds.edge(a, b).then(function (E) {
         if (tok !== self._detTok) return;          // 这期间面板已经换了内容
