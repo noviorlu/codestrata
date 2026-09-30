@@ -1,4 +1,4 @@
-// 静态图：节点和接口一致、分层、点节点看详情、Esc 取消、缩放、搜索栏
+// 静态图：节点和接口一致、分层、点节点看详情、Esc 取消、缩放、搜索栏（找到函数、在详情里定位）
 import { clickNode, drawnNodes, sleep } from '../lib.mjs';
 
 export default async function (t) {
@@ -34,4 +34,10 @@ export default async function (t) {
   ok(await page.wait(`document.activeElement && document.activeElement.id === 'sq' || (document.activeElement && document.activeElement.closest && !!document.activeElement.closest('#sbar'))`), '/ 跳到搜索框');
   await page.type('deep');
   ok(await page.wait(`document.getElementById('sbar').textContent.includes('deep')`), '搜 deep：结果里有 other.deep');
+  // 回车：选中 other 这个节点，详情里按符号键（<路径>#<限定名>）找到 deep 那一行，并显示它的源码
+  await page.key('Enter', 'Enter', 13);
+  ok(await page.wait(`CS.graph.state.sel === 'fakesvc/other.py'`), '回车：图上选中 other');
+  ok(await page.wait(`(() => { const b = document.querySelector('#tree [data-tsym="fakesvc/other.py#deep"]');
+                               return !!b && /def deep/.test(b.parentNode.parentNode.textContent); })()`, 15000),
+     '详情里按符号键 fakesvc/other.py#deep 定位到 deep，显示它的源码');
 }

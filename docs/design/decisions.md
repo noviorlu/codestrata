@@ -31,15 +31,19 @@
 - 在哪：`scan.py` 的 `clean_roots`、`check_roots`、`root_clashes`、`detect_roots`、`candidate_roots`；`app.py` 的 `_scan_argv`；
   `__main__.py` 的 `cmd_trace`（显式 `--roots` 也先过 `check_roots`）。
 
-### 单元、目录按路径认，显示名另给
+### 单元、目录、符号按路径认，显示名另给
 - 决定：单元 id 是文件相对仓库根的路径，目录 id 是路径加 `/`，本层文件节点是 `<目录>*`，根目录的脚本在 `./` 里；
+  符号键是 `<文件路径>#<限定名>`，边上引用的名字、xref 的目标（`s:` / `v:` / `m:`）用同一种写法（xref 内部仍按模块名解析，写出时才换）；
+  `--phase` 在命令行上照旧写 `模块:限定名`（给人写的），解析时按符号的 `m` 对上路径；
   显示名不从 id 拆，由扫描端给 `label` / `sep`（Python 是点分的模块名和 `.`）。id 之间的关系只用 `cut.py` 和 `web/ids.js` 里的函数判断；
   页面上的名字来自数据（`names`、`labels`、布局的 `label`）。index.json 带 `format`，旧的点分索引读到时提示重新 scan。
 - 为什么：点分名只对 Python 成立：C++ / CUDA 的文件名里有点（`runtime.cu`）、目录名里有连字符，Rust 的模块也不是点分的；
   多种语言放进同一张图，id 只能按路径。显示名换成扫描端给，Python 的图看起来和原来一模一样（新旧代码在 codestrata 和 vllm-omni 上
   scan、排版、叠加、时间顺序逐项对比一致，只有两处列表的先后变了）。run 的函数键本来就是 `文件:行`，不受影响，老 run 照样叠。
-- 放弃的方案：Python 留点分名、别的语言用路径（两套规则，切面、排版、前端都要分情况）；id 用点分、显示名也从 id 拆（C++ 文件名表示不了）。
-- 在哪：`cut.py`（`unit_dir`、`root_dir`、`residual`、`within`、`label`、`find_dir`、`INDEX_FORMAT`）、`scan.py`（`unit_label`）、
+- 放弃的方案：Python 留点分名、别的语言用路径（两套规则，切面、排版、前端都要分情况）；id 用点分、显示名也从 id 拆（C++ 文件名表示不了）；
+  符号键保留冒号分隔（`<路径>:<限定名>` 和函数键 `<路径>:<行>` 长得一样，容易混）。
+- 在哪：`cut.py`（`unit_dir`、`root_dir`、`residual`、`within`、`label`、`find_dir`、`INDEX_FORMAT`）、`scan.py`（`unit_label`、`Symbol.key`）、
+  `xref.py`（`_out_target`）、`trace/analysis.py`（`_module_paths`、`defining`）、
   `layout.py`（`_segs`、`name_in`）、`payload.py`（`names`、`labels`、`search_index`）、`web/ids.js`。
 
 ### 纵轴按依赖分层，不用 SCC 缩点，也不用架构高度
@@ -76,6 +80,7 @@
 
 ### import 触发的模块执行、类体执行都不是调用
 - 决定：第 0 行（`<module>` 帧，含 3.12 泛型的定义帧）和落在类符号那一行的帧（class 语句执行时跑一次的类体）算「定义时的执行」，
+  （哪些符号有这种执行由扫描端标 `x: ["defexec"]`，Python 给类标；`defining` 只认标记，不认语言）
   不计入符号、单元、文件的次数，作为被调方时单独记进 `edge_import_exec`，不把边染成橙色；「时间顺序」用同一个判断。
 - 为什么：否则每条 import 边都会因为「导入过」被染成橙色，只被 import、一个函数都没调过的包也显示成「跑到了」。
   类体那一半起因是 httpx 的试用：sync 阶段惰性 import 了 httpcore，一堆 Async 类的类体被算成 sync 调了 async 的类。按行号认，已经录好的老 run 加载时一样分得出来。

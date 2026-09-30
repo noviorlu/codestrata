@@ -210,7 +210,7 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     # 根目录的脚本 trace 得到：函数记在 my_repo.train 上
     cs("trace", repo, "--case", "s", "--phase", "work=my_repo.train:main", "--", PY, "train.py")
     hot, _ = payload.load_hot(repo, idx, "s@work")
-    assert hot["symbols"].get("my_repo.train:main") == 1 and hot["symbols"].get("pkg.core:f") == 1, hot["symbols"]
+    assert hot["symbols"].get("train.py#main") == 1 and hot["symbols"].get("pkg/core.py#f") == 1, hot["symbols"]
     # 仓库名和包名一样：脚本的目录节点加 _scripts
     same = tmpdir("cs-app-") / "pkg"
     for rel in ("pkg/__init__.py", "run.py"):

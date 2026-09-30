@@ -158,15 +158,14 @@ def resolve_phase_at(root: Path, specs: list[str], symbols: dict | None) -> list
             if symbols is None:
                 raise SystemExit(f"--phase {name}：模块:qualname 的写法要查静态索引，先 codestrata scan；"
                                  f"或者写成 文件路径:qualname")
-            key = f"{where}:{q.replace('.<locals>', '')}"     # 索引里嵌套的名字不带 .<locals>
-            s = symbols.get(key)
+            path = _module_paths(symbols).get(where)            # 命令行写模块名，索引的键是 <路径>#<限定名>
+            s = symbols.get(f"{path}#{q.replace('.<locals>', '')}") if path else None   # 索引里嵌套的名字不带 .<locals>
             if s is None or s.get("k") != "func":
                 s, via = _inherited(symbols, where, q.replace(".<locals>", ""))
             if s is None:
                 last = q.rsplit(".", 1)[-1]
-                near = [k for k, v in symbols.items() if v.get("k") == "func"
-                        and k.split(":", 1)[1].rsplit(".", 1)[-1] == last][:6]
-                raise SystemExit(f"--phase {name}：静态索引里没有函数 {key}"
+                near = [_human(v) for v in symbols.values() if v.get("k") == "func" and v["n"].rsplit(".", 1)[-1] == last][:6]
+                raise SystemExit(f"--phase {name}：静态索引里没有函数 {where}:{q}"
                                  + (f"；同名的有：{'、'.join(near)}" if near else ""))
             if isinstance(s, str):                   # _inherited 说不准（基类不在仓库里）：给出原因
                 raise SystemExit(f"--phase {name}：{s}")
@@ -188,6 +187,16 @@ def resolve_phase_at(root: Path, specs: list[str], symbols: dict | None) -> list
     return out
 
 
+def _module_paths(symbols: dict) -> dict[str, str]:
+    """点分模块名 → 文件路径（从符号表里来：--phase 写的是模块名）"""
+    return {v["m"]: v["f"] for v in symbols.values() if v.get("m")}
+
+
+def _human(s: dict) -> str:
+    """给人看的写法：模块:限定名（和 --phase 的写法一致）"""
+    return f"{s['m']}:{s['n']}" if s.get("m") else f"{s['f']}:{s['n']}"
+
+
 # 基类里这些不会定义仓库里的方法：MRO 里碰到它们可以跳过，不算「不在仓库里、说不准」
 _OPAQUE_OK = {"object", "Generic", "ABC", "Protocol"}
 
@@ -196,19 +205,19 @@ def _inherited(symbols: dict, mod: str, q: str) -> tuple[dict | str | None, str 
     """模块:类.方法 在这个类上没定义的，按 C3 MRO 顺着基类（静态索引里记的名字）找。基类先在同一个
     模块里找，再按名字在整个索引里找（唯一才认），Base[T] 去掉下标。MRO 里先碰到仓库外的基类
     （除了 object / Generic / ABC / Protocol）就不猜，返回说明原因的字符串。
-    返回 (符号, 实际定义它的键)；找不到返回 (None, None)。"""
+    返回 (符号, 实际定义它的类.方法，写成 模块:限定名)；找不到返回 (None, None)。"""
     cls, dot, meth = q.rpartition(".")
     if not dot:
         return None, None
     classes = {k: v for k, v in symbols.items() if v.get("k") == "class"}
     by_name: dict[str, list[str]] = {}
-    for k in classes:
-        by_name.setdefault(k.split(":", 1)[1].rsplit(".", 1)[-1], []).append(k)
+    for k, v in classes.items():
+        by_name.setdefault(v["n"].rsplit(".", 1)[-1], []).append(k)
 
     def base_key(ck: str, b: str) -> str:
         b = re.sub(r"\[.*$", "", b).strip()
         last = b.rsplit(".", 1)[-1]
-        same = f"{ck.split(':', 1)[0]}:{last}"
+        same = f"{ck.partition('#')[0]}#{last}"          # 先在同一个文件里找
         if same in classes:
             return same
         cand = by_name.get(last) or []
@@ -248,12 +257,13 @@ def _inherited(symbols: dict, mod: str, q: str) -> tuple[dict | str | None, str 
         memo[ck] = res
         return res
 
-    start = f"{mod}:{cls}"
-    if start not in classes:
+    path = _module_paths(symbols).get(mod)
+    start = f"{path}#{cls}"
+    if not path or start not in classes:
         return None, None
     order = mro(start)
     if order is None:
-        return f"{start} 的继承关系解析不了（有环或者不一致）", None
+        return f"{mod}:{cls} 的继承关系解析不了（有环或者不一致）", None
     for ck in order[1:]:
         if ck.startswith("?"):
             if ck[1:] in _OPAQUE_OK:
@@ -262,7 +272,7 @@ def _inherited(symbols: dict, mod: str, q: str) -> tuple[dict | str | None, str 
                     f"说不准实际调的是哪个；写成定义它的那个类的 模块:qualname"), None
         s = symbols.get(f"{ck}.{meth}")
         if s and s.get("k") == "func":
-            return s, f"{ck}.{meth}"
+            return s, _human(s)
     return None, None
 
 
@@ -406,14 +416,14 @@ def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
     和「时间顺序」（seq）用同一个判断。loc2sym 是 sym_locs(symbols) 的第一项。
       module —— <module> 帧（第 0 行；老 trace 记成第 1 行，那一行又没有符号），import 触发的模块顶层执行
       class  —— 类体：class 语句执行时跑一次的帧，co_firstlineno 是 class 行（有装饰器是第一个装饰器那一行），
-                正好落在类符号的 l / dl 上。类不会被「调用」——实例化跑的是 __init__ / __new__，它们有自己的
+                正好落在类符号的 l / dl 上（扫描端给这种符号标 x: ["defexec"]，这里只认标记，不认语言）。类不会被「调用」——实例化跑的是 __init__ / __new__，它们有自己的
                 def 行——所以落在类符号上的帧只能是定义（3.12 泛型类的 <generic parameters of X> 帧也在这一行）。
                 按行号认，已经录好的老 run 加载时一样分得出来"""
     if ln == 0:
         return "module"
     sk = loc2sym.get((rel, ln))
-    if sk:
-        return "class" if symbols[sk]["k"] == "class" else None
+    if sk:                                      # 扫描端标了 defexec 的符号（Python 的类）：落在定义行上的是定义时的执行
+        return "class" if "defexec" in (symbols[sk].get("x") or ()) else None
     return "module" if ln == 1 else None
 
 

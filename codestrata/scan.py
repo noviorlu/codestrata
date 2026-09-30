@@ -91,11 +91,15 @@ class Symbol:
     also: list[list[int]] = field(default_factory=list)  # 同名的另几个 def（property 的 setter、overload）：[[行, 装饰器行, 末行]]
 
     def key(self) -> str:
-        return f"{self.module}:{self.name}"
+        """符号键：<文件路径>#<限定名>（不认语言；C++ / Rust 的限定名里有 ::，所以不拿冒号分）"""
+        return f"{self.file}#{self.name}"
 
     def as_json(self) -> dict:
-        d = {"n": self.name, "k": self.kind, "f": self.file, "l": self.line,
-             "m": self.module, "p": self.pkg}
+        d = {"n": self.name, "s": self.name.rsplit(".", 1)[-1], "k": self.kind, "f": self.file, "l": self.line,
+             "m": self.module, "p": self.pkg, "lang": "python"}
+        if self.kind == "class":
+            # 类体在 class 语句执行时跑一次：落在类定义行上的帧是定义，不是调用（trace.analysis.defining）
+            d["x"] = ["defexec"]
         if self.dline != self.line:
             d["dl"] = self.dline
         if self.bases:
@@ -625,23 +629,25 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                             "f": str(rel), "l": node.lineno, "s": stmt[:200],
                             "m": target, "n": names[:12],
                             "lazy": id(node) in lazy, "type": id(node) in typeonly})
+                    # sym：这个名字指向什么，和符号键同一种写法——模块是它的文件路径（dst），
+                    # 模块里的名字是 <文件路径>#<名字>
                     if how == "mod":
                         # from . import payload as _payload → _payload 是模块别名
-                        into[a.asname or a.name] = {"kind": "mod", "sym": target, "dst": dst,
+                        into[a.asname or a.name] = {"kind": "mod", "sym": dst, "dst": dst,
                                                     "line": node.lineno, "orig": a.name, "why": why}
                     elif how == "name":
                         if a.name == "*":
                             continue                    # 通配导入无法追踪
-                        into[a.asname or a.name] = {"kind": "name", "sym": f"{target}:{a.name}",
+                        into[a.asname or a.name] = {"kind": "name", "sym": f"{dst}#{a.name}",
                                                     "dst": dst, "line": node.lineno,
                                                     "orig": a.name, "why": why}
                     elif a.asname:
-                        into[a.asname] = {"kind": "mod", "sym": a.name, "dst": dst,
+                        into[a.asname] = {"kind": "mod", "sym": dst, "dst": dst,
                                           "line": node.lineno, "orig": a.name, "why": why}
                     elif "." in a.name:
                         # import a.b.c：绑定的是根名 a，使用形如 a.b.c.X。
                         # 没有任何这样的使用时，几乎总是为了副作用（注册、打补丁）。
-                        into_chain[a.name] = {"kind": "chain", "sym": a.name, "dst": dst,
+                        into_chain[a.name] = {"kind": "chain", "sym": dst, "dst": dst,
                                               "line": node.lineno, "orig": a.name,
                                               "why": why or "sideeffect"}
 
@@ -664,14 +670,14 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                                 c = chains.get(mod)
                                 if c:
                                     used.add(mod)
-                                    _use(edge_uses, pkg, c["dst"], f"{mod}:{parts[cut]}",
+                                    _use(edge_uses, pkg, c["dst"], f"{c['dst']}#{parts[cut]}",
                                          str(rel), node.lineno)
                                     break
                     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
                         b = bound.get(node.value.id)
                         if b and b["kind"] == "mod":
                             used.add(node.value.id)
-                            _use(edge_uses, pkg, b["dst"], f"{b['sym']}:{node.attr}",
+                            _use(edge_uses, pkg, b["dst"], f"{b['dst']}#{node.attr}",
                                  str(rel), node.lineno)
                     elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                         b = bound.get(node.id)

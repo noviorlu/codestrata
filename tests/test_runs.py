@@ -97,9 +97,9 @@ def test_ok():
     idx = payload.load_index(repo)
     hot, meta = payload.load_hot(repo, idx, "fake@serving")
     assert meta["run_id"] == run["id"] and meta["phase"] == "serving" and meta["status"] == "ok"
-    assert "fakesvc.work:handle" in hot["symbols"] and "fakesvc.work:init_model" not in hot["symbols"]
+    assert "fakesvc/work.py#handle" in hot["symbols"] and "fakesvc/work.py#init_model" not in hot["symbols"]
     hot_all, _ = payload.load_hot(repo, idx, "fake")
-    assert "fakesvc.work:init_model" in hot_all["symbols"]
+    assert "fakesvc/work.py#init_model" in hot_all["symbols"]
     assert meta["file_state"] == {} and meta["stale_files"] == []
     for k in ("case", "cmd", "phase", "phases", "n_procs", "unmapped", "stale_files", "mapped_from",
               "n_mapped", "mapped_mismatch", "procs", "script"):
@@ -212,7 +212,7 @@ def test_driver_killed_then_merge():
     assert not (rd / "parts").exists() and (rd / "parts.tar.gz").is_file()
     idx = payload.load_index(repo)
     hot, meta = payload.load_hot(repo, idx, rd.name)
-    assert "fakesvc.work:handle" in hot["symbols"]
+    assert "fakesvc/work.py#handle" in hot["symbols"]
 
 
 def test_merge_rebuild():
@@ -621,13 +621,12 @@ def test_qualnames_and_mro():
     assert "g_outer.<locals>.gdecl" not in qs, sorted(qs)
     ns["g_outer"]()
     assert ns["gdecl"].__code__.co_qualname == "gdecl"                    # 和解释器对得上
-    C = lambda n, bases=(), **kw: {"k": "class", "n": n, "f": "m.py", "l": 1, "b": list(bases), **kw}
-    F = lambda n: {"k": "func", "n": n, "f": "m.py", "l": 2}
-    sy = {"m:Core": C("Core"), "m:Core.close": F("Core.close"), "m:Mixin": C("Mixin"), "m:Mixin.close": F("Mixin.close"),
-          "m:BaseEngine": C("BaseEngine", ["Core"]), "m:Engine": C("Engine", ["BaseEngine", "Mixin"]),
-          "m:GBase": C("GBase", ["Generic[T]"]), "m:GBase.generate": F("GBase.generate"),
-          "m:GEngine": C("GEngine", ["GBase[int]"]),
-          "m:Ext1": C("Ext1", ["torch.nn.Module", "Core"]), "m:Ext2": C("Ext2", ["Core", "torch.nn.Module"])}
+    C = lambda n, bases=(), **kw: {"k": "class", "n": n, "f": "m.py", "m": "m", "l": 1, "b": list(bases), **kw}
+    F = lambda n: {"k": "func", "n": n, "f": "m.py", "m": "m", "l": 2}
+    sy = {f"m.py#{x['n']}": x for x in (
+        C("Core"), F("Core.close"), C("Mixin"), F("Mixin.close"), C("BaseEngine", ["Core"]), C("Engine", ["BaseEngine", "Mixin"]),
+        C("GBase", ["Generic[T]"]), F("GBase.generate"), C("GEngine", ["GBase[int]"]),
+        C("Ext1", ["torch.nn.Module", "Core"]), C("Ext2", ["Core", "torch.nn.Module"]))}
     s, via = trace_analysis._inherited(sy, "m", "Engine.close")
     assert via == "m:Core.close", via                                   # MRO：Engine, BaseEngine, Core, Mixin
     s, via = trace_analysis._inherited(sy, "m", "GEngine.generate")
@@ -822,7 +821,7 @@ def test_site_export():
     assert not (D / "src" / f"{w}.txt").exists()
     assert (D / "edges.json").is_file() and (D / "search.json").is_file()
     # 引用倒排：compute 的目标在它的桶里，引用它的地方里有 extra.py（本地文件也算）
-    t = next(v[0] for v in meta["xref"]["targets"].values() if v[0].endswith(":fakesvc.work:compute"))
+    t = next(v[0] for v in meta["xref"]["targets"].values() if v[0] == "s:fakesvc/work.py#compute")
     B = json.loads((D / "refs" / f"{site.fnv1a(t) % L['refBuckets']}.json").read_text())
     assert t in B and any((files[x[0]] if isinstance(x[0], int) else x[0]) == "fakesvc/extra.py" for x in B[t]["r"]), B.get(t)
     assert B[t]["w"][0] == "fakesvc/work.py"
@@ -894,7 +893,7 @@ def test_site_export_edges():
     assert sorted(p.name for p in (D / "refs").iterdir()) == sorted(f"{b}.json" for b in range(L["refBuckets"]))
     if L["attrBuckets"]:
         assert len(list((D / "attrs").iterdir())) == L["attrBuckets"]
-    t = "s:fakesvc.lonely:nobody_calls_me"
+    t = "s:fakesvc/lonely.py#nobody_calls_me"
     B = json.loads((D / "refs" / f"{site.fnv1a(t) % L['refBuckets']}.json").read_text())
     assert B[t] == {"w": ["fakesvc/lonely.py", 1], "r": []}, B.get(t)
     assert files.index("fakesvc/work.py") in L["stale"], L["stale"]
@@ -1645,8 +1644,9 @@ def decorated():
        "import fakesvc; from fakesvc import work; fakesvc.helper(); work.init_model(); work.decorated()")
     idx = payload.load_index(repo)
     before, _ = payload.load_hot(repo, idx, "mv")
-    want = {k: before["symbols"].get(k) for k in ("fakesvc:helper", "fakesvc.work:init_model", "fakesvc.work:load_weight",
-                                                    "fakesvc.work:decorated", "fakesvc.work:decorated.inner")}
+    want = {k: before["symbols"].get(k) for k in ("fakesvc/__init__.py#helper", "fakesvc/work.py#init_model",
+                                                    "fakesvc/work.py#load_weight", "fakesvc/work.py#decorated",
+                                                    "fakesvc/work.py#decorated.inner")}
     assert all(want.values()), want
     # 每个函数都下移几行（插空行 / 注释），重新 scan
     init.write_text("# moved\n\n\n\n\n" + init.read_text())
@@ -1667,7 +1667,7 @@ def decorated():
     cs("scan", repo)
     idx = payload.load_index(repo)
     h3, m3 = payload.load_hot(repo, idx, "mv")
-    assert not h3["symbols"].get("fakesvc.work:other_fn"), h3["symbols"]
+    assert not h3["symbols"].get("fakesvc/work.py#other_fn"), h3["symbols"]
     assert h3["files"]["fakesvc/work.py"] >= before["files"]["fakesvc/work.py"] - 1, (h3["files"], before["files"])
 
 
@@ -1717,8 +1717,8 @@ def test_class_body_is_definition_not_call():
     idx0 = payload.load_index(repo)
     sm = seq._Map(idx0, ["cb/"])
     S = idx0["symbols"]
-    for k, want in (("cb.lazy:Pool", True), ("cb.lazy:Pool.Options", True), ("cb.lazy:Pool.request", False),
-                    ("cb.lazy:factory", False)):
+    for k, want in (("cb/lazy.py#Pool", True), ("cb/lazy.py#Pool.Options", True), ("cb/lazy.py#Pool.request", False),
+                    ("cb/lazy.py#factory", False)):
         assert sm.of(f'{S[k]["f"]}:{S[k].get("dl", S[k]["l"])}')[1] is want, k
     assert sm.of("cb/lazy.py:0")[1] and not sm.of("cb/lazy.py:3")[1]
 
@@ -1726,8 +1726,8 @@ def test_class_body_is_definition_not_call():
         classes = {k for k, s in idx["symbols"].items() if s["k"] == "class"}
         h, m = payload.load_hot(repo, idx, "cls@late")
         assert not classes & set(h["symbols"]), h["symbols"]
-        assert h["symbols"] == {"cb.main:late": 1, "cb.util:deco": 1, "cb.lazy:Pool.request": 1,
-                                "cb.lazy:factory": 3}, h["symbols"]
+        assert h["symbols"] == {"cb/main.py#late": 1, "cb/util.py#deco": 1, "cb/lazy.py#Pool.request": 1,
+                                "cb/lazy.py#factory": 3}, h["symbols"]
         assert "cb/idle.py" not in h["packages"] and "cb/idle.py" not in h["files"], (h["packages"], h["files"])
         assert h["packages"]["cb/lazy.py"] == 4 and h["files"]["cb/lazy.py"] == 4, (h["packages"], h["files"])
         assert set(h["module_exec"]) == {"cb/idle.py", "cb/lazy.py", "cb/util.py"}, h["module_exec"]
@@ -1826,7 +1826,7 @@ def test_dynamic_dispatch_consistent_across_cuts():
     # 动态分派的调用处：调用方函数体里那一行；经由 map() 这种仓库外的代码调到的，找过但找不到（[]）
     def callers(a, b):
         d = payload.edge_detail(repo, idx, a, b, hd)
-        return {c["sym"].split(":")[1]: c for it in d["items"] if it["status"] == "dynamic"
+        return {c["sym"].partition("#")[2]: c for it in d["items"] if it["status"] == "dynamic"
                 for r in it["runtime"] for c in r["callers"]}
     for a, b in (("dd/runner/loop.py", "dd/models/impl/net.py"), ("dd/runner/", "dd/models/")):
         cs_ = callers(a, b)
@@ -1932,8 +1932,8 @@ def test_call_sites_by_syntax():
     idx = payload.load_index(repo)
     hot, _ = payload.load_hot(repo, idx, "syn")
     d = payload.edge_detail(repo, idx, "sx/use.py", "sx/box.py", hot)
-    got = {r["sym"].split(":")[1]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
-           if c["sym"] == "sx.use:run"}
+    got = {r["sym"].partition("#")[2]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
+           if c["sym"] == "sx/use.py#run"}
     assert not any("<L" in k for k in got), sorted(got)           # getter 不能成了「Box 里的某个闭包」
     use = _SYN["sx/use.py"].splitlines()
     want = {"Box.value": ["v = b.value"], "Box.size": ["b.size = 3", "s = b.size"], "Box.heavy": ["k = b.heavy"],
@@ -1948,16 +1948,16 @@ def test_call_sites_by_syntax():
     call = got["Box.__call__"]
     assert call["sites"] == [] and call["how"] == "implicit" and call["form"] == "对象(…)", call
     # 按语法树认，不按文本：签名的续行、标注里的 list[int]、dict[str, int] | None、-> 都不算调用处
-    typed = {r["sym"].split(":")[1]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
-             if c["sym"] == "sx.use:typed"}
+    typed = {r["sym"].partition("#")[2]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
+             if c["sym"] == "sx/use.py#typed"}
     for q, lines in {"Box.__getitem__": ["return b[1]"], "Box.__len__": ["if b:"], "Box.__contains__": ["if 3 in b:"],
                      "Box.__hash__": ["d = {b: 1}"], "Box.__sub__": ["w = b - b"], "Made.__new__": ["Made()"]}.items():
         assert [x["s"] for x in typed[q]["sites"]] == lines, (q, typed[q])
     deco = next(c for it in d["items"] for r in it["runtime"] for c in r["callers"]
-                if r["sym"] == "sx.box:deco" and c["sym"] == "sx.use:wrap")
+                if r["sym"] == "sx/box.py#deco" and c["sym"] == "sx/use.py#wrap")
     assert [x["s"] for x in deco["sites"]] == ["@deco"], deco
     # 符号表：函数也记装饰器；同名的 def 照旧留最后一个（setter），getter 的位置记在 "a" 里
-    size, box = idx["symbols"]["sx.box:Box.size"], _SYN["sx/box.py"].splitlines()
+    size, box = idx["symbols"]["sx/box.py#Box.size"], _SYN["sx/box.py"].splitlines()
     assert size["d"] == ["setter"] and [a[0] for a in size["a"]] == [box.index("    def size(self):") + 1], size
 
 
@@ -2013,8 +2013,8 @@ def test_callbacks_from_case_code():
     hi, mi = payload.load_hot(repo, idx, "in")
     want = {"web/app.py|web/ctx.py": 3, "web/worker.py|web/model.py": 1}
     assert ho["edges"] == want and hi["edges"] == want, (ho["edges"], hi["edges"])
-    assert ho["symbols"] == hi["symbols"] and ho["symbols"]["web.json:jsonify"] == 2, (ho["symbols"], hi["symbols"])
-    assert list(ho["edge_calls"]["web/worker.py|web/model.py"]["web.model:Model.forward"]["callers"]) == ["web.worker:run"]
+    assert ho["symbols"] == hi["symbols"] and ho["symbols"]["web/json.py#jsonify"] == 2, (ho["symbols"], hi["symbols"])
+    assert list(ho["edge_calls"]["web/worker.py|web/model.py"]["web/model.py#Model.forward"]["callers"]) == ["web/worker.py#run"]
     g = payload.graph_payload(repo, idx, hot=ho, hot_meta=mo)
     assert not g["runtimeOnlyEdges"] and not g["hot"]["dyn"], (g["runtimeOnlyEdges"], g["hot"]["dyn"])
     # 数据里：调用方记成仓库外的 case 代码（index 之外，和 examples/ 里的一样不上图）；funcs 只有仓库代码
@@ -2095,7 +2095,7 @@ def test_generic_defs_are_definitions():
     cs("scan", repo)
     cs("trace", repo, "--case", "gp", "--phase", "run=gp.main:run", "--", PY, "-m", "gp.main")
     h, _ = payload.load_hot(repo, payload.load_index(repo), "gp@run")
-    assert h["symbols"] == {"gp.main:run": 1, "gp.core:ident": 1, "gp.core:Box.get": 1}, h["symbols"]
+    assert h["symbols"] == {"gp/main.py#run": 1, "gp/core.py#ident": 1, "gp/core.py#Box.get": 1}, h["symbols"]
     assert h["files"]["gp/core.py"] == 2 and h["class_frames"] == 1, (h["files"], h["class_frames"])
     assert set(h["module_exec"]) == {"gp/core.py"}, h["module_exec"]
 
@@ -2137,7 +2137,7 @@ def test_edge_defs_vars_and_reexports():
     assert alias == {"DEFAULT_LIMIT": ("rx/models.py", 1, "var", ["LIMIT: int = 30"])}, alias
     # 和 Ctrl+点击同一处
     x = payload.xref_for(repo, "rx/sessions.py")
-    ctrl = {t.rsplit(":", 1)[1]: tuple(w) for t, w in x["targets"].values() if t[0] in "sv"}
+    ctrl = {t.rpartition("#")[2]: tuple(w) for t, w in x["targets"].values() if t[0] in "sv"}
     assert ctrl["Executor"] == ex["Executor"][:2] and ctrl["LIMIT"] == alias["DEFAULT_LIMIT"][:2], ctrl
     # 目录级的边（合并了几对单元）照样带着
     d = payload.edge_detail(repo, idx, "rx/sessions.py", "rx/executor/")
@@ -2195,7 +2195,7 @@ def test_type_checking_imports_are_not_dependencies():
     assert f"{CTX}|{APP}" not in idx["edge_uses"], idx["edge_uses"]
     why = lambda k: sorted((x["n"], x["why"]) for x in idx["edge_dead"].get(k, []))
     assert why(f"{CTX}|{APP}") == [("App", "type")] and why(f"{UTIL}|{CTX}") == [("Ctx", "type")]
-    assert why(f"{CLI}|{APP}") == [] and "tc.app:App" in idx["edge_uses"][f"{CLI}|{APP}"], idx["edge_uses"]
+    assert why(f"{CLI}|{APP}") == [] and "tc/app.py#App" in idx["edge_uses"][f"{CLI}|{APP}"], idx["edge_uses"]
     g = payload.graph_payload(repo, idx, open_=["tc/"])
     assert f"{CTX}|{APP}" not in g["edgeKinds"] and [CTX, APP, 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]
     assert f"{CLI}|{APP}" in g["edgeKinds"] and not any(e[:2] == [CLI, APP] for e in g["typeOnlyEdges"])
@@ -2221,7 +2221,7 @@ def test_type_checking_imports_are_not_dependencies():
     x = json.loads((repo / ".codestrata" / "xref.json").read_text())
     lines = _TC["tc/ctx.py"].splitlines()
     hits = [x["targets"][k[3]] for k in x["files"]["tc/ctx.py"] if lines[k[0] - 1][k[1]:k[2]] == "App"]
-    assert hits and set(hits) == {"s:tc.app:App"}, hits
+    assert hits and set(hits) == {"s:tc/app.py#App"}, hits
 
 
 def test_path_ids():

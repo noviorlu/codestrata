@@ -277,26 +277,9 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
 
 
 def _top(symkey: str) -> str:
-    """模块:Cls.method → 模块:Cls。runtime 调到的是方法，静态引用的往往是类。"""
-    m, _, q = symkey.partition(":")
-    return f"{m}:{q.split('.')[0]}" if q else symkey
-
-
-def _module_files(idx: dict) -> dict:
-    """点分模块名 → 文件。src-layout 的 src/ 前缀不属于模块名，要去掉（同 scan）。"""
-    prefixes = [r.rsplit("/", 1)[0] + "/" for r in idx["repo"].get("roots") or [] if "/" in r]
-    out = {}
-    for orig in idx.get("files") or {}:
-        rel = orig
-        for pre in prefixes:
-            if rel.startswith(pre):
-                rel = rel[len(pre):]
-                break
-        parts = rel[:-3].split("/")
-        if parts[-1] == "__init__":
-            parts = parts[:-1]
-        out[".".join(parts)] = orig
-    return out
+    """<路径>#Cls.method → <路径>#Cls。runtime 调到的是方法，静态引用的往往是类。"""
+    f, sep, q = symkey.partition("#")
+    return f"{f}#{q.split('.')[0]}" if sep and q else symkey
 
 
 @lru_cache(maxsize=256)
@@ -561,7 +544,7 @@ def _add_call_sites(repo: Path, idx: dict, items: list) -> None:
             continue
         for r in it["runtime"]:
             r["sig"] = sig(r.get("def"))
-            form = _call_form(r["sym"].partition(":")[2], syms.get(r["sym"]))
+            form = _call_form(r["sym"].partition("#")[2], syms.get(r["sym"]))
             if not form:
                 continue                                 # 闭包、模块顶层：没有名字可找
             pat, dunder, info = form
@@ -590,7 +573,8 @@ def _add_wiring(repo: Path, idx: dict, items: list) -> None:
         d = it.get("def")
         if it["status"] != "dynamic" or not d or d.get("k") != "class":
             continue
-        name, mod = it["name"].rsplit(".", 1)[-1], it["sym"].split(":", 1)[0]
+        # 字符串里带的是点分的模块名（"pkg.mod.Cls"），和类所在文件的模块名比
+        name, mod = it["name"].rsplit(".", 1)[-1], (syms.get(it["sym"]) or {}).get("m")
         if name not in n_same:
             n_same[name] = sum(1 for x in syms.values() if x["k"] == "class" and x["n"].rsplit(".", 1)[-1] == name)
         kept: list[dict] = []
@@ -622,7 +606,7 @@ def _dyn_hints(repo: Path, idx: dict, items: list) -> None:
 
 
 def _name_def(repo: Path, syms: dict, symkey: str) -> dict | None:
-    """符号表里没有的「模块:名字」——模块级变量（`LIMIT: int = 30`）、__init__ 再导出的类 / 函数——的定义：
+    """符号表里没有的「<路径>#<名字>」——模块级变量（`LIMIT: int = 30`）、__init__ 再导出的类 / 函数——的定义：
     scan 时 xref 按 `from 模块 import 名字` 追到的（xref.json 的 names，和 Ctrl+点击同一套解析）。
     老的 xref.json 没有 names、或者没追到：None（面板照旧说没找到定义）。"""
     X = load_xref(repo)
@@ -663,23 +647,22 @@ def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None)
     items = []
     for sym, locs in uses.items():
         rt = rt_by_top.pop(sym, [])
-        items.append({"sym": sym, "name": sym.split(":", 1)[1], "def": where(sym),
+        items.append({"sym": sym, "name": sym.partition("#")[2], "def": where(sym),
                       "status": "confirmed" if rt else "static",
                       "uses": [{"f": f, "l": l} for f, l in locs[:20]], "n_uses": len(locs),
                       "runtime": sorted(rt, key=lambda x: -x["n"]),
                       "calls": sum(x["n"] for x in rt)})
     for t, rts in rt_by_top.items():
-        items.append({"sym": t, "name": t.split(":", 1)[1], "def": where(t), "status": "dynamic",
+        items.append({"sym": t, "name": t.partition("#")[2], "def": where(t), "status": "dynamic",
                       "uses": [], "n_uses": 0, "runtime": sorted(rts, key=lambda x: -x["n"]),
                       "calls": sum(x["n"] for x in rts)})
     order = {"confirmed": 0, "dynamic": 1, "static": 2}
     items.sort(key=lambda x: (order[x["status"]], -x["calls"], -x["n_uses"], x["name"]))
 
-    mod_file = _module_files(idx)
     ran = set((hot or {}).get("module_exec") or [])
     imp_only = []
     for x in dead:
-        f = mod_file.get(x["sym"].split(":")[0]) or mod_file.get(x["sym"])
+        f = x["sym"].partition("#")[0]                # 导入的是模块（它的路径）或模块里的名字（<路径>#<名字>）
         imp_only.append({**x, "status": "import_only",
                          "module_ran": bool(hot) and bool(f) and f in ran})
 
@@ -817,9 +800,8 @@ def search_index(idx: dict) -> dict:
       mods   [[id, 种类 dir / unit, 文件数, 显示名, 分隔符], ...]   目录树上的每个目录和每个单元
       files  [路径, ...]                               单元的文件和包里的 C++ / CUDA 文件
       units  [所属单元, ...]                           和 files 对齐（C++ 文件是空串）
-      fmods  [模块名, ...]                             和 files 对齐：符号键的前半段（没有符号的是空串）
       syms   [[限定名, 种类首字母 c / f, 文件下标, 行], ...]   类、函数、方法
-    符号不存完整的键（模块名重复两万多遍）：键 = fmods[文件下标] + ":" + 限定名。"""
+    符号不存完整的键（路径重复两万多遍）：键 = files[文件下标] + "#" + 限定名。"""
     tree = idx.get("dirs") or {}
 
     def mod(x: str, kind: str, n: int) -> list:
@@ -830,13 +812,9 @@ def search_index(idx: dict) -> dict:
     unit_of = idx.get("files") or {}
     files = sorted(set(unit_of) | set(idx.get("aux") or {}))
     at = {f: i for i, f in enumerate(files)}
-    fmod = {}
-    for s in (idx.get("symbols") or {}).values():
-        fmod.setdefault(s["f"], s["m"])
     syms = [[s["n"], s["k"][0], at[s["f"]], s["l"]] for _, s in sorted((idx.get("symbols") or {}).items())
             if s["f"] in at]
-    return {"mods": mods, "files": files, "units": [unit_of.get(f, "") for f in files],
-            "fmods": [fmod.get(f, "") for f in files], "syms": syms}
+    return {"mods": mods, "files": files, "units": [unit_of.get(f, "") for f in files], "syms": syms}
 
 
 def reveal(idx: dict, node: str, open_) -> list[str] | None:
@@ -990,11 +968,11 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
            "def": ({"f": wh[0], "l": wh[1], "text": _line_text(repo, wh[0], wh[1]).strip()[:200],
                     **({"stale": True} if stale(wh[0]) else {})} if wh else None),
            "calls": ((hot or {}).get("symbols") or {}).get(key, 0) if kind == "s" else 0}
-    qual = key.partition(":")[2]
+    qual = key.partition("#")[2]
     if kind in ("s", "v") and "." in qual:           # 类的成员：方法、嵌套类、类属性、实例属性
         name = qual.rsplit(".", 1)[1]
         same = sum(1 for t in X["x"]["targets"]
-                   if t[0] in "sv" and "." in t.partition(":")[2].partition(":")[2]
+                   if t[0] in "sv" and "." in t.partition("#")[2]
                    and t.rsplit(".", 1)[-1] == name)
         maybe = (X["x"].get("attrs") or {}).get(name) or []
         mrows = {}
@@ -1207,8 +1185,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     # 全文：用剩下的额度。跑到过的文件优先，其次按体积从小到大（同样额度能带上更多文件）。
     # 先用原始字节数估算（高亮 + JSON 转义后约 3 倍），明显放不下的不去高亮，省掉大部分时间。
     remaining = total_budget - len(json.dumps(p, ensure_ascii=False))
-    ran = {k.rpartition(":")[0] for k in ((hot or {}).get("symbols") or {})}
-    ran |= {s["f"] for k, s in (idx.get("symbols") or {}).items() if k in ((hot or {}).get("symbols") or {})}
+    ran = {k.partition("#")[0] for k in ((hot or {}).get("symbols") or {})}    # 符号键前半段就是文件路径
     every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})
                    | {d["f"] for ds in (idx.get("docs") or {}).values() for d in ds})
     def size(rel):

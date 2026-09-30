@@ -103,7 +103,7 @@ flowchart LR
   `runs` 的建 / 收尾 / 解析 / 管理 / 复刻命令；`events.py` 的日志格式和 span；`seq.py` 的时间窗和边时刻。
 - 切面和排版：`cut.py`（单元 id 是文件路径、目录 id 是路径加 `/`，显示名来自扫描端给的 `label` / `sep`；`dir_node` 把展开的目录挂到它的 `__init__.py` 上是 Python 的约定）、`layout.py`（只吃 id、显示名和带权边）。
 - 叠加：`payload._hot_on_cut`、`graph_payload`；`trace/analysis.py` 的 `to_package_graph` / `sym_locs` / `defining`
-  只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`k`），「第 0 行 = 模块顶层」「落在类符号行 = 类体」是约定。
+  只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`x`），「第 0 行 = 文件顶层的执行」是约定，「落在标了 `defexec` 的符号的定义行 = 定义时的执行」由扫描端标出来（Python 给类标）。
 - `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
 - 前端全部；`highlight.py` / `hl.js` 本来就认多种语言。
 
@@ -116,7 +116,7 @@ flowchart LR
 - `runs.remap` 的细节：qualname 去掉 `.<locals>` 再对 symbols 表的 `(文件, 名字)`；`runs._dists` 读 `*.dist-info`。
 - `payload` 里边详情的「调用处」：`_code_facts` / `_call_form` / `_add_call_sites` 按 Python 语法认调用写法。
 
-加一门语言要提供：一个扫描器，产出同样结构的 index.json / symbols.json（单元、边、目录树、带 `f/l/dl/e/k/n` 的符号、`file_sha`），
+加一门语言要提供：一个扫描器，产出同样结构的 index.json / symbols.json（单元、边、目录树、键是 `<路径>#<限定名>`、带 `f/l/dl/e/k/n/s` 和 `x` 标记的符号、`file_sha`），
 xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写同格式的分片（和可选的事件日志），并有一种注入方式替代
 `PYTHONPATH` + `sitecustomize`；最好再给出等价于 qualname 的名字供 remap。字段级契约见 [`docs/design/run-format.md`](design/run-format.md)。
 多语言（Python、C++、CUDA、Rust）的接口设计（草案，还没实现）见 [`docs/design/multi-language.md`](design/multi-language.md)。

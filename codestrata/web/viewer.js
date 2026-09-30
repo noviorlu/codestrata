@@ -42,8 +42,8 @@ window.CS = window.CS || {};
     });
     return m;
   }
-  function shortTarget(t) {
-    var r = t.slice(2), i = r.indexOf(':');
+  function shortTarget(t) {                       // s:<路径>#<限定名> → 限定名；m:<路径>、x:点分路径 → 原样
+    var r = t.slice(2), i = r.indexOf('#');
     return i < 0 ? r : r.slice(i + 1);
   }
 
@@ -160,7 +160,7 @@ window.CS = window.CS || {};
         var tag = s.k === 'class' ? 'C' : (s.k === 'kernel' ? 'K' : 'f');
         return '<button class="osym d' + Math.min(depth(s.n), 3) + '" data-k="' + k + '">'
           + '<span class="ok' + (s.k === 'class' ? ' c' : (s.k === 'kernel' ? ' kn' : '')) + '">' + tag + '</span>'
-          + '<span class="on">' + esc(s.n.split('.').pop()) + '</span>'
+          + '<span class="on">' + esc(CS.ids.tail(s.n)) + '</span>'
           + (h ? '<span class="oh">' + h + '</span>' : '')
           + '<span class="ol">' + s.l + '</span></button>';
       }).join('');
@@ -364,7 +364,7 @@ window.CS = window.CS || {};
         }
         if (isMember)
           h += '<p class="rs note">静态分析只认得 <code>self.</code> / <code>cls.</code> / <code>类名.</code> / <code>super()</code> 这几种写法；'
-            + '通过别的对象调用（<code>engine.' + esc(shortTarget(refsOpen.target).split('.').pop()) + '()</code>）不知道对象是什么类型，列在下面「同名」一组里。</p>';
+            + '通过别的对象调用（<code>engine.' + esc(CS.ids.tail(shortTarget(refsOpen.target))) + '()</code>）不知道对象是什么类型，列在下面「同名」一组里。</p>';
         if (!r.refs.length)
           h += '<p class="hint">' + (isMember ? '按类型确认的引用一处也没有。' : '仓库里没有别的地方引用它（可能只经由字符串 / getattr / 注册表使用，静态分析看不到）。') + '</p>';
         h += list(r.refs, '');

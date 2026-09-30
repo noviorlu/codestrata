@@ -21,12 +21,18 @@ window.CS = window.CS || {};
     return (Object.prototype.hasOwnProperty.call(L, id) ? L[id] : id) + (CS.ids.isResidual(id) ? '/ 本层' : '');
   }
   var KIND = { dir: '目录（整棵子树收成一个节点）', residual: '目录里直接放着的文件（不含子目录）', unit: '单个文件' };
-  /* 符号键 codestrata.payload:Handler.do_GET → payload:Handler.do_GET；兜底键（文件:行）原样显示 */
+  /* 符号键 codestrata/payload.py#Handler.do_GET → payload:Handler.do_GET（包的 __init__.py 写包名）；
+     兜底键（文件:行、文件:<module>）写成 文件名:行 / 文件名 顶层 */
   function symLabel(k) {
-    var i = k.indexOf(':'); if (i < 0) return k;
-    var m = k.slice(0, i), q = k.slice(i + 1);
-    if (m.indexOf('/') >= 0) return m.split('/').pop() + (q === '<module>' ? ' 顶层' : ':' + q);
-    return m.split('.').pop() + ':' + q;       // 符号键的前半段是点分的模块名，不是节点 id
+    var sk = CS.ids.splitSym(k);
+    if (sk) {
+      var parts = sk[0].split('/'), stem = parts.pop().replace(/\.[^.]*$/, '');
+      if (stem === '__init__' && parts.length) stem = parts.pop();
+      return stem + ':' + sk[1];
+    }
+    var i = k.lastIndexOf(':'); if (i < 0) return k;
+    var f = k.slice(0, i), q = k.slice(i + 1);
+    return f.split('/').pop() + (q === '<module>' ? ' 顶层' : ':' + q);
   }
   function jump(d, text, cls) {
     return d ? '<button class="' + (cls || 'site') + '" data-view="' + esc(d.f) + '" data-line="' + d.l + '">'
@@ -70,7 +76,7 @@ window.CS = window.CS || {};
     pairs.sort(function (p, q) { return q.n - p.n; });
     var MAX = 40;
     return { n: pairs.length, html: pairs.slice(0, MAX).map(function (P) {
-      var r = P.r, c = P.c, q = r.sym.slice(r.sym.indexOf(':') + 1), parts = q.split('.');
+      var r = P.r, c = P.c, q = r.sym.slice(r.sym.indexOf('#') + 1), parts = q.split('.');
       var site = c.sites && c.sites[0];
       var from = site ? jump(site, fname(site.f) + ':' + site.l) : jump(c.def, fname(c.def ? c.def.f : '') + ':' + (c.def ? c.def.l : ''));
       var more = site && c.sites.length > 1 ? c.sites.slice(1).map(function (t) { return jump(t, ':' + t.l); }).join('') : '';
@@ -94,7 +100,7 @@ window.CS = window.CS || {};
     return items.map(function (x) {
       var u = x.uses[0];
       return '<div class="call ref">'
-        + '<div class="ch"><b>' + esc(x.name.split('.').pop()) + '</b>'
+        + '<div class="ch"><b>' + esc(CS.ids.tail(x.name)) + '</b>'
         + (x.n_uses > 1 ? '<span class="cls">引用 ' + x.n_uses + ' 处</span>' : '') + '</div>'
         + (u ? '<div class="cs"><span class="lab">from</span>' + jump(u, fname(u.f) + ':' + u.l) + '</div>' + code(x.use_s ? [x.use_s] : null) : '')
         + '<div class="cs"><span class="lab">to</span>' + jump(x.def, x.def ? fname(x.def.f) + ':' + x.def.l : '（没找到定义）') + '</div>'
@@ -458,7 +464,7 @@ window.CS = window.CS || {};
                 var hm = hotS[m.key] || 0;
                 return '<div class="tn sym"><div class="tr' + (hm ? ' ran' : '') + '" style="--d:' + (depth + 1) + '"><span class="tg sp"></span>'
                   + '<span class="k">' + (isC ? 'm' : 'f') + '</span><button class="tn-name symname" data-tsym="' + esc(m.key) + '" data-f="' + esc(f) + '" data-l="' + m.l + '">'
-                  + esc(m.n.split('.').pop()) + '</button><span class="tn-meta">:' + m.l + '</span>'
+                  + esc(CS.ids.tail(m.n)) + '</button><span class="tn-meta">:' + m.l + '</span>'
                   + (hm ? '<span class="rt">' + hm + '</span>' : '') + '</div><div class="snip"></div></div>';
               }).join('') + '</div>' : '')
             + '</div>';

@@ -453,7 +453,7 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 写键时要注意（叠加的正确性全靠它）：
 
 - **行号必须和扫描端的符号对得上**：等于符号的 `l` 或 `dl`（或 `a` 里的另几个 def），否则次数只落到文件和单元上、不落到函数上（`anon`）。
-- **行号 0 专留给「模块 / 文件顶层的执行」**，行号等于某个 `class` 符号的定义行会被当成类体执行：这两种都**不算调用**，
+- **行号 0 专留给「模块 / 文件顶层的执行」**，行号等于扫描端标了 `defexec` 的符号（Python 的类）的定义行会被当成类体执行：这两种都**不算调用**，
   指向它们的边不画成调用边。一种语言里如果「构造」就发生在类定义那一行（比如构造函数没有自己的定义行），录制端要把键记到构造函数自己的行上，
   否则所有实例化都会被当成定义丢掉（未核实：目前没有别的语言，这条是按 `analysis.defining` 的规则推出来的）。
 - `rel` 是相对 `CODESTRATA_ROOT` 的路径，和扫描端 `files` 的键逐字一致（大小写、`/`）。
@@ -483,10 +483,10 @@ scan 写两个文件，加载时（`payload.load_index`）合成一个 index。�
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
 | `files` | {rel: 单元} | `analysis.to_package_graph`、`runs.file_state` / `remap`、`seq._Map`、`payload`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
-| `symbols` | {符号键: {n, k, f, l, m, p, dl?, e?, b?, d?, a?}} | `analysis.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`k`）、`runs.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`） | `n` 限定名（`Cls.method`）、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`。符号键是 `<模块>:<限定名>` | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
+| `symbols` | {符号键: {n, s, k, f, l, lang, m?, p, dl?, e?, b?, d?, a?, x?}} | `analysis.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`x`）、`runs.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`）、`--phase` 的解析（`m`） | **符号键是 `<文件路径>#<限定名>`**（`fakesvc/offline.py#Engine.generate`；不拿冒号分，C++ / Rust 的限定名里有 `::`）。`n` 限定名、`s` 它的最后一段、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`lang` 语言、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名（Python）、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`、`x` 标记（`defexec`：落在它定义行上的帧是定义时的执行，Python 的类体） | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
 | `file_sha` | {rel: sha16} | `runs.file_state` | 录制后哪些文件改过 | 强烈建议（没有时退回和工作区比） |
-| `edge_uses` | {"a\|b": {"模块:名字": [[文件, 行]…]}} | `payload._edge_uses_on_cut`（算动态分派）、边的详情 | 每条边实际引用了对方哪些符号 | 否（没有时所有 runtime 调用都算动态分派） |
-| `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `payload`（纯 import、不承载调用的边画成虚线） | | 否 |
+| `edge_uses` | {"a\|b": {"<文件路径>#<名字>": [[文件, 行]…]}} | `payload._edge_uses_on_cut`（算动态分派）、边的详情 | 每条边实际引用了对方哪些符号（和符号键同一种写法；模块级变量、再导出的名字不在符号表里，由 xref.json 的 `names` 追到定义） | 否（没有时所有 runtime 调用都算动态分派） |
+| `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `payload`（纯 import、不承载调用的边画成虚线） | `sym` 是导入的东西：模块写它的文件路径，模块里的名字写 `<文件路径>#<名字>` | 否 |
 | `edge_sites`、`name_refs`、`docs`、`aux`、`file_loc` | | 边的详情、接线点、文档、非 Python 源文件、行数 | 面板和冻结区 | 否 |
 
 `layout.build` 读的 `frames`、`alias` 不是扫描端的：是 `payload.graph_payload` 按切面现算、塞进给 layout 的那个字典里的。

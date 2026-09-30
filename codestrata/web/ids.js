@@ -20,6 +20,10 @@ window.CS = window.CS || {};
       if (d === ROOT) return x !== d && (x === ROOT + '*' || x.indexOf('/') < 0);
       return x !== d && x.indexOf(d) === 0;
     },
+    /* 限定名的最后一段：Python 的 Cls.method、C++ / Rust 的 ns::Cls::method 都认 */
+    tail: function (q) { var p = String(q).split(/::|\./); return p[p.length - 1]; },
+    /* 符号键 <路径>#<限定名> 拆成两段；不是符号键（文件:行 这类兜底键）返回 null */
+    splitSym: function (k) { var i = String(k).indexOf('#'); return i < 0 ? null : [k.slice(0, i), k.slice(i + 1)]; },
     /* 路径的最后一段（数据里没有显示名时兜底用） */
     last: function (id) {
       var p = String(id).replace(/\*$/, '').replace(/\/$/, '').split('/');

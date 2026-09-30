@@ -194,7 +194,8 @@ def find_symbols(repo: Path, q: str, limit: int = 20) -> list[str]:
             syms = _payload.load_index(Path(repo)).get("symbols") or {}
         except (OSError, ValueError, SystemExit):     # 正在重新 scan：symbols.json 可能写了一半
             return []
-        hit = (mt, [(s["n"].lower(), k) for k, s in syms.items() if s.get("k") == "func"])
+        # 补全出来的是 --phase 的写法「模块:限定名」，不是索引里的符号键
+        hit = (mt, [(s["n"].lower(), f"{s['m']}:{s['n']}") for s in syms.values() if s.get("k") == "func" and s.get("m")])
         _SYMS[str(repo)] = hit
     found = [(n, k) for n, k in hit[1] if q in n]
     found.sort(key=lambda x: (x[0].rsplit(".", 1)[-1] != q, len(x[0]), x[1]))

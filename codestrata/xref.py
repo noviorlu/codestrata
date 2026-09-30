@@ -27,8 +27,9 @@
 带作用域走一遍记 token。整仓的 AST 一起攥在手里太贵（vllm-omni 的 1600 个文件要吃掉近 1 GB）。
 
 产出 xref.json：
-  targets  [目标, ...]            目标是 "s:模块:限定名"（类 / 函数）、"v:模块:限定名"（变量、类属性、
-                                  实例属性）、"m:模块"（模块）、"x:点分路径"（仓库外）
+  targets  [目标, ...]            目标是 "s:<文件路径>#<限定名>"（类 / 函数，和索引的符号键同一种写法）、
+                                  "v:<文件路径>#<限定名>"（变量、类属性、实例属性）、"m:<文件路径>"（模块）、
+                                  "x:点分路径"（仓库外）。解析时内部按「模块:限定名」算，写出时才换成路径
   where    [[文件, 行] | null, ...]  和 targets 对齐：定义在哪（同名的 getter / setter 取第一个）
   files    {文件: [[行, 起, 止, 目标下标, 种类], ...]}
            起止是 UTF-16 码元下标（JS 的字符串下标；U+FFFF 以上的字符占 2），不是字节，也不是码点。
@@ -38,7 +39,7 @@
   attrs    {属性名: [[文件, 行, 起, 止, 种类], ...]}   解析不了的 `<表达式>.属性名`（种类只有 0 / 1），
            只收和仓库里某个类的成员（方法、嵌套类、类属性、实例属性）同名、而且接收者的类型确实拿不准的
            （字面量、模块、函数、MRO 全在仓库里的类都不算）：引用面板据此列出「同名调用，接收者类型没核实」
-  names    {"模块:名字": 目标下标}   scan 的边明细（edge_uses）引用了、却不在符号表里的名字——模块级变量、
+  names    {"<文件路径>#<名字>": 目标下标}   scan 的边明细（edge_uses）引用了、却不在符号表里的名字——模块级变量、
            __init__ 等处再导出的类 / 函数 / 变量——按 `from 模块 import 名字` 追到的类 / 函数 / 变量（s: / v:）。
            边详情的「to」据此和 Ctrl+点击落在同一个地方
 种类：0 引用、1 调用、2 import、3 定义本身。
@@ -296,7 +297,8 @@ class _Repo:
     """全仓的名字表：哪些模块、每个模块顶层绑定了什么、类的成员和基类。"""
 
     def __init__(self, index: dict):
-        self.symbols = index.get("symbols") or {}
+        # 名字解析按 Python 的「模块:限定名」算；索引里的符号键是 <路径>#<限定名>，这里按模块名另建一份
+        self.symbols = {f"{s['m']}:{s['n']}": s for s in (index.get("symbols") or {}).values() if s.get("m")}
         self.file_of: dict[str, str] = {}            # 模块 → 文件
         self.init: set[str] = set()                  # 是包（__init__.py）的模块
         units = index.get("packages") or {}
@@ -1361,13 +1363,18 @@ def _build(root: Path, index: dict) -> dict:
         if toks:
             toks.sort()
             files[rel] = toks
-    # 边详情引用的名字按 `from 模块 import 名字` 的语义追到定义（和 Ctrl+点击同一套解析）
+    # 边详情引用的名字（<文件路径>#<名字>）按 `from 模块 import 名字` 的语义追到定义（和 Ctrl+点击同一套解析）
+    mod_of = {rel: m for m, rel in repo.file_of.items()}
+    in_index = index.get("symbols") or {}
     names = {}
     for uses in (index.get("edge_uses") or {}).values():
         for key in uses:
-            if key in repo.symbols or key in names:
+            if key in in_index or key in names:
                 continue
-            mod, _, name = key.partition(":")
+            path, _, name = key.partition("#")
+            mod = mod_of.get(path)
+            if not mod or not name:
+                continue
             t = repo.from_import(mod, name)
             if t and t[:2] in ("s:", "v:") and repo.where(t):
                 names[key] = repo.t(t)
@@ -1383,8 +1390,23 @@ def _build(root: Path, index: dict) -> dict:
     attrs = {k: v for k, v in repo.attrs.items() if same.get(k, 0) <= ATTRS_MAX_SAME}
     for v in attrs.values():
         v.sort()
-    return {"targets": repo.targets, "where": [repo.where(t) for t in repo.targets], "files": files,
+    return {"targets": [_out_target(repo.file_of, t) for t in repo.targets],
+            "where": [repo.where(t) for t in repo.targets], "files": files,
             "fp": fp, "attrs": attrs, "names": names}
+
+
+def _out_target(file_of: dict, t: str) -> str:
+    """内部的目标（按模块名）→ 写出去的（按路径，和索引的符号键一致）：s:模块:限定名 → s:<路径>#<限定名>，
+    m:模块 → m:<路径>。命名空间包没有文件、仓库外的 x: 原样。"""
+    kind, rest = t[:2], t[2:]
+    if kind in ("s:", "v:"):
+        m, sep, q = rest.partition(":")
+        p = file_of.get(m)
+        return f"{kind}{p}#{q}" if p and sep else t
+    if kind == "m:":
+        p = file_of.get(rest)
+        return f"m:{p}" if p else t
+    return t
 
 
 def write(outdir: Path, xref: dict) -> Path:

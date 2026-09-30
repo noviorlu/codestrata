@@ -278,7 +278,7 @@ def export_site(repo: Path, idx: dict, out: Path, *, hot=None, hot_meta=None, ot
                 refs_b[fnv1a(t) % nb][t] = v
         same: dict[str, int] = {}
         for t in tg:
-            qual = t.partition(":")[2].partition(":")[2]
+            qual = t.partition(":")[2].partition("#")[2]         # s:<路径>#<限定名>
             if t[:1] in "sv" and "." in qual:
                 n = t.rsplit(".", 1)[-1]
                 same[n] = same.get(n, 0) + 1

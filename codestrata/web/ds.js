@@ -270,7 +270,7 @@ window.CS = window.CS || {};
         var find = s ? Promise.resolve(s) : !where || !own.call(at, where.f) ? Promise.resolve(null)
           : dj('f/' + at[where.f] + '.json').then(function (m) {
             var x = (m.symbols || []).filter(function (y) { return y.key === k; })[0];
-            return x ? { f: where.f, l: x.l, n: x.n, b: [] } : { f: where.f, l: where.l, n: k.split(':').pop(), b: [] };
+            return x ? { f: where.f, l: x.l, n: x.n, b: [] } : { f: where.f, l: where.l, n: k.split('#').pop(), b: [] };
           });
         return find.then(function (s) {
           if (!s) return null;
@@ -305,7 +305,8 @@ window.CS = window.CS || {};
           rows.sort(function (a, b) { return RANK[a.k] - RANK[b.k] || (a.f < b.f ? -1 : a.f > b.f ? 1 : a.l - b.l); });
           rows.forEach(function (r) { if (isStale(r.f)) r.stale = true; });
           var total = 0; Object.keys(counts).forEach(function (k) { total += counts[k]; });
-          var kind = t.split(':')[0], key = t.slice(kind.length + 1), qual = key.split(':').slice(1).join(':');
+          // 目标是 s:<路径>#<限定名>、v:…、m:<路径>、x:点分路径（仓库外）
+          var kind = t.split(':')[0], key = t.slice(kind.length + 1), sk = CS.ids.splitSym(key), qual = sk ? sk[1] : '';
           // 调用次数只在看的是主 run 时给（和边详情一样：选了「静态图」或换了别的 run 都不给）
           var mref = ((EMB.hotMeta || {}).run_id || '') + ((EMB.hotMeta || {}).phase ? '@' + EMB.hotMeta.phase : '');
           var main = self.run ? self.run === mref : !(EMB.hot && self.canSwitchRun);
@@ -315,7 +316,7 @@ window.CS = window.CS || {};
           var jobs = [fill((res.def ? [res.def] : []).concat(res.refs.slice(0, TEXTS)))];
           var maybe = null;
           if ((kind === 's' || kind === 'v') && qual.indexOf('.') >= 0 && K.attrBuckets) {
-            var name = qual.split('.').pop();
+            var name = CS.ids.tail(qual);
             maybe = dj('attrs/' + (fnv(name) % K.attrBuckets) + '.json').then(function (A) {
               var a = own.call(A, name) ? A[name] : { same: 0, r: [] }, mm = {}, mrows = [];
               a.r.forEach(function (x) {

@@ -98,6 +98,7 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 
 - 改了代码之后。scan 之后改过的文件，Ctrl+点击的行列号就对不上了：那个文件不给 Ctrl+点击，重新 scan 即可。
 - **重新 scan 之后要重启 serve**，图和搜索才会更新（Ctrl+点击会自动换新；从主菜单扫描的，主菜单会替你重启）。
+- **升级 codestrata 之后**：索引的格式变了的话，serve / graph 会提示「旧版本的格式，重新 scan」，主菜单的项目卡片上也会标出来。run 不受影响，重新 scan 之后照样叠。
 - `graph`、`serve` 也接受 `--roots`，但目前**不起作用**，扫哪些目录只由 scan 决定。
 
 ### 自动挂上的作者文档

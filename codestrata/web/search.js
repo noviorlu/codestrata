@@ -44,9 +44,9 @@ window.CS = window.CS || {};
       out.push({ t: 'file', f: f, unit: ix.units[i], name: f.split('/').pop(), path: f });
     });
     ix.syms.forEach(function (s) {
-      var u = ix.units[s[2]], mod = (ix.fmods || [])[s[2]] || '';
-      out.push({ t: 'sym', q: s[0], k: s[1], f: ix.files[s[2]], l: s[3], unit: u, key: mod + ':' + s[0],
-                 name: s[0].split('.').pop(), path: s[0] + ' ' + mod + ' ' + ix.files[s[2]] });
+      var u = ix.units[s[2]], f = ix.files[s[2]];
+      out.push({ t: 'sym', q: s[0], k: s[1], f: f, l: s[3], unit: u, key: f + '#' + s[0],     // 符号键 <路径>#<限定名>
+                 name: CS.ids.tail(s[0]), path: s[0] + ' ' + f });
     });
     out.forEach(function (it) {
       it.ln = it.name.toLowerCase();                             // 名字本身
