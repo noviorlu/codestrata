@@ -1434,7 +1434,7 @@ def sym_locs(symbols: dict) -> tuple[dict, dict]:
 
 def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
     """键 rel:ln 的这一帧是定义时的执行、不是调用："module" / "class"，是调用返回 None。模块图（to_package_graph）
-    和时序图（seq）用同一个判断。loc2sym 是 sym_locs(symbols) 的第一项。
+    和「时间顺序」（seq）用同一个判断。loc2sym 是 sym_locs(symbols) 的第一项。
       module —— <module> 帧（第 0 行；老 trace 记成第 1 行，那一行又没有符号），import 触发的模块顶层执行
       class  —— 类体：class 语句执行时跑一次的帧，co_firstlineno 是 class 行（有装饰器是第一个装饰器那一行），
                 正好落在类符号的 l / dl 上。类不会被「调用」——实例化跑的是 __init__ / __new__，它们有自己的

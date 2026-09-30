@@ -251,8 +251,14 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             if k not in kinds and a in shown and b in shown:
                 rt_only.append([a, b, max(he.get(k, 0), heb.get(k, 0))])
     # hot 视图单独排版：只放跑到的节点（对比时两边任一跑到的），每个节点的层沿用总图，纵坐标含义不变、横向更紧凑
-    g_hot = (_layout.build(syn, lane_of={n["id"]: n["lane"] for n in g["nodes"]}, min_files=min_files, width=width,
-                           only={p for p, n in hot_view["packages"].items() if n} | set((cmp or {}).get("nodes") or {}))
+    # 「跑到的」节点：这一段里有函数被调用进去的，加上这一段里任何一条 runtime 边（动态分派的也算）的两端。
+    # 调用方不一定有「被调用」的次数：一直在跑的外层函数（case 脚本的 main 在上一个阶段就进去了）、
+    # import 时执行的模块顶层（定义，不算调用）——少了它们，边就没有起点
+    ran = ({p for p, n in hot_view["packages"].items() if n} | set((cmp or {}).get("nodes") or {})
+           | {x for k in list(hot_view["edges"]) + list((cmp or {}).get("edges") or {}) for x in k.split("|")}) if hot_view else set()
+    g_hot = (_layout.build(syn, lane_of={n["id"]: n["lane"] for n in g["nodes"]},
+                           lane_labels={r["i"]: r["label"] for r in g["lane_rows"]}, min_files=min_files, width=width,
+                           only=ran)
              if hot_view else None)
     for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里
         x = v["nodes"][nd["id"]]

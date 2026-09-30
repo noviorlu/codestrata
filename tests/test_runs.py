@@ -705,13 +705,7 @@ def test_rerun_secrets_and_bytes():
     out2 = rd.parent.parent / "sec2-export.html"
     cs("graph", repo, "--hot", run["id"], "--out", out2)
     assert "sk-999" not in out2.read_text() and "pw7" not in out2.read_text()
-    # 时序图（serve 页面）上的进程命令行也隐去；--no-auth 这种后面紧跟选项的是开关，不吃掉下一个选项
-    from codestrata import seq
-    cs("trace", repo, "--case", "sec3", "--events", "--", PY, "-m", "fakesvc.offline", "--api-key", "sk-777")
-    run, det, rd = latest(repo)
-    sq = seq.build(repo, payload.load_index(repo), rd, run, det)
-    shown = json.dumps(sq["procs"], ensure_ascii=False)
-    assert sq["procs"] and "sk-777" not in shown and "<已隐去>" in shown, shown
+    # --no-auth 这种后面紧跟选项的是开关，不吃掉下一个选项
     assert runs._redact_argv(["x", "--no-auth", "--port", "80", "--api-key", "k"]) == \
         ["x", "--no-auth", "--port", "80", "--api-key", "<已隐去>"]
     # 不是 UTF-8 的参数
@@ -1395,51 +1389,8 @@ def _truth_run():
     return repo, run, det, rd
 
 
-def test_seq_build():
-    """切面上的消息：两端落在不同节点；节点内部的只计数；画得下就不折；生命线按进程分组；
-    fork / exec 的子进程有派生行。"""
-    from codestrata import seq
-    repo, run, det, rd = _truth_run()
-    idx = payload.load_index(repo)
-    r = seq.build(repo, idx, rd, run, det)
-    ms = [x for x in r["rows"] if x["k"] == "m"]
-    assert ms and all(x["a"] != x["b"] for x in ms)
-    assert not [x for x in r["rows"] if x["k"] == "loop"], "画得下就不折"
-    spans, _ = _spans(rd)
-    assert sum(x["rep"] for x in ms) + r["stat"]["internal"] + r["stat"]["unmapped"] + r["stat"]["imports"] \
-        == sum(s["rep"] for s in spans)
-    lanes = r["lifelines"]
-    pids = [l["pid"] for l in lanes]
-    assert pids == sorted(pids, key=lambda p: [q["pid"] for q in r["procs"]].index(p)), "生命线按进程分组"
-    assert all(0 <= x["from"] < len(lanes) and 0 <= x["to"] < len(lanes) for x in ms)
-    assert any(x["k"] == "spawn" for x in r["rows"]), "fork 出来的子进程要有派生行"
-    ts = [x["t"] for x in r["rows"]]
-    assert ts == sorted(ts)
-    # 只看一个阶段 / 从某个时刻起
-    r2 = seq.build(repo, idx, rd, run, det, t0=r["rows"][5]["t"])
-    assert r2["rows"][0]["t"] >= r["rows"][5]["t"]
-
-
-def test_seq_fold_and_budget():
-    """画不下才折循环（第一级折叠后的 50 次叶子调用已经是一条）；给定窗口太密不截断，给建议窗口；
-    自动收窄的窗口折叠后不超过上限。"""
-    from codestrata import seq
-    repo, run, det, rd = _truth_run()
-    idx = payload.load_index(repo)
-    full = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=2000)
-    n = len(full["rows"])
-    small = seq.build(repo, idx, rd, run, det, max_rows=20)
-    assert len(small["rows"]) <= 20 and small["window"][1] < full["window"][1], (len(small["rows"]), small["window"])
-    assert n > 40, n
-    loops = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=n - 10)
-    assert loops["too_dense"] is None and any(x["k"] == "loop" for x in loops["rows"]) \
-        and len(loops["rows"]) <= n - 10, (n, len(loops["rows"]))
-    dense = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=20)
-    assert dense["too_dense"] and dense["rows"] == [] and dense["too_dense"]["suggest"][1] > 0, dense["too_dense"]
-
-
-def test_seq_find_and_api():
-    """/api/seq、/api/seq/overview、/api/seq/find 经真的 serve 走一遍；没录事件的 run 给 404 说明。"""
+def test_edge_times_api():
+    """/api/seq/edges 经真的 serve 走一遍：录了事件的 run 给每条边的时间；没录事件的、没有这个阶段的给 404 说明。"""
     import socket
     import urllib.request
     repo, run, det, rd = _truth_run()
@@ -1458,17 +1409,20 @@ def test_seq_find_and_api():
                 except OSError:
                     time.sleep(0.1)
             raise AssertionError("serve 没起来")
-        st, r = get(f"/api/seq?run={run['id']}")
-        assert st == 200 and r["rows"] and r["lifelines"], r
-        st, o = get(f"/api/seq/overview?run={run['id']}")
-        assert st == 200 and o["procs"] and len(o["procs"][0]["density"]) == 400
-        m = next(x for x in r["rows"] if x["k"] == "m")
-        st, f = get(f"/api/seq/find?run={run['id']}&a={m['a']}&b={m['b']}&after=-1")
-        assert st == 200 and f["t"] <= m["t"], (f, m)
-        st, e = get("/api/seq?run=plain")
+        st, te = get(f"/api/seq/edges?run={run['id']}")
+        assert st == 200 and te["edges"] and all(v["first"] <= v["last"] for v in te["edges"].values()), te
+        st, e = get("/api/seq/edges?run=plain")
         assert st == 404 and "--events" in e["error"], e
-        st, e = get("/api/seq")
+        st, e = get(f"/api/seq/edges?run={run['id']}@nosuch")
+        assert st == 404, e
+        st, e = get("/api/seq/edges")
         assert st == 400
+        for gone in ("/api/seq", "/api/seq/overview", "/api/seq/find"):     # 时序图去掉了
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}{gone}?run={run['id']}", timeout=10)
+                raise AssertionError(f"{gone} 还在")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404, (gone, e.code)
         st, rl = get("/api/runs")
         assert {x["case"]: x["events"] for x in rl["runs"]} == {"truth": True, "plain": False}
     finally:
@@ -1476,79 +1430,52 @@ def test_seq_find_and_api():
         srv.wait()
 
 
-def test_seq_cuts_and_find():
-    """同一微秒的几次调用不拆到两屏；不折叠时分屏、next_t0 接得上；find 先在阶段里找、不算 import；
-    fork+exec 的子进程的派生行在 fork 的时刻（exec 之前的调用之前）；统计只数显示的那一段。"""
+def test_seq_edge_times():
+    """「时间顺序」上色的数据：切面上每条边在一个阶段里第一次 / 最后一次被调用的时刻和次数。节点内部的、
+    import / 类体这种定义时的执行、index 外的不算（这里从原始 span 另算一遍对照）；整个 run 上次数和 hot 图
+    的调用次数一致
+    （分了阶段时边界上会差一点：时间窗按时刻切，fork 出来的进程是轮询着跟着切阶段的）"""
     from codestrata import seq
-    mk = lambda t, pid=1: {"t": t, "d": 1, "pid": pid, "tid": 1, "a": "x", "b": "y", "f": "f.py", "l": t % 7 + 1, "rep": 1}
-    msgs = [mk(1000 + 10 * i, 1) for i in range(30)] + [mk(1000 + 10 * i, 2) for i in range(30)]
-    msgs.sort(key=lambda m: m["t"])
-    n = seq._fit(msgs, 21, fold=False)
-    assert 0 < n < len(msgs) and msgs[n]["t"] != msgs[n - 1]["t"], n            # 退到时刻的边界上
-    ties = [mk(5, p) for p in range(50)]
-    assert seq._fit(ties, 20, fold=False) == 50                                  # 一个时刻放不下也整组放进来
-    repo, run, det, rd = _truth_run()
+    repo = fresh()
+    trace_offline(repo, "ph", "--events", "--phase", "generate=fakesvc.offline:Engine.generate")
+    run, _, rd = latest(repo)
     idx = payload.load_index(repo)
-    # 不折叠分屏：前后两屏接得上、不重不漏
-    a = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, fold=False, max_rows=20)
-    b = seq.build(repo, idx, rd, run, det, t0=a["next_t0"], t1=10 ** 12, fold=False, max_rows=20)
-    ma = [x for x in a["rows"] if x["k"] == "m"]
-    mb = [x for x in b["rows"] if x["k"] == "m"]
-    assert ma and mb and not [x for x in a["rows"] + b["rows"] if x["k"] == "loop"]
-    assert a["next_t0"] == ma[-1]["t"] + 1 and mb[0]["t"] >= a["next_t0"]
-    full = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, fold=False, max_rows=2000)
-    fm = [x["t"] for x in full["rows"] if x["k"] == "m"]
-    assert [x["t"] for x in ma + mb] == fm[:len(ma) + len(mb)]
-    # 统计只数显示的那一段
-    assert a["stat"]["imports"] <= full["stat"]["imports"]
-    # 不画 import 触发的模块顶层执行
-    assert not [x for x in full["rows"] if x["k"] == "m" and x["l"] == 0]
-    # fork+exec 的子进程：派生行在它 exec 之前的调用之前
-    sp = [x for x in full["rows"] if x["k"] == "spawn"]
-    for s_ in sp:
-        first = min((x["t"] for x in full["rows"] if x["k"] == "m" and x["pid"] == s_["pid"]), default=None)
-        assert first is None or s_["t"] <= first, (s_, first)
-    # find：跳过 <module>，先在给的阶段里找
-    hit = seq.find(idx, rd, open_=None, a="fakesvc.truth", b="fakesvc.callee")
-    assert hit and hit["t"] > 0
-    tr_ = [x for x in full["rows"] if x["k"] == "m" and x["a"] == "fakesvc.truth" and x["b"] == "fakesvc.callee"]
-    assert hit["t"] == tr_[0]["t"], (hit, tr_[0]["t"])
-    later = seq.find(idx, rd, open_=None, a="fakesvc.truth", b="fakesvc.callee", window=(tr_[5]["t"], 10 ** 12))
-    assert later["t"] >= tr_[5]["t"]
+    spans, _ = _spans(rd)
+    for phase, opened in ((None, None), ("generate", None), ("generate", ["fakesvc"])):
+        r = seq.edge_times(idx, rd, run, open_=opened, phase=phase)
+        t0, t1 = r["window"]
+        assert (t0 > 0) == bool(phase), r["window"]
+        v = payload._cut.view(idx, set(opened if opened is not None else idx["default_open"]))
+        loc, _ = trace.sym_locs(idx["symbols"])
+        want: dict = {}
+        for x in spans:    # 另算一遍：键 → 单元 → 切面节点；同一个节点、定义时的执行、index 外的不算
+            if not t0 <= x["t0"] <= t1:
+                continue
+            (ra, _, la), (rb, _, lb) = x["a"].rpartition(":"), x["b"].rpartition(":")
+            na, nb = (v["node_of"].get(idx["files"].get(ra)), v["node_of"].get(idx["files"].get(rb)))
+            if na is None or nb is None or na == nb or trace.defining(idx["symbols"], loc, rb, int(lb)):
+                continue
+            end = min(t1, x["t0"] + max(x["dur"], 0)) if x["rep"] > 1 else x["t0"]   # 折叠的一行：不晚于它的结束
+            w = want.setdefault(f"{na}|{nb}", {"first": x["t0"], "last": end, "n": 0})
+            w["first"], w["last"], w["n"] = min(w["first"], x["t0"]), max(w["last"], end), w["n"] + x["rep"]
+        got = {k: {f: v[f] for f in ("first", "last", "n")} for k, v in r["edges"].items()}
+        assert want and got == want, (got, want)
+        assert all(v["repeat"] == (v["n"] >= seq.REPEAT_MIN and v["spread"] > r["span_us"] / 2) for v in r["edges"].values())
+        if phase is None:
+            hot, meta = payload.load_hot(repo, idx, run["id"])
+            he = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=opened)["hot"]["edges"]
+            assert {k: v["n"] for k, v in r["edges"].items()} == he, (r["edges"], he)
 
 
-def test_seq_estimate_and_fit():
-    """画不下时估出来的建议窗口，再请求它不能又是「画不下」（原先会原地打转）；贪心折叠的行数不单调时，
-    _fit 退到时刻边界后也不超过上限；不折叠的分屏一屏接一屏，拼起来就是整段。"""
+def test_phase_intervals():
+    """阶段的时间段按 phase_log：切回去的阶段有几段；时刻不知道的阶段按时间排时明说，不退成整个 run"""
     from codestrata import seq
-    mk = lambda i, tok: {"t": 1000 + i, "d": 1, "pid": 1, "tid": 1, "a": tok, "b": "z", "f": "f.py", "l": 1, "rep": 1}
-    msgs = [mk(i, t) for i, t in enumerate("AAABAAABAAAB")]
-    for lim in range(1, 7):
-        n = seq._fit(msgs, lim)
-        assert n == 0 or len(seq._with_idle(seq._fold_loops(msgs[:n]))) <= max(lim, 1) or n == 1, (lim, n)
-    repo, run, det, rd = _truth_run()
-    idx = payload.load_index(repo)
-    old = seq.ESTIMATE_X
-    try:
-        seq.ESTIMATE_X = 0                           # 什么窗口都走估算的那条路
-        r = seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, max_rows=20)
-        assert r["too_dense"] and r["too_dense"]["estimate"], r["too_dense"]
-        s0, s1 = r["too_dense"]["suggest"]
-        r2 = seq.build(repo, idx, rd, run, det, t0=s0, t1=s1, max_rows=20)
-        assert r2["too_dense"] is None and r2["rows"], r2["too_dense"]
-        # 不折叠的分屏：一屏接一屏走到头，拼起来和一次取全的一样
-        full = [x["t"] for x in seq.build(repo, idx, rd, run, det, t0=0, t1=10 ** 12, fold=False,
-                                          max_rows=2000)["rows"] if x["k"] == "m"]
-        got, t = [], 0
-        for _ in range(50):
-            p = seq.build(repo, idx, rd, run, det, t0=t, t1=10 ** 12, fold=False, max_rows=20)
-            got += [x["t"] for x in p["rows"] if x["k"] == "m"]
-            if p["next_t0"] is None:
-                break
-            t = p["next_t0"]
-        assert got == full, (len(got), len(full))
-    finally:
-        seq.ESTIMATE_X = old
+    run = {"phase_log": [["start", 0, "start"], ["a", 10, "hook"], ["b", 20, "hook"], ["a", 30, "marker"]],
+           "phases": [{"name": "start", "t_us": 0}, {"name": "a", "t_us": 10}, {"name": "b", "t_us": 20}]}
+    iv = seq.phase_intervals(run, 50)
+    assert iv == {None: [(0, 50)], "start": [(0, 10)], "a": [(10, 20), (30, 50)], "b": [(20, 30)]}, iv
+    old = {"phases": [{"name": "start", "t_us": 0}, {"name": "x", "t_us": None}]}      # 老 run：只有 phases
+    assert seq.phase_intervals(old, 9) == {None: [(0, 9)], "start": [(0, 9)]}
 
 
 def test_remap_moved_functions():
@@ -1642,15 +1569,15 @@ def test_class_body_is_definition_not_call():
         (repo / rel).write_text(src)
     cs("scan", repo)
     cs("trace", repo, "--case", "cls", "--phase", "late=cb.main:late", "--", PY, "-m", "cb.main")
-    # 时序图和模块图用同一个「定义时的执行」判断（trace.defining）
+    # 「时间顺序」（seq）和模块图用同一个「定义时的执行」判断（trace.defining）
     from codestrata import seq
     idx0 = payload.load_index(repo)
     sm = seq._Map(idx0, ["cb"])
     S = idx0["symbols"]
     for k, want in (("cb.lazy:Pool", True), ("cb.lazy:Pool.Options", True), ("cb.lazy:Pool.request", False),
                     ("cb.lazy:factory", False)):
-        assert sm.defining(S[k]["f"], S[k].get("dl", S[k]["l"])) is want, k
-    assert sm.defining("cb/lazy.py", 0) and not sm.defining("cb/lazy.py", 3)
+        assert sm.of(f'{S[k]["f"]}:{S[k].get("dl", S[k]["l"])}')[1] is want, k
+    assert sm.of("cb/lazy.py:0")[1] and not sm.of("cb/lazy.py:3")[1]
 
     def check(idx):
         classes = {k for k, s in idx["symbols"].items() if s["k"] == "class"}

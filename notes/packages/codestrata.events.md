@@ -2,20 +2,20 @@
 written_by: claude-opus-5-5
 target: codestrata.events
 kind: package
-code_sha: a767f0b4997792d5
+code_sha: a99a4f3e4107a4ce
 status: draft
-refs: runs.py:349@dcfcecf7,events.py:1@d55ae9b7,trace.py:222@1d353c75,trace.py:234@b260cb52,runs.py:446@1c2edb45,runs.py:447@fe850b3d,runs.py:891@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:190@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:239@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:232@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,seq.py:87@43f9c39a,events.py:166@9e27b77d
+refs: runs.py:349@dcfcecf7,events.py:1@2c6ba816,trace.py:222@1d353c75,trace.py:234@b260cb52,runs.py:446@1c2edb45,runs.py:447@fe850b3d,runs.py:891@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:190@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:239@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:232@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,seq.py:128@a5d4736d,seq.py:54@f794f819,events.py:166@9e27b77d
 ---
 
 ## 是什么
-时序图的数据层（M3 新加的模块）。`trace --events` 录制时，hook 给每个进程映像（fork 出来的子进程、exec 之后的新程序，各算一个映像）写一份文本日志 ev-<pid>-<t0ns>.log，只记**跨文件**的调用，口径和 func_edges 相同。这个模块把这些原始日志整理成配好对的 span，写进 run 目录的 events/spans/。每个 span 是一行：
+时序事件的数据层（M3 新加的模块；数据现在给模块图的「时间顺序」用，早先 M5 的时序图已经去掉）。`trace --events` 录制时，hook 给每个进程映像（fork 出来的子进程、exec 之后的新程序，各算一个映像）写一份文本日志 ev-<pid>-<t0ns>.log，只记**跨文件**的调用，口径和 func_edges 相同。这个模块把这些原始日志整理成配好对的 span，写进 run 目录的 events/spans/。每个 span 是一行：
 
 ```
 [t0_us, dur_us, tid, depth, a, b, rep, n_susp]
 ```
 - t0_us 相对整个 run 的 mono0，和 run.json 里各阶段的 t_us 在同一条时间轴上。dur_us 是墙钟时间，挂起过的 span 包含挂起的时间；没返回的是 -1。
 - tid 是进程内的线程号，exec 前后接着编。depth 是调用那一刻，这个线程上正在执行（没返回、也没挂起）的 span 数。
-- a / b 是调用方 / 被调方在 keys.json 里的下标，键的形式是 rel:firstlineno（模块顶层和 3.12 泛型的定义帧是 rel:0）；登记行丢了的键指到 "?"。调用方还可能是 case 自己的代码（Flask 视图这类被仓库回调的函数），键是 <外部代码>/文件名:行，不在 index 里，时序图把它当作映射不到的一端（trace 那边的 `_case_rel`）。
+- a / b 是调用方 / 被调方在 keys.json 里的下标，键的形式是 rel:firstlineno（模块顶层和 3.12 泛型的定义帧是 rel:0）；登记行丢了的键指到 "?"。调用方还可能是 case 自己的代码（Flask 视图这类被仓库回调的函数），键是 <外部代码>/文件名:行，不在 index 里，`seq` 把它当作映射不到的一端（trace 那边的 `_case_rel`）。
 - rep 是第一级折叠合了几次；n_susp 是挂起了几次，大于 0 就是 async 的 span。
 
 整个模块是一条流水线：`parse`（读一个日志）→ `pair`（配成 span）→ `fold`（第一级折叠）→ `build`（把整个 run 拼起来并写出），`read_spans` 再把写出的 span 读回来。调用方只有 runs：`finalize` 和 `merge_run` 都经 `_build_events`（runs.py:349）进来。
@@ -29,7 +29,7 @@ refs: runs.py:349@dcfcecf7,events.py:1@d55ae9b7,trace.py:222@1d353c75,trace.py:2
 
 **配对按 span 号，不按栈。** 同一线程里两个 asyncio 协程交错执行时，先开始的不一定先结束，按栈顶配会配反（truth.py 的 s_async 就是这个场景）。hook 已经把 R / Y / S 对到了 span 号上，`pair` 里的栈（active）只用来算 depth 和父 span，不参与配对。
 
-**不和 runs 放在一起**：runs 管 run 目录，以及原始数据留不留。这个模块只做「原始日志 → span」这一步纯计算，除了 out_dir 什么都不写。M5 的时序图只需要依赖它和它写出的格式。
+**不和 runs 放在一起**：runs 管 run 目录，以及原始数据留不留。这个模块只做「原始日志 → span」这一步纯计算，除了 out_dir 什么都不写。读 span 的 `seq`（模块图的「时间顺序」）只依赖它写出的格式。
 
 ## 读法
 1. 模块 docstring（events.py:1）：行格式和 span 的字段。和设计稿 `docs/design/runs.md` 的 7.1–7.3 对着读，尤其是 7.1 末尾「实现时的调整（M3）」和「M3 评审后补上的」这两张清单。7.3 正文、清单里讲折叠的那一条、`pair` 的 docstring（events.py:89）现在都是「按 (父 span, 段) 认兄弟」，和 `fold` 一致。落盘重试的去重设计稿里没写，只在 `pair` 的 docstring 末尾（events.py:90）。
@@ -78,15 +78,15 @@ refs: runs.py:349@dcfcecf7,events.py:1@d55ae9b7,trace.py:222@1d353c75,trace.py:2
 
 所有文件先写到 spans.<pid>.tmp，然后把旧目录挪成 .old、把新目录挪进来、删掉 .old（events.py:222 起）。`os.replace` 不能把目录换到非空目录上，所以分两步。两步之间崩了，spans/ 会暂时不存在；但这是派生数据，merge 能重来。
 
-### 时序图（`seq`）读什么
-`seq` 按设计稿 7.4 每次请求现算，不 import 这个模块，直接读写出的文件：
-- **index.json 的 chunks**：按 [t0_us, t1_us] 挑出和时间窗重叠的块，只解压这些块，解压过的放进 16 块的 LRU（`spans_in`，seq.py:87）。同一个 pid 的块内、块间都按 t0 有序。
-- **index.json 的 procs**：子进程在它的 t0_us 时刻，从 ppid 画一条派生箭头。argv 摘要不在这里，另从 detail.json 的 procs 拿。
-- **keys.json**：keys 用来把 a / b 经 rel → 单元 → `node_of` 映射到切面上的节点，两端落在不同节点的才画；"?" 和 <外部代码>/… 映射不到，不画、只计数。threads 给 (pid, tid) 起名；第二级折叠也按 (pid, tid) 分组。
-- **行本身**：rep 用来显示 ×n，n_susp 和 dur 放进 async 消息的详情，dur = -1 表示没返回。
+### 「时间顺序」（`seq`）读什么
+`seq` 不 import 这个模块，直接读写出的文件：
+- **index.json 的 chunks**：第一次请求时把全部块解压、读一遍（`_pairs`，seq.py:128；每块一次 json.loads，`_chunk`，seq.py:54），聚合成每对键的首末时刻和次数，缓存的是聚合结果、不是块。各块 t1_us 里最大的当作 run 的终点，最后一个阶段开到那里。不再按时间窗挑块。
+- **index.json 的 truncated**：原样交给页面，图例上加 ⚠。index.json 的 procs 现在没人读（原来给时序图画派生箭头）。
+- **keys.json**：keys 用来把 a / b 经 rel → 单元 → `node_of` 映射到切面上的节点，两端落在不同节点的才算；"?" 和 <外部代码>/… 映射不到，不算。threads 仍读进来，但没人用了。
+- **行本身**：只用 t0、dur、a、b、rep——rep 大于 1 的折叠行，最后一次调用按这一行的结束算；tid、depth、n_susp 不用。
 - 时间轴和 run.json 里阶段的 t_us 是同一个，「serving 阶段」直接就是一个时间窗（test_events_fake_service 就是这么取的）。
 
-`read_spans` 一次读回全部块（或某个 pid 的全部块），现在只有测试在用；按时间窗读和缓存在 `seq` 里。
+`read_spans` 一次读回全部块（或某个 pid 的全部块），现在只有测试在用；读和缓存都在 `seq` 里。
 
 ## 局限
 - 「段」只在**录下来的** span 挂起或恢复时加一。协程自己不是 span（入口在仓库外，或者调用它的在同一个文件里）时，它们互相切换不留痕迹：挂在同一个父亲（外层的 span，或者 0）下的叶子调用，只要 a→b 相同、中间又没有别的 span 挂起过，照样会合成一条。

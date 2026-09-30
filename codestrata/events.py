@@ -1,4 +1,4 @@
-"""时序事件：hook 记下的原始事件日志 → 配好对的 span（时序图的数据）。
+"""时序事件：hook 记下的原始事件日志 → 配好对的 span（模块图「时间顺序」的数据，见 seq.py）。
 
 录制（trace 的 hook，CODESTRATA_EVENTS=1 时）只记**跨文件**的调用，口径和 func_edges 相同。
 每个进程映像一份文本日志 ev-<pid>-<t0ns>.log，一行一个事件：
@@ -228,7 +228,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
 
 
 def read_spans(spans_dir: Path, pid: int | None = None) -> list[list]:
-    """读回 span（测试和以后的时序图用）；pid 为 None 时读全部。"""
+    """读回 span（测试用）；pid 为 None 时读全部。"""
     idx = json.loads((spans_dir / "index.json").read_text(encoding="utf-8"))
     out = []
     for c in idx["chunks"]:

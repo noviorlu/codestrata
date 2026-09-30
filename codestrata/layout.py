@@ -131,13 +131,14 @@ def layers(ids, edges) -> dict[str, int]:
     return {n: top - h for n, h in height.items()}
 
 
-def build(index: dict, *, lane_of: dict[str, int] | None = None, min_files: int = 1,
-          top: int | None = None, width: float = 1180.0,
+def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: dict[int, str] | None = None,
+          min_files: int = 1, top: int | None = None, width: float = 1180.0,
           only: set[str] | None = None, runtime_edges: list | None = None) -> dict:
     """返回 {"nodes": [...], "edges": [...], "frames": [...], "lanes": n, "width": w, "height": h}
 
     only：只给这些包排版（hot 视图用）。lane_of：每个节点在哪条泳道——hot 视图传总图的，
-    两张图的纵坐标含义一致，只是横向更紧凑；不给就按 layers 分层。runtime_edges：叠着的 run
+    两张图的纵坐标含义一致，只是横向更紧凑；不给就按 layers 分层。lane_labels：泳道标签（hot 视图
+    传总图的：层被压过时一条泳道是「第 a–b 层」，自己按序号写就对不上了）。runtime_edges：叠着的 run
     在这个切面上的调用 [(a, b, 次数)]，分层时比静态边重得多（RUNTIME_WEIGHT）
     """
     pkgs = index["packages"]
@@ -592,7 +593,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, min_files: int 
              + FOOT_H * max(0, foot_stack.get(i, 0) - 4)) if i in occupied else EMPTY_H
         a, b = span_of.get(i, (i, i))
         rows.append({"i": i, "y": y, "h": h, "empty": i not in occupied, "pad": extra_top, "name": "",
-                     "label": f"第 {a + 1} 层" if a == b else f"第 {a + 1}–{b + 1} 层"})
+                     "label": (lane_labels or {}).get(i) or (f"第 {a + 1} 层" if a == b else f"第 {a + 1}–{b + 1} 层")})
         y += h
     # 标签：入口 / 叶子给最上、最下**有内容**的泳道
     occ = sorted(occupied)

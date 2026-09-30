@@ -4,11 +4,8 @@
     GET  /<asset>                 前端静态资源（app.css、*.js）
     GET  /api/app                 {home}：从主菜单（codestrata app）打开时主菜单的地址，页面上放回去的链接
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
-    GET  /api/seq?run=&open=&t0=&t1=&max=&fold=
-                                  时序图：一个时间窗里切面节点之间的消息（没给 t1 就从 t0 / 阶段起点
-                                  自动收窄到 max 行以内）；run 必须录了时序事件（trace --events）
-    GET  /api/seq/overview?run=   每个进程在整个 run 上的调用密度（时间刷）
-    GET  /api/seq/find?run=&open=&a=&b=&after=   切面上 a → b 这条边在 after 之后第一次出现的时刻
+    GET  /api/seq/edges?run=&open=   切面上每条边在 run 选的阶段里第一次 / 最后一次被调用的时刻和次数
+                                  （模块图的「时间顺序」上色）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
@@ -202,44 +199,19 @@ class Handler(BaseHandler):
         return hit[0], hit[1], key
 
     def _seq(self, path: str, q: dict):
-        """时序图的三个接口。run 必填（run id 或 case 名，@阶段决定默认的时间窗）。"""
+        """/api/seq/edges：模块图「时间顺序」上色要的数据。run 必填（run id 或 case 名，@阶段决定时间窗）。"""
         ref = (q.get("run") or [""])[0].strip()
         if not ref:
             return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
         try:
             run, rd, phase = _runs.resolve(self.repo, ref)
-            detail = _runs._read(rd / "detail.json") if (rd / "detail.json").is_file() else {}
         except SystemExit as e:
             return self._json({"error": str(e)}, 404)
-        except (OSError, ValueError) as e:            # detail.json 读不出来
-            return self._json({"error": f"run {ref} 的 detail.json 读不出来：{e}"}, 500)
         raw = (q.get("open") or [None])[0]
         open_ = None if raw is None else [o for o in raw.split(",") if o]
         open_ = sorted(_payload._norm_open(self.idx, open_))
-
-        def num(k, default=None):
-            v = (q.get(k) or [""])[0]
-            try:
-                return int(float(v)) if v != "" else default
-            except (ValueError, OverflowError):
-                return default
         try:
-            if path == "/api/seq/overview":
-                return self._json(_seq.overview(rd))
-            if path == "/api/seq/find":
-                a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
-                # 先在 run 选的阶段里找（这条边在 serving 里叠成了橙色，就该跳到 serving 里的那一次）
-                ph = [p for p in run.get("phases") or [] if p.get("t_us") is not None]
-                names = [p["name"] for p in ph]
-                win = None
-                if phase in names:
-                    i = names.index(phase)
-                    win = (ph[i]["t_us"], ph[i + 1]["t_us"] if i + 1 < len(ph) else float("inf"))
-                hit = _seq.find(self.idx, rd, open_=open_, a=a, b=b, after=num("after", -1), window=win)
-                return self._json(hit) if hit else self._json({"error": f"这个 run 里没有 {a} → {b} 的调用"}, 404)
-            return self._json(_seq.build(self.repo, self.idx, rd, run, detail, open_=open_, t0=num("t0"),
-                                         t1=num("t1"), phase=phase, max_rows=num("max", _seq.MAX_ROWS),
-                                         fold=num("fold", 1) != 0))
+            return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase))
         except (LookupError, FileNotFoundError) as e:
             return self._json({"error": str(e) if isinstance(e, LookupError)
                                else "这个 run 没有录时序事件（codestrata trace --events），或者 span 没整理好（runs merge 重来）"}, 404)
@@ -301,7 +273,7 @@ class Handler(BaseHandler):
             except SystemExit as e:                  # runs/ 是软链、指向的盘没挂上
                 return self._json({"error": str(e)}, 503)
 
-        if path in ("/api/seq", "/api/seq/overview", "/api/seq/find"):
+        if path == "/api/seq/edges":
             return self._seq(path, q)
 
         hot = hot_meta = hot_key = None

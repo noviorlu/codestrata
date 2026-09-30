@@ -43,6 +43,19 @@ window.CS = window.CS || {};
         CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); CS.panel.showEdgeSide(a, b); self.drawerTitle(null, a, b); };
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
         CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); };
+        // 时间顺序的颜色是画的时候按当前主题的 --tm0/1/2 算好写死的：换了亮 / 暗（系统设置或页面上的切换）要重画
+        var retint = function () { if (CS.graph.state.timeOrder && CS.graph.times) CS.graph.paint(); };
+        if (window.matchMedia) {
+          var mq = window.matchMedia('(prefers-color-scheme: dark)');
+          if (mq.addEventListener) mq.addEventListener('change', retint);
+        }
+        if (window.MutationObserver)
+          new MutationObserver(retint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        // 开关（runtime / 动态分派 / 只看已解读）改了看得见的边：时间顺序重排名次，开关上的数跟着变
+        CS.graph.onTimed = function (n) {
+          var c = document.querySelector('#edgechips [data-t=timeorder] .n');
+          if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
+        };
         CS.graph.onSelectFrame = function (f) {
           var t = document.getElementById('dtitle'); if (t) t.textContent = f;
           var s = document.getElementById('dsub'); if (s) s.textContent = '已在图上展开成框（框头的 − 收起）';
@@ -55,6 +68,7 @@ window.CS = window.CS || {};
         CS.graph.phaseMarks = self.phaseMarks();
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
                       { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
+        self.applyTimes();
         self.edgeChips();
         self.controls();
         self.cutBar();
@@ -62,19 +76,6 @@ window.CS = window.CS || {};
         self.footer(d);
         if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);
         else if (self._cmpMissing && CS.viewer) { CS.viewer.toast(self._cmpMissing); self._writeHash(); }   // 进度栏会被解读统计盖掉，用浮层提示
-        // 选中从别处变了（Esc、点空白、搜索、抽屉里的链接、切面变了之后的保留选中）：时序图上的高亮跟着变
-        ['onClear', 'onPick', 'onPickEdge', 'onSelectFrame'].forEach(function (h) {
-          var orig = CS.graph[h];
-          CS.graph[h] = function () {
-            // 抽屉里写的「刚点的那条消息」：选了别的（或别的边）就不再是它了
-            var pm = CS.seq && CS.seq.picked;
-            if (pm && (h !== 'onPickEdge' || pm.a + '|' + pm.b !== CS.graph.state.selEdge)) CS.seq.picked = null;
-            var r = orig.apply(this, arguments);
-            if (self.view === 'seq' && CS.seq.data) CS.seq.render();
-            return r;
-          };
-        });
-        if (/(?:^#|&)view=seq(?:&|$)/.test(location.hash || '')) self.setView('seq');
         if (CS.search) CS.search.init();
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
         self._w = CS.graph.boxWidth();
@@ -179,16 +180,6 @@ window.CS = window.CS || {};
         t.textContent = CS.panel.short(a) + ' → ' + CS.panel.short(b);
         s.textContent = (CS.graph.edgeInfo(a, b) || {}).kind === 'type' ? '只在 if TYPE_CHECKING: 里 import：运行时不存在，不算依赖'
                       : '这条依赖具体用了对方哪些函数 / 类';
-        var pm = CS.seq && CS.seq.picked;
-        if (this.view === 'seq' && pm && pm.a === a && pm.b === b) s.textContent = this._msgText(pm);
-        if (this.view !== 'seq' && this._runHasEvents()) {
-          var sb = document.createElement('button');
-          sb.className = 'chip'; sb.style.marginLeft = '10px'; sb.textContent = '在时序图里看';
-          sb.title = '跳到这个 run 里这条边第一次被调用的时刻';
-          var self = this;
-          sb.onclick = function (ev) { ev.stopPropagation(); self.seqFindEdge(a, b); };
-          s.appendChild(sb);
-        }
       } else {
         t.textContent = '详情';
         s.textContent = '点图上的节点或箭头，在这里看它的文件、类 / 函数和解读';
@@ -320,7 +311,6 @@ window.CS = window.CS || {};
 
     _writeHash: function () {
       var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view|cmp)=/.test(x); });
-      if (this.view === 'seq') rest.unshift('view=seq');
       if (CS.ds.cmp && CS.ds.run) rest.unshift('cmp=' + encodeURIComponent(CS.ds.cmp).replace(/%40/g, '@'));
       if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
       history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
@@ -366,7 +356,6 @@ window.CS = window.CS || {};
 
     selectRun: function (id, phase) {
       var self = this, prev = CS.ds.run;
-      if (CS.seq) CS.seq.reset();                     // 换了 run：时序图的窗口从新 run 的阶段起点重来
       var prevCmp = CS.ds.cmp;
       CS.ds.run = id ? id + (phase ? '@' + phase : '') : '';
       if (!id || (CS.ds.cmp && CS.ds.cmp.split('@')[0] === id)) CS.ds.cmp = '';   // 不能和自己比
@@ -385,6 +374,7 @@ window.CS = window.CS || {};
           CS.ds.cmp = prevCmp;
           self._writeHash();
           self.runBar();
+          self.applyTimes();                          // 退回原来的 run：时间顺序也按它重取
           if (CS.viewer) CS.viewer.toast('换不过去：' + document.getElementById('prog').textContent);
         }
         return ok;
@@ -471,109 +461,11 @@ window.CS = window.CS || {};
       });
     },
 
-    /* ---- 模块图 | 时序图 ---- */
+    /* 这个 run 录了时序事件（trace --events）：「时间顺序」上色要用 */
     _runHasEvents: function () {
       var m = this.data && this.data.hot && this.data.hotMeta;
       var x = m && (this.runList || []).filter(function (r) { return r.id === m.run_id; })[0];
       return !!(x && x.events);
-    },
-
-    _runEventsError: function () {
-      var m = this.data && this.data.hot && this.data.hotMeta;
-      var x = m && (this.runList || []).filter(function (r) { return r.id === m.run_id; })[0];
-      return !!(x && x.events_error);
-    },
-
-    viewBar: function () {
-      var self = this, vc = document.getElementById('viewchips');
-      if (!vc) return;
-      var m = this.data && this.data.hot && this.data.hotMeta, ev = this._runHasEvents();
-      if (!m || !CS.ds.canSwitchRun || this.runListEmbedded) { vc.innerHTML = ''; return; }
-      vc.innerHTML = '<span class="lbl">图</span>'
-        + '<button class="chip" data-view="graph" aria-pressed="' + (this.view !== 'seq') + '" title="模块之间的依赖，橙色是这个 run 跑到的">模块图</button>'
-        + '<button class="chip" data-view="seq" aria-pressed="' + (this.view === 'seq') + '"' + (ev ? '' : ' disabled')
-        + ' title="' + (ev ? '这个 run 里跨模块的调用按时间排开' : this._runEventsError()
-            ? '这个 run 录了时序事件，但整理成 span 时失败了：codestrata runs <repo> merge <id> 重来'
-            : '这个 run 没录时序事件：录的时候加 --events（codestrata trace … --events）') + '">时序图</button>';
-      [].forEach.call(vc.querySelectorAll('[data-view]'), function (b) {
-        b.onclick = function () { self.setView(b.dataset.view); };
-      });
-    },
-
-    setView: function (v, opts) {
-      if (v === 'seq' && !this._runHasEvents()) {
-        // 说清楚为什么看不了：没选 run（或地址里的 run 找不到了，那句已经提示过）、导出版、这个 run 没录事件
-        var m = this.data && this.data.hot && this.data.hotMeta;
-        var why = CS.ds.mode === 'embedded' ? '导出的单文件没有带时序图；要看请用 codestrata serve'
-          : this._runMissing && !m ? null
-          : !m ? '先在上面「运行」里选一个录了时序事件的 run'
-          : this._runEventsError() ? '这个 run 的时序事件整理失败了：codestrata runs <repo> merge <id> 重来'
-          : '这个 run 没录时序事件：录的时候加 --events';
-        if (why && CS.viewer) CS.viewer.toast(why);
-        v = 'graph';
-      }
-      var was = this.view, box = document.querySelector('.gbox');
-      if (was === v && v === 'graph') { this.viewBar(); return; }
-      // 两张图共用一个图框：各记各的滚动位置，切回来时回到原处
-      this._scroll = this._scroll || {};
-      if (box && was) this._scroll[was] = [box.scrollLeft, box.scrollTop];
-      this.view = v;
-      var g = document.getElementById('g'), ctl = document.querySelector('.gctl');
-      g.style.display = v === 'seq' ? 'none' : '';
-      if (ctl) ctl.style.display = v === 'seq' ? 'none' : '';
-      var back = this._scroll[v];
-      if (v === 'seq') {
-        if (box) { box.scrollLeft = 0; box.scrollTop = 0; }
-        var p = CS.seq.show(Object.assign({}, CS.seq.req || {}, opts || {}));
-        if (back && !(opts && opts.focusSel)) p.then(function () { box.scrollLeft = back[0]; box.scrollTop = back[1]; });
-      } else {
-        CS.seq.hide();
-        if (was === 'seq') {                          // 回到模块图：时序图里选中的节点 / 边在图上也选着
-          this.redraw();
-          var st = CS.graph.state;
-          if (st.sel) CS.graph.pick(st.sel, true);
-          else if (st.selEdge) { var e = st.selEdge.split('|'); CS.graph.pickEdge(e[0], e[1]); }
-          if (back && box) { box.scrollLeft = back[0]; box.scrollTop = back[1]; }
-        }
-      }
-      this._writeHash();
-      this.viewBar();
-      this._retitle();
-    },
-
-    /* 抽屉标题按当前视图重写（边：模块图上给「在时序图里看」，时序图上写刚点的那条消息） */
-    _retitle: function () {
-      var st = CS.graph.state;
-      if (st.selEdge) { var e = st.selEdge.split('|'); this.drawerTitle(null, e[0], e[1]); }
-    },
-
-    _msgText: function (r) {
-      return r.fa + ' → ' + r.fb + '　' + (r.t / 1e6).toFixed(3) + 's 起，用时 '
-        + (r.d < 0 ? '到进程结束都没返回' : (r.d / 1000).toFixed(2) + 'ms') + (r.rep > 1 ? '（连续 ' + r.rep + ' 次合在一起）' : '')
-        + (r.async ? '，async 挂起 ' + r.susp + ' 次' : '') + '　pid ' + r.pid + ' 线程 ' + r.tid + '　' + r.f + ':' + r.l;
-    },
-
-    /* 时序图上点生命线头 = 选中这个模块；点消息 = 选中这条边，抽屉里再写上这条消息的时刻 */
-    // 不强行打开抽屉：点的那一行会被盖住（抽屉的标题栏一直看得见，详情点开它看）
-    seqPickNode: function (id) {
-      var st = CS.graph.state;
-      if (st.sel === id) { CS.graph.clear(); return; }
-      CS.graph.pick(id, true);
-    },
-
-    seqPickMsg: function (r) {
-      CS.seq.picked = r;
-      CS.graph.pickEdge(r.a, r.b);
-    },
-
-    /* 模块图上选中一条边时，抽屉标题栏里给个「在时序图里看」：跳到这条边第一次出现的时刻 */
-    seqFindEdge: function (a, b) {
-      var self = this;
-      CS.ds.seqFind(a, b, -1, this.curOpen()).then(function (hit) {
-        CS.seq.req = { t0: Math.max(0, hit.t - 1) };
-        if (self.view === 'seq') CS.seq.show({ t0: Math.max(0, hit.t - 1), focusSel: true });
-        else self.setView('seq', { focusSel: true });
-      }).catch(function (e) { if (CS.viewer) CS.viewer.toast(e.message); });
     },
 
     runBar: function () {
@@ -596,7 +488,6 @@ window.CS = window.CS || {};
         : m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
       var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
       var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
-      this.viewBar();
       this.cmpBar();
       if (!m || phases.length < 2 || !CS.ds.canSwitchRun || this.runListEmbedded) { pc.innerHTML = ''; return; }
       var at = Object.create(null), hook = Object.create(null);
@@ -615,6 +506,44 @@ window.CS = window.CS || {};
           + '　<b class="pe">■ 终点</b> ' + (b.end ? esc(b.end.qualname) + '（切到 ' + esc(b.end.name) + '）' : '程序结束') + '</span>';
       [].forEach.call(pc.querySelectorAll('[data-ph]'), function (x) {
         x.onclick = function () { if ((m.phase || '') !== x.dataset.ph) self.selectRun(m.run_id, x.dataset.ph); };
+      });
+    },
+
+    /* 「时间顺序」开关只在：serve（导出版没带时序数据）、叠着一个 run、它录了时序事件、不在对比 */
+    canTimeOrder: function () {
+      return CS.ds.mode === 'live' && !!(this.data && this.data.hot) && !this.data.cmp && this._runHasEvents();
+    },
+
+    /* 时间顺序上色要的数据：当前 run（阶段）、当前切面上每条边第一次 / 最后一次被调用的时刻。
+       开关关着就把颜色撤掉；同一个 run + 切面取过的直接用；取回来时已经换了 run / 切面的丢掉 */
+    applyTimes: function () {
+      var s = CS.graph.state, self = this;
+      if (!s.timeOrder || !this.canTimeOrder()) {
+        if (CS.graph.times) CS.graph.setTimes(null);
+        if (s.timeOrder && !this.canTimeOrder()) s.timeOrder = false;
+        this.edgeChips(); this.controls();
+        return;
+      }
+      var open = this.data.open || [], key = CS.ds.run + '|' + open.join(',');
+      if (this._times && this._times.key === key) {
+        this._timesLoading = null;
+        CS.graph.setTimes(this._times.data); this.edgeChips(); this.controls();
+        return;
+      }
+      // 取回来之前不上色（不拿上一个 run / 切面的时间画新图），开关上显示「…」
+      this._timesLoading = key;
+      CS.graph.setTimes(null); this.edgeChips(); this.controls();
+      CS.ds.seqEdges(open).then(function (d) {
+        if (self._timesLoading !== key) return;            // 这期间又换了 run / 切面（那边已经另取）
+        self._timesLoading = null;
+        if (CS.ds.run + '|' + (self.data.open || []).join(',') !== key || !s.timeOrder) return self.applyTimes();
+        self._times = { key: key, data: d };
+        CS.graph.setTimes(d); self.edgeChips(); self.controls();
+      }, function (e) {
+        if (self._timesLoading !== key) return;
+        self._timesLoading = null;
+        s.timeOrder = false; CS.graph.setTimes(null); self.edgeChips(); self.controls();
+        if (CS.viewer) CS.viewer.toast('时间顺序：' + e.message);      // 浮层提示：进度栏会被解读统计盖掉
       });
     },
 
@@ -848,13 +777,31 @@ window.CS = window.CS || {};
       } else if (hot) {
         defs.push(['hot', 'e ref warm', 'runtime', c.warm, '这次 case 真的调用过，粗细 ∝ 调用次数', true]);
         if (c.dyn) defs.push(['dyn', 'e dyn warm', '动态分派', c.dyn, DYN_TIP, true]);
+        if (this.canTimeOrder())
+          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : CS.graph.timed || 0) : '',
+                     '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
+                     + '换阶段、展开收起都会按新的时间窗重算', true]);
       }
+      // 整段重写会把键盘焦点丢到 body 上：记下焦点在哪个开关上，重写完放回去
+      var fa = document.activeElement, ft = fa && fa.closest && fa.closest('#edgechips [data-t]') ? fa.dataset.t : null;
       document.getElementById('edgechips').innerHTML = defs.map(function (x) {
-        return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="' + (s[x[0]] !== false) + '" title="'
-          + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true"><line x1="0" y1="4" x2="22" y2="4" class="'
-          + x[1] + '" style="stroke-width:1.8"/></svg>' + x[2] + ' <span class="n">' + x[3] + '</span></button>';
+        var tm = x[0] === 'timeorder';            // 时间顺序：开关上画一段起点色 → 终点色的渐变线
+        return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="'
+          + (tm ? !!s.timeOrder : s[x[0]] !== false) + '" title="'
+          + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true">'
+          + (tm ? '<defs><linearGradient id="tmchip"><stop offset="0" style="stop-color:var(--tm0)"/>'
+                  + '<stop offset=".5" style="stop-color:var(--tm1)"/><stop offset="1" style="stop-color:var(--tm2)"/></linearGradient></defs>'
+                  + '<line x1="0" y1="4" x2="22" y2="4" stroke="url(#tmchip)" style="stroke-width:2.4"/>'
+                : '<line x1="0" y1="4" x2="22" y2="4" class="' + x[1] + '" style="stroke-width:1.8"/>')
+          + '</svg>' + x[2] + ' <span class="n">' + x[3] + '</span></button>';
       }).join('')
-        + (CS.graph.cmp ? '<span class="cmpleg" title="对比两个 run"><i class="a"></i>只有 A<i class="b"></i>只有 B<i class="ab"></i>两边都有</span>' : '');
+        + (CS.graph.cmp ? '<span class="cmpleg" title="对比两个 run"><i class="a"></i>只有 A<i class="b"></i>只有 B<i class="ab"></i>两边都有</span>' : '')
+        + (s.timeOrder && CS.graph.times ? '<span class="tmleg" title="颜色按第一次被调用的先后排名：最早的在左边那头，最晚的在右边那头">'
+           + '早<i class="tmbar"></i>晚　<b class="tp" style="background:var(--tm0)">3</b> 第几个开始的　'
+           + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 同一个进程里一直在反复调用'
+           + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
+           + '</span>' : '');
+      if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
     },
 
     /* ---- 切面：展开 / 收起 ---- */
@@ -913,9 +860,6 @@ window.CS = window.CS || {};
         // 新出现的节点闪一下，好看出展开出来的是哪些
         CS.graph.flash(d.graph.nodes.filter(function (n) { return !before[n.id]; }).map(function (n) { return n.id; }));
         self.cutBar();
-        if (self.view === 'seq') {                    // 时序图跟着切面 / run 走：还有事件就重取，没有就退回模块图
-          if (self._runHasEvents()) CS.seq.show(CS.seq.req); else self.setView('graph');
-        }
         return true;
       }).catch(function (e) {
         if (seq !== self._cutSeq) return false;
@@ -1026,6 +970,7 @@ window.CS = window.CS || {};
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
       if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
+      this.applyTimes();
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();
       this.controls();
@@ -1034,7 +979,8 @@ window.CS = window.CS || {};
 
     controls: function () {
       var s = CS.graph.state, self = this;
-      var KEY = { refs: 'refs', imp: 'imp', type: 'type', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted' };
+      var KEY = { refs: 'refs', imp: 'imp', type: 'type', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted',
+                  timeorder: 'timeOrder' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
         if (key === 'onlyHot') {                 // 换 run 时会来回切：没叠 runtime 就藏起来
@@ -1047,6 +993,7 @@ window.CS = window.CS || {};
           // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置；
           // 仅类型的边关着时不画（不占接点），开关一动也要重画
           if ((key === 'onlyHot' && self.data.graphHot) || key === 'type') self.redraw();
+          else if (key === 'timeOrder') self.applyTimes();
           else CS.graph.paint();
         };
       });

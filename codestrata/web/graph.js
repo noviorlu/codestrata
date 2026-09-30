@@ -58,7 +58,9 @@ window.CS = window.CS || {};
   CS.graph = {
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
     zoom: 1, panMode: false,   // 缩放倍数（相对「适应宽度」）；移动模式：按住任意位置拖动
+    // timeOrder：跑到的边按「第一次被调用」的先后上色、标序号（setTimes 给数据，app.applyTimes 取）
     state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, type: false, hot: true, dyn: true,
+             timeOrder: false,
              onlyHot: false, onlyNoted: false },
     noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
     counts: { ref: 0, imp: 0, type: 0, warm: 0, dyn: 0 },
@@ -106,6 +108,7 @@ window.CS = window.CS || {};
         m.appendChild(el('path', { d: 'M0,0 L8,4 L0,8 z', fill: p[1] })); defs.appendChild(m);
       });
       svg.appendChild(defs);
+      this.defs = defs; this._mk = {};          // 时间顺序上色时按颜色现做的箭头（_marker）
 
       var N = {}; G.nodes.forEach(function (n) { n.cx = n.x * G.width; N[n.id] = n; });
       this.N = N;
@@ -156,9 +159,14 @@ window.CS = window.CS || {};
         Object.keys(cmp.edges).forEach(function (k) { hotEd[k] = Math.max(cmp.edges[k][0], cmp.edges[k][1]); });
       }
       this.hitPk = hotPk;
+      // 「只看跑到的」也留下 runtime 边（含动态分派）的两端：调用方不一定有被调用的次数（一直在跑的外层函数、
+      // import 时执行的模块顶层），少了它边就没有起点。和 payload 里 graphHot 的节点同一个口径
+      this.onPath = {};
+      for (var ek in hotEd) if (hotEd[ek]) ek.split('|').forEach(function (x) { self.onPath[x] = 1; });
       var maxE = 1; for (var k in hotEd) maxE = Math.max(maxE, hotEd[k]);
       // 三层：光晕在最下，可见的边在中间，透明的宽命中区在最上（但仍在节点下面，节点照样能点）
       var hg = el('g', {}), eg = el('g', {}), xg = el('g', {});
+      this.tg = el('g', { class: 'tord' });     // 时间顺序的序号牌：画在节点上面（见下面），不挡点击
       svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(xg); svg.appendChild(fh);
       // 框头上的数紧跟在名字后面：名字的实际宽度要画出来才量得准（估算对长名字会偏）
       Object.keys(this.heads).forEach(function (f) {
@@ -198,7 +206,7 @@ window.CS = window.CS || {};
              : dab && (dab[0] || dab[1]) ? '\n其中动态分派 A ' + dab[0] + ' / B ' + dab[1] + ' 次'
              : !cmp && hotDyn[src + '|' + dst] ? '\n其中 ' + hotDyn[src + '|' + dst] + ' 次是动态分派（代码里看不到引用）' : '')
           + (kind === 'type' ? '\n点击看 import 语句' : '\n点击看具体是哪些函数');
-        E.x.appendChild(tip);
+        E.x.appendChild(tip); E.tip = tip; E.tipBase = tip.textContent;
         E.x.onclick = function (ev) {
           ev.stopPropagation();
           if (self.state.selEdge === src + '|' + dst) self.clear(); else self.pickEdge(src, dst);   // 再点一次取消选中
@@ -249,7 +257,9 @@ window.CS = window.CS || {};
         g.onclick = function (ev) { ev.stopPropagation(); toggle(); };
         g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } };
       });
+      svg.appendChild(this.tg);
       this.setPhaseMarks(this.phaseMarks);
+      this.times = null;                         // 换了图：时间数据由 app.applyTimes 按新的 run / 切面重新给
       this.wireBox(svg.parentNode);
       this.fit();
       this.paint();
@@ -366,7 +376,7 @@ window.CS = window.CS || {};
       if (hint) hint.hidden = !more;
     },
 
-    /* 图藏着（时序图在前面）：量出来的位置全是 0，滚动、缩放都不能做——会把时序图滚走 */
+    /* 图藏着（还没画出来）：量出来的位置全是 0，滚动、缩放都不能做 */
     hidden: function () { return !this.svg || this.svg.style.display === 'none'; },
 
     focus: function (id) {
@@ -430,6 +440,108 @@ window.CS = window.CS || {};
       });
     },
 
+    /* 时间顺序的序号牌：上了色的边上画一个同色的小牌子「序号」，反复调用的在序号后面加一个 ↻。
+       位置先试路径的中点，被节点框或已经放下的牌子挡住就沿着路径往两边挪（0.4、0.6、0.3 …） */
+    _paintOrder: function (keep) {
+      var tg = this.tg, self = this;
+      if (!tg) return;
+      tg.textContent = '';
+      var boxes = Object.keys(this.N || {}).filter(function (id) { return self.vis(id); }).map(function (id) {
+        var n = self.N[id]; return [n.cx - n.w / 2 - 3, n.cy - n.h / 2 - 3, n.cx + n.w / 2 + 3, n.cy + n.h / 2 + 3];
+      });
+      var placed = [];
+      function free(p, w) {
+        var r = [p.x - w / 2, p.y - 8, p.x + w / 2, p.y + 8];
+        return !boxes.concat(placed).some(function (b) { return r[0] < b[2] && r[2] > b[0] && r[1] < b[3] && r[3] > b[1]; });
+      }
+      this.edges.filter(function (E) { return E._tc; })
+        .sort(function (a, b) { return a._t.k - b._t.k; })          // 早的先占位置
+        .forEach(function (E) {
+          var num = String(E._t.k + 1), w = 9 + 6.4 * num.length + (E._t.repeat ? 11 : 0);
+          if (!E._len) E._len = E.p.getTotalLength();
+          var at = null;
+          [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8].some(function (f) {
+            var p = E.p.getPointAtLength(E._len * f);
+            if (free(p, w)) { at = p; return true; }
+            return false;
+          });
+          at = at || E.p.getPointAtLength(E._len / 2);
+          placed.push([at.x - w / 2, at.y - 8, at.x + w / 2, at.y + 8]);
+          var g = el('g', { class: 'tn' + (keep && !E._mine ? ' dim' : '') });
+          g.appendChild(el('rect', { x: at.x - w / 2, y: at.y - 7.5, width: w, height: 15, rx: 7.5, fill: E._tc }));
+          var t = el('text', { x: at.x - (E._t.repeat ? 5 : 0), y: at.y + 3.5, 'text-anchor': 'middle' });
+          t.textContent = num; g.appendChild(t);
+          if (E._t.repeat) {                       // ↻：12px 的字才认得出（9px 的只是一团）
+            var r = el('text', { x: at.x + w / 2 - 7, y: at.y + 4.2, 'text-anchor': 'middle', class: 'rep' });
+            r.textContent = '↻'; g.appendChild(r);
+          }
+          tg.appendChild(g);
+        });
+    },
+
+    /* 时间顺序：t = /api/seq/edges 的结果 {window, span_us, edges: {"a|b": {first, last, n, repeat}},
+       truncated}，null 是不上色。名次在 paint 里按当时看得见的边排（_rankTimes） */
+    setTimes: function (t) {
+      this.times = t || null;
+      this.paint();
+    },
+
+    /* 看得见、这次跑到了（runtime 或动态分派画成跑到的样子）、又有时间的边按 first（控制流第一次走到
+       这条边的时刻）排名：E._t = {k, n, first, last, calls, repeat}，序号总是 1…N、和开关对得上。
+       按名次（不按时刻）上色：模型加载这种长时段会把按时刻插值的颜色都挤到一头。
+       repeat（后端算）：够多次、而且同一个进程里从头到尾隔了这段时间的一半以上——轮询、每个 token
+       都走一遍的路径；它的名次只说明「从什么时候开始」。跑到了却没有时间的（事件录到了上限、阶段边界
+       上差一点）不上色，照原来的样子画，提示里说明 */
+    _rankTimes: function () {
+      var t = this.state.timeOrder ? this.times : null, w = t ? t.window : [0, 0];
+      var list = t ? this.edges.filter(function (E) { return E._show && (E._warm || E._dyn) && t.edges[E.a + '|' + E.b]; }) : [];
+      list.sort(function (x, y) {
+        var p = t.edges[x.a + '|' + x.b], q = t.edges[y.a + '|' + y.b];
+        return p.first - q.first || p.last - q.last || (x.a + x.b < y.a + y.b ? -1 : 1);
+      });
+      var rank = {};
+      list.forEach(function (E, i) { rank[E.a + '|' + E.b] = i; });
+      var n = list.length, cut = t && (t.truncated || []).length;
+      function sec(us) { return '+' + ((us - w[0]) / 1e6).toFixed(3) + ' s'; }
+      this.edges.forEach(function (E) {
+        var k = E.a + '|' + E.b, v = t && k in rank ? t.edges[k] : null;
+        E._t = v ? { k: rank[k], n: n, first: v.first, last: v.last, calls: v.n, repeat: !!v.repeat } : null;
+        if (!E.tip) return;
+        E.tip.textContent = E.tipBase + (E._t
+          ? '\n时间顺序：第 ' + (E._t.k + 1) + ' / ' + n + ' 个开始的　首次 ' + sec(v.first) + '　最后 ' + sec(v.last)
+            + '（从这个阶段开始的时刻算）　' + v.n + ' 次'
+            + (E._t.repeat ? '\n↻ 同一个进程里从头到尾一直在反复调用：序号只说明它从什么时候开始' : '')
+          : t && E._show && (E._warm || E._dyn)
+            ? '\n时间顺序：这段时间里没有这条边的时序记录' + (cut ? '（有进程的时序事件录到了上限，之后的没录）' : '（阶段边界上差一点）')
+            : '');
+      });
+      if (n !== this.timed) { this.timed = n; if (this.onTimed) this.onTimed(n); }
+    },
+
+    /* 名次 f（0 最早 … 1 最晚）→ 颜色：--tm0 → --tm1 → --tm2 三个色标之间线性插值（跟着亮 / 暗主题） */
+    timeColor: function (f) {
+      var cs = getComputedStyle(this.svg), stops = ['--tm0', '--tm1', '--tm2'].map(function (v) {
+        var h = cs.getPropertyValue(v).trim().replace('#', '');
+        return [0, 2, 4].map(function (i) { return parseInt(h.substr(i, 2), 16); });
+      });
+      var x = Math.max(0, Math.min(1, f)) * 2, i = Math.min(1, Math.floor(x)), u = x - i;
+      var c = stops[i].map(function (a, j) { return Math.round(a + (stops[i + 1][j] - a) * u); });
+      return 'rgb(' + c.join(',') + ')';
+    },
+
+    /* 这个颜色的箭头（marker 不跟着 stroke 变色）：按颜色现做、缓存 */
+    _marker: function (color) {
+      var id = this._mk[color];
+      if (!id) {
+        id = this._mk[color] = 'tm' + Object.keys(this._mk).length;
+        var m = el('marker', { id: id, viewBox: '0 0 8 8', refX: '7', refY: '4', markerUnits: 'userSpaceOnUse',
+          markerWidth: '8', markerHeight: '8', orient: 'auto-start-reverse' });
+        m.appendChild(el('path', { d: 'M0,0 L8,4 L0,8 z', fill: color }));
+        this.defs.appendChild(m);
+      }
+      return id;
+    },
+
     /* 静态邻居（详情面板的「依赖 / 被依赖」用） */
     nb: function (id) {
       var i = [], o = [];
@@ -445,7 +557,7 @@ window.CS = window.CS || {};
 
     vis: function (id) {
       var s = this.state;
-      if (s.onlyHot && !((this.hitPk || (this.hot && this.hot.packages) || {})[id] || 0)) return false;
+      if (s.onlyHot && !((this.hitPk || (this.hot && this.hot.packages) || {})[id] || 0) && !(this.onPath || {})[id]) return false;
       if (s.onlyNoted && (this.noteStatus[id] || 'todo') === 'todo') return false;
       return true;
     },
@@ -459,6 +571,7 @@ window.CS = window.CS || {};
         E._show = (E.kind === 'dyn' ? s.dyn : E.kind === 'type' ? s.type
                    : (E._warm || E._dyn || (E.kind === 'ref' ? s.refs : s.imp))) && self.vis(E.a) && self.vis(E.b);
       });
+      this._rankTimes();
       // 选中节点时留亮的：它自己和看得见的边连着的节点（关掉的那类边不算）
       if (s.selEdge) { keep = {}; var ab = s.selEdge.split('|'); keep[ab[0]] = keep[ab[1]] = 1; }
       else if (s.sel) {
@@ -478,15 +591,24 @@ window.CS = window.CS || {};
         var tone = !lit ? '' : E.side === 'b' ? ' warmb' : E.side === 'both' ? ' both' : ' warm';
         var cls = 'e ' + (dyn ? 'dyn' : E.kind) + (lit ? tone : (s.onlyHot ? ' bg' : ''))
                 + (keep && !mine ? ' dim' : '') + (mine ? ' hi' : '');
-        E.p.setAttribute('class', cls);
+        // 时间顺序：排上名次的边换成按名次的颜色；没跑到的静态边退到背景；跑到了却没有时间的照原样
+        var tm = s.timeOrder && self.times;
+        var tc = tm && E._t ? self.timeColor(E._t.k / Math.max(1, E._t.n - 1)) : null;
+        if (tm && !lit) cls += ' bg';
+        E.p.setAttribute('class', cls + (tc ? ' tm' : ''));
+        E.p.style.stroke = tc || '';
         E.p.style.strokeWidth = (lit ? E.w : 1.2) + (mine ? 1 : 0);
-        E.p.setAttribute('marker-end', 'url(#' + (!lit ? 'a' : E.side === 'b' ? 'ahb' : E.side === 'both' ? 'ahf' : 'ah') + ')');
+        E.p.setAttribute('marker-end', 'url(#' + (tc ? self._marker(tc)
+          : !lit ? 'a' : E.side === 'b' ? 'ahb' : E.side === 'both' ? 'ahf' : 'ah') + ')');
+        E._tc = tc && show ? tc : null;
+        E._mine = mine;
         [E.p, E.x, E.halo, E.gap].forEach(function (x) { x.style.display = show ? '' : 'none'; });
         E.halo.classList.toggle('on', !!s.selEdge && mine);
         E.gap.classList.toggle('on', !!s.selEdge && mine);
         // 选中的边挪到各自那一层的最上面：线可以叠在一起，但选中时要看得出哪根指到哪
         if (mine) [E.halo, E.gap, E.p, E.x].forEach(function (x) { x.parentNode.appendChild(x); });
       });
+      this._paintOrder(keep);
       Object.keys(this.nodes).forEach(function (id) {
         var g = self.nodes[id];
         g.style.display = self.vis(id) ? '' : 'none';

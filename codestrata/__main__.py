@@ -318,7 +318,7 @@ def cmd_trace(a) -> int:
                                          for t in phase_at]},
                        invocation=getattr(a, "invocation", None),
                        env_inherited=_runs.inherited_env(os.environ, skip=env))
-    # 时序事件（时序图的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
+    # 时序事件（模块图「时间顺序」的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
     # 明确写 0：shell 里恰好 export 了 CODESTRATA_EVENTS=1 也不录——以命令行为准，重录命令才对得上
     env_run = {**env, "CODESTRATA_EVENTS": "1" if a.events else "0"}
     print(f"[codestrata] run {rd.name}（{rd.resolve()}）", file=sys.stderr)
@@ -692,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
     t.add_argument("--events", action="store_true",
-                   help="同时记时序事件（每次跨文件调用的起止时刻，时序图用；要 Python 3.12+）")
+                   help="同时记时序事件（每次跨文件调用的起止时刻，模块图的「时间顺序」用；要 Python 3.12+）")
     t.add_argument("--attach", action="append", default=[], metavar="FILE",
                    help="把这个文件的内容一起存进 run（比如被 case 脚本 source 的 common.sh）")
     t.add_argument("--phase", action="append", default=[], metavar="NAME=FUNC",
