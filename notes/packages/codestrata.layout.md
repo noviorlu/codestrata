@@ -4,7 +4,7 @@ target: codestrata.layout
 kind: package
 code_sha: 61ab99a4d5305aff
 status: draft
-refs: layout.py:185@98e329ac,layout.py:69@abaf45d9,layout.py:168@862c3de7,layout.py:250@4072b4cc,layout.py:274@f8f7f7d8,layout.py:107@7ce9c7f0,tests/test_runs.py:318@2917db10,layout.py:129@8eddae1c,layout.py:131@983e7095,layout.py:164@873f8cc1,layout.py:191@eb07b538,layout.py:325@40641e05,layout.py:367@3fbfc432,layout.py:415@908fbe9c,layout.py:451@11dce699,layout.py:541@01d31127,layout.py:499@573a5a5a,layout.py:502@0584b2b8,layout.py:591@6b86c3b2,codestrata/web/graph.js:93@9280378d,layout.py:601@1142ab54,layout.py:596@7e4df7cc,codestrata/web/graph.js:88@d20e7888,layout.py:170@8a4a5fa7,payload.py:259@f4670e91,payload.py:178@17763bdf
+refs: layout.py:185@98e329ac,layout.py:69@abaf45d9,layout.py:168@862c3de7,layout.py:250@4072b4cc,layout.py:274@f8f7f7d8,layout.py:107@7ce9c7f0,tests/test_runs.py:319@2917db10,layout.py:129@8eddae1c,layout.py:131@983e7095,layout.py:164@873f8cc1,layout.py:191@eb07b538,layout.py:325@40641e05,layout.py:367@3fbfc432,layout.py:415@908fbe9c,layout.py:451@11dce699,layout.py:541@01d31127,layout.py:499@573a5a5a,layout.py:502@0584b2b8,layout.py:591@6b86c3b2,codestrata/web/graph.js:93@9280378d,layout.py:601@1142ab54,layout.py:596@7e4df7cc,codestrata/web/graph.js:88@d20e7888,layout.py:170@8a4a5fa7,payload.py:259@f4670e91,payload.py:178@17763bdf
 ---
 
 ## 是什么
@@ -32,7 +32,7 @@ refs: layout.py:185@98e329ac,layout.py:69@abaf45d9,layout.py:168@862c3de7,layout
 ### 纵轴：依赖分层，叠了 run 就按实际的调用
 早先纵轴是 scan 算的架构高度 `(出 − 入) / (出 + 入)`。它只看每个模块自己的出入比例、不看谁连着谁，于是 vllm-omni 的 omni → omni_base 这种边会画成往上指。现在 `layers` 直接对边排序，边 a → b 尽量让 a 在 b 上面：
 1. 去环：按权重贪心排一个顺序（Eades–Lin–Smyth）：没有上游的往前、没有下游的往后，其余的挑「出去的权重 − 进来的权重」最大的往前。逆着顺序的边就是环里被打断的、画出来往上指的那几条；
-2. 贪心不求最优，在 vllm-omni 上它为了拆环把一条 4383 次调用的边反了过来。所以再做 sifting（layout.py:107）：逐个节点挪到让「逆着顺序的边的权重」最小的位置，最多 20 轮，挪不动就停。测试里有一个贪心会逆掉重边（共 91）、sifting 之后只逆 51 的例子（tests/test_runs.py:318）；
+2. 贪心不求最优，在 vllm-omni 上它为了拆环把一条 4383 次调用的边反了过来。所以再做 sifting（layout.py:107）：逐个节点挪到让「逆着顺序的边的权重」最小的位置，最多 20 轮，挪不动就停。测试里有一个贪心会逆掉重边（共 91）、sifting 之后只逆 51 的例子（tests/test_runs.py:319）；
 3. 从下往上数的最长路分层：高度 = 顺着顺序往下最长能走几步（layout.py:129），谁也不调的叶子高度 0、都在最底层，一条边都没有的节点也一样；层号 = 最大高度 − 高度（layout.py:131）。早先从上往下数（层号 = 顺着顺序的上游里最大的层号 + 1），只被一个入口用到的叶子停在那个入口的下一层、飘在图中间，codestrata 自己的 `render`、`highlight` 就是。现在 codestrata 的默认切面排成 8 层：`__main__` 在最上，最底层是 `cut`、`events`、`highlight`、`layout`、`render`、`xref` 和包初始化文件。
 
 权重（layout.py:164）：静态边取 `1 + log1p(import 语句数)`，几百条 import 的一对不该压过几十对只有一条的；`runtime_edges`（叠着的 run 在这个切面上的节点间调用次数，对比时 A、B 相加，由 payload 给）取 `RUNTIME_WEIGHT`（10）×`(1 + log1p(次数))`。于是叠了 run 时分层先顺着这次实际的调用：基类回调子类、按注册表分派这类和 import 方向相反的调用也画成往下。改的时候在真仓库上量过 runtime 往上指的份额（按调用次数；pip 按边的条数）：vllm-omni 展开 entrypoints 从 23% 到 0%，nerfstudio 16% 到 6%，pip 47% 到 12%；静态边往上指的仍有 9–16%（环）。

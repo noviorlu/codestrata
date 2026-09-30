@@ -62,7 +62,7 @@ _TYPEALIAS = getattr(ast, "TypeAlias", None)          # 3.12 的 `type X = ...`
 _TRY = tuple(t for t in (ast.Try, getattr(ast, "TryStar", None)) if t)
 _FOR = (ast.For, ast.AsyncFor)
 _WITH = (ast.With, ast.AsyncWith)
-# 带语句体的语句：里面还可能有 def / class / 赋值（同 scan 的 _STMT_CONTAINERS）
+# 带语句体的语句：里面还可能有 def / class / 赋值（同 scan 的 STMT_CONTAINERS）
 _CONTAINERS = (ast.If, ast.While) + _FOR + _WITH + _TRY + ((_MATCH,) if _MATCH else ())
 _ASSIGNS = (ast.Assign, ast.AnnAssign, ast.AugAssign)
 _COMPS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)

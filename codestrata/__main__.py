@@ -325,7 +325,7 @@ def cmd_trace(a) -> int:
     # 明确写 0：shell 里恰好 export 了 CODESTRATA_EVENTS=1 也不录——以命令行为准，重录命令才对得上
     env_run = {**env, "CODESTRATA_EVENTS": "1" if a.events else "0"}
     print(f"[codestrata] run {rd.name}（{rd.resolve()}）", file=sys.stderr)
-    mono0 = _runs._read(rd / "run.json")["clock"]["mono0_ns"]
+    mono0 = _runs.read_json(rd / "run.json")["clock"]["mono0_ns"]
 
     def after(tr, info):
         # 在 driver 的信号处理器还装着的时候收尾：这时按 Ctrl+C 不会把打包打断
@@ -335,7 +335,7 @@ def cmd_trace(a) -> int:
     tr, run = _tdrv.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
                          env_extra=env_run, stop_grace=a.stop_grace, after=after, phase_at=phase_at,
                          cwd=run_dir)
-    detail = _runs._read(rd / "detail.json")
+    detail = _runs.read_json(rd / "detail.json")
     sm = run["summary"]
     print(f"→ run {run['id']}：{_STATUS.get(run['status'], run['status'])}"
           + (f"（{'；'.join(run['problems'])}）" if run["problems"] else ""))
@@ -454,7 +454,7 @@ def cmd_runs(a) -> int:
                 changed = "-"
                 if idx is not None:
                     try:
-                        fs = _runs.file_state(repo, idx, _runs._read(rd / "detail.json"))
+                        fs = _runs.file_state(repo, idx, _runs.read_json(rd / "detail.json"))
                         changed = str(sum(1 for v in fs.values() if v in ("changed", "mismatch")))
                     except (OSError, ValueError):
                         pass
@@ -472,7 +472,7 @@ def cmd_runs(a) -> int:
 
     if a.verb == "show":
         run, rd, phase = _runs.resolve(repo, a.ref)
-        detail = _runs._read(rd / "detail.json") if (rd / "detail.json").is_file() else {}
+        detail = _runs.read_json(rd / "detail.json") if (rd / "detail.json").is_file() else {}
         print(f"run {run['id']}  {rd.resolve()}")
         print(f"  状态  {run.get('status_shown') or run.get('status')}"
               + (f"（{'；'.join(run.get('problems') or [])}）" if run.get("problems") else ""))

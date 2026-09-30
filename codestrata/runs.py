@@ -84,7 +84,7 @@ def _write(path: Path, obj, gz: bool = False) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _read(path: Path, gz: bool = False):
+def read_json(path: Path, gz: bool = False):
     raw = path.read_bytes()
     return json.loads(gzip.decompress(raw) if gz else raw)
 
@@ -97,13 +97,12 @@ def sha16(p: Path) -> str:
         return ""
 
 
-_proc_start = _tdrv._proc_start     # pid 会被复用：判断「录制的 driver 还活着吗」要连启动时刻一起比
 
 
 def _alive(driver: dict | None) -> bool:
     if not driver or not driver.get("pid"):
         return False
-    st = _proc_start(driver["pid"])
+    st = _tdrv.proc_start(driver["pid"])
     return st is not None and (driver.get("start") is None or st == driver["start"])
 
 
@@ -188,7 +187,7 @@ def new_run(repo: Path, *, case: str, cmd: list[str], cwd: Path, env: dict | Non
         git, _ = git_info(repo)
         _write(rd / "run.json", {
             "schema": SCHEMA, "id": rid, "case": case, "status": "recording", "problems": [],
-            "driver": {"pid": os.getpid(), "start": _proc_start(os.getpid())},
+            "driver": {"pid": os.getpid(), "start": _tdrv.proc_start(os.getpid())},
             "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname(),
             "cmd": list(cmd), "cwd": str(cwd), "env": dict(env or {}), "git": git,
             "clock": {"mono0_ns": time.monotonic_ns(), "wall0": time.time()},
@@ -435,12 +434,12 @@ def finalize(repo: Path, rd: Path, tr: dict, *, stop: str, returncode: int | Non
     """录制结束：存录制时的数据（capture），把 parts 打包，算派生数据和状态（derive）。
     打包失败时保留 parts/、状态留在 recording，之后可以 `runs merge` 重来；包已经替换好、
     只是 parts/ 没删干净的，不算失败（merge 会把两边合起来，不会拿少的盖多的）。"""
-    run = _read(rd / "run.json")
+    run = read_json(rd / "run.json")
     run.update({"stop": stop, "returncode": returncode,
                 "duration_s": round(duration_s, 1) if duration_s is not None else None,
                 "phase_log": [list(x) for x in phase_times or []]})
     _write(rd / "run.json", run)
-    detail = (_read(rd / "detail.json") if (rd / "detail.json").is_file() else
+    detail = (read_json(rd / "detail.json") if (rd / "detail.json").is_file() else
               capture(repo, rd, tr, run, leftovers=leftovers, attach=attach))
     parts = rd / "parts"
     packed, events = True, None
@@ -497,7 +496,7 @@ def _migrate_locked(repo: Path, cs: Path, base: Path) -> list[str]:
                                                      "func_edges": tr.get("func_edges") or {}}}
             _write(tmp / "counts.json.gz", {"phases": phases, "names": {}}, gz=True)
             # 核对：全部、每个阶段都要和老文件逐键相等
-            back = _read(tmp / "counts.json.gz", gz=True)["phases"]
+            back = read_json(tmp / "counts.json.gz", gz=True)["phases"]
             tot = _sum(back)
             ok = (tot["funcs"] == (tr.get("funcs") or tot["funcs"])
                   and tot["func_edges"] == (tr.get("func_edges") or tot["func_edges"])
@@ -561,7 +560,7 @@ def _migrate_locked(repo: Path, cs: Path, base: Path) -> list[str]:
 def _cleanup_legacy(cs: Path, final: Path, old: Path, case: str) -> None:
     """迁移的最后一步：run 里的 legacy 副本逐字节和老文件相同、parts 打包的成员齐全，才删老的。"""
     try:
-        run = _read(final / "run.json")
+        run = read_json(final / "run.json")
         if run.get("migrated_from") != old.name:
             return
         if gzip.decompress((final / "legacy" / (old.name + ".gz")).read_bytes()) != old.read_bytes():
@@ -596,7 +595,7 @@ def catalog(repo: Path) -> list[dict]:
         if d.name.startswith(".") or not (d / "run.json").is_file():
             continue
         try:
-            r = _read(d / "run.json")
+            r = read_json(d / "run.json")
         except (OSError, ValueError):
             continue
         if r.get("status") == "recording" and not _alive(r.get("driver")):
@@ -648,7 +647,7 @@ def _sum(phases: dict) -> dict:
 def load_counts(rd: Path, phase: str | None, with_names: bool = False):
     """{funcs, func_edges}：某个阶段的，或全部阶段相加（和老 trace 的 funcs 同义）。
     with_names=True 时返回 (计数, names)：names 是录制时记下的 键 → qualname（remap 用）。"""
-    c = _read(rd / "counts.json.gz", gz=True)
+    c = read_json(rd / "counts.json.gz", gz=True)
     phases = c["phases"]
     out = dict(phases[phase]) if phase else _sum(phases)
     return (out, c.get("names") or {}) if with_names else out
@@ -776,7 +775,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         except (OSError, ValueError) as e:
             raise SystemExit(_seq.unreadable(e, run["id"])) from None
     try:
-        detail = _read(rd / "detail.json")
+        detail = read_json(rd / "detail.json")
     except (OSError, ValueError):
         detail = {}
     fs = file_state(repo, idx, detail)
@@ -832,7 +831,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
 # ---------------------------------------------------------------- 管理：标签、备注、删除、重算
 
 def _update(rd: Path, fn) -> dict:
-    run = _read(rd / "run.json")
+    run = read_json(rd / "run.json")
     fn(run)
     _write(rd / "run.json", run)
     return run
@@ -861,7 +860,7 @@ def remove(repo: Path, run_id: str) -> str:
     rd = base / run_id
     if "/" in run_id or run_id.startswith(".") or not (rd / "run.json").is_file():
         raise SystemExit(f"没有 id 为 {run_id!r} 的 run（rm 只认完整的 run id，runs ls 里看）")
-    run = _read(rd / "run.json")
+    run = read_json(rd / "run.json")
     if live(run):
         raise SystemExit(f"run {run_id} 还在录制中（pid {run['driver']['pid']}），不能删")
     shutil.rmtree(rd)
@@ -873,7 +872,7 @@ def remove_events(repo: Path, run_id: str) -> str:
     rd = runs_dir(repo) / run_id
     if "/" in run_id or run_id.startswith(".") or not (rd / "run.json").is_file():
         raise SystemExit(f"没有 id 为 {run_id!r} 的 run（rm 只认完整的 run id，runs ls 里看）")
-    run = _read(rd / "run.json")
+    run = read_json(rd / "run.json")
     if live(run):
         raise SystemExit(f"run {run_id} 还在录制中，不能删")
     left = _tdrv.leftovers(rd / "parts") if (rd / "parts").is_dir() else []
@@ -892,7 +891,7 @@ def merge_run(repo: Path, ref: str) -> dict:
     录制时的数据（detail.json、files/）已经有的不重写；driver 死在收尾之前、还没有的，现在补
     （标成 late）。录制的进程还活着、或还有进程属于这个 run 时拒绝。"""
     run, rd, _ = resolve(repo, ref)
-    run = _read(rd / "run.json")     # 不用 catalog 给的那份：它带着只用来显示的 status_shown，会被写回去
+    run = read_json(rd / "run.json")     # 不用 catalog 给的那份：它带着只用来显示的 status_shown，会被写回去
     if live(run):
         raise SystemExit(f"run {run['id']} 还在录制中（pid {run['driver']['pid']}）")
     parts = rd / "parts"
@@ -924,7 +923,7 @@ def merge_run(repo: Path, ref: str) -> dict:
         run["phase_log"] = _tana.merge_phase_log(
             run.get("phase_log") or [["start", 0, "start"]],
             _tana.fired_phases(tmp, (run.get("clock") or {}).get("mono0_ns"), sh=True))
-        detail = (_read(rd / "detail.json") if (rd / "detail.json").is_file() else
+        detail = (read_json(rd / "detail.json") if (rd / "detail.json").is_file() else
                   capture(repo, rd, tr, run, attach=(run.get("rec") or {}).get("attach"), late=True))
         packed = True
         if parts.is_dir():
@@ -967,7 +966,7 @@ def inherited_env(environ, skip=()) -> dict:
     return out
 
 
-def _q(x: str) -> str:
+def shell_quote(x: str) -> str:
     """给 shell 的引号：一般的用 shlex.quote；带着不是 UTF-8 的字节（Python 里是孤立的代理字符）的，
     写成 bash / zsh 的 $'…'，按原来的字节还原，复制粘贴也不会变样。"""
     import shlex
@@ -1015,7 +1014,7 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
     codestrata 自己加进 run 的环境变量（从 shell 继承来的 CODESTRATA_EV_MAX）命令行上没有，补成 --env。"""
     pre = ""
     if with_env and run.get("env_inherited"):
-        pre = "env " + " ".join(_q(f"{k}={v}") for k, v in run["env_inherited"].items()) + " "
+        pre = "env " + " ".join(shell_quote(f"{k}={v}") for k, v in run["env_inherited"].items()) + " "
     inv = run.get("invocation") or {}
     if inv.get("argv"):
         argv = list(inv["argv"])
@@ -1030,8 +1029,8 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
             argv[i:i] = extra
         if redact:
             argv = _redact_argv(argv)
-        cmd = pre + " ".join(_q(x) for x in argv)
-        return (f"cd {_q(inv['cwd'])} && " if inv.get("cwd") else "") + cmd
+        cmd = pre + " ".join(shell_quote(x) for x in argv)
+        return (f"cd {shell_quote(inv['cwd'])} && " if inv.get("cwd") else "") + cmd
     rec = run.get("rec") or {}
     parts = ["codestrata", "trace", str(Path(repo).resolve()), f"--case={run['case']}"]
     # run 里的 cwd 是命令实际执行的目录（老 run 里就是仓库根目录）：不是仓库根目录才要写 --cwd
@@ -1059,4 +1058,4 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
     cmd = list(run.get("cmd") or [])
     if redact:
         parts, cmd = _redact_argv(parts), _redact_argv(cmd)
-    return pre + " ".join(_q(p) for p in parts) + " -- " + " ".join(_q(c) for c in cmd)
+    return pre + " ".join(shell_quote(p) for p in parts) + " -- " + " ".join(shell_quote(c) for c in cmd)

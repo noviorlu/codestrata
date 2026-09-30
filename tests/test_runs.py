@@ -1029,7 +1029,7 @@ def test_leftover_by_part_file():
     d = tmpdir("cs-runs-")
     p = subprocess.Popen(["sleep", "30"])
     try:
-        st = trace_driver._proc_start(p.pid)
+        st = trace_driver.proc_start(p.pid)
         (d / f"part-{p.pid}-1.json").write_text(json.dumps({"st": st}))
         assert trace_driver.leftovers(d) == [p.pid]
         (d / f"part-{p.pid}-1.json").write_text(json.dumps({"st": st + 1}))   # pid 被复用了

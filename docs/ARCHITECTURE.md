@@ -92,13 +92,10 @@ flowchart LR
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版） |
 | `web/home.js` | 389 | 主菜单页面（`home.html`，不走 ds.js） |
 
-已知的结构问题（`docs/TODO.md` P0 / P2 里有对应条目）：
+已知的结构问题（`docs/TODO.md` P2 里有对应条目）：
 - **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`）、坐标（`layout`）、源码（`highlight`）、
   交叉引用（`xref`）、解读（`notes`），还有自己的一段 `ast` 分析（`_code_facts`、`_call_form`）。
-- **跨模块用下划线私有名**（`grep` 结果）：`__main__` 用 `_runs._read`（4 处），`serve` 用 `_runs._read`、`_payload._norm_open`，
-  `site` 用 `_payload._inverted`、`_payload._known`，`payload` 用 `_notes._REF_RE`、`_notes._resolve_ref` 和函数内的
-  `from .runs import _q`，`runs` 用 `_trace._proc_start`（`runs.py:99` 起了个同名别名），`trace` 用函数内的
-  `from .scan import _STMT_CONTAINERS`。后两种写法 TODO 里那条 `grep` 抓不到。
+- 模块之间不用下划线开头的名字（`tests/test_package.py` 的 `test_no_cross_module_private_names` 盯着）。
 
 ## 语言无关 vs Python 专用
 
@@ -160,5 +157,5 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 录制只支持 Linux：`cmd_trace` 一开始就调 `compat.require_trace()`，别的系统上说明并退出，不建 run 目录。平台差异都在 `compat.py`
 （能不能录、跨平台的文件锁）；只有 Unix 才有的东西（`fcntl`、`signal.SIGKILL`）不在模块顶层取，所以别的系统上所有模块都能 import，
 scan / serve / graph / runs 照常可用（`tests/test_platform.py` 模拟过）。录制为什么非 Linux 不可：hook 读 `/proc/self/stat|cmdline`（失败有退路）；
-driver 用 `/proc/<pid>/stat|status|environ|cmdline` 认进程、找残留（`_proc_start`、`_alive`、`_ignores`、`leftovers`），没有 `/proc`
+driver 用 `/proc/<pid>/stat|status|environ|cmdline` 认进程、找残留（`proc_start`、`_alive`、`_ignores`、`leftovers`），没有 `/proc`
 时只停命令自己的进程组，setsid 出去的服务找不到；`os.killpg`、`start_new_session`、`os.register_at_fork`、`signal.SIGKILL` 在 Windows 上都没有。

@@ -62,7 +62,7 @@ NON_LIB_DIRS = {
 
 # 带语句体的节点：只有这些内部才可能出现 def / class。
 # 用 getattr 兜住不同 Python 版本的差异（TryStar 是 3.11+，Match 是 3.10+）。
-_STMT_CONTAINERS = tuple(t for t in (
+STMT_CONTAINERS = tuple(t for t in (
     ast.Module, ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith,
     ast.Try, getattr(ast, "TryStar", None), getattr(ast, "Match", None),
     getattr(ast, "match_case", None), ast.ExceptHandler,
@@ -503,7 +503,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                                    end=child.end_lineno or 0, decos=_deco_names(child)))
                         pkg_fn[pkg] = pkg_fn.get(pkg, 0) + 1
                         walk(child, qn + ".")
-                    elif isinstance(child, _STMT_CONTAINERS):
+                    elif isinstance(child, STMT_CONTAINERS):
                         # def/class 只能出现在语句位置，所以只需下潜进「带语句体的节点」。
                         # 早先只白名单了 If/Try/With，for 循环体里的嵌套函数全漏了
                         # （codestrata 自扫描时这一个漏洞吃掉 86 次调用）；

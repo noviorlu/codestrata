@@ -403,7 +403,7 @@ def _overview_pack(repo: Path, index: dict) -> str:
 
 # ---------------------------------------------------------------- 机器核对
 
-_REF_RE = re.compile(r"([\w./-]+\.(?:py|pyi|js|css|html|c|cc|cpp|h|hpp|cu|cuh)):(\d+)")
+REF_RE = re.compile(r"([\w./-]+\.(?:py|pyi|js|css|html|c|cc|cpp|h|hpp|cu|cuh)):(\d+)")
 _FILE_EXTS = {"toml", "yaml", "yml", "json", "md", "txt", "cfg", "ini", "sh", "lock", "jinja", "html"}
 _TICK_RE = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`")
 
@@ -412,7 +412,7 @@ def _line_fp(text: str) -> str:
     return hashlib.sha256(text.strip().encode()).hexdigest()[:8]
 
 
-def _resolve_ref(repo: Path, index: dict, rel: str, target: str | None = None) -> tuple[Path | None, str]:
+def resolve_ref(repo: Path, index: dict, rel: str, target: str | None = None) -> tuple[Path | None, str]:
     """解读里的文件引用 → 实际路径。允许只写文件名或包内相对路径（payload.py:83、
     duplex/policy.py:64），在已扫描的文件里找唯一匹配；有多个时，优先这份解读
     所描述的包自己的文件——一个包的解读里写短路径，指的几乎总是自己包里的。"""
@@ -433,8 +433,8 @@ def _resolve_ref(repo: Path, index: dict, rel: str, target: str | None = None) -
 
 def _ref_snapshot(repo: Path, index: dict, body: str, target: str | None = None) -> str:
     out = []
-    for m in _REF_RE.finditer(body):
-        p, _ = _resolve_ref(repo, index, m.group(1), target)
+    for m in REF_RE.finditer(body):
+        p, _ = resolve_ref(repo, index, m.group(1), target)
         if not p:
             continue
         lines = p.read_text(encoding="utf-8", errors="replace").split("\n")
@@ -464,9 +464,9 @@ def verify(repo: Path, index: dict, target: str) -> list[dict]:
         ref, _, fp = item.rpartition("@")
         if ref:
             snap[ref] = fp
-    for m in _REF_RE.finditer(body):
+    for m in REF_RE.finditer(body):
         rel, ln = m.group(1), int(m.group(2))
-        p, err = _resolve_ref(repo, index, rel, target)
+        p, err = resolve_ref(repo, index, rel, target)
         if not p:
             probs.append({"kind": "ref", "text": m.group(0), "msg": err})
             continue
@@ -557,7 +557,7 @@ def fix_refs(repo: Path, index: dict, target: str) -> int:
              if p["kind"] == "drift" and p.get("moved_to")}
     if not moved:
         return 0
-    body = _REF_RE.sub(lambda m: (f"{m.group(1)}:{moved[m.group(0)]}" if m.group(0) in moved
+    body = REF_RE.sub(lambda m: (f"{m.group(1)}:{moved[m.group(0)]}" if m.group(0) in moved
                                   else m.group(0)), st["md"])
     meta = dict(st["meta"])
     # 指纹只给挪了的引用重算；没挪的（包括「那一行改掉了」的）留着原来的指纹——

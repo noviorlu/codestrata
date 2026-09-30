@@ -107,10 +107,10 @@ def stop_pids(pids: list[int], grace: float, poke=None, parts: Path | None = Non
     """按三级顺序停一组不在同一进程组里的进程（残留进程）；返回 {pid: 最后发出的信号名}。
     忽略 SIGINT 的进程直接从 SIGTERM 开始。"""
     sent: dict[int, str] = {}
-    starts = {p: _proc_start(p) for p in pids}
+    starts = {p: proc_start(p) for p in pids}
 
     def mine(p):                               # 还是当初那个进程（pid 没被复用）
-        return _alive(p) and _proc_start(p) == starts[p]
+        return _alive(p) and proc_start(p) == starts[p]
 
     for sig, wait in _levels():
         alive = [p for p in pids if mine(p)]
@@ -134,7 +134,7 @@ def stop_pids(pids: list[int], grace: float, poke=None, parts: Path | None = Non
     return sent
 
 
-def _proc_start(pid: int) -> int | None:
+def proc_start(pid: int) -> int | None:
     """/proc/<pid>/stat 的第 22 列（开机以来的启动时刻）：和 pid 一起才能认出同一个进程。"""
     try:
         return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
@@ -196,7 +196,7 @@ def leftovers(parts: Path) -> list[int]:
             st = json.loads((parts / n).read_text(encoding="utf-8")).get("st")
         except (OSError, ValueError):
             continue
-        if st is not None and st == _proc_start(pid):
+        if st is not None and st == proc_start(pid):
             out.add(pid)
     return sorted(out)
 

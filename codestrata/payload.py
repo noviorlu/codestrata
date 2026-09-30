@@ -77,7 +77,7 @@ def _unit_syms(idx: dict) -> dict:
     return idx["_unit_syms"]
 
 
-def _norm_open(idx: dict, open_) -> set:
+def norm_open(idx: dict, open_) -> set:
     return set(idx.get("default_open") or []) if open_ is None else {o for o in open_ if _cut.is_node(idx, o)}
 
 
@@ -150,7 +150,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     """一个切面上的全部前端数据。open_ 是展开着的目录（不给就用 scan 算出的默认切面）；
     图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。
     width：页面上图框有多宽——按它排版，宽屏上图铺满、少折行，而不是把 1180 宽的图放大"""
-    open_ = _norm_open(idx, open_)
+    open_ = norm_open(idx, open_)
     v = _cut.view(idx, open_)
     # 框：每个节点被哪个展开着的目录（或展开着的本层文件）直接套着，一路往上。
     # 只有一个根时不画根的框——它就是整张图
@@ -772,7 +772,7 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
     return out
 
 
-def _known(idx: dict, rel: str) -> str | None:
+def known_file(idx: dict, rel: str) -> str | None:
     """只允许打开扫描过的文件（Python 或包内的 C++/CUDA），返回所属单元（C++ 是所在目录）。"""
     if rel in (idx.get("files") or {}):
         return idx["files"][rel]
@@ -787,7 +787,7 @@ def _known(idx: dict, rel: str) -> str | None:
 def file_outline(repo: Path, idx: dict, rel: str) -> dict | None:
     """一个文件的完整符号大纲（含方法），给详情面板的文件树按需展开。
     Python 直接取扫描时的符号表，不用读文件；C++ / CUDA 用词法大纲（要高亮一遍，有缓存）。"""
-    pkg = _known(idx, rel)
+    pkg = known_file(idx, rel)
     if pkg is None:
         return None
     syms = [{"key": k, "n": x["n"], "k": x["k"], "l": x["l"]}
@@ -801,7 +801,7 @@ def file_outline(repo: Path, idx: dict, rel: str) -> dict | None:
 def file_view(repo: Path, idx: dict, rel: str) -> dict | None:
     """整个文件（逐行高亮）+ 符号大纲。Python 的大纲来自 ast（精确），
     C++/CUDA 的来自词法 token（启发式）。"""
-    pkg = _known(idx, rel)
+    pkg = known_file(idx, rel)
     if pkg is None:
         return None
     try:
@@ -859,7 +859,7 @@ def reveal(idx: dict, node: str, open_) -> list[str] | None:
     """让一个模块在图上露出来要展开哪些目录（在当前切面的基础上）。"""
     if not _cut.is_node(idx, node):
         return None
-    return sorted(_cut.open_for(idx, _norm_open(idx, open_), node))
+    return sorted(_cut.open_for(idx, norm_open(idx, open_), node))
 
 
 # ---------------------------------------------------------------- 交叉引用（Ctrl+点击）
@@ -954,7 +954,7 @@ def _line_text(repo: Path, rel: str, line: int) -> str:
     return ls[line - 1] if 0 < line <= len(ls) else ""
 
 
-def _inverted(X: dict) -> dict:
+def xref_inverted(X: dict) -> dict:
     if X["inv"] is None:
         with X["inv_lock"]:
             if X["inv"] is None:
@@ -977,7 +977,7 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
     names = {_xref.CALL: "call", _xref.REF: "ref", _xref.IMPORT: "import"}
     counts: dict[str, int] = {}
     merged: dict[tuple, dict] = {}
-    for f, l, c, k in _inverted(X).get(i, []):
+    for f, l, c, k in xref_inverted(X).get(i, []):
         counts[names[k]] = counts.get(names[k], 0) + 1
         m = merged.get((f, l))
         if m is None or rank[k] < rank[m["k"]]:
@@ -1044,7 +1044,7 @@ def publicize(pl: dict, home: str, keep: list[str]) -> dict:
     复刻命令因此不能原样执行了：pl["public"] 为真，页面上会说明，原样的在录制的机器上 runs show 里。"""
     import copy
     import html as _html
-    from .runs import _q
+    from .runs import shell_quote
     home = home.rstrip("/")
     # 后面跟着 .字母 的是另一个名字（/home/yc.bak），句末的 . 不是
     home_re = re.compile(re.escape(home) + r"(?![\w-]|\.[\w-])") if home and home != "/" else None
@@ -1077,7 +1077,7 @@ def publicize(pl: dict, home: str, keep: list[str]) -> dict:
             parts = shlex.split(c)
         except ValueError:
             return re.sub(r"\b(" + "|".join(_PATHLIST) + r")=\S+", r"\1=…", c)   # 切不开：整个值都不要
-        return " ".join(t if t == "&&" else _q(tok(t)) for t in parts)
+        return " ".join(t if t == "&&" else shell_quote(tok(t)) for t in parts)
 
     def meta_fix(m):
         if not isinstance(m, dict):
@@ -1182,7 +1182,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta, hot_b=hb, hot_meta_b=mb)
     hot_by = {}
     if others:
-        v = _cut.view(idx, _norm_open(idx, None))
+        v = _cut.view(idx, norm_open(idx, None))
         shown = {n["id"] for n in p["graph"]["nodes"]}
         used = _edge_uses_on_cut(idx, v["node_of"])
         for h, m in others:
@@ -1237,8 +1237,8 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     ran |= {s["f"] for k, s in (idx.get("symbols") or {}).items() if k in ((hot or {}).get("symbols") or {})}
     # 解读里引用过的文件也优先：读者最常从解读点进去看的就是它们
     for name, nt in nts.items():
-        for m in _notes._REF_RE.finditer(nt.get("md") or ""):
-            fp, _ = _notes._resolve_ref(repo, idx, m.group(1), name)
+        for m in _notes.REF_RE.finditer(nt.get("md") or ""):
+            fp, _ = _notes.resolve_ref(repo, idx, m.group(1), name)
             if fp:
                 ran.add(str(fp.relative_to(repo)))
     every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})

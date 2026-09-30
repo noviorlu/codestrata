@@ -4,11 +4,11 @@ target: codestrata.xref
 kind: package
 code_sha: f36558a7de602b4f
 status: draft
-refs: __main__.py:86@d89a80ca,xref.py:1348@6f3d4dd5,xref.py:1@33710441,xref.py:295@ad481400,xref.py:615@02ccb7c9,xref.py:830@0ac1d1cb,xref.py:1324@988dc59e,xref.py:1370@299f2f56,xref.py:857@cf9b4e61,xref.py:1327@eecf9796,xref.py:232@59c04e0c,xref.py:334@dac70f9a,xref.py:915@dd64dbbd,xref.py:1236@7666ecb2,xref.py:941@0289caaf,xref.py:461@7cb35e9c,xref.py:390@d2d72128,xref.py:547@0421ea56,xref.py:767@6f648bce,xref.py:732@738ebce6,xref.py:1212@e1368d8e,xref.py:1317@1b6b0495,xref.py:1214@c48b7ec3,xref.py:1381@7362486b,xref.py:1363@e0a460f7,tests/test_runs.py:2119@c253a295,payload.py:961@8e0ec840
+refs: __main__.py:87@d89a80ca,xref.py:1348@6f3d4dd5,xref.py:1@33710441,xref.py:295@ad481400,xref.py:615@02ccb7c9,xref.py:830@0ac1d1cb,xref.py:1324@988dc59e,xref.py:1370@299f2f56,xref.py:857@cf9b4e61,xref.py:1327@eecf9796,xref.py:232@59c04e0c,xref.py:334@dac70f9a,xref.py:915@dd64dbbd,xref.py:1236@7666ecb2,xref.py:941@0289caaf,xref.py:461@7cb35e9c,xref.py:390@d2d72128,xref.py:547@0421ea56,xref.py:767@6f648bce,xref.py:732@738ebce6,xref.py:1212@e1368d8e,xref.py:1317@1b6b0495,xref.py:1214@c48b7ec3,xref.py:1381@7362486b,xref.py:1363@e0a460f7,tests/test_runs.py:2120@c253a295,payload.py:961@8e0ec840
 ---
 
 ## 是什么
-交叉引用：代码里每个名字指向哪个定义。scan 结束时顺带建一份 `.codestrata/xref.json`（__main__.py:86），给全文窗口的 Ctrl+点击用——点一个名字跳到它的定义；点一个定义，由 `payload.refs` 列出所有引用它的地方。另外顺带给边详情一张小表 `names`：边上引用了、符号表里却没有的名字（模块级变量、`__init__` 再导出的），指向哪个定义。只用 `ast`，静态地、尽力而为地解析。
+交叉引用：代码里每个名字指向哪个定义。scan 结束时顺带建一份 `.codestrata/xref.json`（__main__.py:87），给全文窗口的 Ctrl+点击用——点一个名字跳到它的定义；点一个定义，由 `payload.refs` 列出所有引用它的地方。另外顺带给边详情一张小表 `names`：边上引用了、符号表里却没有的名字（模块级变量、`__init__` 再导出的），指向哪个定义。只用 `ast`，静态地、尽力而为地解析。
 
 总原则是**宁可不跳，也不跳错**：跳错一次，用户就不再信这个功能。所以只记能确定的；遮住了、类型拿不准、MRO 上有仓库外的基类，一律不记。
 
@@ -81,7 +81,7 @@ from-import 先存成 `("from", 模块, 名字)`，用到时才由 `from_import`
 ### names：边详情的「to」和 Ctrl+点击落在同一处
 scan 的边明细 `edge_uses` 按「模块:名字」记被引用的东西，payload 拿它查符号表给「to」（定义在哪、签名）。可符号表只有类和函数：`from .models import LIMIT` 引用的模块级变量、`from rx import DEFAULT_LIMIT`（包的 `__init__` 再导出、还改了名）这种键查不到，面板只能说没找到定义。追到真正的定义要的正是 `from_import` 那一套——包自己的绑定优先、星号导入、同名重绑取哪次——而那些表只在 scan 的这一趟里有（第一遍收的，建完就丢）。所以在第二遍之后（xref.py:1363 起），把 `edge_uses` 里不在符号表的键逐个按 `from 模块 import 名字` 追一次：追到的是类 / 函数 / 变量、而且知道定义在哪（`where` 不为空）才记下目标下标（xref.py:1370）。子模块（`m:`）和仓库外（`x:`）不记：面板要的是一个定义的位置和签名。`payload._name_def` 查这张表，变量的签名就是赋值那一行。
 
-同一套解析的好处是两处答案一致：边详情里 DEFAULT_LIMIT 的 to 和 Ctrl+点击它跳到的都是 rx/models.py 的 `LIMIT: int = 30`（test_edge_defs_vars_and_reexports，tests/test_runs.py:2119）。表很小——只有边上引用、又不在符号表里的名字。追的过程可能给 `targets` 添上没有 token 指向的新目标，`where` 在那之后才整表算，仍然对齐。老的 xref.json 没有 `names`，payload 照旧说没找到定义。
+同一套解析的好处是两处答案一致：边详情里 DEFAULT_LIMIT 的 to 和 Ctrl+点击它跳到的都是 rx/models.py 的 `LIMIT: int = 30`（test_edge_defs_vars_and_reexports，tests/test_runs.py:2120）。表很小——只有边上引用、又不在符号表里的名字。追的过程可能给 `targets` 添上没有 token 指向的新目标，`where` 在那之后才整表算，仍然对齐。老的 xref.json 没有 `names`，payload 照旧说没找到定义。
 
 ### invert
 `invert`：目标下标 → 所有引用它的 `[文件, 行, 列, 种类]`，不含定义本身。serve 第一次有人要引用列表时才建，每份 xref 只建一次（payload.py:961）。

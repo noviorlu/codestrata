@@ -70,5 +70,26 @@ def test_trace_layering():
     assert not any(m and m.split(".")[0] == "codestrata" for m in mods), mods
 
 
+def test_no_cross_module_private_names():
+    """模块之间不用下划线开头的名字：别的模块要用的就是接口，该公开（`_模块._名字`，或 `from .模块 import _名字`，
+    函数里面的也算）"""
+    import ast
+    bad = []
+    for p in (HERE.parent / "codestrata").rglob("*.py"):
+        t = ast.parse(p.read_text(encoding="utf-8"))
+        mods = set()
+        for n in ast.walk(t):
+            if isinstance(n, ast.ImportFrom) and n.level:
+                for a in n.names:
+                    if a.name.startswith("_") and a.name != "__future__":
+                        bad.append(f"{p.name}:{n.lineno} from .{n.module or ''} import {a.name}")
+                    mods.add(a.asname or a.name)
+        for n in ast.walk(t):
+            if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in mods
+                    and n.attr.startswith("_") and not n.attr.startswith("__")):
+                bad.append(f"{p.name}:{n.lineno} {n.value.id}.{n.attr}")
+    assert not bad, bad
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

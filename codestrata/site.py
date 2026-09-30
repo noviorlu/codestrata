@@ -219,7 +219,7 @@ def export_site(repo: Path, idx: dict, out: Path, *, hot=None, hot_meta=None, ot
         v.sort(key=lambda d: d["l"])
     metas: dict[str, dict] = {}
     for rel in cand:
-        meta = _file_meta(repo, idx, rel, syms_of, _payload._known(idx, rel))
+        meta = _file_meta(repo, idx, rel, syms_of, _payload.known_file(idx, rel))
         if meta is not None:
             metas[rel] = meta
     every = [r for r in cand if r in metas]
@@ -264,7 +264,7 @@ def export_site(repo: Path, idx: dict, out: Path, *, hot=None, hot_meta=None, ot
     attrs_b: dict = {}
     nb = na = 0
     if X:
-        inv = _payload._inverted(X)
+        inv = _payload.xref_inverted(X)
         tg, wh = X["x"]["targets"], X["x"]["where"]
         rows = {}
         for tid, t in enumerate(tg):

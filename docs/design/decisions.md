@@ -163,7 +163,7 @@
 - 为什么：vLLM 的 engine core 用 setproctitle，它默认借 environ 那块内存写标题，会把 `/proc/<pid>/environ` 清空；两道防线任一生效都认得出。
   pid 会被复用，不核对启动时刻就会误杀、或把早死的 driver 当成还在录。残留的 bash 在 EXIT trap 里还会起新的子进程，只停第一批会漏。
 - 放弃的方案：只看 environ；只看 pid。
-- 在哪：`trace/driver.py` 的 `leftovers`、`stop_pids`、`stop_leftovers`；`runs.py` 的 `_alive`、`live`、`_proc_start`；测试 `test_leftover_by_part_file`。
+- 在哪：`trace/driver.py` 的 `leftovers`、`stop_pids`、`stop_leftovers`；`runs.py` 的 `_alive`、`live`；`trace/driver.py` 的 `proc_start`；测试 `test_leftover_by_part_file`。
   只有 Linux 能这样做（已知问题）。
 
 ### `--phase 名字=函数`：进程第一次进入这个函数时切阶段，每个阶段整个 run 只切一次

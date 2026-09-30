@@ -4,7 +4,7 @@ target: codestrata.scan
 kind: package
 code_sha: b2d815ae9b58438c
 status: draft
-refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777@cdb35e3c,scan.py:793@c176b6f0,payload.py:52@d6513e46,scan.py:800@ae396e12,scan.py:762@bd8a6524,scan.py:524@31448101,codestrata/__main__.py:86@d89a80ca,scan.py:1@5f7a6e1c,scan.py:400@ece62725,scan.py:437@255e30bf,scan.py:455@2fd7b37d,scan.py:466@e7e68c0d,scan.py:290@b898a049,scan.py:441@1da30e18,scan.py:132@f0c578ab,scan.py:144@f82da3ef,scan.py:165@875a23a8,scan.py:152@2e3321f2,scan.py:402@c19aae48,scan.py:173@0f390eab,scan.py:458@1920e340,scan.py:469@5e10daf1,runs.py:91@fb413b11,trace.py:148@0685df0e,scan.py:462@e256ee8e,runs.py:713@2e266090,scan.py:474@6e455720,scan.py:481@47fa472f,scan.py:703@2373040a,scan.py:25@cf78ecb3,scan.py:52@29d84015,scan.py:584@b2d3284a,scan.py:610@22a9f949,scan.py:575@74e4ca0b,scan.py:602@bb22c4ee,scan.py:679@c7b7aa70,scan.py:65@04872629,scan.py:507@0ee68e12,scan.py:640@cfc7e49e,scan.py:685@6f938f80,scan.py:621@8526611d,scan.py:741@8316e21f,scan.py:342@a99d3e2d
+refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777@cdb35e3c,scan.py:793@c176b6f0,payload.py:52@d6513e46,scan.py:800@ae396e12,scan.py:762@bd8a6524,scan.py:524@31448101,codestrata/__main__.py:87@d89a80ca,scan.py:1@5f7a6e1c,scan.py:400@ece62725,scan.py:437@255e30bf,scan.py:455@2fd7b37d,scan.py:466@e7e68c0d,scan.py:290@b898a049,scan.py:441@1da30e18,scan.py:132@f0c578ab,scan.py:144@f82da3ef,scan.py:165@875a23a8,scan.py:152@2e3321f2,scan.py:402@c19aae48,scan.py:173@0f390eab,scan.py:458@1920e340,scan.py:469@5e10daf1,runs.py:92@fb413b11,scan.py:462@e256ee8e,runs.py:713@2e266090,scan.py:474@6e455720,scan.py:481@47fa472f,scan.py:703@2373040a,scan.py:25@cf78ecb3,scan.py:52@29d84015,scan.py:584@b2d3284a,scan.py:610@22a9f949,scan.py:575@74e4ca0b,scan.py:602@bb22c4ee,scan.py:679@c7b7aa70,scan.py:65@04872629,scan.py:507@0ee68e12,scan.py:640@cfc7e49e,scan.py:685@6f938f80,scan.py:621@8526611d,scan.py:741@8316e21f,scan.py:342@a99d3e2d
 ---
 
 ## 是什么
@@ -23,7 +23,7 @@ refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777
 
 同样放在 symbols.json 里的还有 `name_refs`（scan.py:762）：字符串常量里写着的仓库内类名——大写开头的标识符，或者 `"pkg.mod.Cls"` / `"pkg.mod:Cls"` 这种带模块的类路径（后者连模块一起记下）；`__all__` 里的是再导出清单，不收（scan.py:524）。它回答的是动态分派的「在哪儿按名字接上的」：注册表、插件表、配置里的 worker_cls。扫的时候先把所有像类名的字符串收下，扫完再只留仓库里真有这个类名的。
 
-交叉引用（xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:86）。放在同一条命令里，是为了让 xref 和符号表是同一时刻的快照，行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」。
+交叉引用（xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:87）。放在同一条命令里，是为了让 xref 和符号表是同一时刻的快照，行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」。
 
 ## 读法
 1. 模块 docstring（scan.py:1）——两个产出文件各有什么（含 `type_edges`），「架构高度」的定义和为什么不用 SCC
@@ -63,7 +63,7 @@ refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777
 每个 `.py` 先 `read_bytes`（scan.py:455），同一份字节派两个用处：
 
 - **解码**（scan.py:458）：用 utf-8-sig。Windows 编辑器存的文件开头常带 BOM，按普通 utf-8 解码时 `ast.parse` 直接报 `SyntaxError`——早先这种文件整个算进解析失败（`n_parse_errors`），单元、符号、边全从图上消失。`bytes.decode` 不做通用换行转换，所以手动把 CRLF 和单独的 CR 换成 LF：行数（scan.py:466）和查 noqa 用的 `src_lines` 与 `read_text` 读时完全一样。xref 那边用 `read_text` 读、再手动去掉开头的 BOM，两边看到的仍是同一份文本。
-- **哈希**（scan.py:469）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:91）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace.py:148）是同一种，三边能直接比。哈希解码后的文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，也保证哈希和 index 里的行号出自同一份内容（docs/archive/runs-design.md 3.5）。
+- **哈希**（scan.py:469）：对**原始字节**取 sha256 的前 16 位，和 `runs.sha16`（runs.py:92）、`trace.file_shas`、trace 钩子在执行时记下的哈希（trace/hook.py:119）是同一种，三边能直接比。哈希解码后的文本，每个带 BOM 或 CRLF 的文件都会被判成「改过」。用已经读进来的字节顺手算，也保证哈希和 index 里的行号出自同一份内容（docs/archive/runs-design.md 3.5）。
 
 `file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:462 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
 

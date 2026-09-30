@@ -41,8 +41,6 @@
 - **平台**：录制只支持 Linux，别的系统上 `trace` 直接拒绝（`compat.require_trace`）。scan / serve / graph / runs 在别的系统上
   能 import、能用（`tests/test_platform.py` 模拟没有 fcntl / SIGKILL 的环境），但没在真的 Windows / macOS 上跑过。
 - **god module**：`payload.py`（事实、runtime、坐标、源码、xref、解读全认识）。
-- **模块间用下划线私有名**：`runs._read`（5 处）、`payload._norm_open` / `_inverted` / `_known`、`trace._proc_start`、
-  `notes._resolve_ref` / `_REF_RE`，以及函数里的 `from .runs import _q`（payload）、`from .scan import _STMT_CONTAINERS`（trace）。
 - **读图须知埋得太深**：调用方是「最近的仓库内帧」，穿过框架事件循环的调用会显示成直接调用；次数高的多半是轮询；
   3.12 以下录制很慢。
 - **对比只有颜色**，没有「只有 A 走到的 / 只有 B 走到的 / 次数差很多的」清单。
@@ -65,10 +63,12 @@
 
 ## 交接
 
-2026-09-30：做完 TODO P0「平台判断」（新增 `codestrata/compat.py`、`tests/test_platform.py`）。开工前 dogfood 了一轮（用对比回答
-「扫 gsplat 比扫 flask 多走了哪些代码」），发现对比在界面上答不出来，已记进 DOGFOOD，并收紧了 TODO「对比做成差异清单」的验收标准。
-本仓库的解读有 3 份按规矩暂不刷新（`codestrata.__main__`、`codestrata.runs`、`codestrata.trace` 标着过期），下个里程碑统一刷新。
-**下一步**：TODO P0 第 1 条「前端测试进仓库」。
+2026-09-30：TODO 的 P0 全部做完——平台判断（`compat.py`）、前端测试进仓库（`tests/test_browser.py` + `tests/web/`，7 组）、
+拆 `trace.py`（`codestrata/trace/` 下的 hook / driver / analysis）、私有名字公开（`test_package.py` 盯着两条结构约束）。
+写前端测试时发现 `--phase` 切阶段会让触发的进程停 0.1 s（设计如此，已记进 DOGFOOD）。
+本仓库的解读：拆分后指向 `trace.py` 的 401 处引用已按行内容挪到新文件，不再有指向不存在文件的引用；
+但有 11 份因为代码改了（拆分、改名）标着过期，留给 TODO P2「本仓库解读瘦身」一起重写。
+**下一步**：P1 第 1 条「对比做成差异清单」（验收：不写脚本答出「扫 gsplat 比扫 flask 多走了哪些函数」）。
 
 ## 每次开工 / 收工
 

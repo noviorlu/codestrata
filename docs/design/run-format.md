@@ -475,7 +475,7 @@ scan 写两个文件，加载时（`payload.load_index`）合成一个 index。�
 | `edges` | [[单元a, 单元b, 权重]] | `cut.view`（切面上的边、出入度）、`layout.build`（分层）、`payload`（边的种类） | 静态依赖边（Python 是 import 条数） | 是（可以是空列表） |
 | `type_edges` | [[a, b, w]] | `payload`（「仅类型」边） | 只在类型检查时存在的依赖 | 否 |
 | `dirs` | {目录: {parent, dirs, units}} | `cut` 几乎所有函数（节点归属、展开、框） | 目录树。可以直接用 `cut.dir_tree(packages, roots)` 生成：单元所在目录 = 去掉最后一段（`.__init__` 单元就是它自己的目录），每个单元的目录都必须在树里 | 是 |
-| `default_open` | [目录] | `payload._norm_open`、`seq._Map`、`serve` | 默认切面（展开哪些目录）。可以用 `cut.default_open(index)[0]` 算 | 是 |
+| `default_open` | [目录] | `payload.norm_open`、`seq._Map`、`serve` | 默认切面（展开哪些目录）。可以用 `cut.default_open(index)[0]` 算 | 是 |
 | `n_symbols` | int | `payload.index_summary` | 主菜单显示 | 否 |
 
 **symbols.json**（index 里的大块，按需加载；这个文件要有，否则 `idx["edge_sites"]` 之类的直接下标会 KeyError）

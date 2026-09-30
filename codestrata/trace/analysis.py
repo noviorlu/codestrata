@@ -93,7 +93,7 @@ def _qualnames(path: Path) -> dict[str, tuple[int, int]]:
     函数里定义的东西带 .<locals>.；外层函数里 global 声明过的名字不带前缀；if / for / while / with /
     try / match 这些语句体里的 def 也算（和 scan 下潜的是同一批语句）。"""
     import ast
-    from ..scan import _STMT_CONTAINERS
+    from ..scan import STMT_CONTAINERS
     tree = ast.parse(path.read_bytes())
     out: dict[str, tuple[int, int]] = {}
 
@@ -106,7 +106,7 @@ def _qualnames(path: Path) -> dict[str, tuple[int, int]]:
                 walk(n.body, q + ".<locals>.", _globals_in(n))
             elif isinstance(n, ast.ClassDef):
                 walk(n.body, (n.name if n.name in globs else prefix + n.name) + ".", set())
-            elif isinstance(n, _STMT_CONTAINERS) or type(n).__name__ == "Match":
+            elif isinstance(n, STMT_CONTAINERS) or type(n).__name__ == "Match":
                 for f in ("body", "orelse", "finalbody", "handlers", "cases"):
                     walk(getattr(n, f, None) or [], prefix, globs)
     walk(tree.body, "", set())

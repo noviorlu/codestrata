@@ -209,7 +209,7 @@ class Handler(BaseHandler):
             return self._json({"error": str(e)}, 404)
         raw = (q.get("open") or [None])[0]
         open_ = None if raw is None else [o for o in raw.split(",") if o]
-        open_ = sorted(_payload._norm_open(self.idx, open_))
+        open_ = sorted(_payload.norm_open(self.idx, open_))
         try:
             return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase))
         except (LookupError, FileNotFoundError) as e:
@@ -231,7 +231,7 @@ class Handler(BaseHandler):
                 with Handler._lock:
                     changed = Handler._stale.get(key)
                 if changed is None:
-                    fs = _runs.file_state(self.repo, self.idx, _runs._read(rd / "detail.json"))
+                    fs = _runs.file_state(self.repo, self.idx, _runs.read_json(rd / "detail.json"))
                     changed = {"changed": sum(1 for v in fs.values() if v in ("changed", "gone")),
                                "mismatch": sum(1 for v in fs.values() if v == "mismatch")}
                     with Handler._lock:
