@@ -5,7 +5,7 @@
     codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
     codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
-    codestrata graph <repo> [--hot RUN]… [--compare]   导出单文件 HTML（只读、离线、可分享；多个 run 可切换）
+    codestrata graph <repo> [--hot RUN]…             导出单文件 HTML（只读、离线、可分享；多个 run 可切换）
 
 RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
 后面可以加 @阶段（如 minicpmo-duplex@serving）。
@@ -105,11 +105,9 @@ def cmd_graph(a) -> int:
     if any(not r.strip() for r in refs):
         raise SystemExit("--hot 给了空值（脚本里的变量没设？）")
     refs = list(dict.fromkeys(refs))              # 同一个写了两遍：只留一份
-    if a.compare and len(refs) < 2:
-        raise SystemExit("--compare 要给两个 --hot：第一个是主 run，第二个和它对比")
     hot, meta = _payload.load_hot(repo, idx, refs[0]) if refs else (None, None)
     others = [_payload.load_hot(repo, idx, r) for r in refs[1:]]
-    # 写法不同、解析到同一个 run（同一阶段）的只留一份；--compare 要真的有另一个
+    # 写法不同、解析到同一个 run（同一阶段）的只留一份
     ref_of = lambda m: m["run_id"] + (f"@{m['phase']}" if m.get("phase") else "")
     seen, uniq = {ref_of(meta)} if meta else set(), []
     for h, m in others:
@@ -117,8 +115,6 @@ def cmd_graph(a) -> int:
             seen.add(ref_of(m))
             uniq.append((h, m))
     others = uniq
-    if a.compare and not others:
-        raise SystemExit("--compare：几个 --hot 解析到的是同一个 run（同一阶段），没有可以对比的")
     keep = []
     if a.public:
         # 要保留的目录：仓库，和各 run 录制时所在的目录（PATH 里的 venv 往往在那下面）
@@ -136,7 +132,7 @@ def cmd_graph(a) -> int:
         if not a.out or a.out.endswith(".html"):
             raise SystemExit("--link github 导出的是一个目录（index.html + data/）：--out 给目录")
         from . import site as _site
-        r = _site.export_site(repo, idx, Path(a.out), hot=hot, hot_meta=meta, others=others, compare=a.compare,
+        r = _site.export_site(repo, idx, Path(a.out), hot=hot, hot_meta=meta, others=others,
                               per_pkg=a.per_pkg, public=a.public, home=str(Path.home()), keep=keep,
                               code_bases=a.code_base or None, check_remote=not a.no_remote_check,
                               title=f"{idx['repo']['name']} · codestrata")
@@ -155,12 +151,12 @@ def cmd_graph(a) -> int:
                   + "，".join(r["held"][:12]) + ("…" if len(r["held"]) > 12 else ""))
         return 0
     pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg,
-                                 others=others, compare=a.compare)
+                                 others=others)
     if a.public:
         pl = _payload.publicize(pl, str(Path.home()), keep)
     html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
                           fragment=a.fragment)
-    tag = "+".join(refs) + ("-vs" if a.compare else "")
+    tag = "+".join(refs)
     name = f"overview{'-' + re.sub(r'[^A-Za-z0-9@._+-]', '_', tag) if refs else ''}.html"
     out = Path(a.out) if a.out else (_outdir(repo) / name)
     out.write_text(html, encoding="utf-8")
@@ -168,8 +164,8 @@ def cmd_graph(a) -> int:
     print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边，"
           f"泳道 {g['lanes']}"
           + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "")
-          + (f"，另带 {len(others)} 个 run 可切换" if others else "") + ("，对比前两个" if a.compare else "") + ")")
-    parts = {k: len(json.dumps(pl.get(k), ensure_ascii=False)) for k in ("graph", "graphHot", "edges", "sources", "files", "hotBy", "cmp")}
+          + (f"，另带 {len(others)} 个 run 可切换" if others else "") + ")")
+    parts = {k: len(json.dumps(pl.get(k), ensure_ascii=False)) for k in ("graph", "graphHot", "edges", "sources", "files", "hotBy")}
     print("  各部分：" + "，".join(f"{k} {v / 1024:.0f} KB" for k, v in parts.items() if v > 4))
     return 0
 
@@ -562,7 +558,6 @@ def main(argv: list[str] | None = None) -> int:
     common(g)
     g.add_argument("--hot", action="append", default=None, metavar="RUN",
                    help="叠加某个 run 的 runtime 结果（run id 或 case 名，可加 @阶段）；可以给多个，第一个是主 run，其余在页面上可切换")
-    g.add_argument("--compare", action="store_true", help="主 run 和第二个 --hot 对比（三种颜色）")
     g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
     g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
     g.add_argument("--link", choices=["github"], default=None,

@@ -1823,11 +1823,6 @@ def test_dynamic_dispatch_consistent_across_cuts():
     assert mix["hot"]["edges"][RM] == 7 and mix["hot"]["dyn"][RM] == 4 and RM not in mix["dynOnlyEdges"], mix["hot"]
     agree(mix, hm)
     agree(payload.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd", "dd.models"]), hm)
-    # 对比：两个 run 都只有动态分派才算；一边有确认调用就照旧画实线
-    c = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, hot_b=hm, hot_meta_b=mm, open_=["dd"])
-    assert RM not in c["dynOnlyEdges"] and c["cmp"]["dyn"][RM] == [4, 4], c["cmp"]
-    c2 = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, hot_b=hd, hot_meta_b=md, open_=["dd"])
-    assert RM in c2["dynOnlyEdges"], c2["dynOnlyEdges"]
     # 动态分派的调用处：调用方函数体里那一行；经由 map() 这种仓库外的代码调到的，找过但找不到（[]）
     def callers(a, b):
         d = payload.edge_detail(repo, idx, a, b, hd)
@@ -2257,48 +2252,31 @@ def test_duplicate_short_labels():
     assert {n["id"]: n["label"] for n in g2["graph"]["nodes"]}["lb.app"] == "app" and "lb.app" not in g2["alias"]
 
 
-def test_compare_and_multi_export():
-    """M7：两个 run 对比——节点、边上带 [A, B]，只有一边跑到的也在；边详情带 calls_b，和 B 自己的
-    明细对得上；只在 runtime 出现的边、「只看跑到的」取并集。导出能带多个 run、--compare 带对比块。"""
+def test_multi_run_export():
+    """导出能带多个 run（页面上切换）：别的 run 只带切面上的次数；同一个 run 写两遍只留一份；空值说清楚。
+    对比功能已经去掉：serve 忽略老链接里的 cmp=，图照常出来、不带对比的数据"""
     repo = fresh()
     cs("trace", repo, "--case", "a", "--", PY, "-c", "from fakesvc import work; work.init_model()")
     cs("trace", repo, "--case", "b", "--", PY, "-m", "fakesvc.truth")
     idx = payload.load_index(repo)
     ha, ma = payload.load_hot(repo, idx, "a")
     hb, mb = payload.load_hot(repo, idx, "b")
-    g = payload.graph_payload(repo, idx, hot=ha, hot_meta=ma, hot_b=hb, hot_meta_b=mb)
-    c = g["cmp"]
-    assert c and c["ref_b"].startswith(mb["run_id"]) and c["meta_b"]["case"] == "b"
-    ga = payload.graph_payload(repo, idx, hot=ha, hot_meta=ma)
-    gb = payload.graph_payload(repo, idx, hot=hb, hot_meta=mb)
-    for n, (x, y) in c["nodes"].items():
-        assert x == ga["hot"]["packages"].get(n, 0) and y == gb["hot"]["packages"].get(n, 0), n
-    assert any(x and not y for x, y in c["nodes"].values()) or any(y and not x for x, y in c["nodes"].values())
-    assert {tuple(e[:2]) for e in g["runtimeOnlyEdges"]} >= {tuple(e[:2]) for e in gb["runtimeOnlyEdges"]}
-    k = next(k for k, v in c["edges"].items() if v[1])
-    a, b = k.split("|")
-    d = payload.edge_compare(repo, idx, a, b, ha, hb)
-    db = payload.edge_detail(repo, idx, a, b, hb)
-    assert d["has_runtime_b"] and d["counts"]["calls_b"] == db["counts"]["calls"]
-    assert sum(it.get("calls_b", 0) for it in d["items"]) == db["counts"]["calls"]
-    ob = [it for it in d["items"] if it["status"] == "only_b"]
-    assert d["counts"].get("only_b", 0) == len(ob) and all(it["calls"] == 0 and it["calls_b"] for it in ob)
-    # 导出：两个 run、对比
     out = repo / "exp.html"
-    r = cs("graph", repo, "--hot", "a", "--hot", "b", "--compare", "--out", out)
+    r = cs("graph", repo, "--hot", "a", "--hot", "b", "--out", out)
     html = out.read_text()
-    assert out.stat().st_size < 16 * 1024 * 1024 and '"hotBy"' in html and '"cmp"' in html, r.stdout
+    assert out.stat().st_size < 16 * 1024 * 1024 and '"hotBy"' in html, r.stdout
     emb = json.loads(html.split("window.CS_EMBEDDED = ", 1)[1].split(";</script>", 1)[0].replace("<\\/", "</"))
-    assert len(emb["hotBy"]) == 1 and emb["cmp"]["ref_b"].startswith(mb["run_id"]), list(emb["hotBy"])
-    r = cs("graph", repo, "--hot", "a", "--compare", check=False)
-    assert r.returncode != 0 and "--compare" in (r.stdout + r.stderr)
+    gb = payload.graph_payload(repo, idx, hot=hb, hot_meta=mb)
+    (ref, alt), = emb["hotBy"].items()
+    assert ref.startswith(mb["run_id"]) and alt["packages"] == gb["hot"]["packages"] and "cmp" not in emb, list(emb)
+    r = cs("graph", repo, "--hot", "a", "--compare", check=False)                # 参数已经去掉
+    assert r.returncode != 0
     r = cs("graph", repo, "--hot", "a", "--hot", "", check=False)          # 脚本里变量没设
     assert r.returncode != 0 and "空值" in (r.stdout + r.stderr)
     # 同一个 run 写两遍：不会把主 run 换成精简版
     cs("graph", repo, "--hot", "a", "--hot", ma["run_id"], "--out", out)
     emb = json.loads(out.read_text().split("window.CS_EMBEDDED = ", 1)[1].split(";</script>", 1)[0].replace("<\\/", "</"))
     assert emb["hotBy"] == {} and emb["hot"]["symbols"], list(emb["hotBy"])
-    # serve：对比的 run 找不到 / 就是自己 → 只叠 A、说一声，不让整张图 404
     import socket
     import urllib.request
     sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
@@ -2315,12 +2293,9 @@ def test_compare_and_multi_export():
                 except OSError:
                     time.sleep(0.1)
             raise AssertionError("serve 没起来")
-        st, g1 = get(f"/api/graph?run=a&cmp=nope")
-        assert st == 200 and g1["cmp"] is None and "找不到" in g1["cmpError"], (st, g1.get("cmpError"))
-        st, g2 = get(f"/api/graph?run=a&cmp=a")
-        assert st == 200 and g2["cmp"] is None and "同一个" in g2["cmpError"]
-        st, g3 = get(f"/api/graph?run=a&cmp=b")
-        assert st == 200 and g3["cmp"] and not g3.get("cmpError")
+        st, g = get("/api/graph?run=a&cmp=b")
+        st0, g0 = get("/api/graph?run=a")
+        assert st == st0 == 200 and "cmp" not in g and g["hot"]["edges"] == g0["hot"]["edges"], (st, list(g))
     finally:
         srv.kill()
         srv.wait()

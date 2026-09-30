@@ -9,7 +9,7 @@ codestrata 先静态扫描出一张按依赖分层的模块图，再把一次真
 <sub>vllm-omni 的模块图：调用方在上、被依赖的在下，灰线是静态依赖。图里开着「时间顺序」：serving 阶段走过的边按第一次被调用的先后编号，从蓝经紫到橙红上色。</sub>
 
 > [!IMPORTANT]
-> 早期版本（0.1.0）。目前只支持 **Python** 仓库；运行记录的格式、叠加和对比与语言无关，其他语言在计划中。
+> 早期版本（0.1.0）。目前只支持 **Python** 仓库；运行记录的格式和叠加与语言无关，其他语言在计划中。
 > **录制只支持 Linux**（别的系统上 `trace` 会直接说明并退出）；扫描、看图、导出、查看别处录好的 run 在其他系统上也能用，但只在 Linux 上测过。
 > 要 Python ≥ 3.10，没有必需的第三方依赖；`trace --events`（时间轴上的任意一段、「时间顺序」要用它）要求**被录的程序**跑在 Python 3.12+ 上。
 > 所有服务只监听 `127.0.0.1`，在远程机器上用要走 `ssh -L`。
@@ -23,7 +23,7 @@ codestrata 先静态扫描出一张按依赖分层的模块图，再把一次真
 
 ## 快速上手
 
-要 Python ≥ 3.10 和 git。下面拿 [flask](https://github.com/pallets/flask) 当例子，扫描和录制加起来不到 1 秒。录服务、分阶段、对比、导出、主菜单、完整的命令参考见 **[docs/usage.md](docs/usage.md)**。
+要 Python ≥ 3.10 和 git。下面拿 [flask](https://github.com/pallets/flask) 当例子，扫描和录制加起来不到 1 秒。录服务、分阶段、导出、主菜单、完整的命令参考见 **[docs/usage.md](docs/usage.md)**。
 
 ```bash
 # 1. 安装。别用 pip install codestrata：PyPI 上同名的包是别人的
@@ -95,7 +95,6 @@ scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 
 
 ### 其他功能
 
-- **对比两个 run**：两个 run 叠在同一张图上，只有 A 跑到的橙色、只有 B 跑到的紫色。见[对比两个 run](docs/usage.md#对比两个-run)。
 - **读代码**：从图上点进任意文件打开全文窗口，符号大纲、语法高亮、Ctrl+点击跳定义 / 列引用、Ctrl+F 查找，也能一键在本机编辑器打开（截图见 [读代码](docs/usage.md#读代码)）。
 - **复刻**：每个 run 存下原样的命令、所在目录和相关环境变量，一键复制就能再录一次。见[管理 run](docs/usage.md#管理-run)。
 - **分享**：`codestrata graph` 导出一个离线 HTML；`--link github` 导出从 GitHub 取源码的静态站点。见[分享给别人](docs/usage.md#分享给别人)。
@@ -109,7 +108,7 @@ scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 
 flowchart LR
   S["scan<br/>静态分析"] --> I[("index / symbols / xref")]
   T["trace<br/>运行时 hook"] --> R[("runs/")]
-  I --> P["切面 + 分层 + 叠加 / 对比"]
+  I --> P["切面 + 分层 + 叠加"]
   R --> P
   P --> V["serve：本地网页"]
   P --> E["graph：单文件 HTML / GitHub 站点"]
@@ -152,7 +151,7 @@ Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 
 - **OpenGrok / Sourcegraph / Hound / Zoekt** 给的是搜索和交叉引用，不知道一次运行实际走了哪条路。
 - **Sourcetrail** 2021 年已归档；还在维护的 fork NumbatUI 明确禁用了 Python 索引。
-- **profiler（cProfile、py-spy）** 告诉你时间花在哪，但不把调用放回仓库的架构里，也不能两次运行对比着看。
+- **profiler（cProfile、py-spy）** 告诉你时间花在哪，但不把调用放回仓库的架构里，也看不出调用的先后。
 
 ## 致谢
 

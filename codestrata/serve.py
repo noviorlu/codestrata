@@ -9,8 +9,7 @@
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
-                                  可加 @阶段，空 = 只看静态图）。edge / refs 也接受 run=；
-                                  graph 和 edge 另接受 cmp=（对比的另一个 run：图上三种颜色、边详情带 calls_b）
+                                  可加 @阶段，空 = 只看静态图）。edge / refs 也接受 run=
     GET  /api/symbol/<key>        一个符号的源码片段
     GET  /api/file?f=             整个文件 + 符号大纲（全文窗口用）
     GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
@@ -161,11 +160,11 @@ class Handler(BaseHandler):
         root = self.repo.resolve()
         return p if str(p).startswith(str(root) + os.sep) and p.is_file() else None
 
-    def _hot(self, q: dict, param: str = "run"):
+    def _hot(self, q: dict):
         """请求里的 run=（完整 id 或 case 名，可加 @阶段；没有 / 空 = 静态图）→ (hot, meta, 缓存键)。
         按 (run id, 阶段, counts.json.gz 和 run.json 的 mtime) 缓存：counts 只在 runs merge 时才会变，
         run.json 在改 tag / 备注时变（meta 里带着它们）。找不到这个 run 抛 LookupError。"""
-        ref = (q.get(param) or [""])[0].strip()
+        ref = (q.get("run") or [""])[0].strip()
         if not ref:
             return None, None, None
         try:
@@ -266,22 +265,11 @@ class Handler(BaseHandler):
             return self._seq(path, q)
 
         hot = hot_meta = hot_key = None
-        hot_b = hot_meta_b = key_b = None
-        cmp_err = None
         if path in ("/api/graph", "/api/edge", "/api/refs"):
             try:
                 hot, hot_meta, hot_key = self._hot(q)
             except LookupError as e:
                 return self._json({"error": str(e)}, 404)
-            # 对比的另一个 run（cmp=）：找不到、或者就是 A 自己，不让整张图挂掉——只叠 A，说一声
-            if hot and path in ("/api/graph", "/api/edge") and (q.get("cmp") or [""])[0].strip():
-                try:
-                    hot_b, hot_meta_b, key_b = self._hot(q, "cmp")
-                    if key_b and hot_key and key_b[:2] == hot_key[:2]:
-                        hot_b = hot_meta_b = key_b = None
-                        cmp_err = "对比的 run 和当前的是同一个（同一个阶段），不对比"
-                except LookupError as e:
-                    cmp_err = f"对比的 run 找不到了：{e}"
 
         if path == "/api/graph":
             raw = (q.get("open") or [None])[0]
@@ -293,16 +281,12 @@ class Handler(BaseHandler):
                 width = 1180
             # run 也进缓存键：同一个切面，换一个 run 叠加就不一样（hot_key 里有 counts 的 mtime，
             # runs merge 重算之后自然换一份）
-            key = (("\u0000" if open_ is None else ",".join(sorted(open_))) + f"@{width}", hot_key, key_b)
-            body = Handler._graphs.get(key) if not cmp_err else None
-            if cmp_err:
-                pl = _payload.graph_payload(self.repo, self.idx, hot=hot, hot_meta=hot_meta, open_=open_, width=width)
-                pl["cmpError"] = cmp_err
-                return self._json(pl)
+            key = (("\u0000" if open_ is None else ",".join(sorted(open_))) + f"@{width}", hot_key)
+            body = Handler._graphs.get(key)
             if body is None:
                 body = json.dumps(_payload.graph_payload(
-                    self.repo, self.idx, hot=hot, hot_meta=hot_meta, open_=open_, width=width,
-                    hot_b=hot_b, hot_meta_b=hot_meta_b), ensure_ascii=False).encode()
+                    self.repo, self.idx, hot=hot, hot_meta=hot_meta, open_=open_, width=width),
+                    ensure_ascii=False).encode()
                 with Handler._lock:
                     Handler._graphs[key] = body
                     while len(Handler._graphs) > 32:   # 切面可以任意组合，缓存只留最近的一些
@@ -318,7 +302,7 @@ class Handler(BaseHandler):
             a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
             if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
                 return self._json({"error": "unknown node"}, 404)
-            return self._json(_payload.edge_compare(self.repo, self.idx, a, b, hot, hot_b))
+            return self._json(_payload.edge_detail(self.repo, self.idx, a, b, hot))
 
         if path == "/api/search-index":
             if Handler._search is None:

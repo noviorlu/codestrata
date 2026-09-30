@@ -47,8 +47,7 @@ flowchart LR
    时间段则 `seq.window_counts`），`file_state` 拿录制时的文件哈希和 index 的 `file_sha` 比，`remap` 把改过的文件里的键按 qualname
    挪到函数现在的行号，`analysis.to_package_graph(counts, idx)` 折算到单元粒度，返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
 6. **payload**：`payload.load_index` 合并 index.json 和 symbols.json；`graph_payload` 做切面（`cut.view`）、
-   叠加（`_hot_on_cut`，对比时 A、B 各一次，返回里带 `cmp`）、排版（`layout.build`）。边详情 `edge_detail` /
-   `edge_compare`，源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
+   叠加（`_hot_on_cut`）、排版（`layout.build`）。边详情 `edge_detail`，源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
 7. **交付**：`serve.main` 启动时读一次 index；`serve.Handler` 按请求调 payload（`_hot` 按 run id、阶段、文件 mtime 缓存 8 个），
    `/api/seq/edges` 交给 `seq.edge_times`（读 `events/spans/`，只有 serve 有）。`cmd_graph` 调 `payload.export_payload`，由
    `render.export` 内联成单文件（`window.CS_EMBEDDED`），`--link github` 时由 `site.export_site` 写静态站（源码从 GitHub 取）。
@@ -71,7 +70,7 @@ flowchart LR
 | `runs.py` | 1062 | run 目录的建、收尾、迁移、解析、加载（`remap`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
-| `payload.py` | 1270 | 组装前端数据：图、叠加、对比、边详情、源码、引用、搜索、导出数据、公开化 |
+| `payload.py` | 1270 | 组装前端数据：图、叠加、边详情、源码、引用、搜索、导出数据、公开化 |
 | `highlight.py` | 186 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
 | `serve.py` | 477 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `render.py` | 45 | 把 web/ 和 payload 内联成单文件 HTML |
@@ -81,7 +80,7 @@ flowchart LR
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ds.js` | 388 | 数据源层：live（fetch `api/*`）/ embedded / linked |
-| `web/app.js` | 1055 | 入口：串起数据源、图、面板、run 选择、对比、时间轴 |
+| `web/app.js` | 1055 | 入口：串起数据源、图、面板、run 选择、时间轴 |
 | `web/graph.js` | 683 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 633 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
 | `web/viewer.js` | 463 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`） |
@@ -102,7 +101,7 @@ flowchart LR
 - run 的存储：`run.json` / `detail.json` / `counts.json.gz`（各阶段 `funcs`、`func_edges`）、阶段日志 `phase_log`、
   `runs` 的建 / 收尾 / 解析 / 管理 / 复刻命令；`events.py` 的日志格式和 span；`seq.py` 的时间窗和边时刻。
 - 切面和排版：`cut.py`（单元 id 是点分名；`unit_dir` 对 `.__init__` 的特判来自 Python 的包约定）、`layout.py`（只吃 id 和带权边）。
-- 叠加、对比：`payload._hot_on_cut`、`graph_payload`、`edge_compare`；`trace/analysis.py` 的 `to_package_graph` / `sym_locs` / `defining`
+- 叠加：`payload._hot_on_cut`、`graph_payload`；`trace/analysis.py` 的 `to_package_graph` / `sym_locs` / `defining`
   只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`k`），「第 0 行 = 模块顶层」「落在类符号行 = 类体」是约定。
 - `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
 - 前端全部；`highlight.py` / `hl.js` 本来就认多种语言。
@@ -150,7 +149,7 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 
 - `test_runs.py`（70 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 动态分派 / 调用处、
-  对比和多 run 导出、公开导出和静态站、分层方向。
+  多 run 导出、公开导出和静态站、分层方向。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；`index.html` 的脚本清单和 `render.SCRIPTS` 一致；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。
@@ -158,7 +157,7 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
-  （图、叠加、时间轴、时间顺序、对比、代码窗口、查找各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 给对比）。
+  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run）。
   要 node 22+ 和 Chrome / Chromium，没有就跳过；约 15 秒。
 
 ## 平台

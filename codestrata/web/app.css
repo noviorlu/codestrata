@@ -111,8 +111,6 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .e{fill:none;stroke:var(--edge);stroke-width:1.2}
 .e.imp{stroke-dasharray:3 3}
 .e.warm{stroke:var(--hot);opacity:.85}
-.e.warmb{stroke:var(--hotb);opacity:.9}
-.e.both{stroke:var(--ink);opacity:.8}
 .e.dyn{stroke-dasharray:6 3}
 .e.type{stroke-dasharray:1 3;opacity:.7}
 /* dim / hi 必须写在 warm 后面：同优先级后者覆盖。早先顺序反了，
@@ -131,8 +129,6 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd.dim{opacity:.34}   /* .18 时非邻居的标签读不出来 */
 .nd.match rect{stroke:var(--sel);stroke-width:2;stroke-dasharray:4 2}
 .nd.warm rect{fill:var(--hot-bg);stroke:var(--hot)}
-.nd.warmb rect{fill:var(--hotb-bg);stroke:var(--hotb)}
-.nd.both rect{fill:var(--sunk);stroke:var(--ink)}
 /* 选中必须写在 warm 后面，否则跑到过的节点选中了也还是橙框 */
 .nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
@@ -585,25 +581,11 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 
 .chip[disabled]{opacity:.45;cursor:not-allowed}
 
-/* ---- 对比：只有 A 橙（--hot），只有 B 紫（--hotb），两边都跑到前景色 ---- */
-.runbtn.onb{background:var(--hotb-bg);border-color:var(--hotb);color:var(--hotb);font-weight:600}
-.cmpbanner{border-left-color:var(--hotb)}
-.cmpbanner .tA{color:var(--hot);font-weight:600}
-.cmpbanner .tB{color:var(--hotb);font-weight:600}
-.rtb{color:var(--hotb)}
-.cmpleg{display:inline-flex;align-items:center;gap:4px;font:11px/1 ui-monospace,monospace;color:var(--muted)}
-.cmpleg i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-left:6px}
-.cmpleg i.a{background:var(--hot)}.cmpleg i.b{background:var(--hotb)}.cmpleg i.ab{background:var(--ink)}
-.eb2.warmb{color:var(--hotb);border-color:var(--hotb)}.eb2.both{color:var(--ink);border-color:var(--ink)}
-.rtA{color:var(--hot)}
-.ecount .only_b{color:var(--hotb)}
-
 /* 边详情：一对调用一张卡片（被调函数 + from 调用那一行 + to 签名） */
 .call{margin:8px 0;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
 .call .ch{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
 .call .ch b{color:var(--ink);font-family:ui-monospace,monospace;font-size:12.5px}
 .call .ch .rt{color:var(--hot);font-size:11.5px;font-weight:700}
-.call .ch .rtb{color:var(--hotb);font-size:11.5px;font-weight:700}
 .call .ch .cls{color:var(--faint);font-size:11px;font-family:ui-monospace,monospace;overflow-wrap:anywhere}
 .call .dtag{margin-left:auto;font-size:10.5px;color:var(--hot);border:1px dashed var(--hot);border-radius:4px;padding:0 4px;cursor:help}
 .call .cs{display:flex;align-items:baseline;gap:8px;margin-top:5px;font-size:11.5px;color:var(--muted)}

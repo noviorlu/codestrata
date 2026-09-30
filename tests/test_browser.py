@@ -1,10 +1,10 @@
-"""浏览器里的交互：图、运行叠加、时间轴、时间顺序、对比、代码窗口、文件内查找（tests/web/specs/*.mjs）。
+"""浏览器里的交互：图、运行叠加、时间轴、时间顺序、代码窗口、文件内查找（tests/web/specs/*.mjs）。
 
     .venv/bin/python tests/test_browser.py [spec 名…]
 要 node（带全局 WebSocket，22+）和 Chrome / Chromium（找不到就跳过；CHROME=路径 可以指定）。
 测试数据是仓库自带的假服务（tests/trace_cases/fake_repo）当场录的两次 run，不依赖开发机上的任何录制：
   A = truth：--events，--phase 切出 loop / forks 两个阶段（加上开头的 start），跨模块的调用多，时间顺序有得排
-  B = offline：走另一批代码（fork 出工作进程），给对比用
+  B = offline：另一个 run，给「换 run」用
 serve 用随机端口，测完关掉；Chrome 由 tests/web/cdp.mjs 自己起、自己关。
 """
 from __future__ import annotations
@@ -97,10 +97,6 @@ def test_timebar():
 
 def test_timeorder():
     _spec("timeorder")
-
-
-def test_compare():
-    _spec("compare")
 
 
 def test_viewer():

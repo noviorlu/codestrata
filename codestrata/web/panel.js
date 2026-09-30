@@ -47,32 +47,27 @@ window.CS = window.CS || {};
   }
 
   /* 边详情的主体：每一对「谁调了谁」一张卡片——被调的函数、from（调用方里调它的那一行）、
-     to（被调函数的签名）。按次数排；对比时写 A / B。 */
+     to（被调函数的签名）。按次数排。 */
   function callCards(E) {
     var pairs = [], by = {};
     E.items.forEach(function (x) {
-      // A 只引用没调用的（static）照样要看：对比时 B 可能调到了它（runtime_b）
-      if (!(x.runtime || []).length && !(x.runtime_b || []).length) return;
-      function add(rs, side) {
-        (rs || []).forEach(function (r) {
-          r.callers.forEach(function (c) {
-            var k = r.sym + '|' + c.sym, P = by[k];
-            if (!P) { P = by[k] = { r: r, c: c, n: 0, nb: 0, dyn: x.status === 'dynamic' || (x.status === 'only_b' && !x.n_uses) }; pairs.push(P); }
-            if (side === 'a') P.n += c.n; else P.nb += c.n;
-            if (!P.c.sites && c.sites) P.c = c;
-          });
+      (x.runtime || []).forEach(function (r) {
+        r.callers.forEach(function (c) {
+          var k = r.sym + '|' + c.sym, P = by[k];
+          if (!P) { P = by[k] = { r: r, c: c, n: 0, dyn: x.status === 'dynamic' }; pairs.push(P); }
+          P.n += c.n;
+          if (!P.c.sites && c.sites) P.c = c;
         });
-      }
-      add(x.runtime, 'a'); add(x.runtime_b, 'b');
+      });
     });
-    pairs.sort(function (p, q) { return Math.max(q.n, q.nb) - Math.max(p.n, p.nb); });
-    var cmp = !!E.has_runtime_b, MAX = 40;
+    pairs.sort(function (p, q) { return q.n - p.n; });
+    var MAX = 40;
     return { n: pairs.length, html: pairs.slice(0, MAX).map(function (P) {
       var r = P.r, c = P.c, q = r.sym.slice(r.sym.indexOf(':') + 1), parts = q.split('.');
       var site = c.sites && c.sites[0];
       var from = site ? jump(site, fname(site.f) + ':' + site.l) : jump(c.def, fname(c.def ? c.def.f : '') + ':' + (c.def ? c.def.l : ''));
       var more = site && c.sites.length > 1 ? c.sites.slice(1).map(function (t) { return jump(t, ':' + t.l); }).join('') : '';
-      var cnt = cmp ? '<span class="rt">A ' + P.n + '</span><span class="rtb">B ' + P.nb + '</span>' : '<span class="rt">×' + P.n + '</span>';
+      var cnt = '<span class="rt">×' + P.n + '</span>';
       return '<div class="call' + (P.dyn ? ' dyn' : '') + '">'
         + '<div class="ch">' + cnt + '<b>' + esc(parts.pop()) + '</b>'
         + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '')
@@ -159,18 +154,16 @@ window.CS = window.CS || {};
         if (e[0] === id) typ.o.push(e[1]); if (e[1] === id) typ.i.push(e[0]);
       });
       var list = (D.pkgSyms || {})[id] || [];
-      var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0, cmp = CS.graph.cmp;
-      var nab = cmp ? (cmp.nodes[id] || [0, 0]) : null;
+      var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0;
       function pills(a, l, out, kind) {       // kind：图上没画出来的边（关着的仅类型）是哪种
         if (!a.length) return '';
         return '<div class="kv"><span>' + l + '</span>' + a.map(function (i) {
           var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || { kind: kind }, inf = E.info || {};
-          // 对比时：次数写成 A/B，颜色按哪边跑到（只有 B 的紫色），不拿两边的较大值冒充 A 的
-          var ab = E.ab, tone = ab ? (ab[0] && ab[1] ? ' both' : ab[0] ? ' warm' : ab[1] ? ' warmb' : '') : (E.hits ? ' warm' : '');
-          var tag = E.kind === 'dyn' ? (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次'
+          var tone = E.hits ? ' warm' : '';
+          var tag = E.kind === 'dyn' ? E.hits + ' 次'
                   : E.kind === 'type' ? '仅类型'
                   : (inf.uses ? inf.uses + ' 符号' : '只 import')
-                    + (E.dynOnly ? ' · 动态分派 ' + (ab ? ab[0] + '/' + ab[1] : E.hits) + ' 次' : '');
+                    + (E.dynOnly ? ' · 动态分派 ' + E.hits + ' 次' : '');
           return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(short(i))
             + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + tone
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
@@ -180,8 +173,7 @@ window.CS = window.CS || {};
       det.innerHTML = '<h2>' + esc(id) + '</h2>'
         + '<div class="sub">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
-        + (nab ? '　runtime <span class="rtA">A ' + nab[0] + '</span> / <span class="rtb">B ' + nab[1] + '</span> 次'
-           : hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
+        + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
@@ -591,15 +583,12 @@ window.CS = window.CS || {};
 
     _renderEdge: function (E) {
       var c = E.counts, rt = E.has_runtime;
-      // 「引用了，这次没跑到」：两边都没调到的（对比时 B 调到的已经在上面的调用卡片里了）
-      var calls = callCards(E), stat = E.items.filter(function (x) {
-        return x.status === 'static' && !(x.runtime_b || []).length;
-      });
+      // 「引用了，这次没跑到」
+      var calls = callCards(E), stat = E.items.filter(function (x) { return x.status === 'static'; });
       var wired = E.items.filter(function (x) { return x.wiring; });
       // 两端之间只有 if TYPE_CHECKING: 里的 import：运行时不存在，不是依赖（图上的「仅类型」）
       var typeOnly = !E.static_edge && E.type_edge;
-      var sub = rt ? (E.has_runtime_b ? 'runtime A <b>' + c.calls + '</b> 次 · 对比的 run B <b class="rtb">' + (c.calls_b || 0) + '</b> 次'
-                                      : 'runtime <b>' + c.calls + '</b> 次')
+      var sub = rt ? 'runtime <b>' + c.calls + '</b> 次'
                      + ' · ' + calls.n + ' 对调用' + (E.static_edge ? '' : typeOnly ? ' · 只有 TYPE_CHECKING 里的 import' : ' · 没有 import')
                    : (E.note ? esc(E.note) : stat.length + ' 个被引用的符号 · 没有 runtime 数据');
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'

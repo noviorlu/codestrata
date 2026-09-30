@@ -120,19 +120,15 @@ def _edge_uses_on_cut(idx: dict, node_of: dict) -> dict[str, set]:
     return out
 
 
-def _dyn_only(kinds: dict, runs: list[tuple[dict, dict]]) -> list[str]:
-    """有静态边、但这次跑到的调用全是动态分派的切面边（对比时两个 run 都是这样）。
+def _dyn_only(kinds: dict, he: dict, hd: dict) -> list[str]:
+    """有静态边、但这次跑到的调用全是动态分派的切面边。
     这种边不能画成「引用 + runtime」的实线：import 的是一回事（比如一个常量），跑到的是另一回事
     （经由 self.model、注册表调到的类），展开之后实线就变成了没跑到的灰边加一条动态分派的虚线"""
-    out = []
-    for k in kinds:
-        if any(he.get(k) for he, _ in runs) and all(hd.get(k, 0) >= he.get(k, 0) for he, hd in runs):
-            out.append(k)
-    return sorted(out)
+    return sorted(k for k in kinds if he.get(k) and hd.get(k, 0) >= he[k])
 
 
 def _meta_brief(m: dict | None) -> dict | None:
-    """对比 / 导出里别的 run 只带这些：够横幅和下拉用"""
+    """导出里别的 run 只带这些：够横幅和下拉用"""
     if not m:
         return None
     # 横幅和帮助里要读的都带上（都不大）：换到导出里别的 run 时，安装包映射、命令、进程这些说明不能没了
@@ -145,7 +141,7 @@ def _meta_brief(m: dict | None) -> dict | None:
 
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
                   hot_meta: dict | None = None, open_=None, min_files: int = 1,
-                  width: float = 1180.0, hot_b: dict | None = None, hot_meta_b: dict | None = None) -> dict:
+                  width: float = 1180.0) -> dict:
     """一个切面上的全部前端数据。open_ 是展开着的目录（不给就用 scan 算出的默认切面）；
     图、边的种类、hot 叠加、每个节点的文件 / 符号 / 文档，都按这个切面汇总。
     width：页面上图框有多宽——按它排版，宽屏上图铺满、少折行，而不是把 1180 宽的图放大"""
@@ -172,12 +168,9 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     # 同一个切面上短名撞了的（flask.app 和 flask.sansio.app 都叫 app）：补上父目录段，图上和面板里一样
     alias = _cut.disambiguate(idx, set(_cut.visible(v)) | set(frames))
     syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames, "alias": alias}
-    # 分层（纵轴）：叠了 run 就按这次实际发生的调用排（对比时两个 run 合起来），调用方在上；
+    # 分层（纵轴）：叠了 run 就按这次实际发生的调用排，调用方在上；
     # 静态 import 只作次要依据——基类回调子类、注册表、回调这些调用和 import 的方向是反的
-    rt_calls: dict[str, int] = {}
-    for h in (hot, hot_b):
-        for k, n in (_hot_on_cut(h, v["node_of"])[1] if h else {}).items():
-            rt_calls[k] = rt_calls.get(k, 0) + n
+    rt_calls = _hot_on_cut(hot, v["node_of"])[1] if hot else {}
     g = _layout.build(syn, min_files=min_files, width=width,
                       runtime_edges=[(*k.split("|"), n) for k, n in sorted(rt_calls.items())])
     mem, node_of = v["members"], v["node_of"]
@@ -229,32 +222,23 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             type_w[f"{na}|{nb}"] = type_w.get(f"{na}|{nb}", 0) + w
     # hot 叠加也按切面汇总；只在 runtime 出现、静态 import 图里根本没有的节点间调用——插件、
     # importlib、注册表——是静态分析的盲区，必须单独画出来，否则图会说谎。
-    # 对比（hot_b，另一个 run）：两边各自按切面汇总，节点和边上都带 [A, B] 两个次数；
-    # 只在 runtime 出现的边、「只看跑到的」都取两边的并集
-    hot_view, rt_only, cmp, dyn_only = None, [], None, []
+    hot_view, rt_only, dyn_only = None, [], []
     shown = {n["id"] for n in g["nodes"]}
     type_only = [[*k.split("|"), w] for k, w in sorted(type_w.items()) if set(k.split("|")) <= shown]
     if hot:
         hp, he, hd = _hot_on_cut(hot, node_of, syms_used)
         hot_view = {**hot, "packages": hp, "edges": he, "dyn": hd}
-        hpb, heb, hdb = _hot_on_cut(hot_b, node_of, syms_used) if hot_b else ({}, {}, {})
-        if hot_b:
-            ref_b = (hot_meta_b or {}).get("run_id", "?") + (f"@{hot_meta_b['phase']}" if (hot_meta_b or {}).get("phase") else "")
-            cmp = {"ref_b": ref_b, "meta_b": _meta_brief(hot_meta_b),
-                   "nodes": {n: [hp.get(n, 0), hpb.get(n, 0)] for n in set(hp) | set(hpb) if hp.get(n) or hpb.get(n)},
-                   "edges": {k: [he.get(k, 0), heb.get(k, 0)] for k in set(he) | set(heb) if he.get(k) or heb.get(k)},
-                   "dyn": {k: [hd.get(k, 0), hdb.get(k, 0)] for k in set(hd) | set(hdb)}}
-        dyn_only = _dyn_only(kinds, [(he, hd)] + ([(heb, hdb)] if hot_b else []))
-        for k in sorted(set(he) | set(heb)):
+        dyn_only = _dyn_only(kinds, he, hd)
+        for k in sorted(he):
             a, _, b = k.partition("|")
             if k not in kinds and a in shown and b in shown:
-                rt_only.append([a, b, max(he.get(k, 0), heb.get(k, 0))])
-    # hot 视图单独排版：只放跑到的节点（对比时两边任一跑到的），每个节点的层沿用总图，纵坐标含义不变、横向更紧凑
+                rt_only.append([a, b, he[k]])
+    # hot 视图单独排版：只放跑到的节点，每个节点的层沿用总图，纵坐标含义不变、横向更紧凑
     # 「跑到的」节点：这一段里有函数被调用进去的，加上这一段里任何一条 runtime 边（动态分派的也算）的两端。
     # 调用方不一定有「被调用」的次数：一直在跑的外层函数（case 脚本的 main 在上一个阶段就进去了）、
     # import 时执行的模块顶层（定义，不算调用）——少了它们，边就没有起点
-    ran = ({p for p, n in hot_view["packages"].items() if n} | set((cmp or {}).get("nodes") or {})
-           | {x for k in list(hot_view["edges"]) + list((cmp or {}).get("edges") or {}) for x in k.split("|")}) if hot_view else set()
+    ran = ({p for p, n in hot_view["packages"].items() if n}
+           | {x for k in hot_view["edges"] for x in k.split("|")}) if hot_view else set()
     g_hot = (_layout.build(syn, lane_of={n["id"]: n["lane"] for n in g["nodes"]},
                            lane_labels={r["i"]: r["label"] for r in g["lane_rows"]}, min_files=min_files, width=width,
                            only=ran)
@@ -272,7 +256,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
             "alias": alias, "edgeKinds": kinds, "runtimeOnlyEdges": rt_only, "dynOnlyEdges": dyn_only, "typeOnlyEdges": type_only,
-            "hot": hot_view, "hotMeta": hot_meta, "cmp": cmp, "phaseMarks": phase_marks,
+            "hot": hot_view, "hotMeta": hot_meta, "phaseMarks": phase_marks,
             "open": sorted(open_), "defaultOpen": idx.get("default_open") or [],
             "autoSplit": idx["repo"].get("auto_split") or []}
 
@@ -698,29 +682,6 @@ def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None)
                        "calls": sum(x["calls"] for x in items)}}
 
 
-def edge_compare(repo: Path, idx: dict, a: str, b: str, hot: dict | None, hot_b: dict | None) -> dict:
-    """对比时的边详情：A 的明细，每一项再带上 B 调了几次（calls_b）；只有 B 调到的符号补在后面
-    （calls 为 0）。两个 run 各算一遍 edge_detail 再按符号合，静态的部分两边一样。"""
-    d = edge_detail(repo, idx, a, b, hot)
-    if not hot_b:
-        return d
-    db = edge_detail(repo, idx, a, b, hot_b)
-    by = {it["sym"]: it for it in db["items"]}
-    for it in d["items"]:
-        itb = by.pop(it["sym"], None)
-        it["calls_b"] = itb["calls"] if itb else 0
-        it["runtime_b"] = itb["runtime"] if itb else []
-    # 只有 B 调到的：单独一组（only_b），计数也单独记——放进 A 的「动态分派」会说成「这次调到了」
-    for sym, itb in by.items():
-        if itb["calls"]:
-            d["items"].append({**itb, "status": "only_b", "calls": 0, "calls_b": itb["calls"], "runtime": [],
-                               "runtime_b": itb["runtime"]})
-    d["counts"]["calls_b"] = db["counts"]["calls"]
-    d["counts"]["only_b"] = sum(1 for it in d["items"] if it["status"] == "only_b")
-    d["has_runtime_b"] = True
-    return d
-
-
 def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
     """点开一条边：a、b 可以是目录、本层文件或单个文件节点。把两端底下每一对有依赖
     （静态的或 runtime 的）单元的明细合起来；同一个被引用的符号只列一次。"""
@@ -1101,8 +1062,6 @@ def publicize(pl: dict, home: str, keep: list[str]) -> dict:
     if isinstance(out.get("hotBy"), dict):
         out["hotBy"] = {r: {**v, "meta": meta_fix(v.get("meta"))} if isinstance(v, dict) else v
                         for r, v in out["hotBy"].items()}
-    if isinstance(out.get("cmp"), dict) and "meta_b" in out["cmp"]:
-        out["cmp"] = {**out["cmp"], "meta_b": meta_fix(out["cmp"]["meta_b"])}
 
     def u16(x: str) -> int:
         return len(x.encode("utf-16-le")) // 2
@@ -1157,7 +1116,7 @@ def publicize(pl: dict, home: str, keep: list[str]) -> dict:
 
 def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                    per_pkg: int = 10, lines: int = 30,
-                   total_budget: int = 14_000_000, others: list | None = None, compare: bool = False,
+                   total_budget: int = 14_000_000, others: list | None = None,
                    code: bool = True) -> dict:
     """单文件导出要的全部数据：图 + 代表符号的源码 + 尽量多的全文。
     code=False（site.export_site，源码从 GitHub 取）：不带符号片段、全文和共用的跳转目标表。
@@ -1166,8 +1125,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     剩下的额度才留给全文；这次 case 实际跑到的文件优先。
 
     others：别的 run [(hot, meta), …]——只带它们在导出切面上的节点、边次数和简要的 meta
-    （EMB.hotBy），页面上能在它们之间切换，但边详情里的调用明细只有主 run 的。
-    compare：主 run 和 others 的第一个做对比（EMB.cmp，边详情带 calls_b）。"""
+    （EMB.hotBy），页面上能在它们之间切换，但边详情里的调用明细只有主 run 的。"""
     # 同一个 run 给了两遍、或者和主 run 一样：只留一份（主 run 的那份是全的）
     main_ref = (hot_meta or {}).get("run_id", "") + (f"@{hot_meta['phase']}" if (hot_meta or {}).get("phase") else "")
     seen, uniq = {main_ref}, []
@@ -1177,8 +1135,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
             seen.add(ref)
             uniq.append((h, m))
     others = uniq
-    hb, mb = (others[0] if (compare and others) else (None, None))
-    p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta, hot_b=hb, hot_meta_b=mb)
+    p = graph_payload(repo, idx, hot=hot, hot_meta=hot_meta)
     hot_by = {}
     if others:
         v = _cut.view(idx, norm_open(idx, None))
@@ -1190,7 +1147,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
             rt = [[k.split("|")[0], k.split("|")[1], n] for k, n in sorted(he.items())
                   if k not in p["edgeKinds"] and k.split("|")[0] in shown and k.split("|")[1] in shown]
             hot_by[ref] = {"packages": hp, "edges": he, "dyn": hd, "unmapped": h.get("anon"),
-                           "runtimeOnlyEdges": rt, "dynOnlyEdges": _dyn_only(p["edgeKinds"], [(he, hd)]),
+                           "runtimeOnlyEdges": rt, "dynOnlyEdges": _dyn_only(p["edgeKinds"], he, hd),
                            "meta": _meta_brief(m)}
     # Ctrl+点击的目标（目标串 + 定义位置）全文件共用一张表，每个文件 / 片段只带 token：
     # 早先每个文件各带一份，同一个目标重复几百遍，占掉的额度够再内嵌一两百个文件
@@ -1213,9 +1170,9 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                 sources[s["key"]] = src
     edges = {}
     for a, b, _ in p["graph"]["edges"]:
-        edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
+        edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
     for a, b, _ in p["runtimeOnlyEdges"] + p["typeOnlyEdges"]:
-        edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
+        edges[f"{a}|{b}"] = edge_detail(repo, idx, a, b, hot)
     p.update({"sources": sources, "edges": edges,
               "search": search_index(idx), "xrefTargets": xtargets, "hotBy": hot_by})
     if not code:

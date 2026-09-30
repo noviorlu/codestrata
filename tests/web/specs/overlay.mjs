@@ -1,4 +1,4 @@
-// 运行叠加：跑到的边、只看跑到的、点边看调了哪些函数、换阶段、阶段的起点标记
+// 运行叠加：跑到的边、只看跑到的、点边看调了哪些函数、换阶段、阶段的起点标记、从运行菜单换 run
 import { clickEdge, drawnNodes, hash, hotEdges, sleep, waitRun } from '../lib.mjs';
 
 export default async function (t) {
@@ -39,4 +39,17 @@ export default async function (t) {
   const marks = await page.ev(`[...document.querySelectorAll('#g .pmark')].map(x => x.textContent)`);
   ok(marks.some(m => m.includes('loop') && m.includes('起点')), '图上标出 loop 阶段的起点 ' + JSON.stringify(marks));
   ok((await page.ev(`(document.querySelector('.pbound') || {}).textContent || ''`)).includes('s_loop'), '工具栏写明从 s_loop 开始');
+
+  // 从「运行」菜单换成另一个 run（B = offline）：叠加跟着换，地址里记下它
+  await page.click('#runbtn');
+  ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run^="${fx.b}"]')`), '运行菜单里有 B');
+  await page.click(`#runpop [data-run^="${fx.b}"]`);
+  ok(await page.wait(`CS.app.data.hotMeta && CS.app.data.hotMeta.run_id === '${fx.b}'`, 15000), '换成 B');
+  const hb = await hotEdges(page);
+  ok(hb['fakesvc.offline|fakesvc.work'] > 0 && !hb['fakesvc.truth|fakesvc.callee'], '图上换成 B 跑到的边 ' + JSON.stringify(hb));
+  ok((await hash(page)).includes(fx.b), '地址里记下 B');
+  await page.click('#runbtn');
+  ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run=""]')`), '再打开运行菜单');
+  await page.click('#runpop [data-run=""]');
+  ok(await page.wait(`!CS.graph.hot`, 15000), '选「静态图」：不叠任何 run');
 }

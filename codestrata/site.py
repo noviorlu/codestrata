@@ -197,7 +197,7 @@ def _clear(out: Path) -> None:
     (out / "index.html").unlink(missing_ok=True)
 
 
-def export_site(repo: Path, idx: dict, out: Path, *, hot=None, hot_meta=None, others=None, compare=False,
+def export_site(repo: Path, idx: dict, out: Path, *, hot=None, hot_meta=None, others=None,
                 per_pkg: int = 10, public: bool = False, home: str = "", keep: list[str] | None = None,
                 code_bases: list[str] | None = None, check_remote: bool = True, title: str = "") -> dict:
     """导出成一个目录（index.html + data/<版本>/）。返回摘要（给命令行打印）。"""
@@ -207,7 +207,7 @@ def export_site(repo: Path, idx: dict, out: Path, *, hot=None, hot_meta=None, ot
     info = github_origin(repo)
     bases = list(code_bases or CODE_BASES)
     pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=hot_meta, per_pkg=per_pkg,
-                                 others=others, compare=compare, code=False)
+                                 others=others, code=False)
     cand = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})
                   | {d["f"] for ds in (idx.get("docs") or {}).values() for d in ds})
 

@@ -35,16 +35,15 @@ window.CS = window.CS || {};
       var alt = this.run && EMB.hotBy && EMB.hotBy[this.run];
       // 在导出里选了「静态图」：不叠任何 run
       if (!this.run && EMB.hot && this.canSwitchRun)
-        return Promise.resolve(Object.assign({}, EMB, { hot: null, hotMeta: null, graphHot: null, runtimeOnlyEdges: [], dynOnlyEdges: [], cmp: null }));
+        return Promise.resolve(Object.assign({}, EMB, { hot: null, hotMeta: null, graphHot: null, runtimeOnlyEdges: [], dynOnlyEdges: [] }));
       if (!alt) return Promise.resolve(EMB);
       return Promise.resolve(Object.assign({}, EMB, {
         hot: { packages: alt.packages, edges: alt.edges, dyn: alt.dyn || {}, symbols: {}, files: {}, unmapped: alt.unmapped },
         hotMeta: alt.meta, graphHot: null, runtimeOnlyEdges: alt.runtimeOnlyEdges, dynOnlyEdges: alt.dynOnlyEdges || [],
-        cmp: null, _alt: true }));
+        _alt: true }));
     },
     canCut: false,
     run: '',
-    cmp: '',
     // 导出版能换的只有导出时带上的那几个 run
     canSwitchRun: !!(EMB.hotBy && Object.keys(EMB.hotBy).length),
     runs: function () {
@@ -81,7 +80,6 @@ window.CS = window.CS || {};
       if (open) q.push('open=' + encodeURIComponent(open.join(',')));
       if (w) q.push('w=' + Math.round(w));
       if (this.run) q.push('run=' + encodeURIComponent(this.run));
-      if (this.run && this.cmp) q.push('cmp=' + encodeURIComponent(this.cmp));
       return j('api/graph' + (q.length ? '?' + q.join('&') : ''));
     },
     canCut: true,
@@ -101,10 +99,8 @@ window.CS = window.CS || {};
     outline: function (f) { return j('api/outline?f=' + encodeURIComponent(f)); },
     edge: function (a, b) {
       return j('api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
-               + (this.run ? '&run=' + encodeURIComponent(this.run) : '')
-               + (this.run && this.cmp ? '&cmp=' + encodeURIComponent(this.cmp) : ''));
+               + (this.run ? '&run=' + encodeURIComponent(this.run) : ''));
     },
-    cmp: '',
     refs: function (t) { return j('api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     hasFile: function () { return true; },
     searchIndex: function () { return j('api/search-index'); },
@@ -126,8 +122,8 @@ window.CS = window.CS || {};
     var isStatic = !ds.run && EMB.hot && ds.canSwitchRun;       // 选了「静态图」：边详情里也不该有调用次数
     if (!E || !(isStatic || (ds.run && EMB.hotBy && EMB.hotBy[ds.run]))) return E;
     var items = E.items.filter(function (x) { return x.n_uses; }).map(function (x) {
-      return Object.assign({}, x, { runtime: [], calls: 0, calls_b: undefined, runtime_b: undefined, status: 'static' }); });
-    return Object.assign({}, E, { has_runtime: false, has_runtime_b: false, import_exec: 0,
+      return Object.assign({}, x, { runtime: [], calls: 0, status: 'static' }); });
+    return Object.assign({}, E, { has_runtime: false, import_exec: 0,
       note: isStatic ? '现在只看静态图，这里只列静态引用'
         : '导出的单文件只带了第一个 run 的调用明细：这个 run 在图上的次数是对的，这里只列静态引用',
       items: items, counts: { confirmed: 0, dynamic: 0, static: items.length, import_only: (E.import_only || []).length, calls: 0 } });

@@ -67,8 +67,6 @@ window.CS = window.CS || {};
     draw: function (svg, G, hot, extra) {
       extra = extra || {};
       this.G = G; this.hot = hot || null;
-      // 对比（另一个 run）：节点、边上带 [A, B] 两个次数，画三种颜色（只有 A 橙、只有 B 紫、两边都跑到前景色）
-      this.cmp = (extra && extra.cmp) || null;
       var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [], dynOnly = {}, rtKey = {};
       (extra.dynOnly || []).forEach(function (k) { dynOnly[k] = 1; });
       rtOnly.forEach(function (e) { rtKey[e[0] + '|' + e[1]] = 1; });
@@ -100,7 +98,7 @@ window.CS = window.CS || {};
 
       // 箭头是独立的 marker，不会跟着 stroke 变色，每种边色各备一个
       var defs = el('defs', {});
-      [['a', 'var(--edge)'], ['ah', 'var(--hot)'], ['ahb', 'var(--hotb)'], ['ahf', 'var(--ink)']].forEach(function (p) {
+      [['a', 'var(--edge)'], ['ah', 'var(--hot)']].forEach(function (p) {
         // userSpaceOnUse：箭头大小固定，不随线宽放大（默认按 stroke-width 缩放，粗的 runtime 边箭头会大得离谱）
         var m = el('marker', { id: p[0], viewBox: '0 0 8 8', refX: '7', refY: '4', markerUnits: 'userSpaceOnUse',
           markerWidth: '8', markerHeight: '8', orient: 'auto-start-reverse' });
@@ -150,13 +148,8 @@ window.CS = window.CS || {};
       });
       svg.appendChild(fg);
 
-      var hotPk = (hot && hot.packages) || {}, hotEd = (hot && hot.edges) || {}, cmp = this.cmp;
+      var hotPk = (hot && hot.packages) || {}, hotEd = (hot && hot.edges) || {};
       var hotDyn = (hot && hot.dyn) || {};
-      if (cmp) {                                   // 粗细、「跑到了」都按两边的较大值
-        hotPk = {}; hotEd = {};
-        Object.keys(cmp.nodes).forEach(function (k) { hotPk[k] = Math.max(cmp.nodes[k][0], cmp.nodes[k][1]); });
-        Object.keys(cmp.edges).forEach(function (k) { hotEd[k] = Math.max(cmp.edges[k][0], cmp.edges[k][1]); });
-      }
       this.hitPk = hotPk;
       // 「只看跑到的」也留下 runtime 边（含动态分派）的两端：调用方不一定有被调用的次数（一直在跑的外层函数、
       // import 时执行的模块顶层），少了它边就没有起点。和 payload 里 graphHot 的节点同一个口径
@@ -183,11 +176,8 @@ window.CS = window.CS || {};
       function add(src, dst, kind, hits, info) {
         var a = N[src], b = N[dst]; if (!a || !b) return;
         var px = P[src + '|' + dst], d = route(a, b, px[0], px[1]);
-        var ab = cmp ? (cmp.edges[src + '|' + dst] || [0, 0]) : null;
-        var dab = cmp ? ((cmp.dyn || {})[src + '|' + dst] || [0, 0]) : null;
-        var E = { a: src, b: dst, kind: kind, hits: hits, info: info, ab: ab,
+        var E = { a: src, b: dst, kind: kind, hits: hits, info: info,
                   dynOnly: kind !== 'dyn' && !!dynOnly[src + '|' + dst],
-                  side: ab ? (ab[0] && ab[1] ? 'both' : ab[0] ? 'a' : ab[1] ? 'b' : '') : '',
                   w: hits ? 1.2 + 2.2 * Math.log1p(hits) / Math.log1p(maxE) : 1.2 };
         E.halo = el('path', { d: d, class: 'halo' });
         E.gap = el('path', { d: d, class: 'gap' });   // 光晕中间垫一道底色，灰虚线在蓝底上才看得清
@@ -199,11 +189,10 @@ window.CS = window.CS || {};
              : kind === 'type' ? '只在 if TYPE_CHECKING: 里 import（仅类型）：运行时不存在，不算进架构高度'
              : (info.uses ? '用到对方 ' + info.uses + ' 个符号' : '只 import，没用到任何符号')
                + (info.dead ? '　·　' + info.dead + ' 个 import 没被引用' : ''))
-          + (ab ? '\nruntime 调用 A ' + ab[0] + ' / B ' + ab[1] : (hits ? '\nruntime 调用 ' + hits + ' 次' : ''))
+          + (hits ? '\nruntime 调用 ' + hits + ' 次' : '')
           + (E.dynOnly ? '\n跑到的调用全是动态分派：这条边上的 import / 引用这次都没跑到，跑到的调用不经过它们'
              : kind === 'dyn' ? ''
-             : dab && (dab[0] || dab[1]) ? '\n其中动态分派 A ' + dab[0] + ' / B ' + dab[1] + ' 次'
-             : !cmp && hotDyn[src + '|' + dst] ? '\n其中 ' + hotDyn[src + '|' + dst] + ' 次是动态分派（代码里看不到引用）' : '')
+             : hotDyn[src + '|' + dst] ? '\n其中 ' + hotDyn[src + '|' + dst] + ' 次是动态分派（代码里看不到引用）' : '')
           + (kind === 'type' ? '\n点击看 import 语句' : '\n点击看具体是哪些函数');
         E.x.appendChild(tip); E.tip = tip; E.tipBase = tip.textContent;
         E.x.onclick = function (ev) {
@@ -227,15 +216,15 @@ window.CS = window.CS || {};
 
       var ng = el('g', {}); svg.appendChild(ng); this.nodes = {};
       G.nodes.forEach(function (n) {
-        var hits = hotPk[n.id] || 0, nab = cmp ? (cmp.nodes[n.id] || [0, 0]) : null;
-        var side = nab ? (nab[0] && nab[1] ? ' both' : nab[0] ? ' warm' : nab[1] ? ' warmb' : ' cold') : (hot ? (hits ? ' warm' : ' cold') : '');
+        var hits = hotPk[n.id] || 0;
+        var side = hot ? (hits ? ' warm' : ' cold') : '';
         var g = el('g', { class: 'nd' + side, tabindex: '0', role: 'button', 'data-id': n.id });
         g.dataset.id = n.id;
         g.appendChild(el('rect', { x: n.cx - n.w / 2, y: n.cy - n.h / 2, width: n.w, height: n.h }));
         var t = el('text', { x: n.cx, y: n.cy - 3, class: 'nl', 'text-anchor': 'middle' });
         t.textContent = n.label; g.appendChild(t);
         var s = el('text', { x: n.cx, y: n.cy + 9, class: 'ns', 'text-anchor': 'middle' });
-        s.textContent = n.files + 'f · ' + n.classes + 'c' + (nab ? (hits ? ' · ' + nab[0] + '/' + nab[1] : '') : (hits ? (' · ' + hits) : ''));
+        s.textContent = n.files + 'f · ' + n.classes + 'c' + (hits ? ' · ' + hits : '');
         g.appendChild(s);
         if (n.expandable && CS.ds.canCut) {
           // 左上角的 ＋：在当前图上展开成子模块
@@ -573,8 +562,7 @@ window.CS = window.CS || {};
                  : !!s.sel && (E.a === s.sel || E.b === s.sel);
         // hot 视图里没被调用的静态边退到背景：要看的是这个 case 走过的路
         var lit = warm || dyn;
-        // 对比时：只有 A 跑到 = 橙（warm），只有 B = 紫（warmb），两边都跑到 = 前景色（both）
-        var tone = !lit ? '' : E.side === 'b' ? ' warmb' : E.side === 'both' ? ' both' : ' warm';
+        var tone = lit ? ' warm' : '';
         var cls = 'e ' + (dyn ? 'dyn' : E.kind) + (lit ? tone : (s.onlyHot ? ' bg' : ''))
                 + (keep && !mine ? ' dim' : '') + (mine ? ' hi' : '');
         // 时间顺序：排上名次的边换成按名次的颜色；没跑到的静态边退到背景；跑到了却没有时间的照原样
@@ -585,7 +573,7 @@ window.CS = window.CS || {};
         E.p.style.stroke = tc || '';
         E.p.style.strokeWidth = (lit ? E.w : 1.2) + (mine ? 1 : 0);
         E.p.setAttribute('marker-end', 'url(#' + (tc ? self._marker(tc)
-          : !lit ? 'a' : E.side === 'b' ? 'ahb' : E.side === 'both' ? 'ahf' : 'ah') + ')');
+          : !lit ? 'a' : 'ah') + ')');
         E._tc = tc && show ? tc : null;
         E._mine = mine;
         [E.p, E.x, E.halo, E.gap].forEach(function (x) { x.style.display = show ? '' : 'none'; });
