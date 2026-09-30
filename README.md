@@ -145,7 +145,7 @@ Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 - **run 不能重建**：`.codestrata/runs/` 是唯一一份，删了就没了。
 - **自动测试都在 CPU 上的假服务上跑**，没在 GPU 录制上验收过。
 
-完整列表见 [docs/usage.md](docs/usage.md#已知限制)；现在的状态和计划见 [docs/STATUS.md](docs/STATUS.md)。
+完整列表见 [docs/usage.md](docs/usage.md#已知限制)。
 
 ## 和其他工具的区别
 

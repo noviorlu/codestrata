@@ -1,6 +1,6 @@
 # 架构
 
-代码怎么组织、数据怎么流，只写现状。定位和已知问题见 `docs/STATUS.md`；行数是 2026-09-29 的 `wc -l`。
+代码怎么组织、数据怎么流，只写现状。行数是 2026-09-29 的 `wc -l`。
 
 ## 组成
 
@@ -90,7 +90,7 @@ flowchart LR
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版） |
 | `web/home.js` | 389 | 主菜单页面（`home.html`，不走 ds.js） |
 
-已知的结构问题（`docs/TODO.md` P2 里有对应条目）：
+已知的结构问题：
 - **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`）、坐标（`layout`）、源码（`highlight`）、
   交叉引用（`xref`），还有自己的一段 `ast` 分析（`_code_facts`、`_call_form`）。
 - 模块之间不用下划线开头的名字（`tests/test_package.py` 的 `test_no_cross_module_private_names` 盯着）。
@@ -135,7 +135,7 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 ## 测试
 
 不依赖 pytest，每个文件自带运行器（`tests/common.py` 的 `run_tests`，后面跟几个词就只跑名字里带这些词的用例），
-缺工具的自动跳过。提交前全跑（`CLAUDE.md`）：
+缺工具的自动跳过。提交前全跑：
 
 ```bash
 .venv/bin/python tests/test_runs.py      # 约 1.5–2 分钟

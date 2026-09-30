@@ -1,9 +1,9 @@
 # 设计决定
 
 这一页只收**现在代码里仍然成立**的决定，每条一句话的标题 + 四项：决定、为什么、放弃的方案、在哪。
-改掉了的决定直接删掉，不在这里写历史（历史在 git log 和归档的设计稿里）。
+改掉了的决定直接删掉，不在这里写历史（历史在 git log 里）。
 
-- 「为什么」只写记录过的理由：代码注释、当时的模块解读（已删除，在 git 历史里）、归档的设计稿 `docs/archive/runs-design.md`（M1–M8 的设计与实现记录）、旧 README。没有记录的写「理由未记录」，不补猜。
+- 「为什么」只写记录过的理由：代码注释、早期的设计稿和模块解读、旧 README。没有记录的写「理由未记录」，不补猜。
 - 「在哪」写文件和函数，不写行号（行号会漂）。
 - 数字（实测、阈值）都来自上面这些出处或代码本身；标「实测」的是在 vllm-omni 或测试里量过的。
 
@@ -172,7 +172,7 @@
   顺着 C3 MRO 找继承来的方法；`文件路径:qualname` 按解释器的规则现算），写错立刻报。
 - 为什么：第一次录真 GPU 的离线示例是一条阻塞的 python 命令，shell 看不到加载什么时候完、没法写 PHASE；事件数据显示 74 s 里 `Omni(...)` 占 60.5 s、
   `generate` 只有 1.84 s，启动和推理跑到的函数几乎不重叠（跨文件被调方只在启动 215 个、只在推理 202 个、共有 23 个），混成一段就分不清。
-  用户要求分段写在 codestrata 的命令上、不改 sh。只在第一次见到键时检查，热路径零开销；标记保证后来才第一次进这个函数的进程不会把阶段切回去；
+  分段写在 codestrata 的命令上、不改 sh。只在第一次见到键时检查，热路径零开销；标记保证后来才第一次进这个函数的进程不会把阶段切回去；
   停 0.1 秒让工作进程在 generate 期间的活都算进 generate（`test_phase_at`）。
 - 放弃的方案：只靠 case 脚本写 PHASE（仍然支持，两种可以一起用）；按命令行里的先后切。
 - 在哪：`trace/`（analysis / hook） 的 `_trig_check`、`_fire`、`resolve_phase_at`、`_qualnames`、`_inherited`、`fired_phases`、`merge_phase_log`。
@@ -185,7 +185,7 @@
 - 决定：静态分析只有一份（scan 时整份替换）；每次 trace 都是 `.codestrata/runs/<YYYYMMDD-HHMMSS-case>/` 下一个新目录，同名 case 重录不覆盖。
   除了 `runs.remove` 和 `runs.remove_events`，没有代码删 run 里的东西；`rm` 只认完整的 run id，还在录的不删。
   `.codestrata/` 里写 `.gitignore`（`*`）和一行 README.txt；runs/ 可以是软链；scan 跳过以点开头的目录。
-- 为什么：一次录制往往是几分钟 GPU（起服务、加载模型、跑一段对话）。用户原话：「今天我跑 minicpm、明天我跑 qwen……只需要跑一次就能复用」。
+- 为什么：一次录制往往是几分钟 GPU（起服务、加载模型、跑一段对话）。今天录 MiniCPM、明天录 Qwen，每个都应该录一次就能反复用。
   case 名会解析到「最新一次录完的」，拿它删东西太容易删错。旧说法「`.codestrata` 可随时重建」可能让以后的会话 `rm -rf`，所以靠软链、README.txt、
   README 三道防线；`.codestrata/` 不进 git 是因为实测 vllm-omni 的 `git status` 一直显示它。
 - 放弃的方案：每个 case 一份 `trace-<case>.json`、重录覆盖（第一次读到时自动迁成 run）；`rm` 接受 case 名。
@@ -239,8 +239,8 @@
 ### 复刻命令存录制时原样的命令，而不是事后拼
 - 决定：`main()` 在解析参数之前把原样 argv（入口脚本取绝对路径）和当前目录记成 run.json 的 `invocation`，`cmd_trace` 另记白名单里的继承环境
   `env_inherited`；`rerun_command` 给 `cd <目录> && <原样命令>`。只有没存 `invocation` 的老 run 才按参数拼。
-- 为什么：按参数拼的漏掉什么就少什么：当时在哪个目录跑、相对路径指到哪、codestrata 装在哪、shell 里 export 了什么。起因是用户要求「录 runtime 时把执行的命令存进 UI，
-  让人能复刻」。`test_rerun_command_reproduces` 在 / 下照抄这条命令，再录出同样分段的 run。
+- 为什么：按参数拼的漏掉什么就少什么：当时在哪个目录跑、相对路径指到哪、codestrata 装在哪、shell 里 export 了什么。目标是页面上能拿到一条照抄就能
+  复刻的命令。`test_rerun_command_reproduces` 在 / 下照抄这条命令，再录出同样分段的 run。
 - 放弃的方案：case 定义文件（cases.toml）：目标是录一次复用，不是方便重录，也省掉 TOML 和对 3.11 的依赖；变体就是另一个 `--case` 名加 `--env` / `--tag`。
 - 在哪：`__main__.py` 的 `main`、`cmd_trace`；`runs.py` 的 `new_run`、`inherited_env`、`rerun_command`、`fmt_seconds`。
 
@@ -383,24 +383,23 @@
 ### 读代码的功能冻结，只修 bug
 - 决定：代码窗口、Ctrl+点击跳转、文件内查找、搜索栏、浏览器端高亮、单文件导出、GitHub 静态站、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。
   核心（边上的静态 × runtime、录制、叠加、时间轴）继续做深。
-- 为什么：定位定为「仓库的运行路径工具」（2026-09-29 采纳外部评价后定的；2026-09-30 用户说暂时不需要对比，对比功能删掉了，见「不做两次运行的对比」）；用户需求落在冻结区时先指出来、问要不要破例，不默默扩张。
+- 为什么：定位是「仓库的运行路径工具」，真正别人没有的是运行时叠加；跳转定义这类事 pyright / jedi 和用户手边的编辑器做得更好，自己再造一个是往「浏览器里的 IDE」横向扩张。
 - 放弃的方案：继续把 codestrata 做成通用的读代码工具。
-- 在哪：`docs/STATUS.md` 的「定位」「范围」；`CLAUDE.md` 的「范围」。涉及的代码：`web/viewer.js`、`web/findbar.js`、`web/search.js`、`web/hl.js`、`xref.py`、`site.py`、`app.py`。
+- 在哪：`web/viewer.js`、`web/findbar.js`、`web/search.js`、`web/hl.js`、`xref.py`、`site.py`、`app.py`。
 
 ### 不做模块讲解层，重心是运行路径怎么走
 - 决定：不提供「给每个模块写讲解」的功能（原来的解读层：tasks / pack / note / check、`notes/` 目录、页面右栏的解读和节点上的徽标都去掉）。
   serve 只读，不接受写。
-- 为什么：用户会拿录下来的运行路径（这次调用按什么顺序走过哪些模块、两次差在哪）去问 agent，而不是读逐模块的讲解；模块讲解本身不是重点，
-  重点是运行路径怎么走（用户 2026-09-30 的判断）。实际代价也大：本仓库 19 份讲解钉了 1907 处行号引用，一次拆分要搬 401 处，
-  每轮刷新要花几十万 token，写出来的东西人读不下去（外部评价也点了这一条）。
+- 为什么：使用方式是拿录下来的运行路径（这次调用按什么顺序走过哪些模块）去问 agent，而不是读逐模块的讲解；重点是运行路径怎么走。实际代价也大：本仓库 19 份讲解钉了 1907 处行号引用，一次拆分要搬 401 处，
+  每轮刷新要花几十万 token，写出来的东西人读不下去。
 - 放弃的方案：保留功能、只给本仓库的讲解瘦身；引用改锚定到函数上。
-- 在哪：`docs/STATUS.md` 的「定位」；原来的实现在 git 历史里（`codestrata/notes.py`，删于 2026-09-30）。
+- 在哪：原来的实现在 git 历史里（`codestrata/notes.py`，删于 2026-09-30）。
 
 ### 不做两次运行的对比（暂时）
 - 决定：去掉对比功能（`cmp=`、`graph --compare`、图上 A 橙 / B 紫 / 两边前景色、边详情里 B 的次数）。一次只叠一个 run；
   换 run 照常（运行菜单、`graph --hot A --hot B` 导出里切换）。
-- 为什么：用户 2026-09-30 判断现在不需要对比，重心是看清一次运行的路径怎么走；留着就要维护一套 A / B 双份的汇总和界面。
-  另外它本身也答不出「两次差在哪」：差别在模块内部，界面只到模块和跨模块的边（问题记录 09-30）。
+- 为什么：现在的重心是看清一次运行的路径怎么走；留着就要维护一套 A / B 双份的汇总和界面。
+  另外它本身也答不出「两次差在哪」：差别在模块内部，界面只到模块和跨模块的边。
 - 放弃的方案：保留冻结；做成逐函数的差异清单。以后要做，按「两份逐函数计数做差」重新设计，而不是恢复原来的三种颜色。
 - 在哪：原来的实现在 git 历史里（删于 2026-09-30）。
 
@@ -416,9 +415,9 @@
   也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块，`payload.py` 不再加东西。
 - 为什么：driver 的信号处理器要一直装到收尾做完，收尾中途按 Ctrl+C 才不会留下半截的 run——所以用回调而不是返回后再收尾。写 run、删 run 的代码全在 `runs` 里，
   审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.edge_times`；代价是 spans/ 的格式两边各认一份（`test_seq_edge_times` 兜底）。
-  `payload.py` 已经是 god module（STATUS 已知问题）；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
+  `payload.py` 已经是 god module（见 ARCHITECTURE「已知的结构问题」）；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
 - 放弃的方案：`driver.run` 返回后由调用方收尾。
-- 在哪：`trace/driver.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import；`CLAUDE.md` 的「任务的生命周期」。
+- 在哪：`trace/driver.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import。
 
 ### 主菜单是另起的进程，按钮背后是 CLI 子进程
 - 决定：`codestrata app` 不在自己进程里调 scan / trace / serve 的函数：扫描、录制是 `python -u -m codestrata scan|trace …` 子进程，每个打开的仓库一个

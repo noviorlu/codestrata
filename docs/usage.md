@@ -568,4 +568,4 @@ GET  /code/<path>?l=N         整个文件，带行号锚点
 - 测试怎么跑、各自覆盖什么、代码怎么组织：[ARCHITECTURE.md](ARCHITECTURE.md)。
 - 设计决策和理由，包括踩过的坑（调用栈进出都要订阅、按文件名缓存、忽略 SIGINT 的进程）和负面结论（SCC 缩点不能用来分层）：
   [design/decisions.md](design/decisions.md)。
-- 现在的状态、范围和已知问题：[STATUS.md](STATUS.md)。
+- run 目录的格式（接别的语言、别的录制端用）：[design/run-format.md](design/run-format.md)。
