@@ -144,6 +144,26 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd .pmark.start{fill:var(--pstart)}
 .nd .pmark.end{fill:var(--pend)}
 .pbound{margin-left:10px;font-size:12px;color:var(--muted)}
+/* 时间轴：阶段按钮（色块对应条上的色段）+ 时间条（选中的范围是蓝框，两头是把手）；timebar.js */
+.tph .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.sw.p0{background:var(--cool)}.sw.p1{background:var(--hot)}.sw.p2{background:var(--hotb)}.sw.p3{background:var(--gap)}
+.tbar{position:relative;flex:1 1 260px;min-width:200px;max-width:600px;height:22px;border:1px solid var(--line);
+  border-radius:5px;background:var(--sunk);overflow:hidden;cursor:pointer;touch-action:none;user-select:none}
+.tbar.drag{cursor:crosshair}
+.tbar [hidden]{display:none}
+.tseg{position:absolute;top:0;bottom:0;padding-left:4px;border-right:1px solid var(--card);overflow:hidden;
+  white-space:nowrap;font:10.5px/20px ui-monospace,monospace}
+.tseg i{font-style:normal;pointer-events:none}
+.tseg.p0{background:var(--cool-bg);color:var(--cool)}.tseg.p1{background:var(--hot-bg);color:var(--hot)}
+.tseg.p2{background:var(--hotb-bg);color:var(--hotb)}.tseg.p3{background:var(--sunk);color:var(--gap)}
+.tseg.nc{background:var(--card);color:var(--faint);cursor:default}
+.tseg.on{font-weight:700}
+.tsel{position:absolute;top:0;bottom:0;border:1.5px solid var(--sel);border-radius:3px;cursor:grab;
+  background:color-mix(in srgb,var(--sel) 16%,transparent)}
+.th{position:absolute;top:-1px;bottom:-1px;width:7px;background:var(--sel);cursor:ew-resize}
+.th.l{left:-4px}.th.r{right:-4px}
+.th:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+.tlab{font:11.5px/1 ui-monospace,monospace;color:var(--muted);white-space:nowrap}
 /* 时间顺序：上了色的边（颜色写在 style 上）、中点的序号牌、图例的渐变条 */
 .tord{pointer-events:none}
 .tord .tn text{font-size:9.5px;font-weight:700;fill:var(--tmtext)}

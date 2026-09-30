@@ -50,7 +50,7 @@
 | 过期判断和谁比 | 和 index 比（scan 新写 `file_sha`）；老 index 没有这个字段时退回比工作区 | 叠加用的行号来自 index |
 | 不在 index 里的文件 | 标 `outside`，不叠加，也不算过期 | 实测：examples 下的 demo，以及只在安装包里的 `_version.py` |
 | qualname 回退 | 在 `to_package_graph` 之前改写键，用 `(f, qualname) → 符号键` 查 | 改动面小；`__init__.py` 里的函数也能对上 |
-| REF 语法 | `完整 id \| case`，外加可选的 `@阶段` | 够用；id 前缀和日期冲突 |
+| REF 语法 | `完整 id \| case`，外加可选的 `@阶段`，或 `@t=起-止`（微秒，时间轴上拖出来的时间段，2026-09-29 加） | 够用；id 前缀和日期冲突。时间段和阶段放在同一个位置，加载、缓存、地址栏都照走 |
 | `runs` 子命令的形式 | `codestrata runs <repo> <动词>`，两者都必填 | 避免可省略的 repo 把动词当成自己 |
 | 迁移 | 自动做；用 rename 认领；老文件压成 gz 留在 `legacy/` | 幂等，可以并发，不丢数据 |
 | run 放在哪 | `.codestrata/runs/`，可以是软链；vllm-omni 在迁移之前先建软链，指向 `duplex-agents/vllm-omni/runs/` | `rm -rf` 只删链接本身；src/ 是上游的 clone |
@@ -403,6 +403,12 @@ GET /api/seq/find?run=REF&a=&b=&after=             M5  一条边下一次出现�
 ### 6.1 run 选择器（M4）
 
 - **工具栏 `.bar` 加一段**：`运行 [▼]  阶段 [全部|start|serving|shutdown]`。M5 再加 `模块图 | 时序图`，M7 再加 `对比 [无 ▼]`。
+  > **2026-09-29**：阶段按钮并进了时间轴（`web/timebar.js`）：`时间 [全部|start|serving|shutdown] [━━条━━]`。
+  > 条上是各阶段的色段（`meta.timeline`，`seq.phase_segments` 算），蓝框是选中的范围。录了事件的 run
+  > 能拖把手 / 平移 / 新拉一段，选任意时间段 `@t=起-止`：次数由 `seq.window_counts` 按窗口里开始的 span
+  > 现算（只有跨文件的调用；合成一行的连续调用按次数均匀摊在它盖住的时间上，`seq._calls_in`），「时间顺序」的边也按这个窗口算。
+  > 时间轴的终点取最后一条 span 的结束、最后一次切阶段、run 的时长里最大的（`seq.run_end`）。拖到和整个 run、或只有一段的阶段差不到
+  > 4 像素就当成它。滚轮缩放、Shift+滚轮平移；点阶段按钮放大到它（前后各留 25%）。
 - **下拉列表**：
   - 按 case 分组；
   - 每一行显示 tags、日期、git 短哈希、活跃进程数、各阶段的函数数、`⚠ 改过 12 个文件`，录了事件的再加一个「时序」标记；

@@ -4,7 +4,7 @@ target: codestrata.events
 kind: package
 code_sha: a99a4f3e4107a4ce
 status: draft
-refs: runs.py:349@dcfcecf7,events.py:1@2c6ba816,trace.py:222@1d353c75,trace.py:234@b260cb52,runs.py:446@1c2edb45,runs.py:447@fe850b3d,runs.py:891@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:190@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:239@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:232@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,seq.py:128@a5d4736d,seq.py:54@f794f819,events.py:166@9e27b77d
+refs: runs.py:350@dcfcecf7,events.py:1@2c6ba816,trace.py:222@1d353c75,trace.py:234@b260cb52,runs.py:447@1c2edb45,runs.py:448@fe850b3d,runs.py:909@4b07558f,events.py:212@4a27af2c,events.py:89@d6a1c510,events.py:90@2923c6fd,events.py:46@1e268470,events.py:86@694758bc,events.py:133@4dc922c2,events.py:155@3ffeef37,events.py:230@e0f60905,events.py:59@f481dd39,trace.py:190@3ae807b8,events.py:61@39e08d8e,events.py:98@146cc466,events.py:101@931d6e12,events.py:117@84e62137,events.py:112@6a1a11d0,events.py:114@32f9c7ef,events.py:110@2e733f31,events.py:125@41c69a8a,events.py:129@41c69a8a,trace.py:239@5cea0e5e,events.py:148@11981dd3,events.py:141@a086712f,events.py:171@1cdd9bdf,events.py:189@c28c5074,trace.py:232@d683aaef,events.py:179@ec2a9567,events.py:205@736f971c,events.py:214@8c5549f2,events.py:222@4c177812,seq.py:210@87dba17c,seq.py:55@f794f819,seq.py:260@1730468e,events.py:166@9e27b77d
 ---
 
 ## 是什么
@@ -18,14 +18,14 @@ refs: runs.py:349@dcfcecf7,events.py:1@2c6ba816,trace.py:222@1d353c75,trace.py:2
 - a / b 是调用方 / 被调方在 keys.json 里的下标，键的形式是 rel:firstlineno（模块顶层和 3.12 泛型的定义帧是 rel:0）；登记行丢了的键指到 "?"。调用方还可能是 case 自己的代码（Flask 视图这类被仓库回调的函数），键是 <外部代码>/文件名:行，不在 index 里，`seq` 把它当作映射不到的一端（trace 那边的 `_case_rel`）。
 - rep 是第一级折叠合了几次；n_susp 是挂起了几次，大于 0 就是 async 的 span。
 
-整个模块是一条流水线：`parse`（读一个日志）→ `pair`（配成 span）→ `fold`（第一级折叠）→ `build`（把整个 run 拼起来并写出），`read_spans` 再把写出的 span 读回来。调用方只有 runs：`finalize` 和 `merge_run` 都经 `_build_events`（runs.py:349）进来。
+整个模块是一条流水线：`parse`（读一个日志）→ `pair`（配成 span）→ `fold`（第一级折叠）→ `build`（把整个 run 拼起来并写出），`read_spans` 再把写出的 span 读回来。调用方只有 runs：`finalize` 和 `merge_run` 都经 `_build_events`（runs.py:350）进来。
 
 日志的行格式写在模块 docstring 里（events.py:1）。H 是文件头（pid、t0_ns、ppid），N 登记线程，K 登记键，C 是调用，R 是返回或异常展开，Y 是挂起，S 是恢复，T 表示到了行数上限。C/R/Y/S 的时间是相对这个映像 t0 的微秒，第三个数是 span 号。
 
 ## 为什么这样切
 **录制端只管记，配对放到事后做。** hook 跑在被 trace 的程序里，每一次跨文件调用都要付它的开销，所以它只做最少的事：C 时分配 span 号，按 id(帧) 记进 `_xf`；R / Y / S 时按帧找回同一个 span 号写出去（`_ev_call` 在 trace.py:222，`_ev_mark` 在 trace.py:234）。depth、父子关系、折叠都在这里算，算法以后要改，也不用重录。
 
-**span 是派生数据，原始日志才是原件。** 收尾时 `_pack_all` 先把 ev-*.log 单独打进 events/raw.tar.gz（runs.py:446），不和 parts.tar.gz 混在一起，然后才调这里整理（runs.py:447）。整理抛了异常，只在 run.json 的 events 摘要里记一个 error，计数和 status 都不受影响。`runs merge` 从 raw.tar.gz 和散着的 parts/ev-*.log 的并集重建（runs.py:891）。重建出来的必须和收尾时一样（`tests/test_runs.py` 里的 test_events_fake_service 会比对），所以 `build` 的输出是确定的：文件按名字排序处理，键表按第一次出现的顺序编号，gzip 写 mtime=0（events.py:212）。
+**span 是派生数据，原始日志才是原件。** 收尾时 `_pack_all` 先把 ev-*.log 单独打进 events/raw.tar.gz（runs.py:447），不和 parts.tar.gz 混在一起，然后才调这里整理（runs.py:448）。整理抛了异常，只在 run.json 的 events 摘要里记一个 error，计数和 status 都不受影响。`runs merge` 从 raw.tar.gz 和散着的 parts/ev-*.log 的并集重建（runs.py:909）。重建出来的必须和收尾时一样（`tests/test_runs.py` 里的 test_events_fake_service 会比对），所以 `build` 的输出是确定的：文件按名字排序处理，键表按第一次出现的顺序编号，gzip 写 mtime=0（events.py:212）。
 
 **配对按 span 号，不按栈。** 同一线程里两个 asyncio 协程交错执行时，先开始的不一定先结束，按栈顶配会配反（truth.py 的 s_async 就是这个场景）。hook 已经把 R / Y / S 对到了 span 号上，`pair` 里的栈（active）只用来算 depth 和父 span，不参与配对。
 
@@ -80,10 +80,10 @@ refs: runs.py:349@dcfcecf7,events.py:1@2c6ba816,trace.py:222@1d353c75,trace.py:2
 
 ### 「时间顺序」（`seq`）读什么
 `seq` 不 import 这个模块，直接读写出的文件：
-- **index.json 的 chunks**：第一次请求时把全部块解压、读一遍（`_pairs`，seq.py:128；每块一次 json.loads，`_chunk`，seq.py:54），聚合成每对键的首末时刻和次数，缓存的是聚合结果、不是块。各块 t1_us 里最大的当作 run 的终点，最后一个阶段开到那里。不再按时间窗挑块。
+- **index.json 的 chunks**：按阶段看时，第一次请求把全部块解压、读一遍（`_pairs`，seq.py:210；每块一次 json.loads，`_chunk`，seq.py:55），聚合成每对键的首末时刻和次数，缓存的是聚合结果、不是块。各块 t1_us 里最大的是 run 终点的候选之一：`seq.run_end` 在它、最后一次切阶段、run.json 的 duration_s 里取最大的，最后一个阶段开到那里，页面时间轴的终点也是它——只看 span 的话，被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回、没有 span，最后一个阶段会倒着走；index.json 读不出来时 `run_end` 只是不算它。在时间轴上拖出一段时间时，才按块的 t0_us / t1_us 跳过和这段时间不重叠的块（seq.py:260，算次数的 `seq.window_counts` 也一样）：这里写块前把每个 pid 的行按开始时刻排好（events.py:205），t0_us 是第一行的开始、t1_us 是块里最晚的结束，块里每一次调用的开始（折叠行摊开之后也一样）都落在这两个数之间，跳过的块里不会有这段时间里的调用。
 - **index.json 的 truncated**：原样交给页面，图例上加 ⚠。index.json 的 procs 现在没人读（原来给时序图画派生箭头）。
 - **keys.json**：keys 用来把 a / b 经 rel → 单元 → `node_of` 映射到切面上的节点，两端落在不同节点的才算；"?" 和 <外部代码>/… 映射不到，不算。threads 仍读进来，但没人用了。
-- **行本身**：只用 t0、dur、a、b、rep——rep 大于 1 的折叠行，最后一次调用按这一行的结束算；tid、depth、n_susp 不用。
+- **行本身**：只用 t0、dur、a、b、rep——rep 大于 1 的折叠行只记了第一次的开始和整行的结束，`seq._calls_in` 把 rep 次调用均匀摊在 [t0, t0 + dur] 上，最后一次的开始就是这一行的结束；没返回的（dur 为 -1）整行算在开始。tid、depth、n_susp 不用。
 - 时间轴和 run.json 里阶段的 t_us 是同一个，「serving 阶段」直接就是一个时间窗（test_events_fake_service 就是这么取的）。
 
 `read_spans` 一次读回全部块（或某个 pid 的全部块），现在只有测试在用；读和缓存都在 `seq` 里。

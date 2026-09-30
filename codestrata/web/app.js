@@ -366,7 +366,7 @@ window.CS = window.CS || {};
       this._writeHash();
       this.closeRunPop();
       var p = this.setCut(this.curOpen()), mine = this._cutSeq;
-      document.getElementById('prog').textContent = id ? '叠加 run ' + id + (phase ? ' @' + phase : '') + '…' : '重新汇总…';
+      document.getElementById('prog').textContent = id ? '叠加 run ' + id + (phase ? ' @' + CS.timebar.label(phase) : '') + '…' : '重新汇总…';
       return p.then(function (ok) {
         // 换不过去（run 被删了、还没有计数）：退回原来那个，免得之后取边、引用、输入包用的是另一个 run
         if (!ok && self._cutSeq === mine) {
@@ -444,9 +444,9 @@ window.CS = window.CS || {};
       });
     },
 
-    /* 对比的阶段跟着 A：A 看全部就比全部；A 看某个阶段、B 也有同名的就比它；B 没有就比 B 的全部 */
+    /* 对比的阶段跟着 A：A 看全部就比全部；A 看某个阶段、B 也有同名的就比它；B 没有、A 选的是时间段就比 B 的全部 */
     _cmpPhase: function (x, phase) {
-      if (!phase) return '';
+      if (!phase || CS.timebar.parse(phase)) return '';          // 时间段：两次 run 的时刻对不上，比 B 的全部
       return (x.phases || []).some(function (p) { return p.name === phase; }) ? '@' + phase : '';
     },
 
@@ -487,26 +487,28 @@ window.CS = window.CS || {};
       b.title = !CS.ds.canSwitchRun ? '导出的单文件固定叠这一个（或不叠）；要换请用 codestrata serve'
         : m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
       var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
-      var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
       this.cmpBar();
-      if (!m || phases.length < 2 || !CS.ds.canSwitchRun || this.runListEmbedded) { pc.innerHTML = ''; return; }
-      var at = Object.create(null), hook = Object.create(null);
+      // 时间轴：阶段按钮 + 时间条（录了时序事件的还能在条上拖出任意一段时间；老 run 不知道多长就只有按钮）
+      var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
+      if (phases.length < 2) phases = [];                       // 没分阶段：只剩全部 / 拖时间段
+      var canDrag = !!(m && m.end_us) && this._runHasEvents();
+      if (!m || !(phases.length || canDrag) || !CS.ds.canSwitchRun || this.runListEmbedded) { pc.innerHTML = ''; return; }
+      var at = Object.create(null), hook = Object.create(null), tips = {};
       (m.phase_at || []).forEach(function (t) { at[t.name] = t; });
       (m.phase_log || []).forEach(function (x) { if (x[2] === 'hook') hook[x[0]] = 1; });
-      pc.innerHTML = '<span class="lbl">阶段</span>' + [{ name: '' }].concat(phases).map(function (p) {
-        return '<button class="chip" data-ph="' + esc(p.name) + '" aria-pressed="' + ((m.phase || '') === p.name) + '" title="'
-          + (p.name ? '只看 ' + esc(p.name) + ' 这一段' + (p.n_funcs != null ? '（' + p.n_funcs + ' 个函数）' : '')
-             + (at[p.name] && hook[p.name] ? '；从第一次进入 ' + esc(at[p.name].qualname) + ' 开始' : '') : '各阶段加在一起')
-          + '">' + (p.name ? esc(p.name) : '全部') + '</button>';
-      }).join('');
-      // 选了阶段：写明从哪个函数开始、到哪个函数结束（图上对应的节点标成绿 ▶ / 红 ■）
-      var b = this.phaseBounds();
-      if (m.phase)
-        pc.innerHTML += '<span class="pbound"><b class="ps">▶ 起点</b> ' + (b.start ? esc(b.start.qualname) : '程序开始')
-          + '　<b class="pe">■ 终点</b> ' + (b.end ? esc(b.end.qualname) + '（切到 ' + esc(b.end.name) + '）' : '程序结束') + '</span>';
-      [].forEach.call(pc.querySelectorAll('[data-ph]'), function (x) {
-        x.onclick = function () { if ((m.phase || '') !== x.dataset.ph) self.selectRun(m.run_id, x.dataset.ph); };
+      phases.forEach(function (p) {
+        tips[p.name] = (p.n_funcs != null ? '（' + p.n_funcs + ' 个函数）' : '')
+          + (at[p.name] && hook[p.name] ? '；从第一次进入 ' + at[p.name].qualname + ' 开始' : '');
       });
+      CS.timebar.render(pc, { run: m.run_id, names: phases.map(function (p) { return p.name; }),
+                              segs: phases.length ? m.timeline || [] : [], end: m.end_us || 0,
+                              phase: m.window ? '' : m.phase || '', window: m.window, canDrag: canDrag, tips: tips,
+                              onSelect: function (ref) { self.selectRun(m.run_id, ref); } });
+      // 选了阶段：写明从哪个函数开始、到哪个函数结束（图上对应的节点标成绿 ▶ / 红 ■）
+      var bd = this.phaseBounds();
+      if (m.phase && !m.window)
+        pc.insertAdjacentHTML('beforeend', '<span class="pbound"><b class="ps">▶ 起点</b> ' + (bd.start ? esc(bd.start.qualname) : '程序开始')
+          + '　<b class="pe">■ 终点</b> ' + (bd.end ? esc(bd.end.qualname) + '（切到 ' + esc(bd.end.name) + '）' : '程序结束') + '</span>');
     },
 
     /* 「时间顺序」开关只在：serve（导出版没带时序数据）、叠着一个 run、它录了时序事件、不在对比 */
@@ -551,7 +553,7 @@ window.CS = window.CS || {};
        （带 node：落在当前切面的哪个节点上）或 null。没选阶段（全部）时 start / end 都是 null */
     phaseBounds: function () {
       var d = this.data, m = d && d.hot && d.hotMeta, marks = (d && d.phaseMarks) || [];
-      if (!m || !m.phase) return { start: null, end: null };
+      if (!m || !m.phase || m.window) return { start: null, end: null };
       var by = Object.create(null), order = (m.phase_log || []).map(function (x) { return x[0]; });
       marks.forEach(function (x) { by[x.name] = x; if (order.indexOf(x.name) < 0) order.push(x.name); });
       var next = null;
@@ -560,14 +562,17 @@ window.CS = window.CS || {};
     },
 
     /* 图上要标的阶段起点 / 终点。选了阶段：它的起点（绿 ▶）和终点（红 ■，下一个阶段的触发函数）；
-       全部：每个阶段的起点 */
+       全部：每个阶段的起点；时间段：在这段时间里开始的阶段的起点 */
     phaseMarks: function () {
       var d = this.data, m = d && d.hot && d.hotMeta;
       if (!m) return [];
       var out = [];
       function where(x) { return x.qualname + '（' + x.file + ':' + x.line + '）'; }
-      if (!m.phase) {
+      if (!m.phase || m.window) {
+        var t0 = Object.create(null);                 // 各阶段第一次开始的时刻
+        (m.timeline || []).forEach(function (x) { if (!(x[0] in t0)) t0[x[0]] = x[1]; });
         ((d && d.phaseMarks) || []).forEach(function (x) {
+          if (m.window && !(t0[x.name] >= m.window[0] && t0[x.name] <= m.window[1])) return;
           if (x.node) out.push({ node: x.node, kind: 'start', label: '▶ ' + x.name,
                                  title: x.name + ' 阶段从第一次进入 ' + where(x) + ' 开始' });
         });
@@ -709,7 +714,7 @@ window.CS = window.CS || {};
         + '<span>模式 <b>' + CS.ds.mode + '</b></span>'
         // hot 图：上面只留一个标记，来历（阶段、进程、安装包映射、命令）在「?」里
         + (hm ? '<button class="hottag" data-help title="这次 trace 的情况在帮助里">hot <b>' + esc(hm.case)
-                 + (hm.phase ? '@' + esc(hm.phase) : '') + '</b>'
+                 + (hm.phase ? '@' + esc(CS.timebar.label(hm.phase)) : '') + '</b>'
                  + (hm.stale_files && hm.stale_files.length ? ' <span style="color:var(--stale)">⚠ 录制后有文件改过</span>' : '')
                  + '</button>' : '');
       var ht = document.querySelector('#stats [data-help]');
@@ -726,14 +731,16 @@ window.CS = window.CS || {};
         if (d.cmpError) { CS.ds.cmp = ''; this._writeHash(); if (CS.viewer) CS.viewer.toast(d.cmpError); }
         var cmp = d.cmp, mb = cmp && cmp.meta_b;
         document.getElementById('hotbanner').innerHTML =
-          (mb ? '<div class="hotbanner cmpbanner"><div><b>对比</b>：<span class="tA">A = ' + esc(m.case) + (m.phase ? '@' + esc(m.phase) : '')
+          (mb ? '<div class="hotbanner cmpbanner"><div><b>对比</b>：<span class="tA">A = ' + esc(m.case) + (m.phase ? '@' + esc(CS.timebar.label(m.phase)) : '')
             + '</span>　<span class="tB">B = ' + esc(mb.case) + (mb.phase ? '@' + esc(mb.phase) : '') + '</span>　'
             + '橙色只有 A 跑到，紫色只有 B 跑到，前景色两边都跑到；节点上的数是「A/B」。'
             + ((!!m.events) !== (!!mb.events) ? '<br><span style="color:var(--stale)">一个录了时序事件、一个没录：录事件本身有开销，调用次数和时长不完全可比。</span>' : '')
             + '</div></div>' : '')
           + '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
-          + (m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
+          + (m.window ? '时间段 <b>' + esc(CS.timebar.label(m.phase)) + '</b>'
+             + '<span class="lab">（次数按这段时间里的时序事件算：时序事件只记跨文件的调用，同一个文件里的调用不在里面）</span>　'
+             : m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
           + (m.status && m.status !== 'ok' ? '<span style="color:var(--stale)">⚠ 这次录制不完整'
              + (m.problems && m.problems.length ? '：' + esc(m.problems.join('；')) : '') + '</span>　' : '')
           + (m.phases && Object.keys(m.phases).length

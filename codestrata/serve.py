@@ -216,7 +216,7 @@ class Handler(BaseHandler):
             return self._json({"error": str(e) if isinstance(e, LookupError)
                                else "这个 run 没有录时序事件（codestrata trace --events），或者 span 没整理好（runs merge 重来）"}, 404)
         except (OSError, ValueError) as e:            # span 文件坏了：说清楚，不让连接直接断
-            return self._json({"error": f"时序数据读不出来：{type(e).__name__}: {e}（可以 codestrata runs <repo> merge {run['id']} 重建）"}, 500)
+            return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 
     def _runs(self) -> dict:
         """/api/runs：下拉列表要的摘要，新的在前。「录制后改过几个文件」要读 detail.json 和当前

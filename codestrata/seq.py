@@ -17,6 +17,7 @@ from __future__ import annotations
 import bisect
 import gzip
 import json
+import math
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -106,34 +107,115 @@ class _Map:
 
 # ---------------------------------------------------------------- 每条边的时间
 
-_PAIRS: "OrderedDict[tuple, dict]" = OrderedDict()    # (spans 目录, index mtime, 阶段划分) → _pairs 的结果（最近 4 个）
+_PAIRS: "OrderedDict[tuple, dict]" = OrderedDict()    # (spans 目录, index mtime, 阶段划分) → _pairs 的结果（最近 8 个；拖出来的每个时间段各占一个）
 _EDGES: "OrderedDict[tuple, tuple]" = OrderedDict()   # (_PAIRS 的键, id(idx), 切面, 阶段) → (idx, edge_times 的结果)
 _BUSY: dict[tuple, threading.Lock] = {}               # 正在算的 _PAIRS 键：同时来的同一个请求等着用一份结果
 REPEAT_MIN = 5                                        # 「反复调用」至少要调这么多次（2 次、每个进程一次的不算）
 
 
-def phase_intervals(run: dict, end_us: int) -> dict:
-    """每个阶段在 run 里的时间段 [(起, 止)]（微秒，相对 run 起点）：同一个阶段切走又切回来就有几段；
-    None 是整个 run。时刻按 phase_log（[名字, t_us, 来源]），老 run 没有就按 phases 的 t_us"""
+def _phase_log(run: dict) -> list[tuple[str, int]]:
+    """切阶段的时刻 [(名字, t_us)]，按时间排：按 phase_log（[名字, t_us, 来源]），老 run 没有就按 phases 的 t_us"""
     log = [(x[0], x[1]) for x in run.get("phase_log") or [] if len(x) > 1 and x[1] is not None]
     if not log:
         log = [(p["name"], p["t_us"]) for p in run.get("phases") or [] if p.get("t_us") is not None]
-    log.sort(key=lambda x: x[1])
+    return sorted(log, key=lambda x: x[1])
+
+
+def phase_segments(run: dict, end_us: int) -> list[tuple[str, int, int]]:
+    """run 按阶段切成的一段段 [(名字, 起, 止)]（微秒，相对 run 起点，按时间排）：同一个阶段切走又切回来
+    就有几段。页面的时间轴画的就是它（runs.load 放进 meta）"""
+    log = _phase_log(run)
+    return [(name, t, log[i + 1][1] if i + 1 < len(log) else end_us) for i, (name, t) in enumerate(log)]
+
+
+def phase_intervals(run: dict, end_us: int) -> dict:
+    """每个阶段的时间段 {名字: [(起, 止)]}；None 是整个 run"""
     out: dict = {None: [(0, end_us)]}
-    for i, (name, t) in enumerate(log):
-        out.setdefault(name, []).append((t, log[i + 1][1] if i + 1 < len(log) else end_us))
+    for name, a, b in phase_segments(run, end_us):
+        out.setdefault(name, []).append((a, b))
     return out
 
 
-def _pairs(spans: Path, run: dict) -> tuple[tuple, dict]:
+def parse_window(phase: str | None) -> tuple[int, int] | None:
+    """「t=起-止」（微秒，相对 run 起点）是时间段，不是阶段名：页面上时间轴拖出来的范围，和阶段名放在
+    同一个位置（run 引用的 @ 后面），加载、缓存、地址栏都照走。别的（阶段名、None）→ None"""
+    if not phase or not phase.startswith("t="):
+        return None
+    try:
+        a, b = (int(x) for x in phase[2:].split("-", 1))
+    except ValueError:
+        raise ValueError(f"时间段写成 t=起-止（微秒）：{phase}") from None
+    if a < 0 or b <= a:
+        raise ValueError(f"时间段的起点要小于终点：{phase}")
+    return a, b
+
+
+def run_end(run: dict, rd: Path) -> int | None:
+    """时间轴的终点（微秒，相对 run 起点）：最后一条 span 的结束、最后一次切阶段、run 的时长，取最大的。
+    只按 span 不行：被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回，span 停在切到 shutdown 之前，
+    最后一个阶段就倒着走了。span 读不出来（文件坏了）时不算它——加载图不该因此失败，
+    要读 span 的地方（时间段、时间顺序）各自报错。什么都不知道是 None"""
+    ends = [int((run.get("duration_s") or 0) * 1e6)] + [t for _, t in _phase_log(run)]
+    spans = rd / "events" / "spans"
+    if (spans / "index.json").is_file():
+        try:
+            ends.append(max((c["t1_us"] for c in _index(spans)["chunks"]), default=0))
+        except (OSError, ValueError, KeyError):
+            pass
+    return max(ends) or None
+
+
+def unreadable(e: Exception, run_id: str) -> str:
+    """span 文件坏了（解压、JSON 出错）时给人看的话"""
+    return f"时序数据读不出来：{type(e).__name__}: {e}（可以 codestrata runs <repo> merge {run_id} 重建）"
+
+
+def _calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = False) -> tuple[int, int, int] | None:
+    """一行 span 里落在 [lo, hi]（open_hi：[lo, hi)）的调用：(次数, 第一次的开始, 最后一次的开始)，没有是 None。
+    折叠行（rep 次连续的同级调用合成一行，只记了第一次的开始和整行的结束）按 rep 次调用均匀摊在
+    [开始, 结束] 上：一行能盖住几十秒（vllm-omni 里的轮询，一行 3852 次、从 68 s 到 112 s），整行算在开始的
+    那一刻，一秒的时间段里会多出几千次、之后几十秒一次都没有。没返回的（dur < 0）只知道开始，整行算在开始"""
+    if rep <= 1 or dur <= 0:
+        return (rep, t, t) if lo <= t and (t < hi if open_hi else t <= hi) else None
+    step = dur / (rep - 1)
+    i0 = max(0, math.ceil((lo - t) / step))
+    i1 = min(rep - 1, math.ceil((hi - t) / step) - 1 if open_hi else math.floor((hi - t) / step))
+    if i1 < i0:
+        return None
+    return i1 - i0 + 1, t + round(i0 * step), t + round(i1 * step)
+
+
+def window_counts(rd: Path, t0: int, t1: int) -> dict:
+    """时间段里的调用（折叠行按 _calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges}
+    （键都是 文件:首行），交给 trace.to_package_graph，模块图照常叠加。时序事件只记跨文件的调用：同一个文件里的
+    调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError"""
+    spans = rd / "events" / "spans"
+    if not (spans / "index.json").is_file():
+        raise LookupError("这个 run 没有录时序事件（codestrata trace --events）：只能按阶段看，不能选时间段")
+    ix = _index(spans)
+    keys, funcs, edges = ix["keys"], {}, {}
+    for c in ix["chunks"]:
+        if c["t0_us"] > t1 or c["t1_us"] < t0:
+            continue
+        for r in _chunk(spans, c["chunk"]):
+            got = _calls_in(r[0], r[1], r[6], t0, t1)
+            if got is None or not (0 <= r[4] < len(keys) and 0 <= r[5] < len(keys)):
+                continue
+            a, b, n = keys[r[4]], keys[r[5]], got[0]
+            funcs[b] = funcs.get(b, 0) + n
+            edges[f"{a}|{b}"] = edges.get(f"{a}|{b}", 0) + n
+    return {"funcs": funcs, "func_edges": edges}
+
+
+def _pairs(spans: Path, run: dict, window: tuple[int, int] | None = None) -> tuple[tuple, dict]:
     """把整个 run 的 span 解压、读一遍：每个阶段（None 是整个 run）里，(调用方键, 被调方键) →
     [first, last, n, {pid: [first, last]}]。归到切面的节点是后一步（edge_times，很便宜）——换切面、换阶段
     都不用再解压（158 万条 span 的 run 解一遍要两秒多）。同时来的同一个请求只算一次。
-    折叠过的 span（rep 次连续的同级调用合成一行）：first 是第一次的开始，last 取这一行的结束
-    （最后一次调用的开始不会晚于它），不超过所在时间段的终点"""
+    折叠过的 span（rep 次连续的同级调用合成一行）按 _calls_in 均匀摊到它盖住的时间上，跨了阶段的分到各个阶段。
+    window（时间轴拖出来的时间段）：只读和它重叠的块、只算在它里面的调用，结果只有 None 一张表"""
     ix = _index(spans)
-    end_us = max((c["t1_us"] for c in ix["chunks"]), default=0)
-    iv = phase_intervals(run, end_us)
+    end = run_end(run, spans.parent.parent) or 0
+    iv = phase_intervals(run, end) if window is None else {None: [window]}
     key = (str(spans), (spans / "index.json").stat().st_mtime_ns,
            tuple((n, tuple(v)) for n, v in sorted(iv.items(), key=lambda kv: (kv[0] is not None, kv[0] or ""))))
     with _LOCK:
@@ -147,40 +229,50 @@ def _pairs(spans: Path, run: dict) -> tuple[tuple, dict]:
         if hit is not None:
             return key, hit
         try:
-            out = _pairs_scan(spans, ix, iv, end_us)
-            _put(_PAIRS, key, out, cap=4)          # 先放进缓存再撤掉「正在算」：中间来的请求不会再解一遍
+            out = _pairs_scan(spans, ix, iv, *(window or (0, end)))
+            _put(_PAIRS, key, out, cap=8)          # 先放进缓存再撤掉「正在算」：中间来的请求不会再解一遍
         finally:
             with _LOCK:
                 _BUSY.pop(key, None)
         return key, out
 
 
-def _pairs_scan(spans: Path, ix: dict, iv: dict, end_us: int) -> dict:
-    """_pairs 真正读 span 的那一遍"""
+def _pairs_scan(spans: Path, ix: dict, iv: dict, lo: int, hi: int) -> dict:
+    """_pairs 真正读 span 的那一遍：[lo, hi] 里的调用。阶段的各段左闭右开（切阶段那一刻的调用归新阶段），
+    最后一段闭到 run 的终点；一行折叠的调用跨了几段就按 _calls_in 分到几段"""
     segs = sorted((t0, t1, name) for name, v in iv.items() if name is not None for t0, t1 in v)
     starts = [x[0] for x in segs]
     agg: dict = {name: {} for name in iv}
 
-    def add(d, k, t, last, rep, pid):
+    def add(d, k, got, pid):
+        n, t, last = got
         e = d.get(k)
         if e is None:
-            d[k] = [t, last, rep, {pid: [t, last]}]
+            d[k] = [t, last, n, {pid: [t, last]}]
             return
-        e[0], e[1], e[2] = min(e[0], t), max(e[1], last), e[2] + rep
+        e[0], e[1], e[2] = min(e[0], t), max(e[1], last), e[2] + n
         q = e[3].get(pid)
         if q is None:
             e[3][pid] = [t, last]
         else:
             q[0], q[1] = min(q[0], t), max(q[1], last)
     for c in ix["chunks"]:
+        if c["t0_us"] > hi or c["t1_us"] < lo:
+            continue
         pid = c["pid"]
         for r in _chunk(spans, c["chunk"]):
             t, dur, rep, k = r[0], r[1], r[6], (r[4], r[5])
+            got = _calls_in(t, dur, rep, lo, hi)
+            if got is None:
+                continue
+            add(agg[None], k, got, pid)
             end = t + max(dur, 0) if rep > 1 else t
-            add(agg[None], k, t, min(end, end_us), rep, pid)
-            i = bisect.bisect_right(starts, t) - 1
-            if i >= 0 and t <= segs[i][1]:
-                add(agg[segs[i][2]], k, t, min(end, segs[i][1]), rep, pid)
+            i = max(0, bisect.bisect_right(starts, t) - 1)
+            while i < len(segs) and segs[i][0] <= end:
+                g = _calls_in(t, dur, rep, segs[i][0], segs[i][1], open_hi=i + 1 < len(segs))
+                if g:
+                    add(agg[segs[i][2]], k, g, pid)
+                i += 1
     return {"iv": iv, "agg": agg, "keys": ix["keys"], "truncated": ix.get("truncated") or []}
 
 
@@ -195,8 +287,11 @@ def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = Non
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（codestrata trace --events）")
-    pkey, P = _pairs(spans, run)
-    if phase not in P["iv"]:
+    win = parse_window(phase)
+    pkey, P = _pairs(spans, run, win)
+    if win:
+        phase = None                                   # 时间段：只有一张表（_pairs 的 window）
+    elif phase not in P["iv"]:
         raise LookupError(f"这个 run 里没有阶段 {phase} 的时刻：不知道它从什么时候开始，没法按时间排")
     key = (pkey, id(idx), None if open_ is None else ",".join(sorted(open_)), phase)
     with _LOCK:

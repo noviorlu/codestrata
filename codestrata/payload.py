@@ -141,7 +141,7 @@ def _meta_brief(m: dict | None) -> dict | None:
                                     "tags", "note", "git", "n_procs", "stale_files", "unmatched", "events",
                                     "mapped_from", "n_mapped", "mapped_mismatch", "unmapped", "defs", "cmd", "procs",
                                     "script", "file_state", "rerun", "rerun_exact", "rerun_redacted", "rerun_env", "env_inherited",
-                                    "phase_at", "phase_log")}
+                                    "phase_at", "phase_log", "end_us", "timeline", "window")}
 
 
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,

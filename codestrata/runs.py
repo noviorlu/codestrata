@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 from . import events as _events
+from . import seq as _seq
 from . import trace as _trace
 
 SCHEMA = 2
@@ -605,8 +606,8 @@ def catalog(repo: Path) -> list[dict]:
 
 
 def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
-    """REF := <完整 run id> | <case>，后面可以加 @阶段。只写 case 时取它最新的一次 ok 的；
-    一次 ok 都没有就取最新的 partial（并提示）。"""
+    """REF := <完整 run id> | <case>，后面可以加 @阶段，或者 @t=起-止（微秒，时间轴上拖出来的时间段，
+    要录了时序事件）。只写 case 时取它最新的一次 ok 的；一次 ok 都没有就取最新的 partial（并提示）。"""
     ref, _, phase = (ref or "").partition("@")
     runs = catalog(repo)
     hit = next((r for r in runs if r["id"] == ref), None)
@@ -623,7 +624,11 @@ def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
         raise SystemExit(f"没有叫 {ref!r} 的 run 或 case；有的 case：{have}\n"
                          f"  录一个：codestrata trace <repo> --case {ref or 'NAME'} -- <命令>")
     rd = runs_dir(repo) / hit["id"]
-    if phase and phase not in {p["name"] for p in hit.get("phases") or []}:
+    try:
+        win = _seq.parse_window(phase)
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
+    if phase and not win and phase not in {p["name"] for p in hit.get("phases") or []}:
         raise SystemExit(f"run {hit['id']} 里没有阶段 {phase!r}；有的是："
                          + ", ".join(p["name"] for p in hit.get("phases") or []))
     return hit, rd, phase or None
@@ -761,7 +766,15 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         raise SystemExit(f"run {run['id']} 还没有计数：" + (
             "还在录制中" if _alive(run.get("driver")) else
             f"录制中断了，先 codestrata runs {repo} merge {run['id']}"))
-    counts, names = load_counts(rd, phase, with_names=True)
+    win = _seq.parse_window(phase)
+    counts, names = load_counts(rd, None if win else phase, with_names=True)
+    if win:                                      # 时间段：次数按这段时间里的时序事件现算（只有跨文件的调用）
+        try:
+            counts = _seq.window_counts(rd, *win)
+        except LookupError as e:
+            raise SystemExit(str(e)) from None
+        except (OSError, ValueError) as e:
+            raise SystemExit(_seq.unreadable(e, run["id"])) from None
     try:
         detail = _read(rd / "detail.json")
     except (OSError, ValueError):
@@ -780,6 +793,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         s = _trace.case_script(Path(run.get("cwd") or repo), run.get("cmd") or [])
         script = {**s, "saved": False} if s else None
     phases = run.get("phases") or []
+    end = _seq.run_end(run, rd)
     meta = {"case": run.get("case"), "cmd": _redact_argv(run.get("cmd") or []), "phase": phase,
             # 和老的 trace 一样：只有一个阶段时是空的（前端据此判断「分没分阶段」）
             "phases": {p["name"]: p["n_funcs"] for p in phases} if len(phases) > 1 else {},
@@ -807,7 +821,11 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             "rerun_env": rerun_command(run, Path(repo), with_env=True, redact=True) if run.get("env_inherited") else None,
             "env_inherited": {k: _scrub(v) for k, v in (run.get("env_inherited") or {}).items()},
             "phase_at": (run.get("rec") or {}).get("phase_at") or [],
-            "phase_log": run.get("phase_log") or []}
+            "phase_log": run.get("phase_log") or [],
+            # 时间轴（页面上的阶段条）：到哪一刻为止、各阶段的一段段；选的是时间段时它的起止
+            # （这时次数只有跨文件的调用）
+            "end_us": end, "timeline": [list(s) for s in _seq.phase_segments(run, end)] if end else [],
+            "window": list(win) if win else None}
     return hot, meta
 
 
