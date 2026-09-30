@@ -32,8 +32,8 @@
    沿用现在的规矩：**宁可不连，也不连错**。
 4. **加语言 = 加扫描端和录制来源；加仓库 = 加源码根。** 两者都不改核心。
 5. **老数据照样能用。** 现有的 run（单仓库、Python 的键）和它们的计数一字不改就能读；主仓库的路径前缀是空串（见 4.2）。
-6. **核心零依赖，外围可以用现成工具。** 核心仍只用标准库；C++ / CUDA / Rust 的扫描端和原生代码的录制来源不可避免地要外部工具
-   （clang 系、rust-analyzer、profiler），运行时检测，没装就明确说缺什么、这部分不出，不影响别的部分。（待决定，见第 12 节）
+6. **按需用现成工具。** 成熟工具做得更好的就用它，不以零依赖为目标（decisions「依赖按需引入」）。C++ / CUDA / Rust 的扫描端和原生代码的录制来源
+   本来就离不开外部工具（tree-sitter、clang 系、rust-analyzer、profiler）；运行时检测，没装就明确说缺什么、这部分不出，不影响别的部分。
 
 ## 3 名词
 
@@ -156,7 +156,7 @@ Python 那份分片里，`vllm/_custom_ops.py` 调 `torch.ops._C.rms_norm` 的�
 精度写进分片的 `tool.fidelity`，也可以细到每条 `uses` / `exports` 上（`"fid": "approx"`）。
 
 tree-sitter 的 Python 包（`tree-sitter` 0.26 和 `tree-sitter-cpp` / `tree-sitter-cuda` / `tree-sitter-rust` 语法包，MIT，都有预编译 wheel）
-在本机 3.13 上装得上、能解析 kernel 定义和启动；它们是 C++ / CUDA / Rust 扫描端的依赖，不是核心的依赖。
+在本机 3.13 上装得上、能解析 kernel 定义和启动。
 
 ### 5.3 SCIP 适配器
 
@@ -164,8 +164,8 @@ SCIP 是一种跨语言的代码索引格式（原属 Sourcegraph，现在在 `g
 核心带一个**语言无关**的 SCIP 适配器：读一份 `.scip`，给出「某文件某位置 → 某符号」和「某符号定义在哪」两张表，供各扫描端产出 `symbols`、`uses` 和第 6 节的跳转数据。
 这样 C++ / CUDA / Rust 的扫描端 = 「tree-sitter 认语法 + 现成的索引器认名字 + 一小段认绑定写法的代码」，不再各自写名字解析。
 
-读 SCIP 只要标准库：它是 protobuf，但只用到 varint 和定长前缀两种线格式，手写解码器约 130 行，在一个样例上和官方 `scip print --json` 的输出逐份一致，
-速度约 41 MB/s。要注意的格式细节：
+SCIP 是 protobuf，官方没有 Python 绑定。它只用到 varint 和定长前缀两种线格式，手写解码器约 130 行，在一个样例上和官方 `scip print --json` 的输出逐份一致，
+速度约 41 MB/s；也可以用 `protobuf` 库配 `scip.proto` 生成的代码，两种都行，按实现时的方便选。要注意的格式细节：
 
 - 行列从 0 开始、左闭右开；位置有老的整数数组（3 个或 4 个数）和 2026 年新加的分类型写法两种，两种都要认。
 - 列的单位看 `position_encoding`，但各索引器不一样：rust-analyzer 标明 UTF-8；scip-python 没标、实际是 UTF-16；scip-clang 没标、应是字节（待核实）。
@@ -218,7 +218,7 @@ vllm-omni 自己也有：`torch.ops.vllm_omni.fused_qk_rope`（Python 里经 `di
   - C++ / CUDA / Rust：SCIP 索引经 5.3 的适配器转成这个格式。
   - Python：继续用现在的 `xref.py`，改成写 wpath 版的格式。**不换成 scip-python**：它是 2023 年 pyright 的分支，2025-09 之后没有人在维护；
     在一个假项目上实测，`from x import *` 引进来的名字全指到模块上、相对导入 `from .impl import` 指到不存在的模块、符号种类全是 0，
-    这几处现在的 `xref.py` 都做对了。（再导出、`self.x`、继承来的方法它能解析对。）
+    这几处现在的 `xref.py` 都做对了。（再导出、`self.x`、继承来的方法它能解析对。）别的现成工具（jedi、basedpyright）还没测，测过比 `xref.py` 好再换。
 - **跨根**：SCIP 的符号串里带包名和版本，别的仓库对它的引用写的是同一个串，两份索引按串相等就能接上。所以挂进来的每个根都要用**同一套包名和版本**建索引
   （scip-clang 用 `--package-map-path` 给 `名字@版本`）。scip-clang 只给本项目文件里的出现位置，别的包的定义只有名字、没有位置：
   要从 vllm 跳进 torch 的头文件，torch 也得作为一个根单独建索引。Python 这边跨根由 `xref.py` 按多个根一起解析。
@@ -274,7 +274,7 @@ vllm-omni 自己也有：`torch.ops.vllm_omni.fused_qk_rope`（Python 里经 `di
 - **报告**：对齐时钟用的方法和残差、丢掉的事件数、对不上的名字数，写进 run.json 的 `sources[].report`。
 
 合并后的计数、span 和现在一样按 `(pid, 道)` 分块存，派生数据都能从原始数据重算（导入端改进了，`runs merge` 一遍老 run 就受益）。
-两种外部格式都只要标准库就能读：torch.profiler 的是 JSON，Nsight Systems 的报告可以导出成 SQLite（`sqlite3`）。
+两种外部格式都好读：torch.profiler 的是 JSON，Nsight Systems 的报告可以导出成 SQLite。
 
 ### 7.4 时钟对齐
 
@@ -357,7 +357,7 @@ vLLM 这类服务为了省 CPU 开销，常在启动时把模型的前向**捕�
 | `trace/driver.py` | 直接起命令 | 按录制来源决定是否包一层外部工具（Nsight Systems）；给每路来源建 `parts/<id>/` |
 | `runs.py` | `remap` 按 Python 的 qualname 规则（去掉 `.<locals>`） | 规则按语言分（Python 保持现状，其余按 `n` 精确对）；run.json 加 `format`、`roots`、`sources`；读老格式 |
 | `events.py`、`seq.py` | 只有线程 | 道（CPU 线程 / GPU 流）、`lag`、`?` 键、`A` 锚点行 |
-| 新：导入端 | 没有 | torch.profiler 的 JSON、Nsight Systems 导出的 SQLite 各一个，都只用标准库 |
+| 新：导入端 | 没有 | torch.profiler 的 JSON、Nsight Systems 导出的 SQLite 各一个 |
 | `xref.py` | 写 xref.json，点分目标 | Python 的内置跳转端，写 wpath 版的同一格式，跨多个根解析；新增 SCIP 适配器（给 C++ / CUDA / Rust） |
 | `highlight.py`、`web/hl.js` | 认 Python / Triton / C++ / CUDA | 加 Rust |
 | 前端 | `split('.')` 取短名、点分 id | 读 `label` / `s`；语言标记；新线型；GPU 道 |
@@ -380,7 +380,7 @@ vLLM 这类服务为了省 CPU 开销，常在启动时把模型的前向**捕�
 
 已经核实的（2026-09-30）：
 
-- 静态：SCIP 能只用标准库读（5.3）；scip-python 的问题（第 6 节）；scip-clang 支持 CUDA、kernel 启动记成引用；CMake 在 configure 阶段就写出
+- 静态：SCIP 手写解码器就能读（5.3）；scip-python 的问题（第 6 节）；scip-clang 支持 CUDA、kernel 启动记成引用；CMake 在 configure 阶段就写出
   `compile_commands.json`，不用编译；tree-sitter 的 CUDA 语法能解析 kernel 启动、C++ 语法不能。
 - 运行时（CPU 上）：torch.profiler 的时钟和事件格式（7.4）；`sys.monitoring` 对原生调用的事件和 DISABLE 的限制（7.2）；
   pybind11 / PyO3 / `torch.ops` 的被调对象怎么认；Triton kernel 在 GPU 上的名字就是 Python 函数名；本机装了 Nsight Systems、没有特权（7.2、7.7）；
@@ -397,9 +397,8 @@ vLLM 这类服务为了省 CPU 开销，常在启动时把模型的前向**捕�
 
 ## 12 待决定
 
-1. **零依赖原则**：改成「核心零依赖，扫描端和原生代码的录制来源可以要外部工具」（第 2 节第 6 条）。tree-sitter、scip-clang、rust-analyzer、Nsight Systems 都属于外围。
-2. **单元统一成文件、id 改成路径**：图上的样子不变，但页面地址里记的展开状态、导出页里的 id 会变，老链接打开时回到默认切面。
-3. **vllm 这类依赖怎么挂**：Python 部分挂 site-packages 里装好的包（马上能用）；C++ / CUDA / Rust 要另外 checkout 同一版本的源码。
-4. **第 10 节的顺序**：先多仓库（第 1 步）再 C++ / CUDA（第 2 步），还是反过来。
-5. **Python 的跳转留着 `xref.py`**（第 6 节：scip-python 实测不如它）；外部索引器只用在 C++ / CUDA / Rust 上。
-6. **GPU 上的核实**（第 11 节第一行）：要用 GPU 录两次小例子。
+1. **单元统一成文件、id 改成路径**：图上的样子不变，但页面地址里记的展开状态、导出页里的 id 会变，老链接打开时回到默认切面。
+2. **vllm 这类依赖怎么挂**：Python 部分挂 site-packages 里装好的包（马上能用）；C++ / CUDA / Rust 要另外 checkout 同一版本的源码。
+3. **第 10 节的顺序**：先多仓库（第 1 步）再 C++ / CUDA（第 2 步），还是反过来。
+4. **Python 的跳转留着 `xref.py`**（第 6 节：scip-python 实测不如它）；外部索引器只用在 C++ / CUDA / Rust 上。
+5. **GPU 上的核实**（第 11 节第一行）：要用 GPU 录两次小例子。

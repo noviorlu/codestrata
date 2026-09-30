@@ -403,12 +403,16 @@
 - 放弃的方案：保留冻结；做成逐函数的差异清单。以后要做，按「两份逐函数计数做差」重新设计，而不是恢复原来的三种颜色。
 - 在哪：原来的实现在 git 历史里（删于 2026-09-30）。
 
-### 只用标准库，存文件，不引入新的配置格式
-- 决定：运行时依赖为空（Pygments 可选，只用于服务端高亮）；数据都是 JSON / gzip / tar 文件；没有 case 定义文件。
-- 为什么：`pip install` 之后一条命令出图；对照 OpenGrok（要 Java + Tomcat + universal-ctags，为读代码架一套太重）。设计稿原则 6「实现尽量小」：只用 stdlib、存文件、不用数据库、
-  不引入新的配置文件格式。
-- 放弃的方案：OpenGrok / Sourcetrail 这类现成工具（Sourcetrail 已归档，活着的 fork 禁用了 Python 索引）；sqlite；cases.toml。
-- 在哪：`pyproject.toml`（`dependencies = []`、`highlight` 可选依赖）。
+### 依赖按需引入，不以零依赖为目标；数据存文件
+- 决定：成熟的现成工具做得更好的，就用它（跳转、排版、原生代码的解析和录制都在此列），不为了少一个依赖自己实现。
+  现在运行时依赖仍为空（Pygments 可选，只用于服务端高亮），这是现状，不是约束。新依赖优先选 `pip` 装得上、有预编译 wheel 的；
+  要系统工具的（clang、Nsight Systems）装不上时明确说缺什么、这部分不出，不影响别的部分。
+  数据都是 JSON / gzip / tar 文件，不用数据库；没有 case 定义文件。
+- 为什么：早期设计稿把「只用 stdlib」写成了原则，这不是需求；照着它自己写了名字解析（`xref.py`）、分层排版（`layout.py`）这类有现成工具的东西，
+  维护成本高，也分散了花在核心（运行时叠加）上的精力。`pip install` 之后一条命令出图仍然要紧，所以优先选好装的依赖。
+  存文件：run 目录能直接拷走、原始数据人能读；对照 OpenGrok（要 Java + Tomcat + universal-ctags，为读代码架一套太重）。
+- 放弃的方案：为了零依赖自己实现有现成工具的东西；OpenGrok / Sourcetrail 这类整套的读代码工具（Sourcetrail 已归档，活着的 fork 禁用了 Python 索引）；sqlite；cases.toml。
+- 在哪：`pyproject.toml`（`dependencies`、`highlight` 可选依赖）。
 
 ### 模块边界：录和存分开，seq 和 events 只隔一个文件格式
 - 决定：`trace` 不 import `runs`：`trace.driver.run` 只接收一个 parts 目录和一个 `after` 回调，收尾（打包、写 run.json）在 `run` 的 try/finally 里跑。`seq` 不 import `events`
