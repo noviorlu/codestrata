@@ -4,7 +4,7 @@ target: codestrata.scan
 kind: package
 code_sha: b2d815ae9b58438c
 status: draft
-refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777@cdb35e3c,scan.py:793@c176b6f0,payload.py:52@d6513e46,scan.py:800@ae396e12,scan.py:762@bd8a6524,scan.py:524@31448101,codestrata/__main__.py:85@d89a80ca,scan.py:1@5f7a6e1c,scan.py:400@ece62725,scan.py:437@255e30bf,scan.py:455@2fd7b37d,scan.py:466@e7e68c0d,scan.py:290@b898a049,scan.py:441@1da30e18,scan.py:132@f0c578ab,scan.py:144@f82da3ef,scan.py:165@875a23a8,scan.py:152@2e3321f2,scan.py:402@c19aae48,scan.py:173@0f390eab,scan.py:458@1920e340,scan.py:469@5e10daf1,runs.py:91@fb413b11,trace.py:148@0685df0e,scan.py:462@e256ee8e,runs.py:714@2e266090,scan.py:474@6e455720,scan.py:481@47fa472f,scan.py:703@2373040a,scan.py:25@cf78ecb3,scan.py:52@29d84015,scan.py:584@b2d3284a,scan.py:610@22a9f949,scan.py:575@74e4ca0b,scan.py:602@bb22c4ee,scan.py:679@c7b7aa70,scan.py:65@04872629,scan.py:507@0ee68e12,scan.py:640@cfc7e49e,scan.py:685@6f938f80,scan.py:621@8526611d,scan.py:741@8316e21f,scan.py:342@a99d3e2d
+refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777@cdb35e3c,scan.py:793@c176b6f0,payload.py:52@d6513e46,scan.py:800@ae396e12,scan.py:762@bd8a6524,scan.py:524@31448101,codestrata/__main__.py:86@d89a80ca,scan.py:1@5f7a6e1c,scan.py:400@ece62725,scan.py:437@255e30bf,scan.py:455@2fd7b37d,scan.py:466@e7e68c0d,scan.py:290@b898a049,scan.py:441@1da30e18,scan.py:132@f0c578ab,scan.py:144@f82da3ef,scan.py:165@875a23a8,scan.py:152@2e3321f2,scan.py:402@c19aae48,scan.py:173@0f390eab,scan.py:458@1920e340,scan.py:469@5e10daf1,runs.py:91@fb413b11,trace.py:148@0685df0e,scan.py:462@e256ee8e,runs.py:713@2e266090,scan.py:474@6e455720,scan.py:481@47fa472f,scan.py:703@2373040a,scan.py:25@cf78ecb3,scan.py:52@29d84015,scan.py:584@b2d3284a,scan.py:610@22a9f949,scan.py:575@74e4ca0b,scan.py:602@bb22c4ee,scan.py:679@c7b7aa70,scan.py:65@04872629,scan.py:507@0ee68e12,scan.py:640@cfc7e49e,scan.py:685@6f938f80,scan.py:621@8526611d,scan.py:741@8316e21f,scan.py:342@a99d3e2d
 ---
 
 ## 是什么
@@ -23,7 +23,7 @@ refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777
 
 同样放在 symbols.json 里的还有 `name_refs`（scan.py:762）：字符串常量里写着的仓库内类名——大写开头的标识符，或者 `"pkg.mod.Cls"` / `"pkg.mod:Cls"` 这种带模块的类路径（后者连模块一起记下）；`__all__` 里的是再导出清单，不收（scan.py:524）。它回答的是动态分派的「在哪儿按名字接上的」：注册表、插件表、配置里的 worker_cls。扫的时候先把所有像类名的字符串收下，扫完再只留仓库里真有这个类名的。
 
-交叉引用（xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:85）。放在同一条命令里，是为了让 xref 和符号表是同一时刻的快照，行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」。
+交叉引用（xref.json）**不在这里建**：`scan` 只返回 index，是 `__main__` 里的 `cmd_scan` 在 `write_index` 之后紧接着调 `xref.build` 并写盘（codestrata/__main__.py:86）。放在同一条命令里，是为了让 xref 和符号表是同一时刻的快照，行号才对得上；放在 scan 外面，则让 scan 保持「只产出总图事实」。
 
 ## 读法
 1. 模块 docstring（scan.py:1）——两个产出文件各有什么（含 `type_edges`），「架构高度」的定义和为什么不用 SCC
@@ -68,7 +68,7 @@ refs: scan.py:136@cf3433c4,scan.py:398@8f7062c3,scan.py:772@f74f5b17,scan.py:777
 `file_sha` 只给解析成功的 `.py` 记（解析失败的在 scan.py:462 就 `continue` 了，和 `files` 同进同出）；C/C++ 文件（`aux`）不记，trace 只录 Python。
 
 ### 为什么过期判断要和 index 比
-run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:714）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；拿 run 去比工作区（`trace.stale_files`）这时会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
+run 只存原始键（`文件:行号`）和录制时的文件哈希，加载时现映射到当前 index 上；叠加用的行号来自 index 的符号表，而不是工作区。所以「这个 run 在这个文件上还准不准」应该拿 run 的哈希和 index 的 `file_sha` 比（`runs.file_state`，runs.py:713）：改了代码但还没重新 scan，index 仍描述旧代码，和 run 对得上，叠加是准的；拿 run 去比工作区（`trace.stale_files`）这时会误报。index 是老的、没有 `file_sha` 时，`file_state` 才退回去比工作区。
 
 ### 同名的几个 def：留最后一个，前面的记进 also
 符号按 `模块:限定名` 存，property 的 getter 和 setter、`overload`、if/else 里的两个版本是同一个键。`add`（scan.py:474）照旧留最后一个，把前面几个的 [行, 装饰器行, 末行] 记在 `also`（JSON 里的 "a"，scan.py:481）：trace 按「文件:首行」记，getter 跑到了也要对回这个符号（`trace.sym_locs` 把它们都建进索引），payload 找调用方函数体时也把这几段算上。只合并同一个文件里、同一种的：不同文件同名是模块名撞了（`root_clashes` 挡着）；一个函数一个类的不合，trace 靠种类区分「调用」和「定义」。

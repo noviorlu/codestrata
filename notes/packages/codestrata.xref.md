@@ -4,11 +4,11 @@ target: codestrata.xref
 kind: package
 code_sha: f36558a7de602b4f
 status: draft
-refs: __main__.py:85@d89a80ca,xref.py:1348@6f3d4dd5,xref.py:1@33710441,xref.py:295@ad481400,xref.py:615@02ccb7c9,xref.py:830@0ac1d1cb,xref.py:1324@988dc59e,xref.py:1370@299f2f56,xref.py:857@cf9b4e61,xref.py:1327@eecf9796,xref.py:232@59c04e0c,xref.py:334@dac70f9a,xref.py:915@dd64dbbd,xref.py:1236@7666ecb2,xref.py:941@0289caaf,xref.py:461@7cb35e9c,xref.py:390@d2d72128,xref.py:547@0421ea56,xref.py:767@6f648bce,xref.py:732@738ebce6,xref.py:1212@e1368d8e,xref.py:1317@1b6b0495,xref.py:1214@c48b7ec3,xref.py:1381@7362486b,xref.py:1363@e0a460f7,tests/test_runs.py:2119@c253a295,payload.py:961@8e0ec840
+refs: __main__.py:86@d89a80ca,xref.py:1348@6f3d4dd5,xref.py:1@33710441,xref.py:295@ad481400,xref.py:615@02ccb7c9,xref.py:830@0ac1d1cb,xref.py:1324@988dc59e,xref.py:1370@299f2f56,xref.py:857@cf9b4e61,xref.py:1327@eecf9796,xref.py:232@59c04e0c,xref.py:334@dac70f9a,xref.py:915@dd64dbbd,xref.py:1236@7666ecb2,xref.py:941@0289caaf,xref.py:461@7cb35e9c,xref.py:390@d2d72128,xref.py:547@0421ea56,xref.py:767@6f648bce,xref.py:732@738ebce6,xref.py:1212@e1368d8e,xref.py:1317@1b6b0495,xref.py:1214@c48b7ec3,xref.py:1381@7362486b,xref.py:1363@e0a460f7,tests/test_runs.py:2119@c253a295,payload.py:961@8e0ec840
 ---
 
 ## 是什么
-交叉引用：代码里每个名字指向哪个定义。scan 结束时顺带建一份 `.codestrata/xref.json`（__main__.py:85），给全文窗口的 Ctrl+点击用——点一个名字跳到它的定义；点一个定义，由 `payload.refs` 列出所有引用它的地方。另外顺带给边详情一张小表 `names`：边上引用了、符号表里却没有的名字（模块级变量、`__init__` 再导出的），指向哪个定义。只用 `ast`，静态地、尽力而为地解析。
+交叉引用：代码里每个名字指向哪个定义。scan 结束时顺带建一份 `.codestrata/xref.json`（__main__.py:86），给全文窗口的 Ctrl+点击用——点一个名字跳到它的定义；点一个定义，由 `payload.refs` 列出所有引用它的地方。另外顺带给边详情一张小表 `names`：边上引用了、符号表里却没有的名字（模块级变量、`__init__` 再导出的），指向哪个定义。只用 `ast`，静态地、尽力而为地解析。
 
 总原则是**宁可不跳，也不跳错**：跳错一次，用户就不再信这个功能。所以只记能确定的；遮住了、类型拿不准、MRO 上有仓库外的基类，一律不记。
 

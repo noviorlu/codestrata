@@ -4,7 +4,7 @@ target: codestrata.notes
 kind: package
 code_sha: 6301e0df69295018
 status: draft
-refs: notes.py:1@b8d20e4f,notes.py:129@8bc76733,notes.py:267@bb0281eb,notes.py:294@90202984,notes.py:351@0be28323,scan.py:8@7a3ad8a9,notes.py:315@81fd43bd,codestrata/runs.py:786@16613a5f,payload.py:1201@df6c2b1d,notes.py:563@7959d135
+refs: notes.py:1@b8d20e4f,notes.py:129@8bc76733,notes.py:267@bb0281eb,notes.py:294@90202984,notes.py:351@0be28323,scan.py:8@7a3ad8a9,notes.py:315@81fd43bd,codestrata/runs.py:785@16613a5f,payload.py:1201@df6c2b1d,notes.py:563@7959d135
 ---
 
 ## 是什么
@@ -33,7 +33,7 @@ refs: notes.py:1@b8d20e4f,notes.py:129@8bc76733,notes.py:267@bb0281eb,notes.py:2
 `tasks` 只派默认切面上的节点，按架构高度从低到高排（notes.py:267）：叶子没有内部依赖，可以孤立读懂；写到上层时下层的解读已经存在。`prompt_pack` 也能给展开出来的节点出输入包：它先用 `cut.open_for` 取一个让目标可见的切面（notes.py:294），邻居和高度都在这个切面上算。它会把**依赖模块已有的解读**一并放进输入包，于是上层能引用下层、而不是各说各话（notes.py:351）。输入包里还有作者写的相关文档（先读这些）；传了 hot（CLI 上是给了 --hot）时，还有这个节点在那次录制里被调用的总次数和被调用最多的符号。总览排在最后，它的输入包带上所有模块解读的第一句。这里说的依赖、高度都只按 index 的 edges 算：`if TYPE_CHECKING:` 里的 import 由 scan 另记在 type_edges 里（scan.py:8），运行时不执行、不算依赖，所以不进输入包的「依赖 →」一行，不影响派活顺序，也不在总览哈希的骨架里——只改这种 import 不会让总览过期。
 
 ### runtime 那一行写明是哪个 run
-runtime 那一行在次数后面带上 hot 里的 run 名（notes.py:315），形如「run 完整 id@阶段」，由 `runs.load` 填进去（codestrata/runs.py:786）。原因是同名 case 现在重录不覆盖：同一个 case 可以有好几个 run，而 --hot 只写 case 名时解析到最新一次录完的那个，不写 @阶段 时是各阶段相加。不写明的话，读输入包的 agent、以及回头核对解读的人，都分不清「被调用 N 次」是哪次录制、哪个阶段的数字——换一个 run 数字就可能不一样。导出单文件 HTML 时 --hot 可以给好几个（切换 / 对比），但 `prompt_pack` 只收一份 hot，导出里的输入包用的是第一个、也就是主 run 的数字（payload.py:1201），这时写明 run 名更有必要。hot 里没有这个键时（不是 `runs.load` 来的），照旧只写次数。
+runtime 那一行在次数后面带上 hot 里的 run 名（notes.py:315），形如「run 完整 id@阶段」，由 `runs.load` 填进去（codestrata/runs.py:785）。原因是同名 case 现在重录不覆盖：同一个 case 可以有好几个 run，而 --hot 只写 case 名时解析到最新一次录完的那个，不写 @阶段 时是各阶段相加。不写明的话，读输入包的 agent、以及回头核对解读的人，都分不清「被调用 N 次」是哪次录制、哪个阶段的数字——换一个 run 数字就可能不一样。导出单文件 HTML 时 --hot 可以给好几个（切换 / 对比），但 `prompt_pack` 只收一份 hot，导出里的输入包用的是第一个、也就是主 run 的数字（payload.py:1201），这时写明 run 名更有必要。hot 里没有这个键时（不是 `runs.load` 来的），照旧只写次数。
 
 ### 机器核对（`verify`）
 LLM 写的解读里，有一部分是机器能核对的：file:line 引用（文件在不在、行号越没越界；只写文件名或包内相对路径时在已扫描文件里找唯一匹配，有多个时优先这份解读所描述的包自己的文件），反引号里的路径和文件名（要真的存在，也允许相对包目录），反引号里的标识符（先查符号表，再查全仓源码里出现过的标识符；根名是标准库模块的，如 `os._exit`，真去 import 解析——只 import 标准库，不执行仓库或第三方代码）。核对不了「为什么这么写」对不对——那要人去读；但编出来的函数名、写错的行号、引用了已删除的代码，都能抓住。前端和 codestrata check 都会显示结果。

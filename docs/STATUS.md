@@ -32,14 +32,13 @@
 - `trace`：录一次真实运行（子进程、fork / exec、setsid 出去的服务、停进程三级升级），存成可复用的 run；
   `--phase` 按函数切阶段；`--events` 记时序（3.12+）。
 - `serve`：图 + 运行叠加 + 时间轴（阶段 / 任意时间段）+ 时间顺序上色 + 对比两个 run（目前只是图上三种颜色）。
-- 测试：`tests/test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`（node）；`tests/hl_parity.py` 对拍浏览器端高亮和 Pygments，
+- 测试：`tests/test_runs.py`、`test_app.py`、`test_package.py`、`test_web.py`（node）、`test_platform.py`；`tests/hl_parity.py` 对拍浏览器端高亮和 Pygments，
   默认语料是本机的 vllm-omni，别人要自己给目录。
 
 ## 已知问题（如实写，不粉饰）
 
-- **平台**：只在 Linux 上测过。
-  - macOS 等别的 Unix：读 `/proc` 的地方都有兜底，trace 大概能跑，但 setsid 出去的服务找不到、停不掉（只停命令自己的进程组）。
-  - Windows：`runs.py` 顶层 `import fcntl`、`trace.py` 顶层用了 `signal.SIGKILL`，命令行入口一加载就 import 它们，所以连 scan / serve 都起不来。
+- **平台**：录制只支持 Linux，别的系统上 `trace` 直接拒绝（`compat.require_trace`）。scan / serve / graph / runs 在别的系统上
+  能 import、能用（`tests/test_platform.py` 模拟没有 fcntl / SIGKILL 的环境），但没在真的 Windows / macOS 上跑过。
 - **前端几乎没有进仓库的测试**：约 4800 行 JS，仓库里只有 `test_web.py` 的纯函数测试；浏览器测试写在开发机的临时目录里，
   依赖本机的 vllm-omni 录制，别人跑不了。
 - **god module**：`trace.py` 混了三件事：被测进程里的 hook、外面的 driver，以及加载时才用的分析
@@ -69,10 +68,10 @@
 
 ## 交接
 
-2026-09-29：采纳外部评价（功能在往 IDE 横向扩张、文档像流水账、god module、平台没写明、前端没测试），
-定了定位（仓库的运行路径对比工具，核心与语言无关）和范围；文档整理完成并提交：README 按新定位重写（12 KB，细节在
-`docs/usage.md`，4 张重点功能截图），新写 ARCHITECTURE / run-format / decisions，旧设计稿归档，`notes/overview.md` 缩短。
-**下一步**：TODO P0 第 1 条（平台判断）。开工前按 `CLAUDE.md` 先 dogfood。
+2026-09-30：做完 TODO P0「平台判断」（新增 `codestrata/compat.py`、`tests/test_platform.py`）。开工前 dogfood 了一轮（用对比回答
+「扫 gsplat 比扫 flask 多走了哪些代码」），发现对比在界面上答不出来，已记进 DOGFOOD，并收紧了 TODO「对比做成差异清单」的验收标准。
+本仓库的解读有 3 份按规矩暂不刷新（`codestrata.__main__`、`codestrata.runs`、`codestrata.trace` 标着过期），下个里程碑统一刷新。
+**下一步**：TODO P0 第 1 条「前端测试进仓库」。
 
 ## 每次开工 / 收工
 

@@ -20,7 +20,7 @@ README 讲 codestrata 是什么、怎么几分钟内跑起来；这份手册讲�
 - **Python ≥ 3.10**（`pyproject.toml` 的 `requires-python`）。在 3.10 和 3.13 上装过、扫过、录过。
 - **没有必需的第三方依赖**，只用标准库。可选的 `[highlight]` 装上 Pygments ≥ 2.17，用来给源码上色；不装的话，本地网页里的代码是纯文本。
 - **`trace --events` 要求被录的那个 Python 是 3.12+**（它要用 `sys.monitoring`），和 codestrata 自己装在哪个 Python 里无关：codestrata 装在 3.10 的 venv 里、去录一个 3.13 的程序，照样录得到事件。被录的 Python 低于 3.12 时，run 照样录完，但会打印 `⚠ 要了 --events 但没有录到事件：…`。
-- **操作系统**：只在 Linux 上验证过。Windows 上 CLI 起不来（`runs.py` 在模块顶层 `import fcntl`，录制还用到 `os.killpg` 和 `setsid`）。macOS 在代码里有退路（没有 `/proc` 时只停进程组），但没测过。
+- **操作系统**：录制（`trace`）只支持 Linux，别的系统上会直接说明并退出——它靠 `/proc` 认进程、找出 setsid 出去的服务，靠进程组和 SIGKILL 停干净。scan / serve / graph / runs 在其他系统上也能 import、能用（测试里模拟过没有 `fcntl`、没有 SIGKILL 的环境），但只在 Linux 上实际跑过。
 - **编辑器跳转**要 PATH 上有 `code`、`cursor`、`codium`、`code-insiders` 或 `subl` 之一（按这个顺序找）；都没有时 serve 会打印「没找到」，跳转按钮返回 501。
 
 ### 从 GitHub 装
@@ -562,7 +562,7 @@ vllm-omni 的 `vllm_omni/` 包（不叠 run）导出单文件：6.6–6.8 s，14
 | 严重度 | 局限 |
 |---|---|
 | 高 | **只看 Python。** 静态图只收 `.py`；C/C++/CUDA 只能浏览，不进 import 图（pybind、`torch.ops` 这类跨语言的边没有）；运行时只 hook Python 函数。 |
-| 高 | **只在 Linux 上验证过。** Windows 上 CLI 起不来（`fcntl`）。残留进程识别、「还在录吗」的判断都靠 `/proc`：没有 `/proc` 的系统上找不到残留进程，正在录的 run 会显示成「中断」。 |
+| 高 | **录制只支持 Linux**，别的系统上 `trace` 直接拒绝。其余命令在别的系统上能用但只在 Linux 上跑过；「还在录吗」的判断靠 `/proc`，没有 `/proc` 的系统上看别处正在录的 run 会显示成「中断」。 |
 | 高 | **`--events`、时间顺序、任意时间段都要被录的 Python 是 3.12+**（`sys.monitoring`）。3.10 和 3.11 退回 `sys.setprofile`：仓库内的调用开销差不多，但仓库外的代码也要付回调的开销（3.12+ 上几乎为 0；3.10 上一个只调标准库的循环慢了约 8 倍）；3.10 还没有 `co_qualname`，录完一改代码，这个文件里的次数就挪不回函数上。 |
 | 高 | **serve 只在启动时读索引。** 重新 scan 之后，图和搜索要重启 serve 才更新（Ctrl+点击会自动换新；新录的 run 不用重启）。 |
 | 高 | **读运行时图要知道：** 「调用方」是最近的仓库内的帧，穿过框架、事件循环的调用会显示成直接调用；调用次数高的多半是轮询，不等于重要；import 触发的模块顶层执行不算调用。 |
@@ -642,6 +642,7 @@ GET  /code/<path>?l=N         整个文件，带行号锚点
 .venv/bin/python tests/test_runs.py      # run 存储和录制的端到端测试，在 CPU 假服务上跑真的 trace（setsid 的服务、multiprocessing、exec、asyncio、分阶段），约 1.5–2 分钟
 .venv/bin/python tests/test_app.py       # 主菜单：清单、录制表单、后台任务、HTTP 鉴权、扫描、录制、打开图
 .venv/bin/python tests/test_web.py       # 前端里不碰 DOM 的纯函数（文件内查找、时间轴的吸附 / 放大），要 node
+.venv/bin/python tests/test_platform.py  # 平台：模拟没有 fcntl / SIGKILL、不是 Linux 的环境
 .venv/bin/python tests/test_package.py   # 非 -e 安装的包里要有前端文件，要 uv
 .venv/bin/python tests/hl_parity.py      # 浏览器端高亮 hl.js 对拍 Pygments，要 node
 ```

@@ -21,7 +21,6 @@ run 不能重建——一次录制往往要几分钟 GPU（起服务、加载模
 """
 from __future__ import annotations
 
-import fcntl
 import gzip
 import hashlib
 import json
@@ -35,6 +34,7 @@ import tarfile
 import time
 from pathlib import Path
 
+from . import compat as _compat
 from . import events as _events
 from . import seq as _seq
 from . import trace as _trace
@@ -465,8 +465,7 @@ def migrate(repo: Path) -> list[str]:
         return []
     # 整个迁移串行：同时起的几个 serve / runs ls 排队，后来的看到 run 已经在了就跳过。
     # 锁随进程释放，所以持锁时还在的 .tmp-* 一定是上次迁到一半死掉留下的
-    with open(base / ".migrate.lock", "a") as lk:
-        fcntl.flock(lk, fcntl.LOCK_EX)
+    with open(base / ".migrate.lock", "a") as lk, _compat.file_lock(lk):
         return _migrate_locked(repo, cs, base)
 
 

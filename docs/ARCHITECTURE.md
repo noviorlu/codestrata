@@ -38,7 +38,7 @@ flowchart LR
    **driver** `trace.run`：`_make_bootstrap` 把 **hook** `_SITECUSTOMIZE` 写成临时目录里的 `sitecustomize.py` 插到
    `PYTHONPATH` 最前面，经 `CODESTRATA_ROOT` / `CODESTRATA_OUT` / `CODESTRATA_EVENTS` / `CODESTRATA_PHASE_AT` 等环境变量配置，
    命令在自己的会话里跑。每个 Python 进程映像往 `parts/` 写 `part-<pid>-<t0ns>.json`（`funcs`、`func_edges`、`names`、
-   文件哈希），`--events` 时另写 `ev-<pid>-<t0ns>.log`。停止按 `_LEVELS`（SIGINT → SIGTERM → SIGKILL）逐级升级，
+   文件哈希），`--events` 时另写 `ev-<pid>-<t0ns>.log`。停止按 `_levels()`（SIGINT → SIGTERM → SIGKILL）逐级升级，
    `stop_leftovers` 停残留进程，最后 `trace.merge` 合并分片，经 `after` 回调收尾。
 4. **run**：`runs.finalize` → `capture`（case 脚本、配置文件、环境、git → `detail.json`）→ `_pack_all`（`parts.tar.gz`、
    `events/raw.tar.gz`）→ `_build_events`（`events.build` → `events/spans/`）→ `derive`（`counts.json.gz`：各阶段的
@@ -59,6 +59,7 @@ flowchart LR
 | 模块 | 行 | 职责 |
 |---|---:|---|
 | `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
+| `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
 | `__main__.py` | 784 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
 | `scan.py` | 806 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1401 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击 |
@@ -148,13 +149,15 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；`index.html` 的脚本清单和 `render.SCRIPTS` 一致。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。
+- `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan / graph 能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 
 **浏览器测试还不在仓库里**：图、叠加、时间轴、对比、代码窗口的交互目前只在开发机上手测，见 `docs/TODO.md` P0「前端测试进仓库」。
 
 ## 平台
 
-`trace` 只在 Linux 上验证过，代码里没有平台判断（`docs/TODO.md` P0 第 1 条）。hook 读 `/proc/self/stat|cmdline`（失败有退路）；
+录制只支持 Linux：`cmd_trace` 一开始就调 `compat.require_trace()`，别的系统上说明并退出，不建 run 目录。平台差异都在 `compat.py`
+（能不能录、跨平台的文件锁）；只有 Unix 才有的东西（`fcntl`、`signal.SIGKILL`）不在模块顶层取，所以别的系统上所有模块都能 import，
+scan / serve / graph / runs 照常可用（`tests/test_platform.py` 模拟过）。录制为什么非 Linux 不可：hook 读 `/proc/self/stat|cmdline`（失败有退路）；
 driver 用 `/proc/<pid>/stat|status|environ|cmdline` 认进程、找残留（`_proc_start`、`_alive`、`_ignores`、`leftovers`），没有 `/proc`
-时只停命令自己的进程组，setsid 出去的服务找不到。`os.killpg`、`start_new_session`、`os.register_at_fork` 和模块级 `_LEVELS` 里的
-`signal.SIGKILL` 在 Windows 上都没有：`trace.py` 在那里 import 即失败，而 `__main__`、`runs` 都在顶层 import 它。
+时只停命令自己的进程组，setsid 出去的服务找不到；`os.killpg`、`start_new_session`、`os.register_at_fork`、`signal.SIGKILL` 在 Windows 上都没有。

@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from . import self_command
+from . import compat as _compat
 from . import cut as _cut
 from . import notes as _notes
 from . import payload as _payload
@@ -253,6 +254,7 @@ _TAG_RE = re.compile(r"^[A-Za-z0-9._:=/+-]+$")
 
 
 def cmd_trace(a) -> int:
+    _compat.require_trace()                 # 不能录的系统上，在建 run 目录之前就停
     repo = Path(a.repo).resolve()
     if not a.cmd:
         raise SystemExit("要在 -- 之后给出命令，例如：\n"

@@ -703,7 +703,10 @@ def _killpg(pgid: int, sig: int) -> None:
         pass
 
 
-_LEVELS = ((signal.SIGINT, None), (signal.SIGTERM, 15.0), (signal.SIGKILL, 5.0))
+def _levels():
+    """停进程的三级：(信号, 升级到它之前等几秒)。用到时才取——SIGKILL 只有 Unix 有，放在模块顶层会让
+    Windows 上连 scan / serve 都 import 不了（录制本身只支持 Linux，见 compat.py）"""
+    return ((signal.SIGINT, None), (signal.SIGTERM, 15.0), (signal.SIGKILL, 5.0))
 
 
 def _before_term(parts: Path | None, alive) -> None:
@@ -729,7 +732,7 @@ def _stop(alive, send, grace: float, poke=None, parts: Path | None = None,
     poke() 返回 True 表示用户又按了一次 Ctrl+C（或按了 Ctrl+\\）：直接升级一级。
     skip_int() 为真时跳过 SIGINT 这一级。"""
     last = None
-    for sig, wait in _LEVELS:
+    for sig, wait in _levels():
         if not alive():
             break
         if sig == signal.SIGINT and skip_int():
@@ -771,7 +774,7 @@ def stop_pids(pids: list[int], grace: float, poke=None, parts: Path | None = Non
     def mine(p):                               # 还是当初那个进程（pid 没被复用）
         return _alive(p) and _proc_start(p) == starts[p]
 
-    for sig, wait in _LEVELS:
+    for sig, wait in _levels():
         alive = [p for p in pids if mine(p)]
         if not alive:
             break
