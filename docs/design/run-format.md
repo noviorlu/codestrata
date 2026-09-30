@@ -464,7 +464,7 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 ### 9.3 扫描端要产出的静态索引
 
 scan 写两个文件，加载时（`payload.load_index`）合成一个 index。下表是叠加、图、切面实际读到的字段
-（`payload.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace/` 里查过）；其余的只给冻结区（代码窗口、交叉引用、解读）用。
+（`payload.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace/` 里查过）；其余的只给冻结区（代码窗口、交叉引用）用。
 
 **index.json**
 

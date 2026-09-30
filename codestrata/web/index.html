@@ -22,7 +22,7 @@
         <p class="lede" id="lede"></p>
         <h3>怎么操作</h3>
         <ul class="howto">
-          <li>点<b>节点</b>在下面的抽屉里看模块：依赖谁、文件树、类 / 函数、解读；再点一次、点空白处或按 Esc 取消选中。</li>
+          <li>点<b>节点</b>在下面的抽屉里看模块：依赖谁、文件树、类 / 函数；再点一次、点空白处或按 Esc 取消选中。</li>
           <li>点<b>箭头</b>看这条依赖具体用了对方哪些函数 / 类、在哪一行。</li>
           <li>节点左上角的 <b>＋</b> 就地展开成子模块（框在一个框里），框头的 <b>−</b> 收起；展开 / 收起不会取消选中。</li>
           <li>缩放：图左上角的 ＋ / －，或按住 <b>Ctrl</b> 滚滚轮；✥ 打开后按住任意位置拖动图。<span id="panhint" hidden>现在图比图框宽：按住空白处也能拖，或 Shift + 滚轮横着滚。</span></li>
@@ -49,7 +49,6 @@
       <span id="edgechips" style="display:contents"></span>
       <span class="lbl">视图</span>
       <button class="chip" data-t="onlyhot" aria-pressed="false">只看跑到的</button>
-      <button class="chip" data-t="noted" aria-pressed="false">只看已解读</button>
       <span class="sp"></span>
       <span class="prog" id="prog"></span>
       <button class="chip" id="resetcut" style="display:none" title="回到 scan 算出来的默认层级">恢复默认层级</button>
@@ -83,13 +82,10 @@
       <div class="dhead" id="dhead">
         <button class="dtog" id="dtog" aria-expanded="false" aria-controls="dbody" title="展开 / 收起详情">▴</button>
         <span class="dtitle" id="dtitle">详情</span>
-        <span class="dsub" id="dsub">点图上的节点或箭头，在这里看它的文件、类 / 函数和解读</span>
+        <span class="dsub" id="dsub">点图上的节点或箭头，在这里看它的文件、类 / 函数，或者这条依赖上实际调了哪些函数</span>
       </div>
       <div class="dbody" id="dbody">
-        <div class="cols">
-          <section class="det" id="det"></section>
-          <aside class="side" id="side"></aside>
-        </div>
+        <section class="det" id="det"></section>
         <footer id="foot"></footer>
       </div>
     </section>

@@ -323,12 +323,6 @@ class AppHandler(BaseHandler):
                 return self._json({"error": str(e)}, 500)
         return self._json(job.snapshot())
 
-    # ---- PUT（只有图服务有：写解读）----
-    def do_PUT(self):
-        path = urllib.parse.urlparse(self.path).path
-        if self._guard(path) and not self._view("PUT"):
-            self._json({"error": "not found"}, 404)
-
     # ---- DELETE ----
     def do_DELETE(self):
         u = urllib.parse.urlparse(self.path)

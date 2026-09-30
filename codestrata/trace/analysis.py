@@ -368,7 +368,7 @@ def merge(parts: Path) -> dict:
 
 
 def file_shas(root: Path, rels) -> dict:
-    """runtime 数据和解读一样会腐烂：trace 以 file:行号 为键，代码一改就对不上。
+    """runtime 数据会腐烂：trace 以 file:行号 为键，代码一改就对不上。
     录制时记下每个涉及文件的内容哈希，加载时比对，就知道哪些叠加已经不准了。"""
     import hashlib
     out = {}

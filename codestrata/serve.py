@@ -9,13 +9,8 @@
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
-                                  可加 @阶段，空 = 只看静态图）。edge / refs / pack 也接受 run=；
+                                  可加 @阶段，空 = 只看静态图）。edge / refs 也接受 run=；
                                   graph 和 edge 另接受 cmp=（对比的另一个 run：图上三种颜色、边详情带 calls_b）
-    GET  /api/notes/<target>      解读（含 stale 判定）
-    GET  /api/status?ids=a,b      一批节点的解读状态 noted / stale / todo（图上的徽标）
-    PUT  /api/notes/<target>      写入解读        ← LLM agent 从这里介入
-    GET  /api/tasks               还没解读 / 已过期的目标，按架构高度自底向上
-    GET  /api/pack/<target>       给 agent 的输入包（纯文本 Markdown）
     GET  /api/symbol/<key>        一个符号的源码片段
     GET  /api/file?f=             整个文件 + 符号大纲（全文窗口用）
     GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
@@ -43,7 +38,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import cut as _cut
-from . import notes as _notes
 from . import payload as _payload
 from . import runs as _runs
 from . import seq as _seq
@@ -125,8 +119,8 @@ class BaseHandler(BaseHTTPRequestHandler):
 
     def _host_ok(self) -> bool:
         """Host 头必须是本机的这个端口：防 DNS rebinding（别的域名解析到 127.0.0.1，浏览器就会把
-        那个网页的请求发到这里来；Host 头还是那个域名）。两个本地服务都能执行本机操作（写解读、
-        开编辑器、跑命令），都要挡"""
+        那个网页的请求发到这里来；Host 头还是那个域名）。两个本地服务都能执行本机操作（开编辑器、
+        跑命令），都要挡"""
         port = self.server.server_address[1]
         return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
 
@@ -251,11 +245,6 @@ class Handler(BaseHandler):
                         "loadable": (rd / "counts.json.gz").is_file(), "migrated": bool(r.get("migrated_from"))})
         return {"default": Handler.default_run, "runs": out}
 
-    def _target(self, prefix: str, path: str) -> str | None:
-        t = urllib.parse.unquote(path[len(prefix):])
-        # 只接受目录树上真实存在的节点（和总览这个保留名），防止借 target 写出仓库外的文件
-        return t if (_cut.is_node(self.idx, t) or t == _notes.OVERVIEW) else None
-
     # ---- GET ----
     def do_GET(self):
         if not self._host_ok():
@@ -279,12 +268,10 @@ class Handler(BaseHandler):
         hot = hot_meta = hot_key = None
         hot_b = hot_meta_b = key_b = None
         cmp_err = None
-        if path in ("/api/graph", "/api/edge", "/api/refs") or path.startswith("/api/pack/"):
+        if path in ("/api/graph", "/api/edge", "/api/refs"):
             try:
                 hot, hot_meta, hot_key = self._hot(q)
             except LookupError as e:
-                if path.startswith("/api/pack/"):   # 输入包是纯文本，错误也给纯文本
-                    return self._send(404, str(e).encode(), "text/plain; charset=utf-8")
                 return self._json({"error": str(e)}, 404)
             # 对比的另一个 run（cmp=）：找不到、或者就是 A 自己，不让整张图挂掉——只叠 A，说一声
             if hot and path in ("/api/graph", "/api/edge") and (q.get("cmp") or [""])[0].strip():
@@ -321,29 +308,6 @@ class Handler(BaseHandler):
                     while len(Handler._graphs) > 32:   # 切面可以任意组合，缓存只留最近的一些
                         Handler._graphs.pop(next(iter(Handler._graphs)))
             return self._send(200, body, "application/json; charset=utf-8")
-
-        if path.startswith("/api/notes/"):
-            t = self._target("/api/notes/", path)
-            if not t:
-                return self._json({"error": "unknown target"}, 404)
-            nt = _notes.load(self.repo, self.idx, t)
-            nt["problems"] = _notes.verify(self.repo, self.idx, t)
-            return self._json(nt)
-
-        if path == "/api/status":
-            ids = [t for t in (q.get("ids") or [""])[0].split(",")
-                   if t and (t == _notes.OVERVIEW or _cut.is_node(self.idx, t))]
-            return self._json(_notes.status(self.repo, self.idx, ids))
-
-        if path == "/api/tasks":
-            return self._json(_notes.tasks(self.repo, self.idx))
-
-        if path.startswith("/api/pack/"):
-            t = self._target("/api/pack/", path)
-            if not t:
-                return self._send(404, b"unknown target", "text/plain; charset=utf-8")
-            txt = _notes.prompt_pack(self.repo, self.idx, t, hot=hot)
-            return self._send(200, txt.encode(), "text/markdown; charset=utf-8")
 
         if path.startswith("/api/symbol/"):
             key = urllib.parse.unquote(path[len("/api/symbol/"):])
@@ -412,26 +376,6 @@ class Handler(BaseHandler):
 
         return self._asset(path)
 
-    # ---- PUT：写解读 ----
-    def do_PUT(self):
-        if not self._host_ok():
-            return self._send(403, b"bad host", "text/plain")
-        u = urllib.parse.urlparse(self.path)
-        if not u.path.startswith("/api/notes/"):
-            return self._send(404, b"not found", "text/plain")
-        t = self._target("/api/notes/", u.path)
-        if not t:
-            return self._json({"error": "unknown target"}, 404)
-        body, err = self._body_json()
-        if err:
-            return self._json({"error": err}, 400)
-        md = (body.get("md") or "").strip()
-        if not md:
-            return self._json({"error": "md 为空"}, 400)
-        meta = {k: str(v) for k, v in (body.get("meta") or {}).items()
-                if k in ("written_by", "status", "confidence")}
-        meta.setdefault("written_by", "web")
-        return self._json(_notes.save(self.repo, self.idx, t, md, meta=meta))
 
 
 def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | None = None) -> int:
@@ -455,13 +399,11 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | No
     lag = _payload.index_lag(repo)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     ed = _editor()
-    todo = _notes.tasks(repo, idx)
     print(f"codestrata serve → http://127.0.0.1:{port}/")
     print(f"  仓库   {repo}")
     print(f"  前端   {WEB}")
     n_default = len(_cut.visible(_cut.view(idx, set(idx.get("default_open") or []))))
     print(f"  图     默认切面 {n_default} 个节点（{len(idx['packages'])} 个文件级模块，点节点可展开 / 收起）")
-    print(f"  解读   {_notes.notes_root(repo)}  （待写 {len(todo)}）")
     print(f"  编辑器 {' '.join(ed) if ed else '没找到，跳转按钮会返回 501'}")
     print(f"  run    录下的 {n_runs} 个，页面上方「运行」里切换（serve 开着时新录的也看得到）")
     if lag:

@@ -1,5 +1,5 @@
 /* 数据访问层。整套前端只通过这一层拿数据，于是同一份 UI 能跑两种模式：
- *   live      —— codestrata serve：fetch api/*，可写解读、可跳编辑器。地址都是相对的：页面可能
+ *   live      —— codestrata serve：fetch api/*，可跳编辑器。地址都是相对的：页面可能
  *                不在根上（经主菜单转发时在 /v/<端口>/ 下，见 app.py）
  *   embedded  —— 单文件导出：读内嵌 JSON，只读、离线、可分享
  * 这和「总图 / hot 图」是同一个思路：一套渲染，换数据源。 */
@@ -26,7 +26,6 @@ window.CS = window.CS || {};
     mode: 'embedded',
     // graph --public 导出的：主目录写成了 ~、PATH 里项目以外的目录省略成了 …（帮助里的复刻命令旁边会说明）
     public: !!EMB.public,
-    canWrite: false,
     canOpenEditor: false,
     // 和 /api/graph 同形：整份 payload。导出版只有导出时的那个切面，展开 / 收起要靠 serve
     graph: function (open) {
@@ -60,16 +59,7 @@ window.CS = window.CS || {};
       Object.keys(EMB.hotBy || {}).forEach(function (k) { rows.push(row(EMB.hotBy[k].meta)); });
       return Promise.resolve({ default: m ? m.run_id + (m.phase ? '@' + m.phase : '') : null, runs: rows, embedded: true });
     },
-    note: function (t) { return Promise.resolve((EMB.notes || {})[t] || blank(t)); },
     seqEdges: function () { return Promise.reject(new Error('导出版没有时序数据')); },
-    status: function (ids) {
-      var out = {};
-      ids.forEach(function (t) { var nt = (EMB.notes || {})[t]; out[t] = !nt || !nt.present ? 'todo' : (nt.stale ? 'stale' : 'noted'); });
-      return Promise.resolve(out);
-    },
-    saveNote: function () { return Promise.reject(new Error('导出的单文件是只读的')); },
-    tasks: function () { return Promise.resolve(EMB.tasks || []); },
-    pack: function (t) { return Promise.resolve((EMB.packs || {})[t] || ''); },
     source: function (k) { return Promise.resolve(withTargets((EMB.sources || {})[k] || null)); },
     file: function (f) { return Promise.resolve(withTargets((EMB.files || {})[f] || null)); },
     // 导出版只内嵌了一部分文件：跳过去之前先问一声，免得落到「没内嵌」的页面上回不来
@@ -85,7 +75,6 @@ window.CS = window.CS || {};
     home: function () { return Promise.resolve(null); }
   } : {
     mode: 'live',
-    canWrite: true,
     canOpenEditor: true,
     graph: function (open, w) {
       var q = [];
@@ -96,8 +85,8 @@ window.CS = window.CS || {};
       return j('api/graph' + (q.length ? '?' + q.join('&') : ''));
     },
     canCut: true,
-    // 当前叠在图上的 run（「完整 id@阶段」，空 = 只看静态图）。叠加相关的请求（图、边、引用、
-    // 输入包）都带上它，app 只管改这一个值
+    // 当前叠在图上的 run（「完整 id@阶段」，空 = 只看静态图）。叠加相关的请求（图、边、引用）
+    // 都带上它，app 只管改这一个值
     run: '',
     canSwitchRun: true,
     runs: function () { return j('api/runs'); },
@@ -106,19 +95,6 @@ window.CS = window.CS || {};
     // 切面上每条边在当前 run（选的阶段）里第一次 / 最后一次被调用的时刻和次数：「时间顺序」上色
     seqEdges: function (open) {
       return j('api/seq/edges?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
-    },
-    note: function (t) { return j('api/notes/' + encodeURIComponent(t)); },
-    // 一批节点的解读状态（noted / stale / todo），不核对内容，给图上的徽标用
-    status: function (ids) { return j('api/status?ids=' + encodeURIComponent(ids.join(','))); },
-    saveNote: function (t, md) {
-      return j('api/notes/' + encodeURIComponent(t),
-        { method: 'PUT', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ md: md }) });
-    },
-    tasks: function () { return j('api/tasks'); },
-    pack: function (t) {
-      return fetch('api/pack/' + encodeURIComponent(t) + (this.run ? '?run=' + encodeURIComponent(this.run) : ''))
-        .then(function (r) { return r.text(); });
     },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
     file: function (f) { return j('api/file?f=' + encodeURIComponent(f)); },
@@ -380,9 +356,4 @@ window.CS = window.CS || {};
     return String(h || '').replace(/<[^>]*>/g, '').replace(/&(lt|gt|quot|#x27|#39|amp);/g, function (m, e) {
       return { lt: '<', gt: '>', quot: '"', '#x27': "'", '#39': "'", amp: '&' }[e]; });
   }
-
-  function blank(t) {
-    return { target: t, present: false, stale: false, html: '', md: '', meta: {} };
-  }
-  CS.blankNote = blank;
 })(window.CS);

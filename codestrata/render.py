@@ -4,7 +4,7 @@
 serve 时前端 fetch /api/*；导出时前端读内嵌的 window.CS_EMBEDDED。
 切换由 web/ds.js 完成，UI 代码本身不感知。
 
-导出的文件只读、离线、可以直接发给别人；要写解读或跳编辑器，用 serve。
+导出的文件只读、离线、可以直接发给别人；要展开 / 收起、跳编辑器、看时间顺序，用 serve。
 """
 from __future__ import annotations
 

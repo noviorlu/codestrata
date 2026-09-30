@@ -22,7 +22,7 @@
      0  双向都多                  → 中间层（引擎、调度）
     -1  只被依赖，自己不依赖别人  → 叶子工具（协议定义、metrics）
 
-架构高度现在只是详情面板上的一个指标（和解读任务的先后）。图的纵轴改成了按依赖分层（layout.layers）：
+架构高度现在只是详情面板上的一个指标。图的纵轴改成了按依赖分层（layout.layers）：
 出入度比值只看每个模块自己，不看谁连着谁，边会画成往上指。早先不用分层的理由是循环 import——vllm-omni
 上 30 个二级包有 20 个在同一个强连通分量里、缩点后分层信息全丢；layers 不缩点，而是按边的权重打断
 最轻的那些回边（贪心 + sifting），层太多时再压到 16 条泳道。
@@ -300,8 +300,8 @@ DOC_PATH_KEYS = {"primary_code_paths": "primary", "code_paths": "primary",
 def collect_docs(root: Path, files: dict[str, str]) -> dict[str, list]:
     """把作者写的文档挂到包上：包目录里的 README，和 frontmatter 声明了代码路径的设计文档。
 
-    解读层最缺的是「为什么」，而作者往往在文档里写过。输入包和详情面板会列出它们，
-    让写解读的人或 agent 先读作者自己的说法，而不是从命名去猜。
+    「为什么这样写」作者往往在文档里写过。详情面板会列出它们，读代码的人先看作者自己的说法，
+    而不是从命名去猜。
     """
     dir_pkg: dict[str, str] = {}
     for rel, unit in files.items():

@@ -12,7 +12,6 @@ from pathlib import Path
 from . import cut as _cut
 from . import highlight as _hl
 from . import layout as _layout
-from . import notes as _notes
 from . import runs as _runs
 from . import xref as _xref
 
@@ -1035,7 +1034,7 @@ _PATHLIST = ("PATH", "LD_LIBRARY_PATH", "PYTHONPATH")
 
 def publicize(pl: dict, home: str, keep: list[str]) -> dict:
     """公开导出（graph --public）：要发到公网上的页面里不带本机的个人信息。
-      - 所有字符串（路径、命令、argv、解读正文、源码都算）里的主目录写成 ~；源码行里换了的，这一行上
+      - 所有字符串（路径、命令、argv、源码都算）里的主目录写成 ~；源码行里换了的，这一行上
         Ctrl+点击的列号跟着挪（xref.toks 是按原文算的列）；
       - run 元数据里的命令（rerun / rerun_env / cmd / 各进程 argv）和 env_inherited 中 PATH / LD_LIBRARY_PATH /
         PYTHONPATH 这种目录列表，不在 keep（仓库、各 run 录制时所在的目录；主目录本身、它的上级、/ 不算）
@@ -1160,7 +1159,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
                    per_pkg: int = 10, lines: int = 30,
                    total_budget: int = 14_000_000, others: list | None = None, compare: bool = False,
                    code: bool = True) -> dict:
-    """单文件导出要的全部数据：图 + 已有解读 + 待办输入包 + 代表符号的源码 + 尽量多的全文。
+    """单文件导出要的全部数据：图 + 代表符号的源码 + 尽量多的全文。
     code=False（site.export_site，源码从 GitHub 取）：不带符号片段、全文和共用的跳转目标表。
 
     整个 HTML 要装得进一个单文件（artifact 之类的宿主上限 16 MB），所以先算好其余部分，
@@ -1193,12 +1192,6 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
             hot_by[ref] = {"packages": hp, "edges": he, "dyn": hd, "unmapped": h.get("anon"),
                            "runtimeOnlyEdges": rt, "dynOnlyEdges": _dyn_only(p["edgeKinds"], [(he, hd)]),
                            "meta": _meta_brief(m)}
-    nts = {n["id"]: _notes.load(repo, idx, n["id"]) for n in p["graph"]["nodes"]}
-    nts[_notes.OVERVIEW] = _notes.load(repo, idx, _notes.OVERVIEW)
-    for name, nt in nts.items():
-        nt["problems"] = _notes.verify(repo, idx, name)
-    todo = _notes.tasks(repo, idx)
-    packs = {t["target"]: _notes.prompt_pack(repo, idx, t["target"], hot=hot) for t in todo}
     # Ctrl+点击的目标（目标串 + 定义位置）全文件共用一张表，每个文件 / 片段只带 token：
     # 早先每个文件各带一份，同一个目标重复几百遍，占掉的额度够再内嵌一两百个文件
     xtargets: dict = {}
@@ -1223,7 +1216,7 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
         edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
     for a, b, _ in p["runtimeOnlyEdges"] + p["typeOnlyEdges"]:
         edges[f"{a}|{b}"] = edge_compare(repo, idx, a, b, hot, hb)
-    p.update({"notes": nts, "tasks": todo, "packs": packs, "sources": sources, "edges": edges,
+    p.update({"sources": sources, "edges": edges,
               "search": search_index(idx), "xrefTargets": xtargets, "hotBy": hot_by})
     if not code:
         for k in ("sources", "xrefTargets"):
@@ -1235,12 +1228,6 @@ def export_payload(repo: Path, idx: dict, *, hot=None, hot_meta=None,
     remaining = total_budget - len(json.dumps(p, ensure_ascii=False))
     ran = {k.rpartition(":")[0] for k in ((hot or {}).get("symbols") or {})}
     ran |= {s["f"] for k, s in (idx.get("symbols") or {}).items() if k in ((hot or {}).get("symbols") or {})}
-    # 解读里引用过的文件也优先：读者最常从解读点进去看的就是它们
-    for name, nt in nts.items():
-        for m in _notes.REF_RE.finditer(nt.get("md") or ""):
-            fp, _ = _notes.resolve_ref(repo, idx, m.group(1), name)
-            if fp:
-                ran.add(str(fp.relative_to(repo)))
     every = sorted(set(idx.get("files") or {}) | set(idx.get("aux") or {})
                    | {d["f"] for ds in (idx.get("docs") or {}).values() for d in ds})
     def size(rel):

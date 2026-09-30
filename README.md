@@ -104,7 +104,6 @@ scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 
 - **复刻**：每个 run 存下原样的命令、所在目录和相关环境变量，一键复制就能再录一次。见[管理 run](docs/usage.md#管理-run)。
 - **分享**：`codestrata graph` 导出一个离线 HTML；`--link github` 导出从 GitHub 取源码的静态站点。见[分享给别人](docs/usage.md#分享给别人)。
 - **主菜单**：`codestrata app` 在浏览器里选文件夹、点按钮扫描、录制、打开图。见[主菜单](docs/usage.md#主菜单-codestrata-app)。
-- **解读层**：给人或 LLM agent 派活，按依赖自底向上写每个模块的讲解，存进 `notes/`；代码一改自动标「可能过期」，`codestrata check` 核对里面引用的行号和名字。见[解读层](docs/usage.md#解读层)。
 
 ## 它是怎么做到的
 

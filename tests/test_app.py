@@ -462,8 +462,6 @@ def test_app_http():
         assert anon.req("GET", o["url"] + "api/graph", header=False)[0] == 403
         assert c.req("GET", o["url"], host="evil.example")[0] == 403
         assert c.req("GET", f"/v/{port}/api/projects", header=False)[0] == 404        # 不转发到任意端口（包括主菜单自己）
-        st, saved, _ = c.req("PUT", o["url"] + "api/notes/_overview", {"md": "经主菜单写的总览"}, header=False)
-        assert st == 200 and (raw / "notes" / "overview.md").read_text().find("经主菜单写的总览") >= 0, saved
         # 图服务的 /api/open（开编辑器）要 X-Codestrata：转发时带不带头照原样传过去（这里不带：不会真的开编辑器）
         assert c.req("GET", o["url"] + "api/open?f=does-not-exist.py&l=1", header=False)[0] == 403
         assert _status(vport, "GET", "/api/app", host="evil.example") == 403          # 图服务自己也挡 DNS rebinding
@@ -510,7 +508,7 @@ def _status(port: int, method: str, path: str, body: bytes | None = None, host: 
 
 
 def test_serve_guard_and_home():
-    """直接 serve（不是主菜单起的）：/api/app 的 home 是 null；Host 不对 403；写解读的 body 要是对象"""
+    """直接 serve（不是主菜单起的）：/api/app 的 home 是 null；Host 不对 403；不接受写（PUT 501）"""
     import subprocess
     from codestrata.viewers import free_port
     repo, port = fresh(), free_port()
@@ -523,7 +521,7 @@ def test_serve_guard_and_home():
             time.sleep(0.2)
         assert _get_json(port, "/api/app") == {"home": None}
         assert _status(port, "GET", "/", host="evil.example:80") == 403
-        assert _status(port, "PUT", "/api/notes/_overview", body=b"[1]") == 400
+        assert _status(port, "PUT", "/api/notes/_overview", body=b"[1]") == 501       # serve 是只读的：不接受写
         # 开编辑器：没带 X-Codestrata 头（别的网页用 <img src> 发的 GET 就是这样）一律 403。
         # 请求一个不存在的文件：万一守卫失效，拿到的是 400（找不到文件），也不会真的在桌面上开编辑器
         assert _status(port, "GET", "/api/open?f=does-not-exist.py&l=1") == 403

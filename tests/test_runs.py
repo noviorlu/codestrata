@@ -731,7 +731,7 @@ def test_publicize_rules():
           "files": {"f.py": {"lines": [f'<span class="s">&quot;{H}/models&quot;</span>, <span class="n">NAME</span>'],
                              "xref": {"toks": [[1, 19, 23, 5, 0], [1, 2, 6, 3, 0]]}}},
           "sources": {"k": {"line": 10, "lines": ["x = 1", f'p = "{H}/a" ; NAME2'], "xref": {"toks": [[11, 19, 24, 1, 0]]}}},
-          "notes": {"n": {"md": f"weights in {H}. and {H}.bak and {H}a"}}}
+          "extra": {"n": {"md": f"weights in {H}. and {H}.bak and {H}a"}}}
     for keep in ([f"{H}/p"], [f"{H}/p", H, "/", ""]):
         o = payload.publicize(pl, H, keep)
         m = o["hotMeta"]
@@ -741,7 +741,7 @@ def test_publicize_rules():
         assert m["env_inherited"] == {"PATH": "…:~/p/b"} and m["script"]["text"] == "export PATH=/opt/cuda/bin:$PATH"
     assert o["files"]["f.py"]["lines"][0].count("~/models") == 1 and o["files"]["f.py"]["xref"]["toks"] == [[1, 12, 16, 5, 0]]
     assert o["sources"]["k"]["xref"]["toks"] == [[11, 12, 17, 1, 0]], o["sources"]
-    assert o["notes"]["n"]["md"] == f"weights in ~. and {H}.bak and {H}a", o["notes"]
+    assert o["extra"]["n"]["md"] == f"weights in ~. and {H}.bak and {H}a", o["extra"]
     try:                                            # 漏网的（比如非字符串里带着）：拒绝写出
         payload.publicize({"x": [1, {"y": ("tuple " + H + "/q",)}]}, H, [])
     except SystemExit as e:
@@ -2324,26 +2324,6 @@ def test_compare_and_multi_export():
     finally:
         srv.kill()
         srv.wait()
-
-
-def test_notes_fix_refs_keeps_changed():
-    """check --fix 只改挪了位置的引用；那一行内容改掉了的，修完还得报出来（指纹不能被顺手刷新）。"""
-    repo = fresh()
-    w = repo / "fakesvc" / "work.py"
-    lines = w.read_text().splitlines()
-    ln_moved = next(i for i, l in enumerate(lines, 1) if l.startswith("def compute"))
-    ln_changed = next(i for i, l in enumerate(lines, 1) if l.startswith("def load_weight"))
-    md = repo / "n.md"
-    md.write_text(f"## 是什么\n`compute` 在 work.py:{ln_moved}，`load_weight` 在 work.py:{ln_changed}。\n")
-    cs("note", repo, "fakesvc.work", md)
-    # 顶上插一行（两个都往下挪一行），再把 load_weight 那一行改掉
-    w.write_text("# 插一行\n" + w.read_text().replace("def load_weight(i: int) -> int:", "def load_weight(i: int, k: int = 1) -> int:"))
-    cs("scan", repo)
-    cs("check", repo, "fakesvc.work", "--fix", check=False)
-    r = cs("check", repo, "fakesvc.work", check=False)
-    out = r.stdout + r.stderr
-    assert f"work.py:{ln_moved}" not in out, out                       # 挪了的已经改到新行号，不再报
-    assert "改掉了" in out and r.returncode != 0, out                    # 改掉了的那一行还在报
 
 
 if __name__ == "__main__":

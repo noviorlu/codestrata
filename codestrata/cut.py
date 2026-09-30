@@ -115,11 +115,6 @@ def units_of(index: dict, node: str) -> list[str]:
     return [node] if node in index["packages"] else []
 
 
-def node_files(index: dict, node: str) -> list[str]:
-    """一个节点的源文件（相对路径），用于解读的 code_sha 等。"""
-    us = set(units_of(index, node))
-    return sorted(f for f, u in (index.get("files") or {}).items() if u in us)
-
 
 def fanout(index: dict, node: str) -> int:
     """展开这个节点后，它会变成几个节点。"""

@@ -38,9 +38,9 @@ window.CS = window.CS || {};
       }).then(function (d) {
         self.data = d;
         self.header(d);
-        CS.panel.init(document.getElementById('det'), document.getElementById('side'), d);
-        CS.graph.onPick = function (id) { CS.panel.showPkg(id); CS.panel.showNote(id); self.drawerTitle(id); };
-        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); CS.panel.showEdgeSide(a, b); self.drawerTitle(null, a, b); };
+        CS.panel.init(document.getElementById('det'), d);
+        CS.graph.onPick = function (id) { CS.panel.showPkg(id); self.drawerTitle(id); };
+        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); self.drawerTitle(null, a, b); };
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
         CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); };
         // 时间顺序的颜色是画的时候按当前主题的 --tm0/1/2 算好写死的：换了亮 / 暗（系统设置或页面上的切换）要重画
@@ -51,7 +51,7 @@ window.CS = window.CS || {};
         }
         if (window.MutationObserver)
           new MutationObserver(retint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-        // 开关（runtime / 动态分派 / 只看已解读）改了看得见的边：时间顺序重排名次，开关上的数跟着变
+        // 开关（runtime / 动态分派 / 只看跑到的）改了看得见的边：时间顺序重排名次，开关上的数跟着变
         CS.graph.onTimed = function (n) {
           var c = document.querySelector('#edgechips [data-t=timeorder] .n');
           if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
@@ -72,10 +72,9 @@ window.CS = window.CS || {};
         self.edgeChips();
         self.controls();
         self.cutBar();
-        self.refreshStatus();
         self.footer(d);
         if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);
-        else if (self._cmpMissing && CS.viewer) { CS.viewer.toast(self._cmpMissing); self._writeHash(); }   // 进度栏会被解读统计盖掉，用浮层提示
+        else if (self._cmpMissing && CS.viewer) { CS.viewer.toast(self._cmpMissing); self._writeHash(); }   // 用浮层提示：进度栏一会儿就被别的消息换掉
         if (CS.search) CS.search.init();
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
         self._w = CS.graph.boxWidth();
@@ -182,7 +181,7 @@ window.CS = window.CS || {};
                       : '这条依赖具体用了对方哪些函数 / 类';
       } else {
         t.textContent = '详情';
-        s.textContent = '点图上的节点或箭头，在这里看它的文件、类 / 函数和解读';
+        s.textContent = '点图上的节点或箭头，在这里看它的文件、类 / 函数，或者这条依赖上实际调了哪些函数';
       }
     },
 
@@ -545,7 +544,7 @@ window.CS = window.CS || {};
         if (self._timesLoading !== key) return;
         self._timesLoading = null;
         s.timeOrder = false; CS.graph.setTimes(null); self.edgeChips(); self.controls();
-        if (CS.viewer) CS.viewer.toast('时间顺序：' + e.message);      // 浮层提示：进度栏会被解读统计盖掉
+        if (CS.viewer) CS.viewer.toast('时间顺序：' + e.message);      // 浮层提示：进度栏一会儿就被别的消息换掉
       });
     },
 
@@ -703,8 +702,7 @@ window.CS = window.CS || {};
         + '叠了 run 时按这次实际的调用分层（所以换 run 时节点会上下挪）。横轴用重心排序减少交叉。'
         + ' 灰实线是真的用到了对方符号的 import，灰虚线是只 import 没用到的。'
         + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的部分。' : '')
-        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。'
-        + '　下面抽屉的右半边是<b>解读层</b>——机器给不出的那部分。';
+        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。';
       var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
                 ['符号', r.n_symbols || 0], ['图上的边', d.graph.edges.length],
                 ['解析失败', r.n_parse_errors]];
@@ -856,7 +854,6 @@ window.CS = window.CS || {};
         self.header(d);
         st.sel = st.selEdge = st.selFrame = null;
         self.redraw();
-        self.refreshStatus();
         self.keepSelection(was);
         if (focus) {
           CS.graph.reveal(focus);
@@ -976,7 +973,6 @@ window.CS = window.CS || {};
       CS.graph.phaseMarks = this.phaseMarks();
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges, cmp: d.cmp });
-      if (CS.graph.noteStatus) CS.graph.setNoteStatus(CS.graph.noteStatus);
       this.applyTimes();
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();
@@ -986,7 +982,7 @@ window.CS = window.CS || {};
 
     controls: function () {
       var s = CS.graph.state, self = this;
-      var KEY = { refs: 'refs', imp: 'imp', type: 'type', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot', noted: 'onlyNoted',
+      var KEY = { refs: 'refs', imp: 'imp', type: 'type', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot',
                   timeorder: 'timeOrder' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
@@ -1014,7 +1010,7 @@ window.CS = window.CS || {};
         this._esc = true;
         document.addEventListener('keydown', function (ev) {
           // Esc 取消选中（全文窗口开着时 Esc 先关窗口，那边自己处理）
-          // 正在输入框里打字（搜索框、文件树过滤、贴解读的文本框）时 Esc 归输入框自己
+          // 正在输入框里打字（搜索框、文件树过滤）时 Esc 归输入框自己
           var s = CS.graph.state, t = ev.target;
           if (ev.isComposing || (t && t.closest && t.closest('input, textarea, select, [contenteditable]'))) return;
           if (ev.key === 'Escape' && !document.getElementById('help').hidden) { self.help(false); return; }
@@ -1024,28 +1020,12 @@ window.CS = window.CS || {};
       }
     },
 
-    /* 每个节点的解读状态：图上打 ✓ / ! 徽标，工具栏显示进度 */
-    refreshStatus: function () {
-      // 分母取图上的节点：空包（如空 __init__.py）不上图也不派活，不该算进进度
-      var ids = this.data.graph.nodes.map(function (n) { return n.id; });
-      var self = this, seq = this._cutSeq;
-      CS.ds.status(ids).catch(function () { return {}; }).then(function (map) {
-        if (seq !== self._cutSeq) return;      // 这期间切面又变了：这份状态是旧图的
-        CS.graph.setNoteStatus(map);
-        var n = 0, st = 0;
-        ids.forEach(function (i) { if (map[i] === 'noted') n++; else if (map[i] === 'stale') st++; });
-        document.getElementById('prog').innerHTML =
-          '解读 <b>' + n + '</b>/' + ids.length + (st ? '（过期 ' + st + '）' : '');
-      });
-    },
-
     footer: function (d) {
       var r = d.repo;
       document.getElementById('foot').innerHTML =
         'codestrata · 结构由 <code>ast</code> 遍历 <code>' + esc((r.roots || []).join(', '))
         + '</code> 得出（' + r.n_files + ' 文件，解析失败 ' + r.n_parse_errors + '）'
-        + (d.hot ? '；hot 部分来自 runtime hook' : '')
-        + '。解读层存在仓库的 <code>notes/</code> 下，随代码一起进版本库。';
+        + (d.hot ? '；hot 部分来自 runtime hook' : '') + '。';
     }
   };
   // 内联进宿主页面时脚本可能在 DOMContentLoaded 之后才跑，那时再监听就永远等不到

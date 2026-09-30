@@ -782,7 +782,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
     # 录制之后改过的文件：按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上
     counts, unmatched = remap(counts, names, fs, idx)
     hot = _tana.to_package_graph(counts, idx)
-    hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 输入包里写明数字来自哪个 run
+    hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 写明这份次数来自哪个 run（和阶段 / 时间段）
     script = None
     sc = detail.get("script")
     if sc and sc.get("stored") and (rd / sc["stored"]).is_file():

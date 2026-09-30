@@ -1,13 +1,11 @@
-/* 详情面板（左：机器事实 + 源码）与解读面板（右：空槽 / 已写 / 过期）。
- * 「留给 llm agent 的空间」就是右边那块：没写时显示 task 输入包，
- * agent 从 PUT /api/notes 写回后这里立刻变成渲染好的解读。 */
+/* 详情面板：选中的节点（依赖、文件树、符号、源码片段）或箭头（这条依赖上实际调了哪些函数、次数、调用处）。 */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
-  var det, side, D, OVERVIEW = '_overview';
+  var det, D;
 
   function short(id) {
     id = String(id);
@@ -132,8 +130,8 @@ window.CS = window.CS || {};
 
   CS.panel = {
     short: short,      // 节点的短名（撞名的用补过父目录段的别名，和图上一致）：抽屉标题也用它
-    _sideTok: 0, _detTok: 0,      // 面板每换一次内容加一：异步请求回来时据此判断还要不要画
-    init: function (detEl, sideEl, data) { det = detEl; side = sideEl; D = data; this.reset(); },
+    _detTok: 0,                   // 面板每换一次内容加一：异步请求回来时据此判断还要不要画
+    init: function (detEl, data) { det = detEl; D = data; this.reset(); },
 
     /* 展开 / 收起之后换一份切面数据 */
     setData: function (data) { D = data; },
@@ -143,19 +141,7 @@ window.CS = window.CS || {};
       delete det.dataset.pkg;
       det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是依赖的一层，箭头尽量从上指向下：'
         + '越上面越靠入口、越下面越是被调用的叶子；节点大小编码文件数。'
-        + '点节点看它依赖谁、里面有什么符号，右边是这个模块的<b>解读</b>。</p>';
-      // 右边正贴着一份还没保存的解读时不清掉它（取消选中、换切面都会走到这里）
-      var ta = side.querySelector('#noteta');
-      if (ta && ta.value.trim()) return;
-      var tok = ++this._sideTok;
-      side.innerHTML = '<h3>解读层</h3><p class="hint">机器只能给出结构；'
-        + '「为什么这样切、算法为什么这么写、该按什么顺序读」需要人或 agent 补。'
-        + '点一个节点看它的解读状态。</p>';
-      // 没选中任何东西时，右边放仓库总览——第一次打开页面最需要的就是它
-      var self = this;
-      CS.ds.note(OVERVIEW).then(function (nt) {
-        if (nt && nt.present && tok === self._sideTok) self._renderNote(OVERVIEW, nt);
-      }).catch(function () {});
+        + '点节点看它依赖谁、里面有什么符号；点箭头看这条依赖上实际调了哪些函数。</p>';
     },
 
     /* ---- 左：机器事实 ---- */
@@ -642,99 +628,6 @@ window.CS = window.CS || {};
           + (E.n_sites > E.sites.length ? '<p class="hint">…只列前 ' + E.sites.length + ' 条</p>' : ''), typeOnly && !calls.n);
       det.innerHTML = h;
       this._wireDet(E.a);
-    },
-
-    showEdgeSide: function (a, b) {
-      this._sideTok++;
-      side.innerHTML = '<h3>这条边的解读</h3>'
-        + '<p class="hint">边本身不单独写解读：它为什么存在，由两端模块的解读回答'
-        + '（「为什么这样切、和相邻模块的分界是什么」）。</p>'
-        + '<div class="rowbtn"><button data-note="' + esc(a) + '">看 ' + esc(short(a)) + ' 的解读</button>'
-        + '<button data-note="' + esc(b) + '">看 ' + esc(short(b)) + ' 的解读</button></div>';
-      [].forEach.call(side.querySelectorAll('[data-note]'), function (x) {
-        x.onclick = function () { CS.panel.showNote(x.dataset.note); };
-      });
-    },
-
-    /* ---- 右：解读层 ---- */
-    showNote: function (id) {
-      side.innerHTML = '<h3>' + esc(short(id)) + ' 的解读</h3>'
-        + '<p class="hint">读取中…</p>';
-      // 请求回来之前面板可能已经换了内容（再点一次取消选中、换了节点）：那就丢掉这次的结果
-      var self = this, tok = ++this._sideTok;
-      CS.ds.note(id).then(function (nt) { if (tok === self._sideTok) self._renderNote(id, nt); })
-                    .catch(function (e) {
-                      if (tok === self._sideTok)
-                        side.innerHTML = '<h3>解读</h3><p class="hint">读取失败：' + esc(e.message) + '</p>';
-                    });
-    },
-
-    _renderNote: function (id, nt) {
-      var title = id === OVERVIEW ? '仓库总览' : short(id);
-      var tag = nt.present ? (nt.stale ? '<span class="tagpill stale">可能过期</span>'
-                                       : '<span class="tagpill noted">已解读</span>')
-                           : '<span class="tagpill">未解读</span>';
-      var head = '<h3>' + esc(title) + (id === OVERVIEW ? ' ' : ' 的解读 ') + tag + '</h3>';
-      var probs = (nt.problems || []);
-      var check = probs.length ? '<div class="stalewarn">机器核对：这份解读里有 ' + probs.length
-          + ' 处引用在代码里对不上<ul>' + probs.map(function (p) {
-            return '<li><code>' + esc(p.text) + '</code> ' + esc(p.msg) + '</li>'; }).join('') + '</ul></div>'
-        : (nt.present ? '<p class="checked">✓ 引用的文件行号和符号名都在代码里核对过</p>' : '');
-
-      if (!nt.present) {
-        side.innerHTML = head
-          + '<div class="empty-slot">'
-          + '<p class="why">这里是留给人 / LLM agent 的空槽。</p>'
-          + '<p>机器能给出结构，给不出「为什么这样切、算法为什么这么写、该按什么顺序读」。</p>'
-          + '<div class="rowbtn"><button class="primary" id="genpack">生成输入包</button></div>'
-          + '<div class="taskbox" id="taskbox"></div>'
-          + '</div>';
-        document.getElementById('genpack').onclick = function () { CS.panel._pack(id); };
-        return;
-      }
-      side.innerHTML = head
-        + (nt.stale ? '<div class="stalewarn">这份解读写于代码的另一个版本'
-            + '（哈希 ' + esc((nt.code_sha_note || '').slice(0, 8)) + ' → 现在 '
-            + esc((nt.code_sha_now || '').slice(0, 8)) + '）。内容可能已经不准。</div>' : '')
-        + check
-        + '<div class="note">' + (nt.html || '') + '</div>'
-        + '<div class="rowbtn">'
-        + (nt.stale && CS.ds.canWrite ? '<button class="primary" id="genpack">重写：生成输入包</button>' : '')
-        + (nt.meta && nt.meta.written_by ? '<span class="tagpill">' + esc(nt.meta.written_by) + '</span>' : '')
-        + (nt.path ? '<span class="tagpill">' + esc(nt.path) + '</span>' : '')
-        + '</div><div class="taskbox" id="taskbox"></div>';
-      var g = document.getElementById('genpack');
-      if (g) g.onclick = function () { CS.panel._pack(id); };
-    },
-
-    _pack: function (id) {
-      var box = document.getElementById('taskbox');
-      box.innerHTML = '<p class="hint">生成中…</p>';
-      CS.ds.pack(id).then(function (txt) {
-        box.innerHTML = '<textarea id="packta" readonly></textarea>'
-          + '<div class="rowbtn"><button id="copypack">复制给 agent</button>'
-          + (CS.ds.canWrite ? '<button id="writenote">粘贴解读并保存</button>' : '') + '</div>';
-        document.getElementById('packta').value = txt;
-        document.getElementById('copypack').onclick = function () {
-          var b = this;
-          if (navigator.clipboard) navigator.clipboard.writeText(txt).then(function () {
-            b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制给 agent'; }, 1400); }, function () {});
-        };
-        var w = document.getElementById('writenote');
-        if (w) w.onclick = function () {
-          box.innerHTML = '<textarea id="noteta" placeholder="把 agent 产出的 Markdown 粘进来…"></textarea>'
-            + '<div class="rowbtn"><button class="primary" id="savenote">保存</button></div>';
-          document.getElementById('savenote').onclick = function () {
-            var md = document.getElementById('noteta').value.trim();
-            if (!md) return;
-            this.textContent = '保存中…';
-            CS.ds.saveNote(id, md).then(function (nt) {
-              CS.panel._renderNote(id, nt);
-              if (CS.app && CS.app.refreshStatus) CS.app.refreshStatus();
-            }).catch(function (e) { alert('保存失败：' + e.message); });
-          };
-        };
-      }).catch(function (e) { box.innerHTML = '<p class="hint">生成失败：' + esc(e.message) + '</p>'; });
     }
   };
 })(window.CS);

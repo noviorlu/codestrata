@@ -7,7 +7,7 @@
 codestrata 是一个纯标准库的 Python 包（源码高亮用可选的 Pygments）加一套不需要构建的前端，分四部分：
 **静态扫描**（`scan`、`xref`：把仓库变成 `.codestrata/` 下可重建的索引）；**录制**（`trace`、`runs`、`events`：跑一条真实命令，
 存成 `.codestrata/runs/<id>/` 下不可重建的 run）；**组装与交付**（`payload` 把索引和 run 拼成前端数据，`serve` 按请求给，
-`render` / `site` 导出成文件；`cut`、`layout`、`seq`、`highlight`、`notes` 是零件）；**前端**（`codestrata/web/`）。
+`render` / `site` 导出成文件；`cut`、`layout`、`seq`、`highlight` 是零件）；**前端**（`codestrata/web/`）。
 主菜单 `codestrata app`（`app`、`projects`、`jobs`、`viewers`）站在外面，替人敲 `scan` / `trace` / `serve` 命令，不直接调它们的函数。
 
 ## 数据流
@@ -73,7 +73,6 @@ flowchart LR
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
 | `payload.py` | 1270 | 组装前端数据：图、叠加、对比、边详情、源码、引用、搜索、导出数据、公开化 |
 | `highlight.py` | 186 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
-| `notes.py` | 572 | 解读层：`notes/` 下的 Markdown、过期判定、任务、输入包、引用核对 |
 | `serve.py` | 477 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `render.py` | 45 | 把 web/ 和 payload 内联成单文件 HTML |
 | `site.py` | 351 | 静态站导出（源码从 GitHub 取，数据按需加载） |
@@ -84,7 +83,7 @@ flowchart LR
 | `web/ds.js` | 388 | 数据源层：live（fetch `api/*`）/ embedded / linked |
 | `web/app.js` | 1055 | 入口：串起数据源、图、面板、run 选择、对比、时间轴 |
 | `web/graph.js` | 683 | SVG 绘图（纯函数式），边的配色约定 |
-| `web/panel.js` | 740 | 详情面板（事实 + 源码）和解读面板 |
+| `web/panel.js` | 633 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
 | `web/viewer.js` | 463 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`） |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 337 | 搜索栏：模块、文件、类 / 函数 |
@@ -94,7 +93,7 @@ flowchart LR
 
 已知的结构问题（`docs/TODO.md` P2 里有对应条目）：
 - **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`）、坐标（`layout`）、源码（`highlight`）、
-  交叉引用（`xref`）、解读（`notes`），还有自己的一段 `ast` 分析（`_code_facts`、`_call_form`）。
+  交叉引用（`xref`），还有自己的一段 `ast` 分析（`_code_facts`、`_call_form`）。
 - 模块之间不用下划线开头的名字（`tests/test_package.py` 的 `test_no_cross_module_private_names` 盯着）。
 
 ## 语言无关 vs Python 专用
@@ -149,9 +148,9 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 .venv/bin/python tests/hl_parity.py      # 只在动了高亮时跑；要 node
 ```
 
-- `test_runs.py`（71 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
+- `test_runs.py`（70 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 动态分派 / 调用处、
-  对比和多 run 导出、公开导出和静态站、分层方向、`notes` 引用修复。
+  对比和多 run 导出、公开导出和静态站、分层方向。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；`index.html` 的脚本清单和 `render.SCRIPTS` 一致；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。

@@ -2,13 +2,9 @@
 
     codestrata scan  <repo>                      静态扫描 → .codestrata/index.json
     codestrata app                               主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图
-    codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 源码 + 解读 + 跳编辑器
+    codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
     codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
-    codestrata tasks <repo> [--write]            待解读的模块（自底向上）+ 给 agent 的输入包
-    codestrata pack  <repo> <target>             打印某个模块给 agent 的输入包
-    codestrata note  <repo> <target> <file.md>   写回一份解读（仓库总览的 target 是 _overview）
-    codestrata check <repo> [target ...]         机器核对解读：过期、引用的 file:line / 符号是否存在
     codestrata graph <repo> [--hot RUN]… [--compare]   导出单文件 HTML（只读、离线、可分享；多个 run 可切换）
 
 RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
@@ -26,7 +22,6 @@ from pathlib import Path
 from . import self_command
 from . import compat as _compat
 from . import cut as _cut
-from . import notes as _notes
 from . import payload as _payload
 from . import render as _render
 from . import runs as _runs
@@ -103,7 +98,7 @@ def _short(idx: dict, name: str) -> str:
 
 
 def cmd_graph(a) -> int:
-    """导出单文件 HTML（只读、离线、可分享）。要写解读或跳编辑器，用 serve。"""
+    """导出单文件 HTML（只读、离线、可分享）。要展开 / 收起、跳编辑器、看时间顺序，用 serve。"""
     repo = Path(a.repo).resolve()
     idx = _load_index(repo)
     refs = a.hot or []
@@ -170,85 +165,13 @@ def cmd_graph(a) -> int:
     out = Path(a.out) if a.out else (_outdir(repo) / name)
     out.write_text(html, encoding="utf-8")
     g = pl["graph"]
-    ids = [n["id"] for n in g["nodes"]]                 # 和前端同口径：只数图上的节点
-    noted = sum(1 for i in ids if pl["notes"][i]["present"] and not pl["notes"][i]["stale"])
     print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边，"
-          f"泳道 {g['lanes']}，解读 {noted}/{len(ids)}"
+          f"泳道 {g['lanes']}"
           + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "")
           + (f"，另带 {len(others)} 个 run 可切换" if others else "") + ("，对比前两个" if a.compare else "") + ")")
     parts = {k: len(json.dumps(pl.get(k), ensure_ascii=False)) for k in ("graph", "graphHot", "edges", "sources", "files", "hotBy", "cmp")}
     print("  各部分：" + "，".join(f"{k} {v / 1024:.0f} KB" for k, v in parts.items() if v > 4))
     return 0
-
-
-def cmd_tasks(a) -> int:
-    """列出还需要解读的模块（自底向上），可选把输入包写到文件里交给 agent。"""
-    repo = Path(a.repo).resolve()
-    idx = _load_index(repo)
-    hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
-    todo = _notes.tasks(repo, idx)
-    total = len(_cut.visible(_cut.view(idx, set(idx["default_open"])))) + 1      # + 仓库总览
-    print(f"待解读 {len(todo)} / {total}（默认切面上的节点 + 总览；按架构高度自底向上：先读叶子，再读依赖它们的）")
-    for t in todo:
-        print(f"  {t['alt']:+.2f}  {t['reason']:<7}  {t['target']:<36} "
-              f"{t['files']}f {t['classes']}c {t['funcs']}fn")
-    if a.write:
-        d = _outdir(repo) / "tasks"
-        d.mkdir(parents=True, exist_ok=True)
-        for i, t in enumerate(todo, 1):
-            p = d / f"{i:02d}-{t['target']}.md"
-            p.write_text(_notes.prompt_pack(repo, idx, t["target"], hot=hot), encoding="utf-8")
-        print(f"→ 输入包写到 {d}/（{len(todo)} 个，文件名前缀即建议顺序）")
-        print(f"  agent 产出的 Markdown 用这个写回：codestrata note {repo} <target> <file.md>")
-    return 0
-
-
-def cmd_pack(a) -> int:
-    """打印一个模块的输入包。每次现算：下层解读写好后，上层的包会自动带上它们。"""
-    repo = Path(a.repo).resolve()
-    idx = _load_index(repo)
-    if not _cut.is_node(idx, a.target) and a.target != _notes.OVERVIEW:
-        raise SystemExit(f"没有这个模块：{a.target}（仓库总览用 {_notes.OVERVIEW}）")
-    hot, _ = _payload.load_hot(repo, idx, a.hot) if a.hot else (None, None)
-    print(_notes.prompt_pack(repo, idx, a.target, hot=hot))
-    return 0
-
-
-def cmd_note(a) -> int:
-    """把一份 Markdown 写成某个模块的解读（自动补 frontmatter 和 code_sha）。"""
-    repo = Path(a.repo).resolve()
-    idx = _load_index(repo)
-    if not _cut.is_node(idx, a.target) and a.target != _notes.OVERVIEW:
-        raise SystemExit(f"没有这个模块：{a.target}（仓库总览用 {_notes.OVERVIEW}）")
-    body = Path(a.file).read_text(encoding="utf-8") if a.file != "-" else sys.stdin.read()
-    nt = _notes.save(repo, idx, a.target, body, meta={"written_by": a.by})
-    print(f"→ {nt['path']}  code_sha={nt['code_sha_now']}")
-    return 0
-
-
-def cmd_check(a) -> int:
-    """机器核对已写的解读：过期没有、引用的 file:line 和符号名在代码里是否真的存在。"""
-    repo = Path(a.repo).resolve()
-    idx = _load_index(repo)
-    targets = a.targets or (list(idx["packages"]) + [_notes.OVERVIEW])
-    if a.fix:
-        for t in targets:
-            n = _notes.fix_refs(repo, idx, t)
-            if n:
-                print(f"  修正 {t}：{n} 处引用改到了新行号（内容仍需重读确认，所以还标着过期）")
-    bad = 0
-    for t in targets:
-        nt = _notes.load(repo, idx, t)
-        if not nt["present"]:
-            continue
-        probs = _notes.verify(repo, idx, t)
-        mark = "过期" if nt["stale"] else ("✗" if probs else "✓")
-        print(f"  {mark:<3} {t}")
-        for p in probs:
-            print(f"        {p['text']}：{p['msg']}")
-        bad += bool(probs) or nt["stale"]
-    print(f"{'有问题' if bad else '全部通过'}（{bad} 份需要处理）")
-    return 1 if bad else 0
 
 
 _TAG_RE = re.compile(r"^[A-Za-z0-9._:=/+-]+$")
@@ -654,32 +577,6 @@ def main(argv: list[str] | None = None) -> int:
                    help="要放到公网上：主目录写成 ~，PATH 这类目录列表里仓库和录制目录以外的部分省略成 …（页面上会注明）")
     g.add_argument("--out", default=None)
     g.set_defaults(fn=cmd_graph)
-
-    k = sub.add_parser("tasks", help="列出待解读的模块，可把输入包写出来交给 agent")
-    common(k)
-    k.add_argument("--hot", default=None, metavar="RUN")
-    k.add_argument("--write", action="store_true", help="把输入包写到 .codestrata/tasks/")
-    k.set_defaults(fn=cmd_tasks)
-
-    pk = sub.add_parser("pack", help="打印某个模块给 agent 的输入包")
-    pk.add_argument("repo")
-    pk.add_argument("target")
-    pk.add_argument("--hot", default=None, metavar="RUN")
-    pk.set_defaults(fn=cmd_pack)
-
-    nn = sub.add_parser("note", help="把一份 Markdown 写成某个模块的解读")
-    nn.add_argument("repo")
-    nn.add_argument("target")
-    nn.add_argument("file", help="Markdown 文件；- 表示从 stdin 读")
-    nn.add_argument("--by", default="human", help="记在 frontmatter 的 written_by")
-    nn.set_defaults(fn=cmd_note)
-
-    c = sub.add_parser("check", help="机器核对已写的解读（过期 / 引用不存在）")
-    c.add_argument("repo", nargs="?", default=".")
-    c.add_argument("targets", nargs="*")
-    c.add_argument("--fix", action="store_true",
-                   help="把只是挪了位置的 file:line 引用改到新行号（不会把过期标记去掉）")
-    c.set_defaults(fn=cmd_check)
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")
     common(t, "仓库代码在哪些目录（安装包映射回仓库用）；默认用 scan 时选的目录，没 scan 过才自动探测")

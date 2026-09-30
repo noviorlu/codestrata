@@ -3,10 +3,10 @@
 单文件导出要把源码塞进 HTML，受单文件宿主的体积上限所限（artifact 这类 16 MB）：vllm-omni 1600 多个
 文件只装得下两百多个。而扫的仓库基本都在 GitHub 上——源码不必自己带：jsDelivr 和
 raw.githubusercontent.com 都允许跨域取，按提交号钉住的地址内容不会变。codestrata 自己算出来的东西
-（依赖图、边的调用明细、Ctrl+点击的跳转、引用倒排、解读、runtime）放在旁边的 data/ 里按需加载，
+（依赖图、边的调用明细、Ctrl+点击的跳转、引用倒排、runtime）放在旁边的 data/ 里按需加载，
 于是也没有体积上限了，GitHub Pages 这种静态站点直接放。
 
-    <out>/index.html                  页面：图、解读、run 这些小的内嵌；EMB.link 说从哪取源码、数据在哪
+    <out>/index.html                  页面：图、run 这些小的内嵌；EMB.link 说从哪取源码、数据在哪
     <out>/data/<版本>/edges.json       边详情（第一次点边时取）
     <out>/data/<版本>/search.json      搜索索引（第一次搜时取）
     <out>/data/<版本>/f/<序号>.json     每个文件：语言、行数（取回来的源码按它核对）、大纲、Ctrl+点击的 token 和目标

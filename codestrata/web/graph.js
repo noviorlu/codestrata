@@ -61,8 +61,7 @@ window.CS = window.CS || {};
     // timeOrder：跑到的边按「第一次被调用」的先后上色、标序号（setTimes 给数据，app.applyTimes 取）
     state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, type: false, hot: true, dyn: true,
              timeOrder: false,
-             onlyHot: false, onlyNoted: false },
-    noteStatus: {},          // target → 'noted' | 'stale' | 'todo'
+             onlyHot: false },
     counts: { ref: 0, imp: 0, type: 0, warm: 0, dyn: 0 },
 
     draw: function (svg, G, hot, extra) {
@@ -249,8 +248,7 @@ window.CS = window.CS || {};
           xp.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); if (self.onExpand) self.onExpand(n.id); } };
           g.appendChild(xp);
         }
-        var bd = el('text', { x: n.cx + n.w / 2 - 5, y: n.cy - n.h / 2 + 8, class: 'badge todo', 'text-anchor': 'end' });
-        g.appendChild(bd); g._badge = bd; g._n = n;
+        g._n = n;
         ng.appendChild(g); self.nodes[n.id] = g;
         // 再点一次选中的节点就取消选中（程序里调 pick 总是选中，比如从详情面板跳过来）
         var toggle = function () { if (self.state.sel === n.id) self.clear(); else self.pick(n.id); };
@@ -407,17 +405,6 @@ window.CS = window.CS || {};
       if (this.onSelectFrame) this.onSelectFrame(id);
     },
 
-    setNoteStatus: function (map) {
-      this.noteStatus = map || {};
-      var self = this;
-      Object.keys(this.nodes).forEach(function (id) {
-        var st = self.noteStatus[id] || 'todo', b = self.nodes[id]._badge;
-        b.setAttribute('class', 'badge ' + st);
-        b.textContent = st === 'noted' ? '✓' : (st === 'stale' ? '!' : '');
-      });
-      this.paint();
-    },
-
     /* 阶段的起点 / 终点（trace --phase 的触发函数所在的节点）：[{node, kind: start|end, label, title}]。
        节点框描成绿 / 红，框上面写一行字；同一个节点上有几个就往上叠。重画之后按 phaseMarks 再套一遍 */
     setPhaseMarks: function (marks) {
@@ -558,7 +545,6 @@ window.CS = window.CS || {};
     vis: function (id) {
       var s = this.state;
       if (s.onlyHot && !((this.hitPk || (this.hot && this.hot.packages) || {})[id] || 0) && !(this.onPath || {})[id]) return false;
-      if (s.onlyNoted && (this.noteStatus[id] || 'todo') === 'todo') return false;
       return true;
     },
 
@@ -616,7 +602,7 @@ window.CS = window.CS || {};
         g.classList.toggle('sel', s.sel === id);
         g.classList.toggle('end', !!s.selEdge && !!keep && !!keep[id]);
       });
-      // 框：「只看跑到的 / 已解读」把框里的节点全滤掉了就不画这个框；滤掉一部分就写「剩几个 / 一共几个」
+      // 框：「只看跑到的」把框里的节点全滤掉了就不画这个框；滤掉一部分就写「剩几个 / 一共几个」
       Object.keys(this.frames || {}).forEach(function (f) {
         var h = self.heads[f], F = h._F, ids = self.inFrame[f] || [];
         var k = ids.filter(function (i) { return self.vis(i); }).length;

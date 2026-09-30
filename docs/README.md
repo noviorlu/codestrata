@@ -15,7 +15,6 @@
 | **现状参考**（跟着代码改） | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 代码怎么组织、数据怎么流、测试怎么跑 |
 | | [`design/run-format.md`](design/run-format.md) | run 的每个文件和字段（接其他语言的契约） |
 | | [`design/decisions.md`](design/decisions.md) | 还在生效的设计决策、理由、在哪 |
-| | [`../notes/`](../notes/) | 每个模块的讲解（产品的解读层用在自己身上，里程碑时刷新） |
 | **工作流程**（跟着干活改） | [`../CLAUDE.md`](../CLAUDE.md) | agent 怎么干活：开工读什么、收工写什么 |
 | | [`STATUS.md`](STATUS.md) | 定位、范围、能用的、已知问题（开发视角）、交接 |
 | | [`TODO.md`](TODO.md) | 接下来做什么、谁在做、做到什么算完 |
@@ -43,7 +42,7 @@ flowchart LR
   DF -.->|"⑩ 链过去"| LG
   DC -.->|"⑩ 链过去"| LG
   LG -.->|"⑪ 交接指向最新一条"| ST
-  CL["CLAUDE.md<br/>怎么干活"] -.->|"⑰ 开工读、收工写"| ST
+  CL["CLAUDE.md<br/>怎么干活"] -.->|"⑯ 开工读、收工写"| ST
 ```
 
 **图二：现状文档怎么跟着代码走**——谁是谁的来源、谁只是摘要。
@@ -58,9 +57,7 @@ flowchart LR
   US -->|"⑫ 挑最要紧的做摘要"| RM["README.md<br/>一页摘要"]
   RM -.->|"⑬ 想深入就去"| US
   AR -->|"⑭ 字段级的契约"| RF
-  CODE -.->|"⑮ check 核对"| NT["notes/<br/>模块讲解"]
-  NT -.->|"⑮ 总览指回"| AR
-  RF -.->|"⑯ 列出不一致处"| AX["archive/<br/>旧设计稿"]
+  RF -.->|"⑮ 列出不一致处"| AX["archive/<br/>旧设计稿"]
 ```
 
 ## 每条箭头做什么
@@ -81,9 +78,8 @@ flowchart LR
 | ⑫ | usage → README | README 只摘要 usage：上手、读图须知、重点功能、实测、最要紧的限制 | usage 的这些部分变了时 |
 | ⑬ | README ⇢ usage / STATUS | 给想深入的人的出口 | — |
 | ⑭ | ARCHITECTURE → run-format | ARCHITECTURE 讲哪些与语言无关，字段级的契约在 run-format | 数据格式变了时 |
-| ⑮ | 代码 ⇢ notes ⇢ ARCHITECTURE | `codestrata check` 对着代码核对解读的引用和过期；总览只指回 ARCHITECTURE，不重复结构 | 里程碑时刷新 |
-| ⑯ | run-format ⇢ archive | 旧设计稿不再改，和代码不一致的地方在 run-format 开头列出 | — |
-| ⑰ | CLAUDE ⇢ STATUS / TODO / log | 流程规矩：开工读 STATUS、TODO、日志最新一条；收工写日志、改交接、改 TODO | 每次开工 / 收工 |
+| ⑮ | run-format ⇢ archive | 旧设计稿不再改，和代码不一致的地方在 run-format 开头列出 | — |
+| ⑯ | CLAUDE ⇢ STATUS / TODO / log | 流程规矩：开工读 STATUS、TODO、日志最新一条；收工写日志、改交接、改 TODO | 每次开工 / 收工 |
 
 ## 容易放错地方的几类信息
 
