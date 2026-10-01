@@ -434,12 +434,24 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             u = str(p.relative_to(root))
             unit_of_module[m] = u
             unit_label[u] = m + ".__init__" if p.name == "__init__.py" and r != ROOT_SCRIPTS else m
-    # 根目录的脚本之间 `import utils`：Python 按脚本所在目录找到的是 utils.py，这里的模块名是
-    # <仓库名>.utils。裸名字对上根目录的脚本、又不是仓库里的包时，换成那个模块名
-    bare_scripts = {p.stem for p in root_py_files(root, ROOT_SCRIPTS)} - top if ROOT_SCRIPTS in roots else set()
+    # 不在包里的文件（examples/ 下的脚本、根目录的脚本）之间 `import helpers`：Python 把脚本所在目录放在
+    # sys.path 最前面，找到的是同目录的 helpers.py / helpers/，模块名是 <那个目录的模块名>.helpers
+    # （根目录的脚本是 <仓库名>.helpers）。仓库顶层有同名的包时包优先（根目录的脚本和顶层包在同一个目录里；
+    # xref 的 script_module 同一个规则）
+    in_pkg = {str(Path(u).parent) for u in unit_of_module.values() if u.endswith("__init__.py")}
+    pkgs = {m for m, u in unit_of_module.items() if u.endswith("__init__.py")} | {   # 包和命名空间目录
+        ".".join(m.split(".")[:i]) for m in unit_of_module for i in range(1, m.count(".") + 1)}
 
-    def canon(name: str) -> str:
-        return f"{scripts}.{name}" if name.split(".")[0] in bare_scripts else name
+    def canon(name: str, rel: Path, module: str) -> str | None:
+        """import 写的绝对模块名 → 仓库里的模块名；不是仓库里的（标准库、第三方）是 None"""
+        head = name.split(".")[0]
+        d = module.rpartition(".")[0]
+        sib = f"{d}.{head}"
+        # import a.b：同目录的 a 得是包（目录）才有子模块；import a：模块、包都行
+        if d and str(rel.parent) not in in_pkg and head not in top and (
+                sib in pkgs or ("." not in name and sib in unit_of_module)):
+            return f"{d}.{name}"
+        return name if head in top else None
     unresolved: dict[tuple[str, str], int] = {}
 
     for r in roots:
@@ -555,15 +567,15 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         up = up[: max(0, len(up) - node.level + (1 if is_init else 0))]
                         base = ".".join(up)
                         mod0 = (f"{base}.{node.module}" if base else node.module) if node.module else base
-                    elif node.module and node.module.split(".")[0] in top | bare_scripts:
-                        mod0 = canon(node.module)
+                    elif node.module:
+                        mod0 = canon(node.module, rel, module)
                     if mod0:
                         for a in node.names:
                             sub = f"{mod0}.{a.name}"
                             # from . import layout / from pkg import submodule：导入的是子模块
                             targets.append(sub if a.name != "*" and sub in unit_of_module else mod0)
                 elif isinstance(node, ast.Import):
-                    targets = [canon(a.name) for a in node.names if a.name.split(".")[0] in top | bare_scripts]
+                    targets = [c for a in node.names if (c := canon(a.name, rel, module))]
                 seen_dst: set[str] = set()
                 for target in targets:
                     dst = unit_of_module.get(target)

@@ -185,5 +185,58 @@ def test_ctor_methods_and_property_setters():
     assert got == want, (got, want)
 
 
+_SCRIPT_SRC = {
+    "lib/__init__.py": "",
+    "lib/m.py": (
+        "from __future__ import annotations\n\n\n"
+        "class Config:\n    pass\n\n\n"
+        "class Builder:\n"
+        "    class Key:\n        pass\n\n"
+        "    def Config(self) -> Config:\n        return Config()\n\n"
+        "    def build(self, c: Config, k: Key) -> list[Config]:\n        return [c]\n"),
+    "examples/demo/helpers.py": "def greet():\n    return 'hi'\n",
+    "examples/demo/tool/__init__.py": "def run():\n    return 1\n",
+    "examples/demo/main.py": ("import helpers\nimport tool\nfrom helpers import greet\nfrom json.decoder import JSONDecoder\n\n\n"
+                              "def main():\n    return helpers.greet() + greet() + tool.run()\n"),
+    "examples/demo/json.py": "X = 1\n",                    # 同目录的 json.py 遮住标准库 json，但它不是包，json.decoder 还是标准库的
+}
+
+
+def test_script_imports_and_lazy_annotations():
+    """不在包里的脚本（examples/ 下）之间 `import helpers`：找到的是同目录的 helpers.py / tool/（Python 把脚本所在目录
+    放在 sys.path 最前面）；`import a.b` 要同目录的 a 是包才算。from __future__ import annotations 下，方法签名里的
+    `Config` 不会是类里同名的方法 Config（标注不求值），类里的嵌套类照样看得见"""
+    d = tmpdir("cs-graph-") / "repo"
+    for rel, text in _SCRIPT_SRC.items():
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text(text)
+    cs("scan", d, "--roots", "lib", "examples")
+    cd = d / ".codestrata"
+    x = json.loads((cd / "xref.json").read_text())
+    T = x["targets"]
+
+    def at(rel, needle, word):
+        src = _SCRIPT_SRC[rel].splitlines()
+        l = next(i for i, s in enumerate(src, 1) if needle in s)
+        col = src[l - 1].index(word, src[l - 1].index(needle))
+        hit = [T[t] for ln, a, b, t, k in x["files"][rel] if ln == l and a == col]
+        return hit[0] if hit else None
+    D = "examples/demo/"
+    assert at(f"{D}main.py", "import helpers", "helpers") == f"m:{D}helpers.py"
+    assert at(f"{D}main.py", "import tool", "tool") == f"m:{D}tool/__init__.py"
+    assert at(f"{D}main.py", "from helpers import greet", "greet") == f"s:{D}helpers.py#greet"
+    assert at(f"{D}main.py", "from json.decoder", "decoder") == "x:json.decoder"
+    assert at(f"{D}main.py", "return helpers.greet()", "greet") == f"s:{D}helpers.py#greet"
+    M = "lib/m.py"
+    assert at(M, "def build", "Config") == f"s:{M}#Config", at(M, "def build", "Config")
+    assert at(M, "def build", "Key") == f"s:{M}#Builder.Key"
+    g = json.loads((cd / "graph.json").read_text())
+    called = {g["callees"][i] for i, *_ in g["calls"][f"{D}main.py#main"]}
+    assert {f"{D}helpers.py#greet", f"{D}tool/__init__.py#run"} <= called, called
+    edges = {(a, b) for a, b, _ in json.loads((cd / "index.json").read_text())["edges"]}
+    assert {(f"{D}main.py", f"{D}helpers.py"), (f"{D}main.py", f"{D}tool/__init__.py")} <= edges, edges
+    assert not any(b == f"{D}json.py" for _, b in edges), edges
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

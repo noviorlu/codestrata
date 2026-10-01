@@ -390,10 +390,27 @@ class _Repo:
         return None
 
     # ---- 模块名 ----
+    def script_module(self, m: str, full: str) -> str:
+        """不在包里的文件（examples/ 下的脚本、根目录的脚本）写的 `import helpers`：Python 把脚本所在目录放在
+        sys.path 最前面，找到的是同一个目录里的 helpers.py / helpers/。对上了给出补全的模块名，对不上原样返回。
+        同一个目录里既有包 helpers/ 又有 helpers.py 时包优先；仓库顶层有这个名字的包时也不换（根目录的脚本
+        和顶层包在同一个目录里，包优先，同 scan）"""
+        d = m.rpartition(".")[0]
+        head = full.split(".")[0]
+        if not d or d in self.init or head in self.init or head in self.ns:
+            return full
+        sib = f"{d}.{head}"
+        if "." in full:                               # import a.b：同目录的 a 得是包（目录）才有子模块
+            ok = sib in self.init or sib in self.ns
+        else:
+            ok = sib in self.file_of or sib in self.ns
+        return f"{d}.{full}" if ok else full
+
     def abs_module(self, m: str, level: int, module: str | None) -> str:
-        """相对 import 的绝对模块名。__init__.py 的模块名就是包本身，「一个点」指它自己（同 scan）。"""
+        """相对 import 的绝对模块名。__init__.py 的模块名就是包本身，「一个点」指它自己（同 scan）。
+        绝对 import 在脚本里可能指同目录的模块（script_module）"""
         if not level:
-            return module or ""
+            return self.script_module(m, module) if module else ""
         up = m.split(".")
         up = up[:max(0, len(up) - level + (1 if m in self.init else 0))]
         base = ".".join(up)
@@ -404,14 +421,17 @@ class _Repo:
             return f"m:{full}"
         return f"n:{full}" if full in self.ns else None
 
-    def import_target(self, full: str) -> str:
-        """一个点分路径（import 语句里写的）落在哪：仓库里的模块 / 命名空间包，还是仓库外。"""
+    def import_target(self, full: str, m: str | None = None) -> str:
+        """一个点分路径（import 语句里写的）落在哪：仓库里的模块 / 命名空间包，还是仓库外。
+        m：写这条 import 的模块（给了就按脚本同目录的规则补全，见 script_module）"""
+        if m is not None:
+            full = self.script_module(m, full)
         return self.module_target(full) or f"x:{full}"
 
     def from_binding(self, m: str, module: str | None, name: str | None, level: int):
         """import 语句给的绑定（还没追）。name 为 None 是 `import module`。"""
         if name is None:
-            return self.import_target(module)
+            return self.import_target(module, m)
         return ("from", self.abs_module(m, level, module), name)
 
     # ---- 解析（带缓存；成环的那一圈不缓存，免得把「环上暂时找不到」记成定论） ----
@@ -702,7 +722,7 @@ class _Collect:
             elif t is ast.Import:
                 for a in st.names:
                     local = a.asname or a.name.split(".")[0]
-                    self.bind(local, repo.import_target(a.name if a.asname else local))
+                    self.bind(local, repo.import_target(a.name if a.asname else local, m))
             elif t is ast.ImportFrom:
                 for a in st.names:
                     if a.name == "*":
@@ -798,7 +818,7 @@ class _Collect:
             elif t is ast.Import:
                 for a in s.names:
                     local = a.asname or a.name.split(".")[0]
-                    cenv[local] = repo.import_target(a.name if a.asname else local)
+                    cenv[local] = repo.import_target(a.name if a.asname else local, self.m)
             elif t is ast.ImportFrom:
                 for a in s.names:
                     if a.name != "*":
@@ -897,8 +917,13 @@ class _Walk:
         self.calls: list | None = [] if collect else None
         self.spans: list = []
         self.cur = f"{m}:<module>"                    # 现在这段代码属于哪个节点
+        self.lazy_ann = False                         # 有 from __future__ import annotations（run 里定）
 
     def run(self, tree) -> list[tuple]:
+        # from __future__ import annotations：标注不求值，是字符串。类里有个同名的方法 Config 时，方法签名里的
+        # `-> Config` 指的还是类 Config，不是这个方法（不加这一行时标注在定义时求值，类体里先定义的方法就挡住了它）
+        self.lazy_ann = any(type(st) is ast.ImportFrom and st.module == "__future__"
+                            and any(a.name == "annotations" for a in st.names) for st in tree.body)
         for st in tree.body:
             self.top_line = st.lineno
             self.block((st,), "", None)
@@ -1124,6 +1149,13 @@ class _Walk:
         if tps:
             self.scopes = self.scopes + [{p.name: None for p in tps}]
         self.late = True
+        if self.lazy_ann and self.cscope is not None:
+            # 标注是字符串、不求值：类体里的方法挡不住它（-> Config 不会是同名的方法 Config）；
+            # 类体里的嵌套类、类属性照样看得见（类型检查器就是这么解析的）
+            syms = self.symbols
+            self.scopes = self.outer_chain() + [_ClsScope(
+                (k, v) for k, v in self.cscope.items()
+                if not (v and v[:2] == "s:" and (syms.get(v[2:]) or {}).get("k") == "func"))]
         for x in _all_args(a):
             if x.annotation is not None:
                 ex(x.annotation)
@@ -1189,10 +1221,11 @@ class _Walk:
         repo, m = self.repo, self.m
         if type(st) is ast.Import:
             for a in st.names:
-                self.dotted(a.lineno, a.col_offset, a.name.split("."), "")
+                full = repo.script_module(m, a.name)
+                self.dotted(a.lineno, a.col_offset, a.name.split("."), full[:-len(a.name)].rstrip("."))
                 if self.cscope is not None:
                     local = a.asname or a.name.split(".")[0]
-                    self.cscope[local] = repo.import_target(a.name if a.asname else local)
+                    self.cscope[local] = repo.import_target(a.name if a.asname else local, m)
             return
         base = repo.abs_module(m, st.level, st.module)
         if st.module:
@@ -1201,7 +1234,8 @@ class _Walk:
             i = st.col_offset + 4
             while i < len(line) and line[i:i + 1] in (b" ", b"\t", b"."):
                 i += 1
-            self.dotted(st.lineno, i, st.module.split("."), repo.abs_module(m, st.level, None) if st.level else "")
+            pre = repo.abs_module(m, st.level, None) if st.level else base[:-len(st.module)].rstrip(".")
+            self.dotted(st.lineno, i, st.module.split("."), pre)
         for a in st.names:
             if a.name == "*":
                 continue
