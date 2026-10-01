@@ -2,6 +2,7 @@
 单独跑：python -m fakesvc.truth"""
 import asyncio
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -71,6 +72,32 @@ def s_exec():                 # exec：exec 前后各一份
 
 def s_spawn():                # exec 出来的子进程（subprocess）：父进程里记下是哪个调用起的它
     subprocess.run([sys.executable, "-c", "pass"], check=True)
+
+
+def in_consumer(q):           # 另一个线程从队列里取：主线程 put 的那个对象交到这里
+    return callee.take_job(q)
+
+
+def s_queue():                # 进程内的队列交接：主线程 put、consumer 线程 get
+    q = queue.Queue()
+    t = threading.Thread(target=in_consumer, args=(q,), name="consumer")
+    t.start()
+    callee.put_job(q, {"job": 1})
+    t.join()
+
+
+def s_zmq():                  # 跨进程的 ZMQ 交接（测试给了假的 zmq 才跑）：父进程发、fork 出来的子进程收
+    try:
+        import zmq
+    except ImportError:
+        return
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        callee.zmq_recv(zmq.Socket(rfd=r))
+        os._exit(0)
+    callee.zmq_send(zmq.Socket(wfd=w), [b"req", b"x" * 100])
+    os.waitpid(pid, 0)
 
 
 def s_loop():                 # 第一级折叠：连续 50 次调同一个叶子 → 一条 rep=50；有子调用的 mid 不合
@@ -149,6 +176,8 @@ def main():
     s_fork()
     s_exec()
     s_spawn()
+    s_queue()
+    s_zmq()
 
 
 if __name__ == "__main__":

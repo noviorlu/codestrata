@@ -77,3 +77,19 @@ def regen_after(g):
     # 起一个同一函数的生成器——新帧的对象多半落在刚释放的地址上。它没有调用行，不能接上旧 span
     del g
     return list(gen(3))
+
+
+def put_job(q, job):
+    q.put(job)
+
+
+def take_job(q):
+    return q.get()
+
+
+def zmq_send(sock, parts):
+    sock.send_multipart(parts)
+
+
+def zmq_recv(sock):
+    return sock.recv_multipart()

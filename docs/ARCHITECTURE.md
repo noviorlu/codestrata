@@ -89,11 +89,11 @@ flowchart LR
 | `align.py` | 478 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
-| `trace/hook.py` | 764 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
+| `trace/hook.py` | 928 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
-| `events.py` | 301 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠 |
+| `events.py` | 352 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠 |
 | `seq.py` | 414 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用） |
 | `path.py` | 223 | 请求路径：一个阶段里每个进程、每个线程按第一次调用的先后排的函数级调用树（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
@@ -139,7 +139,8 @@ flowchart LR
 - `trace/hook.py`（`_SITECUSTOMIZE`）：经 `sitecustomize` + `PYTHONPATH` 注入；3.12+ 用 `sys.monitoring`，否则
   `sys.setprofile` / `threading.setprofile`；记 `co_qualname`；拦 `os._exit` / `os.exec*`、`os.register_at_fork`；
   `CODESTRATA_PKGS` 把 site-packages 里的路径映射回仓库。时序事件只有 `sys.monitoring` 路径才录；录的时候还包一层
-  `threading.Thread.start`、`_posixsubprocess.fork_exec`、`os.posix_spawn(p)`，记下谁起了哪个线程、哪个子进程。
+  `threading.Thread.start`、`_posixsubprocess.fork_exec`、`os.posix_spawn(p)`，记下谁起了哪个线程、哪个子进程；queue / asyncio / janus 的队列、
+  pyzmq 的 `send_multipart` / `recv_multipart` 在它们被 import 时包一层，记下谁把数据交给谁。
 - `--phase` 的解析（`trace/analysis.py` 的 `resolve_phase_at`、`_qualnames`、`_inherited` 按 MRO 找方法）和 `case_script`。
 - `align.remap` 的细节：qualname 去掉 `.<locals>` 再对 symbols 表的 `(文件, 名字)`；`runs._dists` 读 `*.dist-info`。
 - `graph.py` 的 scan 记录按 Python 语法认调用：构造、装饰器、property、`getattr` 的字符串、语法触发的特殊方法（`syntax_facts`）；

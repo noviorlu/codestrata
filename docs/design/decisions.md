@@ -351,6 +351,18 @@
 - 放弃的方案：按时刻猜（子进程的起始时刻落在父进程的哪个 span 里——同一时刻好几个线程都在跑）；包 `subprocess.Popen`、`multiprocessing.Process.start`
   （要 import 它们、而且漏掉直接用 `os.fork` 的）。asyncio 的 `create_task` 不记：task 跑在同一个线程里，不另起一列。
 - 在哪：`trace/hook.py` 的 `_ev_here`、`_start`、`_spawned`、`_before_fork`、`_after_fork_ev`；`events.py` 的 `parse`、`_origins`。测试 `test_events_truth`。
+
+### 谁把数据交给谁：盯几种常见的通道，进程内按对象、跨进程按消息指纹配对
+- 决定：时序事件开着时，hook 在 `queue`（Queue / PriorityQueue / LifoQueue 的 `_put` / `_get`）、`asyncio.queues`（同）、`janus`（`_put_internal` / `_get`）、
+  pyzmq（`zmq.sugar.socket.Socket` 和 `zmq._future._AsyncSocket` 的 `send_multipart` / `recv_multipart`）第一次被 import 完的时候包一层（`sys.meta_path` 上的 `_OnImport`），
+  放 / 取、发 / 收各写一行。整理时队列按（队列 id, 对象 id）先进先出地配——对象在队列里一直活着，id 不会被复用；ZMQ 按消息指纹（每段长度 + 首尾 32 字节的哈希）
+  跨进程先发先收地配。asyncio 版的 ZMQ socket 背后真正收发的是一个同步的影子 socket：影子的收发不记，由 asyncio 那一层记，收的 span 是等它的协程。
+- 为什么：P0（用户 2026-10-01 定）要画线程之间「谁把数据交给谁」；只按时刻排的话同一时刻好几个线程都在跑，看不出因果。vllm-omni 的交接正好走这几种：
+  主线程和 orchestrator 之间是 janus 队列，orchestrator 和各个 stage 进程之间、stage 进程里收请求的线程是 ZMQ，引擎循环和收发线程之间是 `queue.Queue`。
+  按模块被 import 时再打补丁，不为了打补丁去 import asyncio、pyzmq（每个被录的 Python 进程都会跑 hook）。
+- 放弃的方案：按 payload 的内容（pickle）配对（贵，还要拷大张量）；包 `Socket.send` / `recv`（multipart 会调它们，记重复）。
+  没盯的：`queue.SimpleQueue`（C 写的，包不了）、线程池的 `submit`、共享内存、裸管道和 socket——stage1 到 stage2 走的共享内存通道两边都是仓库里的同一个模块，靠「共用同一个模块」那种连线连上。
+- 在哪：`trace/hook.py` 的 `_queue_patch`、`_fp`、`_zmq_sync`、`_zmq_async`、`_OnImport`；`events.py` 的 `_handoffs`。测试 `test_events_truth`（`trace_cases/fakezmq` 是假的 pyzmq）。
 ### 调用的先后画在模块图的边上，按名次上色
 - 决定：录了事件的 run 在 serve 里多一个「时间顺序」开关：看得见的、跑到的边按第一次被调用的先后排名 1…N，按名次在三个色标之间插值上色、标序号。
   同一个进程里第一次到最后一次隔了超过阶段总长一半、而且至少 5 次的，序号后加 ↻。

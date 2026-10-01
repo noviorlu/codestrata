@@ -16,6 +16,10 @@
     F <tid> <起它的 tid> <span> <t_us>   谁起的这个线程：在哪个线程的哪个 span 里 Thread.start（span 0：不在任何 span 里）
     P <t_us> <tid> <span> <子进程 pid>   在这个 span 里 exec 出一个子进程（subprocess、multiprocessing 的 spawn）
     B <父进程映像的 t0_ns> <tid> <span>  这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的
+    Q <t_us> <tid> <span> <种类> <队列 id> <对象 id>   往进程内的队列里放了一个对象（种类：q queue.Queue，a asyncio.Queue，j janus）
+    G <t_us> <tid> <span> <种类> <队列 id> <对象 id>   从队列里取出一个对象
+    O <t_us> <tid> <span> <指纹>          ZMQ 发出一条消息（指纹：每一段的长度 + 首尾 32 字节的哈希）
+    I <t_us> <tid> <span> <指纹>          ZMQ 收到一条消息（asyncio 版的 span 是等它的那个协程）
 
 span 号在进程内唯一；返回、挂起、恢复是 hook 按帧（id(帧)）找回的 span 号，不靠栈的顺序，
 所以同一线程里交错执行的 asyncio 协程也配得对。
@@ -39,7 +43,9 @@ events/raw.tar.gz 里永久保留）：
 
 谁起了谁（F / P / B 行，2026-10-01 起）整理进 index.json：thread_from {pid: {tid: [起它的 tid, span 下标]}}、
 spawns [{pid, tid, row, child, how, t_us}]（pid / tid / row 是起它的那一边，row 是 span 下标、-1 是不在任何 span 里；
-how 是 exec / fork；t_us 只有 exec 的有）。
+how 是 exec / fork；t_us 只有 exec 的有）。谁把数据交给谁（Q / G / O / I 行）整理进 handoffs：
+[{via, from: [pid, tid, row, t_us], to: [pid, tid, row, t_us]}]，via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按
+（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）。同一个线程里自己放自己取的不算交接。
 
 写出 events/spans/：keys.json {keys, threads}、index.json {chunks, truncated, scope, thread_from, spawns, ...}、
 p<pid>-NNN.jsonl.gz（按 t0 排好，每块最多 10 万行）。
@@ -59,7 +65,7 @@ def parse(path: Path) -> dict:
     """读一个 ev 日志：{pid, t0, ppid, keys: {id: key}, threads: {tid: 名}, ev: [(tag, t, tid, span, a, b)],
     truncated}。坏行（进程被强杀时最后一行可能只写了一半）跳过。"""
     out = {"pid": None, "t0": None, "ppid": None, "keys": {}, "threads": {}, "ev": [], "truncated": False,
-           "scope": "cross", "from": {}, "spawns": [], "forked": None}
+           "scope": "cross", "from": {}, "spawns": [], "forked": None, "msgs": []}
     name = path.name                              # ev-<pid>-<t0>.log：没有 H 行时从文件名取
     try:
         pid_s, t0_s = name[len("ev-"):-len(".log")].split("-")[:2]
@@ -102,6 +108,12 @@ def parse(path: Path) -> dict:
                 elif ln.startswith("B "):
                     _, pt0, ptid, psp = ln.split()
                     out["forked"] = (int(pt0), int(ptid), int(psp))
+                elif ln[:2] in ("Q ", "G "):
+                    tag, mt, mtid, msp, kind, qid, oid = ln.split()
+                    out["msgs"].append((tag, int(mt), int(mtid), int(msp), (kind, qid, oid)))
+                elif ln[:2] in ("O ", "I "):
+                    tag, mt, mtid, msp, fp = ln.split()
+                    out["msgs"].append((tag, int(mt), int(mtid), int(msp), fp))
             except (ValueError, IndexError):
                 continue
     return out
@@ -205,7 +217,8 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
             remap[i] = kidx[k]
         off = tid_base.get(log["pid"], 0)
         tid_base[log["pid"]] = off + max(log["threads"], default=0)
-        images.append((img, log["pid"], off, base, {k: log[k] for k in ("ppid", "t0", "from", "spawns", "forked")}))
+        images.append((img, log["pid"], off, base,
+                       {k: log[k] for k in ("ppid", "t0", "from", "spawns", "forked", "msgs")}))
         threads.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["threads"].items()})
         raw = pair(log)
         by_tid: dict[int, list] = {}
@@ -240,6 +253,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
             r[8] = at.get(r[8], -1)                     # 父亲被截断在上限之后（没有调用行）的也是 -1
             del r[9]
     thread_from, spawns = _origins(images, at)
+    handoffs = _handoffs(images, at)
     for pid, rows in sorted(per_pid.items(), key=lambda kv: kv[0] or 0):
         for ci in range(0, max(len(rows), 1), CHUNK):
             part = rows[ci:ci + CHUNK]
@@ -254,7 +268,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
         n_calls += sum(r[6] for r in rows)
     index = {"pairing": "frame", "scope": "all" if scopes == {"all"} else "mixed" if "all" in scopes else "cross",
              "chunks": chunks, "procs": procs, "truncated": sorted(p for p in truncated if p),
-             "thread_from": thread_from, "spawns": spawns,
+             "thread_from": thread_from, "spawns": spawns, "handoffs": handoffs,
              "n_lines": n_lines, "n_spans": n_spans, "n_calls": n_calls}
     (tmp / "keys.json").write_text(json.dumps({"keys": keys, "threads": threads}, ensure_ascii=False),
                                    encoding="utf-8")
@@ -286,6 +300,43 @@ def _origins(images: list[tuple], at: dict) -> tuple[dict, list]:
                            "how": "fork"})
     spawns.sort(key=lambda s: (s["pid"], s["child"]))
     return thread_from, spawns
+
+
+_VIA = {"q": "queue", "a": "asyncio", "j": "janus"}
+
+
+def _handoffs(images: list[tuple], at: dict) -> list[dict]:
+    """Q / G / O / I 行 → index.json 的 handoffs（见模块说明）"""
+    out: list[dict] = []
+    sends: dict[str, list] = {}                   # ZMQ：指纹 → [(t, 那一边)]，跨进程配
+    recvs: dict[str, list] = {}
+    for img, pid, off, base, lg in images:
+        puts: dict[tuple, list] = {}
+        for tag, t, tid, sp, what in sorted(lg["msgs"], key=lambda m: m[1]):
+            side = [pid, tid + off, at.get((img, sp), -1), base + t]
+            if tag == "Q":
+                puts.setdefault(what, []).append(side)
+            elif tag == "G":
+                q = puts.get(what)
+                if q:
+                    src = q.pop(0)
+                    if src[1] != side[1]:
+                        out.append({"via": _VIA.get(what[0], what[0]), "from": src, "to": side})
+            else:
+                (sends if tag == "O" else recvs).setdefault(what, []).append(side)
+    for fp, rs in recvs.items():
+        ss = sorted(sends.get(fp, ()), key=lambda s: s[3])
+        i = 0
+        for r in sorted(rs, key=lambda s: s[3]):
+            while i < len(ss) and ss[i] is None:
+                i += 1
+            j = i
+            if j < len(ss) and ss[j][3] <= r[3]:
+                src, ss[j] = ss[j], None
+                if src[:2] != r[:2]:
+                    out.append({"via": "zmq", "from": src, "to": r})
+    out.sort(key=lambda h: (h["from"][3], h["to"][3]))
+    return out
 
 
 def read_spans(spans_dir: Path, pid: int | None = None) -> list[list]:

@@ -709,6 +709,170 @@ if _root and _out:
                 _ev.append("B %d %d %d" % fr)
         os.register_at_fork(before=_before_fork, after_in_child=_after_fork_ev)
 
+    # ---- 谁把数据交给谁（时序事件开着时）。进程内的队列：put 时、get 时各写一行（Q / G），带队列和对象的 id——
+    # 对象在队列里的时候一直活着，整理时同一个队列里同一个对象的 put 和 get 配成一对。ZMQ：发、收各写一行（O / I），
+    # 带消息的指纹（每一段的长度 + 首尾 32 字节的哈希），整理时按指纹、先发先收配对（跨进程）。都算进行数上限。
+    # 这些模块不为了打补丁主动 import：第一次 import 完的时候打（_OnImport），已经 import 过的马上打
+    def _ev_put(tag, kind, q, item):
+        if _ev_room():
+            _ev.append("%s %d %d %d %s %d %d" % (tag, _ev_t(), _ev_tid(), _ev_here(), kind, id(q), id(item)))
+
+    def _queue_patch(cls, kind, put_name, get_name):
+        put0, get0 = cls.__dict__.get(put_name), cls.__dict__.get(get_name)
+        if put0 is not None:
+            def put(self, item, *a, **kw):
+                r = put0(self, item, *a, **kw)
+                try:
+                    _ev_put("Q", kind, self, item)
+                except Exception:
+                    pass
+                return r
+            setattr(cls, put_name, put)
+        if get0 is not None:
+            def get(self, *a, **kw):
+                item = get0(self, *a, **kw)
+                try:
+                    _ev_put("G", kind, self, item)
+                except Exception:
+                    pass
+                return item
+            setattr(cls, get_name, get)
+
+    def _fp(parts):
+        h = hashlib.blake2b(digest_size=8)
+        if isinstance(parts, (bytes, bytearray, memoryview)):
+            parts = (parts,)
+        for x in parts:
+            if isinstance(x, str):
+                x = x.encode("utf-8", "replace")
+            try:
+                m = memoryview(getattr(x, "buffer", x))
+                if m.ndim != 1 or m.format != "B":
+                    m = m.cast("B")
+            except (TypeError, ValueError):
+                continue
+            h.update(m.nbytes.to_bytes(8, "little"))
+            h.update(m[:32])
+            h.update(m[-32:])
+        return h.hexdigest()
+
+    def _ev_msg(tag, span, parts):
+        if _ev_room():
+            _ev.append("%s %d %d %d %s" % (tag, _ev_t(), _ev_tid(), span, _fp(parts)))
+
+    import weakref
+    _zshadow = weakref.WeakSet()  # asyncio 版 socket 背后真正收发的同步 socket：它们的收发由 asyncio 版那一层记
+
+    def _zmq_sync(mod):
+        S = mod.Socket
+        send0, recv0 = S.__dict__.get("send_multipart"), S.__dict__.get("recv_multipart")
+        if send0 is not None:
+            def send_multipart(self, msg_parts, *a, **kw):
+                try:
+                    if self not in _zshadow:
+                        _ev_msg("O", _ev_here(), msg_parts)
+                except Exception:
+                    pass
+                return send0(self, msg_parts, *a, **kw)
+            S.send_multipart = send_multipart
+        if recv0 is not None:
+            def recv_multipart(self, *a, **kw):
+                parts = recv0(self, *a, **kw)
+                try:
+                    if self not in _zshadow:
+                        _ev_msg("I", _ev_here(), parts)
+                except Exception:
+                    pass
+                return parts
+            S.recv_multipart = recv_multipart
+
+    def _zmq_async(mod):
+        S = getattr(mod, "_AsyncSocket", None)
+        if S is None:
+            return
+        init0 = S.__dict__.get("__init__")
+        if init0 is not None:
+            def __init__(self, *a, **kw):
+                init0(self, *a, **kw)
+                try:
+                    _zshadow.add(self._shadow_sock)
+                except Exception:
+                    pass
+            S.__init__ = __init__
+        send0, recv0 = S.__dict__.get("send_multipart"), S.__dict__.get("recv_multipart")
+        if send0 is not None:
+            def send_multipart(self, msg_parts, *a, **kw):
+                try:
+                    _ev_msg("O", _ev_here(), msg_parts)
+                except Exception:
+                    pass
+                return send0(self, msg_parts, *a, **kw)
+            S.send_multipart = send_multipart
+        if recv0 is not None:
+            def recv_multipart(self, *a, **kw):
+                fut = recv0(self, *a, **kw)
+                try:
+                    sp = _ev_here()                   # 等它的协程；收到的时候（回调里）已经不在它的帧上了
+                    def done(f, sp=sp):
+                        try:
+                            if not f.cancelled() and f.exception() is None:
+                                _ev_msg("I", sp, f.result())
+                        except Exception:
+                            pass
+                    fut.add_done_callback(done)
+                except Exception:
+                    pass
+                return fut
+            S.recv_multipart = recv_multipart
+
+    _patches = {}
+    if _EV:
+        _patches = {
+            "queue": lambda m: [_queue_patch(c, "q", "_put", "_get") for c in (m.Queue, m.PriorityQueue, m.LifoQueue)],
+            "asyncio.queues": lambda m: [_queue_patch(c, "a", "_put", "_get")
+                                         for c in (m.Queue, m.PriorityQueue, m.LifoQueue)],
+            "janus": lambda m: _queue_patch(m.Queue, "j", "_put_internal", "_get"),
+            "zmq.sugar.socket": _zmq_sync,
+            "zmq._future": _zmq_async,
+        }
+
+    class _OnImport:
+        # 这几个模块第一次 import 完的时候打补丁：找 spec 交给后面的 finder，只把 loader 的 exec_module 包一层
+        def find_spec(self, name, path=None, target=None):
+            fn = _patches.pop(name, None)
+            if fn is None:
+                return None
+            try:
+                spec = None
+                for f in sys.meta_path:
+                    if f is self or not hasattr(f, "find_spec"):
+                        continue
+                    spec = f.find_spec(name, path, target)
+                    if spec is not None:
+                        break
+                ld = getattr(spec, "loader", None)
+                ex = getattr(ld, "exec_module", None)
+                if ex is None:
+                    return spec
+                def exec_module(module):
+                    ex(module)
+                    try:
+                        fn(module)
+                    except Exception:
+                        pass
+                ld.exec_module = exec_module
+                return spec
+            except Exception:
+                return None
+    for _n in list(_patches):                         # 已经 import 过的马上打
+        if _n in sys.modules:
+            try:
+                _patches.pop(_n)(sys.modules[_n])
+            except Exception:
+                pass
+    if _patches:
+        sys.meta_path.insert(0, _OnImport())
+
     _mon = getattr(sys, "monitoring", None)
     if _mon is not None:
         # Python 3.12+。必须同时订阅进出：只订阅 PY_START 不出栈的话，「调用者」会

@@ -995,9 +995,11 @@ def _line(repo: Path, rel: str, needle: str) -> str:
 
 def test_events_truth():
     """7.1 的真值：同步嵌套、返回后再调、生成器、异常、asyncio 交错、多线程、fork、exec 都配对正确，父 span 对；
-    span 的调用次数之和 = 计数里的 func_edges 之和（同文件的调用也记）。"""
+    span 的调用次数之和 = 计数里的 func_edges 之和（同文件的调用也记）。谁起了谁（线程、fork、subprocess）、
+    谁把数据交给谁（进程内的队列、跨进程的 ZMQ——用 trace_cases/fakezmq 这个假的 pyzmq）都记在对的那次调用上。"""
     repo = fresh()
-    cs("trace", repo, "--case", "truth", "--events", "--", PY, "-m", "fakesvc.truth")
+    cs("trace", repo, "--case", "truth", "--events", "--", PY, "-m", "fakesvc.truth",
+       env={"PYTHONPATH": str(HERE / "trace_cases" / "fakezmq")})
     run, det, rd = latest(repo)
     assert run["status"] == "ok" and run["events"]["n_spans"] > 0, run
     sp, keys = _spans(rd)
@@ -1079,6 +1081,16 @@ def test_events_truth():
     how = {(s["how"], rows[main_pid][s["row"]]["b"]) for s in idx["spawns"] if s["pid"] == main_pid and s["row"] >= 0}
     assert {("fork", k(T, "s_fork")), ("fork", k(T, "s_exec")), ("exec", k(T, "s_spawn"))} <= how, idx["spawns"]
     assert all(s["child"] for s in idx["spawns"]), idx["spawns"]
+    # 谁把数据交给谁：主线程 put_job → consumer 线程 take_job（queue）；父进程 zmq_send → 子进程 zmq_recv（zmq）
+    def side(x):
+        return x[0], keys["threads"][str(x[0])][str(x[1])], rows[x[0]][x[2]]["b"] if x[2] >= 0 else None
+    hs = {(h["via"], side(h["from"]), side(h["to"])) for h in idx["handoffs"]}
+    want_q = ("queue", (main_pid, "MainThread", k(C, "put_job")), None)
+    got_q = [h for h in hs if h[:2] == want_q[:2]]
+    assert len(got_q) == 1 and got_q[0][2][1:] == ("consumer", k(C, "take_job")), (hs, idx["handoffs"])
+    got_z = [h for h in hs if h[0] == "zmq"]
+    assert len(got_z) == 1 and got_z[0][1] == (main_pid, "MainThread", k(C, "zmq_send")) and \
+        got_z[0][2][0] != main_pid and got_z[0][2][2] == k(C, "zmq_recv"), (hs, idx["handoffs"])
     # 父 span：同一个进程、同一个线程，调用那一刻在跑；它的被调方就是这次的调用方（或者是同一个文件里转过来的不可能：都记了）
     for s in sp:
         if s["parent"] is not None:
