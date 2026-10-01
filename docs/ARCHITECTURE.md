@@ -187,6 +187,8 @@ flowchart LR
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 - `bench/python_versions.py`：trace 在 3.10 / 3.11 / 3.12 上的开销（usage「实测数字」里那张表），不是回归测试。
+- `bench/quality.py`：核心质量的基准数（只有 trace 的占比按成因分、请求路径上到模型函数的链有几跳看不出、`/api/graph` 的大小），
+  改判定 / 类型推断前后各跑一次比；默认在本机 vllm-omni 的 MiniCPM run 上，不是回归测试。
 - `payload_parity.py`：重构用的对拍工具，不是回归测试：拿某个旧提交和工作区的代码，对同一份索引和 run 各算一遍几个切面上的图、边详情、时间顺序，逐项比。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
