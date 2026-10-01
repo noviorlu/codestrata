@@ -11,12 +11,12 @@
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
                                   可加 @阶段，空 = 只看静态图）。edge / refs 也接受 run=
     GET  /api/symbol/<key>        一个符号的源码片段
-    GET  /api/file?f=             整个文件 + 符号大纲（全文窗口用）
+    GET  /api/file?f=&run=        整个文件 + 符号大纲（全文窗口用）；带 run 时还有这个文件里「只有 trace」的调用处
     GET  /api/outline?f=          一个文件的符号大纲（含方法），文件树按需展开
     GET  /api/refs?t=             一个定义被哪些地方引用（全文窗口里 Ctrl+点击定义）
     GET  /api/search-index        搜索栏要的全部名字（模块、文件、类 / 函数），前端自己搜
     GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
-    GET  /api/edge?a=&b=          一条边承载了什么：用到了对方哪些符号、runtime 调了哪些
+    GET  /api/edge?a=&b=&run=     一条边承载了什么：两端底下函数之间的调用，scan 写的和 trace 录到的
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
@@ -208,7 +208,12 @@ class Handler(BaseHandler):
         open_ = None if raw is None else [o for o in raw.split(",") if o]
         open_ = sorted(_cut.norm_open(self.idx, open_))
         try:
-            return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase))
+            hot = self._hot(q)[0]                  # 带着录制时的键 → 现在的键（改过的文件里函数挪了位置）
+        except LookupError as e:
+            return self._json({"error": str(e)}, 404)
+        try:
+            return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase,
+                                              keymap=(hot or {}).get("keymap"), redirect=(hot or {}).get("redirect")))
         except (LookupError, FileNotFoundError) as e:
             return self._json({"error": str(e) if isinstance(e, LookupError)
                                else "这个 run 没有录时序事件（codestrata trace --events），或者 span 没整理好（runs merge 重来）"}, 404)
@@ -269,7 +274,7 @@ class Handler(BaseHandler):
             return self._seq(path, q)
 
         hot = hot_meta = hot_key = None
-        if path in ("/api/graph", "/api/edge", "/api/refs"):
+        if path in ("/api/graph", "/api/edge", "/api/refs", "/api/file"):
             try:
                 hot, hot_meta, hot_key = self._hot(q)
             except LookupError as e:
@@ -333,7 +338,7 @@ class Handler(BaseHandler):
             rel = (q.get("f") or [""])[0]
             if not self._in_repo(rel):
                 return self._json({"error": "bad path"}, 404)
-            fv = _source.file_view(self.repo, self.idx, rel)
+            fv = _source.file_view(self.repo, self.idx, rel, hot)
             return self._json(fv) if fv else self._json({"error": "不是已扫描的文件"}, 404)
 
         if path == "/api/open":

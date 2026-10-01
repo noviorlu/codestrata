@@ -1,125 +1,103 @@
-"""点开一条边：它承载了哪些引用和调用（给 /api/edge）。两边怎么对上由 align 定。"""
+"""点开一条边：两端底下函数之间的调用（给 /api/edge）。两边怎么对上由 align 定，这里只取数、配上源码那一行。"""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .. import align as _align
 from .. import cut as _cut
+from .. import graph as _graph
 from . import source as _source
 
+MAX_ITEMS = 60
 
-def _name_def(repo: Path, syms: dict, symkey: str) -> dict | None:
-    """符号表里没有的「<路径>#<名字>」——模块级变量（`LIMIT: int = 30`）、__init__ 再导出的类 / 函数——的定义：
-    scan 时 xref 按 `from 模块 import 名字` 追到的（xref.json 的 names，和 Ctrl+点击同一套解析）。
-    老的 xref.json 没有 names、或者没追到：None（面板照旧说没找到定义）。"""
-    X = _source.load_xref(repo)
-    i = (X["x"].get("names") or {}).get(symkey) if X else None
-    if i is None:
+
+def _sig(repo: Path, d: dict | None) -> list[str] | None:
+    """被调函数的签名（def 那一行到冒号为止，最多 6 行），多行的压成一行"""
+    if not d or d.get("k") not in ("func", "class"):
         return None
-    (f, l), (kind, _, key) = X["x"]["where"][i], X["x"]["targets"][i].partition(":")
-    return {"f": f, "l": l, "k": (syms.get(key) or {}).get("k") if kind == "s" else "var"}
-
-
-def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
-    """点开一条边：它到底承载了什么。
-
-    静态引用 × runtime 调用 两个维度交叉，归成五类：
-      confirmed  代码里引用了，这次 case 也真的调到了
-      static     代码里引用了，这次没走到（或没有 runtime 数据）
-      dynamic    runtime 调到了，但代码里没有静态引用——插件 / getattr / 注册表
-      import_only 导入了但本文件从没引用（原因再细分：unused / reexport / type / sideeffect / intentional）
-    """
-    key = f"{a}|{b}"
-    syms = idx.get("symbols") or {}
-    uses = (idx.get("edge_uses") or {}).get(key, {})
-    dead = (idx.get("edge_dead") or {}).get(key, [])
-    sites = (idx.get("edge_sites") or {}).get(key, [])
-    calls = ((hot or {}).get("edge_calls") or {}).get(key, {})
-
-    def where(symkey: str) -> dict | None:
-        d = syms.get(symkey)
-        return {"f": d["f"], "l": d["l"], "k": d["k"]} if d else _name_def(repo, syms, symkey)
-
-    def runtime(callee: str, info: dict) -> dict:
-        return {"sym": callee, "def": {"f": info["f"], "l": info["l"]}, "n": info["n"],
-                "callers": sorted(({"sym": c, "def": {"f": v["f"], "l": v["l"]}, "n": v["n"]}
-                                   for c, v in info["callers"].items()), key=lambda x: -x["n"])[:8]}
-
-    items = []
-    for sym, locs, rts, status in _align.pair_items(uses, calls):
-        rt = [runtime(c, info) for c, info in rts]
-        items.append({"sym": sym, "name": sym.partition("#")[2], "def": where(sym), "status": status,
-                      "uses": [{"f": f, "l": l} for f, l in locs[:20]], "n_uses": len(locs),
-                      "runtime": sorted(rt, key=lambda x: -x["n"]),
-                      "calls": sum(x["n"] for x in rt)})
-    order = {"confirmed": 0, "dynamic": 1, "static": 2}
-    items.sort(key=lambda x: (order[x["status"]], -x["calls"], -x["n_uses"], x["name"]))
-
-    ran = set((hot or {}).get("module_exec") or [])
-    imp_only = []
-    for x in dead:
-        f = x["sym"].partition("#")[0]                # 导入的是模块（它的路径）或模块里的名字（<路径>#<名字>）
-        imp_only.append({**x, "status": "import_only",
-                         "module_ran": bool(hot) and bool(f) and f in ran})
-
-    cnt = {"confirmed": 0, "static": 0, "dynamic": 0}
-    for x in items:
-        cnt[x["status"]] += 1
-    return {"a": a, "b": b, "has_runtime": bool(hot),
-            "import_exec": ((hot or {}).get("edge_import_exec") or {}).get(key, 0),
-            "static_edge": any(e[0] == a and e[1] == b for e in (idx.get("edges") or [])),
-            # 只在 if TYPE_CHECKING: 里 import 了对方（static_edge 为假时，这条「边」运行时不存在）
-            "type_edge": any(e[0] == a and e[1] == b for e in (idx.get("type_edges") or [])),
-            "sites": sites[:60], "n_sites": len(sites),
-            "items": items, "import_only": imp_only,
-            "counts": {**cnt, "import_only": len(imp_only),
-                       "calls": sum(x["calls"] for x in items)}}
+    ls = _source.lines_of(str(repo / d["f"]), (repo / d["f"]).stat().st_mtime_ns) if (repo / d["f"]).exists() else ()
+    if not 0 < d["l"] <= len(ls):
+        return None
+    out = []
+    for t in ls[d["l"] - 1:d["l"] + 5]:
+        out.append(t.rstrip())
+        if t.split("#", 1)[0].rstrip().endswith(":"):
+            break
+    if len(out) == 1:
+        return [out[0].strip()[:200]]
+    one = re.sub(r"\(\s+", "(", re.sub(r",?\s*\)", ")", " ".join(t.strip() for t in out)))
+    closed = out[-1].split("#", 1)[0].rstrip().endswith(":")
+    return [one[:200] + ("" if closed else " …")]
 
 
 def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
-    """点开一条边：a、b 可以是目录、本层文件或单个文件节点。把两端底下每一对有依赖
-    （静态的或 runtime 的）单元的明细合起来；同一个被引用的符号只列一次。"""
-    A, B = _cut.units_of(idx, a), _cut.units_of(idx, b)
-    if A == [a] and B == [b]:
-        d = _pair_detail(repo, idx, a, b, hot)
-        _align.hints(repo, idx, d["items"])
-        return d
-    Bs = set(B)
-    hot_edges = (hot or {}).get("edges") or {}
-    pairs = sorted({(x, y) for x, y, _ in (idx.get("edges") or []) + (idx.get("type_edges") or [])
-                    if y in Bs and x in set(A)}
-                   | {tuple(k.split("|")) for k in hot_edges
-                      if k.split("|")[1] in Bs and k.split("|")[0] in set(A)})
-    parts = [_pair_detail(repo, idx, x, y, hot) for x, y in pairs]
-    out = {"a": a, "b": b, "has_runtime": bool(hot), "import_exec": 0, "static_edge": False, "type_edge": False,
-           "sites": [], "n_sites": 0, "items": [], "import_only": [], "n_pairs": len(parts),
-           "counts": {"confirmed": 0, "static": 0, "dynamic": 0, "import_only": 0, "calls": 0}}
-    items: dict[str, dict] = {}
-    for p in parts:
-        out["import_exec"] += p.get("import_exec", 0)
-        out["static_edge"] = out["static_edge"] or p["static_edge"]
-        out["type_edge"] = out["type_edge"] or p["type_edge"]
-        out["sites"] += p["sites"]
-        out["n_sites"] += p["n_sites"]
-        out["import_only"] += p["import_only"]
-        for it in p["items"]:
-            cur = items.get(it["sym"])
-            if cur is None:
-                items[it["sym"]] = {**it, "uses": list(it["uses"]), "runtime": list(it["runtime"])}
-                continue
-            cur["uses"] += it["uses"]
-            cur["n_uses"] += it["n_uses"]
-            cur["runtime"] += it["runtime"]
-            cur["calls"] += it["calls"]
-    for it in items.values():               # 合并完再定状态：同一个符号可能一对里静态引用、另一对里 runtime 调到
-        it["status"] = _align.merged_status(it["uses"], it["runtime"])
-    order = {"confirmed": 0, "dynamic": 1, "static": 2}
-    out["items"] = sorted(items.values(), key=lambda x: (order[x["status"]], -x["calls"], -x["n_uses"], x["name"]))
-    for it in out["items"]:
-        it["uses"] = it["uses"][:20]
-        out["counts"][it["status"]] += 1
-        out["counts"]["calls"] += it["calls"]
-    out["counts"]["import_only"] = len(out["import_only"])
-    out["sites"] = out["sites"][:80]
-    _align.hints(repo, idx, out["items"])
-    return out
+    """点开一条边：a、b 可以是目录、本层文件或单个文件节点。两端底下函数之间的调用：
+      calls      这次 trace 到的函数对 [{caller, callee, caller_def, def, sig, n, only, status, lines, guessed, note, wiring}]：
+                 n 次数、only 其中代码里看不出的次数；status：both（两边都有）/ trace（只有 trace）/ mixed（有的行对得上、有的对不上）；
+                 lines 是 trace 记的调用行 [{f, l, n, status, note, s}]（note 见 align.judge）；老 run 没有调用行：lines 是 null，
+                 guessed 是在调用方里按名字找到的 [{f, l, s}]，note 是整个函数对的；wiring 见 align.wiring（只给有只有 trace 的）
+      scan_only  代码里写了、这次没录到的 [{caller, callee, caller_def, def, sig, lines: [{f, l, s, k}], n_lines, unseen}]
+                 （k 是 graph.py 的种类）；unseen：只是构造一个构造时不跑仓库里代码的类，跑没跑 trace 都看不到
+    两种都按次数 / 调用处多的在前，各最多 MAX_ITEMS 条（counts 里是全部的）。
+    lines_approx：时间段的次数没有调用行，每行的次数是按整个 run 的调用行摊的（seq.window_counts）"""
+    A, B = set(_cut.units_of(idx, a)), set(_cut.units_of(idx, b))
+    unit = {}
+
+    def u(key):
+        if key not in unit:
+            unit[key] = _align.node_unit(idx, key)
+        return unit[key]
+
+    def text(f: str, l: int) -> str:
+        return _source.line_text(repo, f, l).strip()[:200]
+
+    calls, ran = [], set()
+    for pk, x in ((hot or {}).get("calls") or {}).items():
+        if x["a"] not in A or x["b"] not in B:
+            continue
+        caller, _, callee = pk.partition("|")
+        cd, d = _source.node_def(idx, caller), _source.node_def(idx, callee)
+        it = {"caller": caller, "callee": callee, "caller_def": cd, "def": d, "sig": _sig(repo, d),
+              "n": x["n"], "only": x["only"],
+              "status": "trace" if x["only"] >= x["n"] else "both" if not x["only"] else "mixed",
+              "lines": None, "guessed": None, "note": x.get("note")}
+        if x["lines"] is not None:
+            it["lines"] = [{**ln, "f": cd["f"], "s": text(cd["f"], ln["l"]) if ln["l"] else ""} for ln in x["lines"]]
+        else:
+            it["guessed"] = [{"f": cd["f"], "l": l, "s": text(cd["f"], l)} for l in x["guessed"] or []]
+        if x["only"]:
+            w = _align.wiring(idx, callee)
+            if w:
+                it["wiring"] = {**w, "refs": [{**r, "s": text(r["f"], r["l"])} for r in w["refs"]]}
+        calls.append(it)
+        ran.add(pk)
+    # scan 记录：两端在这两个节点底下、定下了被调方的调用
+    g = idx.get("graph") or {}
+    C = g.get("callees") or []
+    scan: dict[str, list] = {}
+    for caller, xs in (g.get("calls") or {}).items():
+        if u(caller) not in A:
+            continue
+        for i, l, e, k in xs:
+            if u(C[i]) in B:
+                scan.setdefault(f"{caller}|{C[i]}", []).append((l, e, k))
+    ctors = g.get("ctors") or {}
+    scan_only = []
+    for pk, sl in scan.items():
+        if pk in ran:
+            continue
+        caller, _, callee = pk.partition("|")
+        cd, d = _source.node_def(idx, caller), _source.node_def(idx, callee)
+        scan_only.append({"caller": caller, "callee": callee, "caller_def": cd, "def": d, "sig": _sig(repo, d),
+                          "lines": [{"f": cd["f"], "l": l, "k": k, "s": text(cd["f"], l)} for l, _, k in sl[:5]],
+                          "n_lines": len(sl),
+                          # 构造一个构造时不跑仓库里代码的类（dataclass 生成的 __init__、仓库外基类的）：trace 看不到
+                          "unseen": all(k == _graph.NEW for _, _, k in sl) and ctors.get(callee) == []})
+    order = {"trace": 0, "mixed": 1, "both": 2}
+    calls.sort(key=lambda x: (order[x["status"]], -x["n"], x["callee"]))
+    scan_only.sort(key=lambda x: (x["unseen"], -x["n_lines"], x["callee"]))
+    return {"a": a, "b": b, "has_runtime": bool(hot), "lines_approx": bool((hot or {}).get("lines_approx")),
+            "calls": calls[:MAX_ITEMS], "scan_only": scan_only[:MAX_ITEMS],
+            "counts": {"calls": sum(x["n"] for x in calls), "only": sum(x["only"] for x in calls),
+                       "pairs": len(calls), "scan_only": len(scan_only)}}

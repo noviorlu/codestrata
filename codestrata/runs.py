@@ -712,9 +712,9 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             f"录制中断了，先 codestrata runs {repo} merge {run['id']}"))
     win = _seq.parse_window(phase)
     counts, names = load_counts(rd, None if win else phase, with_names=True)
-    if win:                                      # 时间段：次数按这段时间里的时序事件现算（只有跨文件的调用）
-        try:
-            counts = _seq.window_counts(rd, *win)
+    if win:                                      # 时间段：次数按这段时间里的时序事件现算（只有跨文件的调用）；
+        try:                                     # 调用行按整个 run 记的比例摊（span 不记调用行）
+            counts = _seq.window_counts(rd, *win, ref_lines=counts.get("func_lines"))
         except LookupError as e:
             raise SystemExit(str(e)) from None
         except (OSError, ValueError) as e:
@@ -727,7 +727,9 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
     # 录制之后改过的文件：按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上
     counts, unmatched = _align.remap(counts, names, fs, idx)
     hot = _align.to_package_graph(counts, idx)
+    hot["keymap"] = _align.key_mapper(names, fs, idx)    # 录制时的键 → 现在的（「时间顺序」读 span 时用；不发给页面）
     hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 写明这份次数来自哪个 run（和阶段 / 时间段）
+    hot["lines_approx"] = bool(win) and "func_lines" in counts     # 时间段：每行的次数是摊出来的
     script = None
     sc = detail.get("script")
     if sc and sc.get("stored") and (rd / sc["stored"]).is_file():

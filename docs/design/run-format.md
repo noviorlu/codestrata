@@ -239,8 +239,8 @@
   所以阶段归属是按各进程看到阶段切换的那一刻：各进程每 0.05 秒看一次 `PHASE`（另外每秒兜底读一次）；`--phase` 切的，
   触发的那个线程当场切、再停 0.1 秒等别的进程跟上。计数的阶段边界和 `phase_log` 的时刻因此可能差几十毫秒。
 - 不带阶段加载（`<id>` 不带 `@`）= 各阶段逐键相加（`runs._sum`）。
-- 加载时从这里算出的东西（`module_frames`、`class_frames`、`anon`、单元间的边、`edge_calls`…）**不存盘**，
-  每次按当前的 index 现算（`align.to_package_graph`），见 §8。
+- 加载时从这里算出的东西（`module_frames`、`class_frames`、`anon`、函数对和它们和 scan 比的结果 `calls`、`redirect`…）
+  **不存盘**，每次按当前的 index 现算（`align.to_package_graph`），见 §8。
 
 ## 5 原始分片（parts/，打包后在 parts.tar.gz）
 
@@ -374,8 +374,10 @@ R 3784145 1 2
 
 ### 6.4 从 span 算出来的东西（不存盘）
 
-- **时间段的次数**（`seq.window_counts`，`@t=起-止`）：落在 `[起, 止]` 里的调用 → 和 counts 同形状的 `{funcs, func_edges}`
-  （被调方算一次进入）。只有跨文件的调用，比按阶段看的次数少（页面上注明）。
+- **时间段的次数**（`seq.window_counts`，`@t=起-止`）：落在 `[起, 止]` 里的调用 → 和 counts 同形状的 `{funcs, func_edges, func_lines}`
+  （被调方算一次进入）。只有跨文件的调用，比按阶段看的次数少（页面上注明）。span 不记调用行：每一对的次数按它在整个 run 的
+  `func_lines` 里各行的比例摊到行上（`seq.spread_lines`，最大余数法，每对加起来正好是它的次数；整个 run 里没有这一对的记在第 0 行），
+  和 scan 比的结果和按阶段看的一样；每行的次数是约数（`hot.lines_approx`，页面上注明）。老 run 没有 `func_lines` 就不给。
 - **时间顺序**（`seq.edge_times`，`/api/seq/edges`）：一个阶段（或时间段）里，切面上每条节点间的边
   `{first, last, n, spread, repeat}`。阶段的时间段来自 `phase_log`：各段左闭右开，最后一段闭到 run 的终点；
   终点 = max(`duration_s`、最后一次切阶段、所有块的 `t1_us`)（`seq.run_end`）。`repeat` = 至少 5 次，且同一进程里第一次到最后一次
@@ -418,17 +420,22 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
    查到的把键改成 `rel:现在的行号`；查不到的、名字里有 `<` 的（lambda、生成器表达式）、没存 qualname 的，键改成 `rel:-1`
    ——次数还算在这个文件和它的单元上，但不算到任何函数上。模块顶层（`:0`）不动。改写后撞到同一个键的相加。
    对不上的键数给页面（`unmatched`）。`func_lines` 的调用行跟着调用方挪：函数整个挪了几行，行也挪几行（函数体里面改过的，行就可能偏）；
-   调用方改成了 `rel:-1` 的，行记成 0。
-4. **折到单元**（`align.to_package_graph(counts, idx)`）：
+   调用方是模块顶层（`rel:0`，没有可以对的定义行）或者改成了 `rel:-1` 的，行记成 0（不知道是哪一行）。
+4. **落到 graph 的节点上**（`align.to_package_graph(counts, idx)`）：
    - `rel` → 单元：`idx.files[rel]`；不在里面的键整个不叠。
    - `(rel, 行)` → 符号：index 符号的 `(f, l)`、`(f, dl)` 和同名的另几个 def（`a`）都能对上；对不上的是 `anon`
-     （闭包、lambda：算到文件和单元上，明细里归到包住它的最内层符号，写成 `外层符号.<L行号>`）。
-   - **定义时的执行不算调用**（`analysis.defining`）：行号 0 → 模块顶层（`module_frames`）；行号正好是某个 `class` 符号的
-     `l` / `dl` → 类体（`class_frames`）；行号 1 又对不上任何符号 → 当模块顶层（老格式）。被调方是定义的边记进
-     `edge_import_exec`，不画成调用。
-   - 单元间的边：两端单元不同的 `func_edges` 相加；同单元的丢掉。
-5. **折到切面**（`align.hot_on_cut`）：单元 → 当前切面上的节点（`cut.view` 的 `node_of`），节点、节点间的边分别相加；
-   被调符号不在这条边的静态引用（`edge_uses`）里的，算作动态分派。
+     （闭包、lambda：算到文件和单元上，节点写成 `外层符号.<L行号>`）；模块顶层是 `<rel>#<module>`。和 graph.json 同一种写法。
+   - **定义时的执行不算调用**（`align.defining`）：行号 0 → 模块顶层（`module_frames`）；行号正好是某个 `class` 符号的
+     `l` / `dl` → 类体（`class_frames`）；行号 1 又对不上任何符号 → 当模块顶层（老格式）。被调方是定义的边（import 触发的
+     模块顶层执行、class 语句）不算调用。
+   - 函数对（`calls`）：`func_edges` 落到节点上，`func_lines` 给出每个函数对的调用行；同一个文件里的也留着（代码窗口要）。
+5. **和 scan 记录比**（`align.classify`）：每个函数对的每个调用行，看 graph.json 里调用方在那一行记的调用：定下的被调方就是它，
+   两边都有；否则只有 trace，记下 scan 在那一行看到的是什么（`align.judge`）。行是 0 的（不知道是哪一行）在调用方整个函数里比。
+   **构造**：那一行写的构造 `C(…)`（种类 1）会跑到这个方法的（graph.json 的 `ctors`）——这些调用从 F→方法挪到 F→C 这个函数对上
+   （被调方是类，两边都有），和 scan 的记录对上，一次构造只算一次（同一行的 `__new__`、`__init__` 取多的那个；一行里几处构造都会跑到
+   这个方法时平分）。整个挪过去了的函数对记进 `redirect`（trace 的键对 → C 的文件），「时间顺序」也照这个算到 C 上。
+   调用方自己里面的 lambda、生成器表达式（F → F.<L行>）算两边都有。没有 `func_lines` 的老 run 在整个函数里比，调用处按名字猜。
+6. **折到切面**（`align.hot_on_cut`）：单元 → 当前切面上的节点（`cut.view` 的 `node_of`），节点、节点间的调用次数、其中只有 trace 的次数分别相加。
 
 ## 9 给其他语言的录制端
 
@@ -448,7 +455,7 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 | 要的功能 | 必须有 | 建议有 |
 |---|---|---|
 | **不需要 scan 就能用的**：run 出现在列表里（`runs ls`、页面下拉）、`runs show`、按 case 名解析 | `runs/<id>/run.json` 含 `id`（= 目录名）、`case`、`status`（`ok` / `partial` 才会被 case 名优先选中） | `created`、`duration_s`、`summary`、`problems`、`cmd`、`cwd`、`git` |
-| **叠加到图上**（节点、边上的次数、只看跑到的、边的明细） | 上一行 + `counts.json.gz` 至少一个阶段，每个阶段有 `funcs` 和 `func_edges`；键的 `rel` 在 index 的 `files` 里。**叠加一定要 index**：没有 scan 过的仓库只能看列表 | `detail.json` 的 `file_shas`（没有它就判断不了录制后哪些文件改过，改过的文件会叠到错的函数上）、`names`（改过的文件按名字挪键） |
+| **叠加到图上**（节点、边上的次数、只看跑到的、边的明细） | 上一行 + `counts.json.gz` 至少一个阶段，每个阶段有 `funcs` 和 `func_edges`；键的 `rel` 在 index 的 `files` 里。**叠加一定要 index**：没有 scan 过的仓库只能看列表 | `func_lines`（没有它就不知道调用写在哪一行：和 scan 只能按整个函数比、调用处按名字猜，代码窗口里也标不出运行时调到了谁）；`detail.json` 的 `file_shas`（没有它就判断不了录制后哪些文件改过，改过的文件会叠到错的函数上）、`names`（改过的文件按名字挪键） |
 | **阶段**（阶段按钮、`@阶段`） | counts.json.gz 里两个以上阶段；run.json 的 `phases` 列出同样的名字（`resolve` 查它、页面按它出按钮） | `phases[].n_funcs`、`n_calls` |
 | **时间条**（阶段按时间画成一段段） | 阶段的时刻：run.json 的 `phase_log`（`[名字, t_us, 来源]`，来源用 `start` / `sh` / `hook`），或者至少 `phases[].t_us`；时间轴终点：`duration_s` 或 span | `clock` |
 | **时间顺序**、在时间条上拖时间段（`@t=`） | `events/spans/` 的 index.json（`chunks`）、keys.json（`keys`）、`p*.jsonl.gz`；run.json 的 `events` 不为 null 且没有 `error`（页面按它决定开不开放）；按阶段看时间顺序还要这个阶段在 `phase_log` 里有时刻 | index.json 的 `truncated`、`procs`；keys.json 的 `threads` |
@@ -472,38 +479,37 @@ scan 写 index.json 和 symbols.json，加载时（`ui.load.load_index`）合成
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
-| `format` | int | `ui.load.load_index`、`ui.load.index_summary` | 索引的格式版本（`cut.INDEX_FORMAT`，现在是 4：id 按路径、符号键 `<路径>#<限定名>`、有 graph.json）；不一样的旧索引要重新 scan | 是 |
-| `repo` | {root, name, roots, n_files, n_parse_errors, unresolved_imports, n_aux, auto_split} | `ui.graphview.graph_payload`（整个传给前端：页头用 `name`，页脚用 `roots`、`n_files`、`n_parse_errors`）、`payload.index_summary`（主菜单卡片、trace 的默认 roots）、`auto_split` 给前端 | 仓库信息 | 是（至少 `name`、`roots`、`n_files`、`n_parse_errors`） |
+| `format` | int | `ui.load.load_index`、`ui.load.index_summary` | 索引的格式版本（`cut.INDEX_FORMAT`，现在是 5：id 按路径、符号键 `<路径>#<限定名>`、有 graph.json，graph.json 有 `ctors`）；不一样的旧索引要重新 scan | 是 |
+| `repo` | {root, name, roots, n_files, n_parse_errors, unresolved_imports, n_aux, auto_split} | `ui.graphview.graph_payload`（整个传给前端：页头用 `name`，页脚用 `roots`、`n_files`、`n_parse_errors`）、`ui.load.index_summary`（主菜单卡片、trace 的默认 roots）、`auto_split` 给前端 | 仓库信息 | 是（至少 `name`、`roots`、`n_files`、`n_parse_errors`） |
 | `packages` | {单元: {files, loc, classes, funcs, out, in, alt, label?, sep?}} | `cut.view`（按切面相加 `files`、`loc`、`classes`、`funcs`）、`cut.default_open`（`loc`）、`layout.build`（过滤掉 `files` < min_files 的、既没符号也没边的空单元）、`cut.members`；`label` / `sep` 给 `cut.label`（显示名） | 单元（节点的最小粒度）。**id 是文件相对仓库根的路径**（`fakesvc/offline.py`）。`label` 是显示名、`sep` 是它的分隔符：Python 是点分的模块名（`fakesvc.offline`，包的 `__init__.py` 是 `<包>.__init__`）和 `.`；不给就按路径切 | 是（`label` / `sep` 否） |
-| `edges` | [[单元a, 单元b, 权重]] | `cut.view`（切面上的边、出入度）、`layout.build`（分层）、`ui.graphview`（边的种类） | 静态依赖边（Python 是 import 条数） | 是（可以是空列表） |
-| `type_edges` | [[a, b, w]] | `ui.graphview`（「仅类型」边） | 只在类型检查时存在的依赖 | 否 |
+| `edges` | [[单元a, 单元b, 权重]] | `cut.view`（出入度）、`layout.build`（分层、横向排序、画不画） | import 关系（Python 是 import 条数） | 是（可以是空列表） |
 | `dirs` | {目录: {parent, dirs, units, label?, sep?}} | `cut` 几乎所有函数（节点归属、展开、框） | 目录树。**目录 id 是路径加 `/`**（`fakesvc/`），仓库根目录直接放着的脚本在 `./` 里；「本层文件」节点是 `<目录>*`。可以直接用 `cut.dir_tree(packages, roots)` 生成：单元所在目录 = 去掉文件名；目录的显示名从单元的推（单元显示名去掉最后一段）。每个单元的目录都必须在树里 | 是 |
 | `default_open` | [目录] | `cut.norm_open`、`seq._Map`、`serve` | 默认切面（展开哪些目录和本层文件节点）。可以用 `cut.default_open(index)[0]` 算 | 是 |
 | `n_symbols` | int | `ui.load.index_summary` | 主菜单显示 | 否 |
 
-**symbols.json**（index 里的大块，按需加载；这个文件要有，否则 `idx["edge_sites"]` 之类的直接下标会 KeyError）
+**symbols.json**（index 里的大块，按需加载）
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
 | `files` | {rel: 单元} | `align.to_package_graph` / `remap`、`runs.file_state`、`seq._Map`、`ui.graphview`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
 | `symbols` | {符号键: {n, s, k, f, l, lang, m?, p, dl?, e?, b?, d?, a?, x?}} | `align.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`x`）、`align.remap`（`f`、`n`、`l`、`dl`）、`ui.graphview`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`）、`--phase` 的解析（`m`） | **符号键是 `<文件路径>#<限定名>`**（`fakesvc/offline.py#Engine.generate`；不拿冒号分，C++ / Rust 的限定名里有 `::`）。`n` 限定名、`s` 它的最后一段、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`lang` 语言、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名（Python）、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`、`x` 标记（`defexec`：落在它定义行上的帧是定义时的执行，Python 的类体） | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
 | `file_sha` | {rel: sha16} | `runs.file_state` | 录制后哪些文件改过 | 强烈建议（没有时退回和工作区比） |
-| `edge_uses` | {"a\|b": {"<文件路径>#<名字>": [[文件, 行]…]}} | `align.edge_uses_on_cut`（算动态分派）、边的详情（`align.pair_items`） | 每条边实际引用了对方哪些符号（和符号键同一种写法；模块级变量、再导出的名字不在符号表里，由 xref.json 的 `names` 追到定义） | 否（没有时所有 runtime 调用都算动态分派） |
-| `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `ui.graphview`、`ui.edge`（纯 import、不承载调用的边画成虚线） | `sym` 是导入的东西：模块写它的文件路径，模块里的名字写 `<文件路径>#<名字>` | 否 |
-| `edge_sites`、`name_refs`、`docs`、`aux`、`file_loc` | | 边的详情、接线点、文档、非 Python 源文件、行数 | 面板和冻结区 | 否 |
+| `name_refs`、`docs`、`aux`、`file_loc` | | 按名字接线的地方（`align.wiring`）、文档、非 Python 源文件、行数 | 面板和冻结区 | 否 |
 
-**graph.json**（graph 的 scan 记录：函数之间的调用。由 `graph.Builder` 在 `xref.build` 的同一遍里产出；现在还没有界面读它，以后给 scan-trace alignment 用）
+**graph.json**（graph 的 scan 记录：函数之间的调用。由 `graph.Builder` 在 `xref.build` 的同一遍里产出；`ui.load.load_index` 读进 `idx["graph"]`，图上的边和 scan-trace alignment 都靠它。
+**必需**：没有它图上一条边都没有，trace 到的调用全算成只有 trace）
 
-| 字段 | 形状 | 用途 |
-|---|---|---|
-| `format` | int | 同 index.json |
-| `callees` | [符号键] | 被调方，`calls` 里按下标引用 |
-| `calls` | {调用方: [[被调方下标, 行, 末行, 种类]]} | 定下了被调方的调用 |
-| `sites` | {调用方: [[名字, 行, 末行, 种类]]} | 定不下被调方的调用处：名字是写的那个（`x.m(…)` 的 `m`；语法触发的是特殊方法名；`f()()` 这种没有名字的是 null） |
+| 字段 | 形状 | 用途 | 必 |
+|---|---|---|---|
+| `format` | int | 同 index.json | 是 |
+| `callees` | [符号键] | 被调方，`calls` 里按下标引用 | 是 |
+| `calls` | {调用方: [[被调方下标, 行, 末行, 种类]]} | 定下了被调方的调用 | 是 |
+| `sites` | {调用方: [[名字, 行, 末行, 种类]]} | 定不下被调方的调用处：名字是写的那个（`x.m(…)` 的 `m`；语法触发的是特殊方法名；`f()()` 这种没有名字的是 null） | 是 |
+| `ctors` | {类: [方法符号键]} | 构造过的类（种类 1 的被调方）构造时跑到的仓库里的方法：Python 是沿 MRO 各取第一个 `__new__` / `__init__` / `__post_init__`（dataclass 生成的 `__init__` 不在仓库里）。`[]`：构造时跑的代码都不在仓库里，trace 看不到（边详情里标出来，不说「没录到」） | 是 |
 
 调用方是符号键，另有三种符号表里没有的：`<文件路径>#<module>`（模块顶层的代码）、`<外层>.<L行>`（lambda、生成器表达式：运行时是单独的帧）；
 类体里的代码记在类自己身上，列表 / 集合 / 字典推导式算外层（3.12 起它们不是单独的帧）。行、末行是调用那个表达式占的行。
-种类：0 调用、1 构造（被调方是类）、2 装饰器（`@x` 在定义时调 `x`）、3 取 property（调 getter）、4 语法触发的特殊方法（`with`、`for`、`[]`、运算符、`len()` 这类，
+种类：0 调用、1 构造（被调方是类）、2 装饰器（`@x` 在定义时调 `x`）、3 用 property（读、赋值、`del` 调 getter、setter、deleter）、4 语法触发的特殊方法（`with`、`for`、`[]`、运算符、`len()` 这类，
 只记仓库里有类定义过的）、5 `getattr(…, "名字")`、6 调的是仓库外的。
 
 `layout.build` 读的 `frames`、`alias` 不是扫描端的：是 `ui.graphview.graph_payload` 按切面现算、塞进给 layout 的那个字典里的。

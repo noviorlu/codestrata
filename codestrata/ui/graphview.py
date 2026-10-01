@@ -53,9 +53,10 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     alias = _cut.disambiguate(idx, set(_cut.visible(v)) | set(frames))
     syn = {"repo": idx["repo"], "packages": v["nodes"], "edges": v["edges"], "frames": frames, "alias": alias,
            "root_label": _cut.root_label(idx)}
-    # 分层（纵轴）：叠了 run 就按这次实际发生的调用排，调用方在上；
-    # 静态 import 只作次要依据——基类回调子类、注册表、回调这些调用和 import 的方向是反的
-    rt_calls = _align.hot_on_cut(hot, v["node_of"])[1] if hot else {}
+    # 分层（纵轴）：import 关系只当排版的权重（图上不画）；叠了 run 再按这次实际发生的调用排，调用方在上——
+    # 基类回调子类、注册表、回调这些调用和 import 的方向是反的
+    hp, he, hd = _align.hot_on_cut(hot, v["node_of"]) if hot else ({}, {}, {})
+    rt_calls = he
     g = _layout.build(syn, min_files=min_files, width=width,
                       runtime_edges=[(*k.split("|"), n) for k, n in sorted(rt_calls.items())])
     mem, node_of = v["members"], v["node_of"]
@@ -83,43 +84,20 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
         if n:
             have = {d["f"] for d in pkg_docs.get(n, [])}
             pkg_docs.setdefault(n, []).extend(d for d in ds if d["f"] not in have)
-    # 每条边的「实质」：用到了对方几个符号、有几个只 import 没用的绑定。
-    # 一个符号都没用到的边（纯 import）在图上画成虚线——它不承载任何调用。
-    dead = idx.get("edge_dead") or {}
-    kinds: dict[str, dict] = {}
-    syms_used = _align.edge_uses_on_cut(idx, node_of)
-    for a, b, w in idx.get("edges") or []:
-        na, nb = node_of[a], node_of[b]
-        if na == nb:
-            continue
-        k = f"{na}|{nb}"
-        d = kinds.setdefault(k, {"uses": 0, "dead": 0, "sites": 0})
-        d["dead"] += len(dead.get(f"{a}|{b}", []))
-        d["sites"] += w
-    for k, ss in syms_used.items():
-        kinds[k]["uses"] = len(ss)
-    # 只在 TYPE_CHECKING 里 import 的（运行时不存在）：不是依赖，不进排版和高度。切面上两端之间
-    # 没有运行时 import 的才单独给出来，前端画成「仅类型」（默认不显示）；有的，它的 import 在那条边的详情里
-    type_w: dict[str, int] = {}
-    for a, b, w in idx.get("type_edges") or []:
-        na, nb = node_of[a], node_of[b]
-        if na != nb and f"{na}|{nb}" not in kinds:
-            type_w[f"{na}|{nb}"] = type_w.get(f"{na}|{nb}", 0) + w
-    # hot 叠加也按切面汇总；只在 runtime 出现、静态 import 图里根本没有的节点间调用——插件、
-    # importlib、注册表——是静态分析的盲区，必须单独画出来，否则图会说谎。
-    hot_view, rt_only, dyn_only = None, [], []
+    # 图上的边只有调用：scan 边（代码里写了、定下了被调方的调用，graph.json）和这次 trace 到的调用。
+    # 边的第三项：切面上这条 scan 边底下有几处调用
+    kinds = _align.scan_edges_on_cut(idx, node_of)
     shown = {n["id"] for n in g["nodes"]}
-    type_only = [[*k.split("|"), w] for k, w in sorted(type_w.items()) if set(k.split("|")) <= shown]
+    g["edges"] = [[*k.split("|"), w] for k, w in sorted(kinds.items()) if set(k.split("|")) <= shown]
+    # 这次跑了、scan 里却没有边的节点间调用（插件、注册表、回调、self.model 这类）：单独给出来，前端照样画
+    hot_view, rt_only = None, []
     if hot:
-        hp, he, hd = _align.hot_on_cut(hot, node_of, syms_used)
-        hot_view = {**hot, "packages": hp, "edges": he, "dyn": hd}
-        dyn_only = _align.dyn_only(kinds, he, hd)
-        for k in sorted(he):
-            a, _, b = k.partition("|")
-            if k not in kinds and a in shown and b in shown:
-                rt_only.append([a, b, he[k]])
+        hot_view = {**{k: v for k, v in hot.items() if k not in ("calls", "redirect", "keymap")},
+                    "packages": hp, "edges": he, "dyn": hd}
+        rt_only = [[*k.split("|"), n] for k, n in sorted(he.items())
+                   if k not in kinds and set(k.split("|")) <= shown]
     # hot 视图单独排版：只放跑到的节点，每个节点的层沿用总图，纵坐标含义不变、横向更紧凑
-    # 「跑到的」节点：这一段里有函数被调用进去的，加上这一段里任何一条 runtime 边（动态分派的也算）的两端。
+    # 「跑到的」节点：这一段里有函数被调用进去的，加上这一段里任何一条 runtime 边（只有 trace 的也算）的两端。
     # 调用方不一定有「被调用」的次数：一直在跑的外层函数（case 脚本的 main 在上一个阶段就进去了）、
     # import 时执行的模块顶层（定义，不算调用）——少了它们，边就没有起点
     ran = ({p for p, n in hot_view["packages"].items() if n}
@@ -128,6 +106,9 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
                            lane_labels={r["i"]: r["label"] for r in g["lane_rows"]}, min_files=min_files, width=width,
                            only=ran)
              if hot_view else None)
+    if g_hot:
+        on = {n["id"] for n in g_hot["nodes"]}
+        g_hot["edges"] = [e for e in g["edges"] if e[0] in on and e[1] in on]
     for nd in (g["nodes"] + (g_hot["nodes"] if g_hot else [])):   # 前端要知道哪些节点能展开、收起到哪里
         x = v["nodes"][nd["id"]]
         nd.update(kind=x["kind"], expandable=x["expandable"], parent=x["parent"],
@@ -149,7 +130,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             "rootLabel": _cut.sep_join(idx, _cut.root_label(idx)),
             "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
             "fileLoc": idx.get("file_loc") or {},
-            "alias": alias, "edgeKinds": kinds, "runtimeOnlyEdges": rt_only, "dynOnlyEdges": dyn_only, "typeOnlyEdges": type_only,
+            "alias": alias, "runtimeOnlyEdges": rt_only,
             "hot": hot_view, "hotMeta": hot_meta, "phaseMarks": phase_marks,
             "open": sorted(open_), "defaultOpen": idx.get("default_open") or [],
             "autoSplit": idx["repo"].get("auto_split") or []}

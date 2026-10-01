@@ -1592,10 +1592,11 @@ _DD = {
 }
 
 
-def test_dynamic_dispatch_consistent_across_cuts():
-    """收起的一条边上碰巧有别的 import（runner 只 import 了 helpers 的一个常量），跑到的调用却是经由
-    self.model 动态分派到 impl 的：收起时不能画成「引用 + runtime」的实线（展开后那条实线会「消失」，
-    变成没跑到的灰边加一条虚线）。图上每条边的动态分派次数和点开边看到的明细必须对得上，每个切面都是。"""
+def test_trace_only_consistent_across_cuts():
+    """「只有 trace」（代码里看不出会调到它）：runner 经 self.model.forward 调到 impl 的 Net.forward，scan 只知道名字。
+    收起的一条边上碰巧还有一处代码里写了的调用（helpers.tag()，这次没跑）：边是 scan 边，跑到的全是只有 trace 的，
+    画虚线。图上每条边的次数、只有 trace 的次数和点开边看到的明细必须对得上，每个切面都是；调用处是 trace 记的那一行，
+    经 map() 这种仓库外的代码调到的也一样"""
     t = tmpdir("cs-dyn-")
     repo = t / "repo"
     for rel, src in _DD.items():
@@ -1608,53 +1609,65 @@ def test_dynamic_dispatch_consistent_across_cuts():
     hd, md = ui_load.load_hot(repo, idx, "dyn")
     hm, mm = ui_load.load_hot(repo, idx, "mix")
     RM, RI, RH = "dd/runner/|dd/models/", "dd/runner/|dd/models/impl/", "dd/runner/|dd/models/helpers.py"
-    MR = "dd/main.py|dd/registry.py"        # 文件对文件：静态引用的是 MODELS，跑到的 lookup 是 getattr 取的
+    MR = "dd/main.py|dd/registry.py"        # build 用 getattr 按字符串取到 lookup：代码里没有这条调用
 
     def agree(g, hot):
-        """图上的次数 = 边详情里的次数；图上的动态分派次数 = 边详情里「动态分派」那组的次数"""
+        """图上的次数 = 边详情里的次数；图上只有 trace 的次数 = 边详情里只有 trace 的次数"""
         for k, n in g["hot"]["edges"].items():
             a, b = k.split("|")
             d = ui_edge.edge_detail(repo, idx, a, b, hot)
-            dyn = sum(it["calls"] for it in d["items"] if it["status"] == "dynamic")
-            assert d["counts"]["calls"] == n and dyn == g["hot"]["dyn"].get(k, 0), (k, n, d["counts"], g["hot"]["dyn"])
+            assert d["counts"]["calls"] == n and d["counts"]["only"] == g["hot"]["dyn"].get(k, 0), \
+                (k, n, d["counts"], g["hot"]["dyn"])
+
+    def scan_edges(g):
+        return {f"{a}|{b}" for a, b, _ in g["graph"]["edges"]}
+
+    def dashed(g, k):                   # 前端（graph.js）的画法：跑到的全是只有 trace 的画虚线
+        return g["hot"]["edges"].get(k, 0) > 0 and g["hot"]["dyn"].get(k, 0) >= g["hot"]["edges"][k]
 
     shut = ui_graphview.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd/"])
     ids = {n["id"] for n in shut["graph"]["nodes"]}
     assert {"dd/runner/", "dd/models/"} <= ids, ids
-    assert RM in shut["edgeKinds"] and shut["hot"]["edges"][RM] == 4 and shut["hot"]["dyn"][RM] == 4, shut["hot"]
-    assert RM in shut["dynOnlyEdges"] and MR in shut["dynOnlyEdges"], shut["dynOnlyEdges"]
+    assert RM in scan_edges(shut) and shut["hot"]["edges"][RM] == 4 and shut["hot"]["dyn"][RM] == 4, shut["hot"]
+    assert dashed(shut, RM)
+    assert MR not in scan_edges(shut) and [*MR.split("|"), 1] in shut["runtimeOnlyEdges"] and shut["hot"]["dyn"][MR] == 1
     agree(shut, hd)
     opened = ui_graphview.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd/", "dd/models/"])
     assert [RI.split("|")[0], RI.split("|")[1], 4] in opened["runtimeOnlyEdges"], opened["runtimeOnlyEdges"]
-    assert RH in opened["edgeKinds"] and not opened["hot"]["edges"].get(RH) and RH not in opened["dynOnlyEdges"]
+    assert RH in scan_edges(opened) and not opened["hot"]["edges"].get(RH) and not dashed(opened, RH)
     agree(opened, hd)
-    # 同一条边上也有确认调用（helpers.tag()）：照旧画实线，动态分派的次数单独带着
+    # 同一条边上也有两边都有的调用（helpers.tag()）：画实线，只有 trace 的次数单独带着
     mix = ui_graphview.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd/"])
-    assert mix["hot"]["edges"][RM] == 7 and mix["hot"]["dyn"][RM] == 4 and RM not in mix["dynOnlyEdges"], mix["hot"]
+    assert mix["hot"]["edges"][RM] == 7 and mix["hot"]["dyn"][RM] == 4 and not dashed(mix, RM), mix["hot"]
     agree(mix, hm)
     agree(ui_graphview.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd/", "dd/models/"]), hm)
-    # 动态分派的调用处：调用方函数体里那一行；经由 map() 这种仓库外的代码调到的，找过但找不到（[]）
-    def callers(a, b):
+    # 调用处：trace 记的那一行（经 map() 调到的也是），scan 在那一行只知道名字
+    loop = _DD["dd/runner/loop.py"].splitlines()
+    l_step = next(i for i, x in enumerate(loop, 1) if "self.model.forward(helpers.SCALE)" in x)
+    l_batch = next(i for i, x in enumerate(loop, 1) if "map(self.model.forward" in x)
+
+    def calls(a, b):
         d = ui_edge.edge_detail(repo, idx, a, b, hd)
-        return {c["sym"].partition("#")[2]: c for it in d["items"] if it["status"] == "dynamic"
-                for r in it["runtime"] for c in r["callers"]}
+        return {c["caller"].partition("#")[2]: c for c in d["calls"]}
     for a, b in (("dd/runner/loop.py", "dd/models/impl/net.py"), ("dd/runner/", "dd/models/")):
-        cs_ = callers(a, b)
-        assert [x["s"] for x in cs_["Runner.step"]["sites"]] == ["return self.model.forward(helpers.SCALE)"], cs_
-        assert cs_["Runner.step"]["sites"][0]["f"] == "dd/runner/loop.py", cs_
-        assert cs_["Runner.batch"]["sites"] == [] and cs_["Runner.batch"]["callee"] == "forward", cs_
-    got = callers("dd/main.py", "dd/registry.py")["build"]["sites"]
-    assert len(got) == 1 and "'lookup')(name)" in got[0]["s"], got
+        c = calls(a, b)
+        assert c["Runner.step"]["status"] == "trace" and c["Runner.step"]["callee"] == "dd/models/impl/net.py#Net.forward", c
+        st = c["Runner.step"]["lines"]
+        assert [(x["l"], x["n"], x["status"]) for x in st] == [(l_step, 3, "trace")], st
+        assert st[0]["s"] == "return self.model.forward(helpers.SCALE)" and st[0]["note"] == {"k": "name", "names": ["forward"]}, st
+        assert [(x["l"], x["n"]) for x in c["Runner.batch"]["lines"]] == [(l_batch, 1)], c["Runner.batch"]
+    lk = calls("dd/main.py", "dd/registry.py")["build"]["lines"]
+    assert len(lk) == 1 and "'lookup')(name)" in lk[0]["s"] and "lookup" in lk[0]["note"]["names"], lk
     # 按名字登记：带模块的类路径只认模块对得上的，同一处登记留带模块的那一行；只写类名的另起一处；
     # __all__ 是再导出清单不算；仓库里有同名类（helpers.Net）要说出来
-    d = ui_edge.edge_detail(repo, idx, "dd/runner/loop.py", "dd/models/impl/net.py", hd)
-    w = next(it for it in d["items"] if it["status"] == "dynamic")["wiring"]
+    w = calls("dd/runner/loop.py", "dd/models/impl/net.py")["Runner.step"]["wiring"]
     ln = next(i for i, x in enumerate(_DD["dd/main.py"].splitlines(), 1) if "build('Net')" in x)
     assert [(t["f"], t["l"], t["exact"]) for t in w["refs"]] == [
         ("dd/registry.py", 2, True), ("dd/main.py", ln, False), ("dd/wire.py", 1, False)], w
     assert w["same_name"] == 2 and w["n"] == 3 and "dd.models.impl.net.Net" in w["refs"][0]["s"], w
     nr = ui_load.load_index(repo)["name_refs"]
     assert not any(f.endswith("impl/__init__.py") for f, *_ in nr["Net"]), nr["Net"]
+
 
 
 _SYN = {
@@ -1723,10 +1736,11 @@ _SYN = {
 }
 
 
-def test_call_sites_by_syntax():
-    """不写名字的调用：property 取属性就是调用（`.名字`，有 setter 的也要认得 getter），特殊方法由
-    with / for / [] / + 触发；边详情的 from 要落在调用方里写这些的那一行上（docstring 和注释里的不算），
-    落不了的（对象(…) 调 __call__）说清楚是怎么调到的，而不是「没直接写 __call__(…)」。"""
+def test_call_lines_for_syntax_calls():
+    """不写名字的调用：property 取属性就是调用（有 setter 的 getter、setter 都是），特殊方法由 with / for / [] / + 触发，
+    对象(…) 调 __call__。边详情里的调用行是 trace 记的那一行（docstring、注释里的字样不会被当成调用处），
+    再说清楚 scan 在那一行看到了什么：接收者 b 是参数、类型定不下——取属性那一行 scan 没看到调用，
+    语法触发的特殊方法、b(…) 只知道名字；类名(…) 构造、@deco 两边都有。"""
     repo = tmpdir("cs-syn-") / "repo"
     for rel, src in _SYN.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -1736,30 +1750,31 @@ def test_call_sites_by_syntax():
     idx = ui_load.load_index(repo)
     hot, _ = ui_load.load_hot(repo, idx, "syn")
     d = ui_edge.edge_detail(repo, idx, "sx/use.py", "sx/box.py", hot)
-    got = {r["sym"].partition("#")[2]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
-           if c["sym"] == "sx/use.py#run"}
+    by = {(c["caller"].partition("#")[2], c["callee"].partition("#")[2]): c for c in d["calls"]}
+    got = {q: c for (r, q), c in by.items() if r == "run"}
     assert not any("<L" in k for k in got), sorted(got)           # getter 不能成了「Box 里的某个闭包」
     use = _SYN["sx/use.py"].splitlines()
     want = {"Box.value": ["v = b.value"], "Box.size": ["b.size = 3", "s = b.size"], "Box.heavy": ["k = b.heavy"],
-            "Box.__enter__": ["with b:"], "Box.__exit__": ["with b:"], "Box.__iter__": ["for x in b:"],
-            "Box.__getitem__": ["y = b[0]"], "Box.__add__": ["z = b + b"]}
+            "Box.__enter__": ["with b:"], "Box.__iter__": ["for x in b:"],
+            "Box.__getitem__": ["y = b[0]"], "Box.__add__": ["z = b + b"], "Box.__call__": ["return b(5)"]}
     for q, lines in want.items():
         c = got[q]
-        assert [x["s"] for x in c["sites"]] == lines, (q, c)
-        assert all(use[x["l"] - 1].strip() == x["s"] for x in c["sites"]), (q, c)
-    assert got["Box.value"]["how"] == "attr" and got["Box.value"]["form"] == ".value", got["Box.value"]
-    assert got["Box.__enter__"]["how"] == "syntax" and got["Box.__enter__"]["form"] == "with …", got["Box.__enter__"]
-    call = got["Box.__call__"]
-    assert call["sites"] == [] and call["how"] == "implicit" and call["form"] == "对象(…)", call
-    # 按语法树认，不按文本：签名的续行、标注里的 list[int]、dict[str, int] | None、-> 都不算调用处
-    typed = {r["sym"].partition("#")[2]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
-             if c["sym"] == "sx/use.py#typed"}
+        assert [x["s"] for x in c["lines"]] == lines, (q, c["lines"])
+        assert all(use[x["l"] - 1].strip() == x["s"] and x["status"] == "trace" for x in c["lines"]), (q, c["lines"])
+    assert got["Box.value"]["lines"][0]["note"] == {"k": "none"}, got["Box.value"]
+    assert "__enter__" in got["Box.__enter__"]["lines"][0]["note"]["names"], got["Box.__enter__"]
+    assert "__getitem__" in got["Box.__getitem__"]["lines"][0]["note"]["names"], got["Box.__getitem__"]
+    assert got["Box.__call__"]["lines"][0]["note"] == {"k": "line", "names": ["b"]}, got["Box.__call__"]
+    # 按语法树认，不按文本：签名的续行、标注里的 list[int]、dict[str, int] | None、-> 都不会是调用行
+    typed = {q: c for (r, q), c in by.items() if r == "typed"}
     for q, lines in {"Box.__getitem__": ["return b[1]"], "Box.__len__": ["if b:"], "Box.__contains__": ["if 3 in b:"],
-                     "Box.__hash__": ["d = {b: 1}"], "Box.__sub__": ["w = b - b"], "Made.__new__": ["Made()"]}.items():
-        assert [x["s"] for x in typed[q]["sites"]] == lines, (q, typed[q])
-    deco = next(c for it in d["items"] for r in it["runtime"] for c in r["callers"]
-                if r["sym"] == "sx/box.py#deco" and c["sym"] == "sx/use.py#wrap")
-    assert [x["s"] for x in deco["sites"]] == ["@deco"], deco
+                     "Box.__hash__": ["d = {b: 1}"], "Box.__sub__": ["w = b - b"], "Made": ["Made()"]}.items():
+        assert [x["s"] for x in typed[q]["lines"]] == lines, (q, typed[q])
+    made = typed["Made"]               # 构造：算在 typed → Made 上，和 scan 的那条记录对上
+    assert made["status"] == "both" and made["lines"][0]["note"] == {"k": "ctor", "via": ["sx/box.py#Made.__new__"]}, made
+    assert "Made.__new__" not in typed, sorted(typed)
+    deco = by[("wrap", "deco")]
+    assert [x["s"] for x in deco["lines"]] == ["@deco"] and deco["status"] == "both", deco
     # 符号表：函数也记装饰器；同名的 def 照旧留最后一个（setter），getter 的位置记在 "a" 里
     size, box = idx["symbols"]["sx/box.py#Box.size"], _SYN["sx/box.py"].splitlines()
     assert size["d"] == ["setter"] and [a[0] for a in size["a"]] == [box.index("    def size(self):") + 1], size
@@ -1816,11 +1831,25 @@ def test_callbacks_from_case_code():
     ho, mo = ui_load.load_hot(repo, idx, "out")
     hi, mi = ui_load.load_hot(repo, idx, "in")
     want = {"web/app.py|web/ctx.py": 3, "web/worker.py|web/model.py": 1}
-    assert ho["edges"] == want and hi["edges"] == want, (ho["edges"], hi["edges"])
+
+    def unit_edges(h):
+        out = {}
+        for x in h["calls"].values():
+            if x["a"] and x["b"] and x["a"] != x["b"]:
+                out[f"{x['a']}|{x['b']}"] = out.get(f"{x['a']}|{x['b']}", 0) + x["n"]
+        return out
+    assert unit_edges(ho) == want and unit_edges(hi) == want, (unit_edges(ho), unit_edges(hi))
     assert ho["symbols"] == hi["symbols"] and ho["symbols"]["web/json.py#jsonify"] == 2, (ho["symbols"], hi["symbols"])
-    assert list(ho["edge_calls"]["web/worker.py|web/model.py"]["web/model.py#Model.forward"]["callers"]) == ["web/worker.py#run"]
+    assert [k for k in ho["calls"] if k.endswith("|web/model.py#Model.forward")] == ["web/worker.py#run|web/model.py#Model.forward"]
     g = ui_graphview.graph_payload(repo, idx, hot=ho, hot_meta=mo)
-    assert not g["runtimeOnlyEdges"] and not g["hot"]["dyn"], (g["runtimeOnlyEdges"], g["hot"]["dyn"])
+    # case 代码回调的那些不算到仓库函数头上：没有代码里没写的边。只有 worker → model 是只有 trace 的：
+    # 代码里写的是 runner.execute(Model().forward, …)，Model.forward 是仓库外的 runner 调起来的
+    assert not g["runtimeOnlyEdges"] and g["hot"]["dyn"] == {"web/worker.py|web/model.py": 1}, \
+        (g["runtimeOnlyEdges"], g["hot"]["dyn"])
+    fw = ho["calls"]["web/worker.py#run|web/model.py#Model.forward"]["lines"]
+    # 这一行 scan 看到的：构造 Model（仓库里）和 runner.execute（仓库外，经它回调到 forward）
+    assert [(x["status"], x["note"]) for x in fw] == \
+        [("trace", {"k": "line", "c": ["web/model.py#Model"], "ext": ["execute"]})], fw
     # 数据里：调用方记成仓库外的 case 代码（index 之外，和 examples/ 里的一样不上图）；funcs 只有仓库代码
     out_run, rd_out, _ = runs.resolve(repo, "out")
     c = runs.load_counts(rd_out, None)
@@ -1916,9 +1945,9 @@ _RX = {
 }
 
 
-def test_edge_defs_vars_and_reexports():
-    """边详情的「to」：模块级变量（带标注的 `LIMIT: int = 30` 也算）、__init__ 再导出的类 / 改了名的变量
-    都要有定义，而且和 Ctrl+点击（xref）落在同一处；老的 xref.json 没有 names：照旧没有定义、不报错。"""
+def test_edge_detail_calls_through_reexports():
+    """边详情只列调用（没叠 run 时就是代码里写的）：构造 __init__ 再导出的类，这条调用落在真正定义它的文件上，
+    和 Ctrl+点击（xref）同一处；只是读模块级变量（LIMIT、改了名再导出的 DEFAULT_LIMIT）不是调用，不成边。"""
     repo = tmpdir("cs-defs-") / "repo"
     for rel, src in _RX.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -1926,33 +1955,26 @@ def test_edge_defs_vars_and_reexports():
     cs("scan", repo)
     idx = ui_load.load_index(repo)
 
-    def defs(a, b):
-        items = ui_edge.edge_detail(repo, idx, a, b)["items"]
-        return {it["name"]: it["def"] and (it["def"]["f"], it["def"]["l"], it["def"]["k"], it.get("sig"))
-                for it in items}
-    assert defs("rx/sessions.py", "rx/models.py") == {
-        "LIMIT": ("rx/models.py", 1, "var", ["LIMIT: int = 30"]),
-        "STATI": ("rx/models.py", 2, "var", ["STATI = (301, 302)"]),
-        "FAST": ("rx/models.py", 4, "var", ["FAST = True"]),          # try 里的第一次
-        "Request": ("rx/models.py", 9, "class", ["class Request:"])}, defs("rx/sessions.py", "rx/models.py")
-    ex = defs("rx/sessions.py", "rx/executor/__init__.py")
+    def scan_items(a, b):
+        d = ui_edge.edge_detail(repo, idx, a, b)
+        assert not d["has_runtime"] and not d["calls"], d
+        return {it["callee"].partition("#")[2]: (it["def"]["f"], it["def"]["l"], it["def"]["k"], it["sig"])
+                for it in d["scan_only"]}
+    assert scan_items("rx/sessions.py", "rx/models.py") == {"Request": ("rx/models.py", 9, "class", ["class Request:"])}
+    ex = scan_items("rx/sessions.py", "rx/executor/abstract.py")
     assert ex == {"Executor": ("rx/executor/abstract.py", 1, "class", ["class Executor:"])}, ex
-    alias = defs("rx/sessions.py", "rx/__init__.py")
-    assert alias == {"DEFAULT_LIMIT": ("rx/models.py", 1, "var", ["LIMIT: int = 30"])}, alias
+    assert scan_items("rx/sessions.py", "rx/executor/__init__.py") == {}     # 再导出的地方不是被调的
+    assert scan_items("rx/sessions.py", "rx/__init__.py") == {}              # DEFAULT_LIMIT 是变量
     # 和 Ctrl+点击同一处
     x = ui_source.xref_for(repo, "rx/sessions.py")
     ctrl = {t.rpartition("#")[2]: tuple(w) for t, w in x["targets"].values() if t[0] in "sv"}
-    assert ctrl["Executor"] == ex["Executor"][:2] and ctrl["LIMIT"] == alias["DEFAULT_LIMIT"][:2], ctrl
+    assert ctrl["Executor"] == ex["Executor"][:2], ctrl
     # 目录级的边（合并了几对单元）照样带着
-    d = ui_edge.edge_detail(repo, idx, "rx/sessions.py", "rx/executor/")
-    assert [it["def"]["f"] for it in d["items"]] == ["rx/executor/abstract.py"], d["items"]
-    # 老的 xref.json（没有 names）：没有定义，面板照旧说没找到
-    p = repo / ".codestrata" / "xref.json"
-    X = json.loads(p.read_text())
-    del X["names"]
-    p.write_text(json.dumps(X))
-    os.utime(p, ns=(time.time_ns() + 10**9,) * 2)
-    assert defs("rx/sessions.py", "rx/models.py")["LIMIT"] is None
+    assert scan_items("rx/sessions.py", "rx/executor/") == ex
+    # 图上只有调用边
+    g = ui_graphview.graph_payload(repo, idx, open_=sorted(idx["dirs"]))
+    assert {(a, b) for a, b, _ in g["graph"]["edges"]} == {("rx/sessions.py", "rx/models.py"),
+                                                           ("rx/sessions.py", "rx/executor/abstract.py")}, g["graph"]["edges"]
 
 
 # TYPE_CHECKING 里的 import：tc.ctx 只在标注里用 App（from __future__ 下是 Name，不是字符串）；
@@ -1978,9 +2000,9 @@ _TC = {
 
 
 def test_type_checking_imports_are_not_dependencies():
-    """if TYPE_CHECKING: 里的 import 运行时不执行：不算依赖、不进架构高度、不画成实线——不管名字在标注里
-    有没有被引用（早先 from __future__ 下的标注引用会把它变成「1 符号」的实线回边）。它另记在 type_edges，
-    边详情里是「仅类型」；函数里再运行时 import 同一个名字的，照旧是依赖。Ctrl+点击标注里的名字照样能跳。"""
+    """if TYPE_CHECKING: 里的 import 运行时不执行：不算 import 依赖、不进架构高度和排版——不管名字在标注里
+    有没有被引用；函数里再运行时 import 同一个名字的，照旧是依赖。图上只有调用边，类型标注不是调用。
+    Ctrl+点击标注里的名字照样能跳。"""
     t = tmpdir("cs-tc-")
     repo = t / "repo"
     for rel, src in _TC.items():
@@ -1989,36 +2011,25 @@ def test_type_checking_imports_are_not_dependencies():
     cs("scan", repo)
     idx = ui_load.load_index(repo)
     E = {(a, b): w for a, b, w in idx["edges"]}
-    T = {(a, b): w for a, b, w in idx.get("type_edges") or []}
-    CTX, APP, CLI, SUB, UTIL = "tc/ctx.py", "tc/app.py", "tc/cli.py", "tc/sub/", "tc/sub/util.py"
-    assert (CTX, APP) not in E and T[(CTX, APP)] == 1, (E, T)
-    assert (UTIL, CTX) not in E and T[(UTIL, CTX)] == 1, (E, T)
-    assert E[(CLI, APP)] == 1 and T[(CLI, APP)] == 1, (E, T)      # 函数里的那条是真依赖
+    CTX, APP, CLI, UTIL = "tc/ctx.py", "tc/app.py", "tc/cli.py", "tc/sub/util.py"
+    assert (CTX, APP) not in E and (UTIL, CTX) not in E, E
+    assert E[(CLI, APP)] == 1, E                                # 函数里的那条是真依赖
     # 高度只看运行时的 import：ctx 只被 app import，是叶子
     assert idx["packages"][CTX]["alt"] == -1.0, idx["packages"][CTX]
-    assert f"{CTX}|{APP}" not in idx["edge_uses"], idx["edge_uses"]
-    why = lambda k: sorted((x["n"], x["why"]) for x in idx["edge_dead"].get(k, []))
-    assert why(f"{CTX}|{APP}") == [("App", "type")] and why(f"{UTIL}|{CTX}") == [("Ctx", "type")]
-    assert why(f"{CLI}|{APP}") == [] and "tc/app.py#App" in idx["edge_uses"][f"{CLI}|{APP}"], idx["edge_uses"]
+    assert "type_edges" not in idx and "edge_dead" not in idx, sorted(idx)
     g = ui_graphview.graph_payload(repo, idx, open_=["tc/"])
-    assert f"{CTX}|{APP}" not in g["edgeKinds"] and [CTX, APP, 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]
-    assert f"{CLI}|{APP}" in g["edgeKinds"] and not any(e[:2] == [CLI, APP] for e in g["typeOnlyEdges"])
+    ge = {f"{a}|{b}" for a, b, _ in g["graph"]["edges"]}
+    assert f"{CTX}|{APP}" not in ge and f"{CLI}|{APP}" in ge, ge        # App().run() 是调用
     assert g["pkgs"][CTX]["alt"] == -1.0 and g["pkgs"][CTX]["out"] == 0, g["pkgs"][CTX]
-    assert [SUB, CTX, 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]         # 收起的目录 → 文件
-    for a, b, n in ((CTX, APP, "App"), (SUB, CTX, "Ctx")):
-        d = ui_edge.edge_detail(repo, idx, a, b)
-        assert not d["static_edge"] and d["type_edge"] and d["items"] == [] and d["n_sites"] == 1, d
-        assert [(x["n"], x["why"]) for x in d["import_only"]] == [(n, "type")], d["import_only"]
-    d = ui_edge.edge_detail(repo, idx, CLI, APP)
-    assert d["static_edge"] and d["type_edge"], d                     # 两样都有：是依赖
-    # runtime：ctx 经 self.app 调到 app 的 hook——两端之间运行时没有 import，是只在 runtime 出现的边
+    # runtime：ctx 经 self.app 调到 app 的 hook——代码里没写这两者之间的调用（self.app 的类型 scan 不推），只有 trace
     cs("trace", repo, "--case", "tc", "--", PY, "-m", "tc")
     hot, meta = ui_load.load_hot(repo, idx, "tc")
     g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["tc/"])
     assert any(e[:2] == [CTX, APP] for e in g["runtimeOnlyEdges"]), g["runtimeOnlyEdges"]
     d = ui_edge.edge_detail(repo, idx, CTX, APP, hot)
-    assert [(it["name"], it["status"]) for it in d["items"]] == [("App", "dynamic")], d["items"]
-    assert [x["why"] for x in d["import_only"]] == ["type"], d["import_only"]
+    assert [(c["caller"], c["callee"], c["status"]) for c in d["calls"]] == [
+        ("tc/ctx.py#Ctx.push", "tc/app.py#App.hook", "trace")], d["calls"]
+    assert d["calls"][0]["lines"][0]["note"] == {"k": "name", "names": ["hook"]}, d["calls"][0]
     # 标注里的名字 Ctrl+点击照样跳到定义（xref 自己解析 import，不看边）
     x = json.loads((repo / ".codestrata" / "xref.json").read_text())
     lines = _TC["tc/ctx.py"].splitlines()
@@ -2119,6 +2130,181 @@ def test_no_export_command():
     """导出 / 分享（graph 命令、单文件 HTML、静态站、--public）已经去掉：命令行不认 graph"""
     r = cs("graph", fresh(), check=False)
     assert r.returncode != 0 and "invalid choice" in (r.stdout + r.stderr), r.stdout + r.stderr
+
+
+_CT = {
+    "ct/__init__.py": "",
+    "ct/root.py": "class Root:\n    def __init__(self):\n        self.r = 1\n",
+    "ct/leaf.py": "from ct.root import Root\n\n\nclass Leaf(Root):\n    pass\n",
+    "ct/models.py": (
+        "from dataclasses import dataclass\n\n\n"
+        "class Base:\n    def __init__(self, n=0):\n        self.n = n\n\n\n"
+        "class Own:\n    def __init__(self, x=None):\n        self.x = x\n\n\n"
+        "class Inherit(Base):\n    pass\n\n\n"
+        "class Both:\n    def __new__(cls):\n        return super().__new__(cls)\n\n"
+        "    def __init__(self):\n        self.ok = True\n\n\n"
+        "@dataclass\nclass Cfg:\n    n: int = 1\n\n\n"
+        "@dataclass\nclass Post:\n    n: int = 1\n\n    def __post_init__(self):\n        self.m = self.n\n\n\n"
+        "class Prop:\n"
+        "    @property\n    def v(self):\n        return 1\n\n"
+        "    @v.setter\n    def v(self, x):\n        pass\n\n"
+        "    def bump(self):\n        self.v = 5\n        return self.v\n"),
+    "ct/use.py": (
+        "from ct.leaf import Leaf\nfrom ct.models import Both, Cfg, Inherit, Own, Post, Prop\n\n\n"
+        "def make():\n"
+        "    a = Own()\n"
+        "    b = Inherit()\n"
+        "    c = Both()\n"
+        "    d = Cfg(n=2)\n"
+        "    e = Own(Inherit())\n"
+        "    f = Post()\n"
+        "    g = Leaf()\n"
+        "    return a, b, c, d, e, f, g\n\n\n"
+        "def props():\n    return Prop().bump()\n\n\n"
+        "if __name__ == '__main__':\n    make()\n    make()\n    props()\n"),
+}
+
+
+def test_constructor_calls_counted_once():
+    """构造 C(…) 跑的是 C 沿继承找到的 __new__ / __init__ / __post_init__：调用算在 F→C 上（和 scan 的那条记录对上），
+    一次构造只算一次——C 自己的 __init__、继承来的（基类在别的文件里也不另起一条边）、__new__ 加 __init__、
+    A(B()) 一行两处构造、dataclass 的 __post_init__。图上的次数 = 边详情的次数 = 实际构造的次数；
+    构造时不跑仓库里代码的（dataclass 生成的 __init__）标成 trace 看不到。没有调用行的老 run 次数一样；
+    「时间顺序」也算到 C 的文件上；录制之后文件挪了几行，次数和时刻都不变。有 setter 的 property 两边都有"""
+    from codestrata import seq
+    repo = tmpdir("cs-ct-") / "repo"
+    for rel, src in _CT.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "ct", "--events", "--", PY, "-m", "ct.use")
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, "ct")
+    use = _CT["ct/use.py"].splitlines()
+    L = {s: next(i for i, x in enumerate(use, 1) if x.strip().startswith(s + " = ")) for s in "abcdefg"}
+    M, U = "ct/models.py#", "ct/use.py#make"
+    got = {k.partition("|")[2]: x for k, x in hot["calls"].items() if k.startswith(U + "|")}
+    want = {f"{M}Own": ([(L["a"], 2), (L["e"], 2)], [f"{M}Own.__init__"]),
+            f"{M}Inherit": ([(L["b"], 2), (L["e"], 2)], [f"{M}Base.__init__"]),
+            f"{M}Both": ([(L["c"], 2)], [f"{M}Both.__init__", f"{M}Both.__new__"]),
+            f"{M}Post": ([(L["f"], 2)], [f"{M}Post.__post_init__"]),
+            "ct/leaf.py#Leaf": ([(L["g"], 2)], ["ct/root.py#Root.__init__"])}
+    assert sorted(got) == sorted(want), sorted(got)
+    for c, (ls, via) in want.items():
+        x = got[c]
+        assert [(y["l"], y["n"]) for y in x["lines"]] == ls and x["only"] == 0, (c, x)
+        assert all(y["status"] == "both" and y["note"] == {"k": "ctor", "via": via} for y in x["lines"]), (c, x)
+    opened = ["ct/"]
+    g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=opened)
+    he = g["hot"]["edges"]
+    # Own 4、Inherit 4、Both 2、Post 2，加上 props 调 Prop.bump 1 次（Prop() 没有仓库里的 __init__）
+    assert he["ct/use.py|ct/models.py"] == 4 + 4 + 2 + 2 + 1 and he["ct/use.py|ct/leaf.py"] == 2, he
+    assert "ct/use.py|ct/root.py" not in he and not g["runtimeOnlyEdges"], (he, g["runtimeOnlyEdges"])
+    for k, n in he.items():
+        d = ui_edge.edge_detail(repo, idx, *k.split("|"), hot)
+        assert d["counts"]["calls"] == n and d["counts"]["only"] == g["hot"]["dyn"].get(k, 0), (k, n, d["counts"])
+    d = ui_edge.edge_detail(repo, idx, "ct/use.py", "ct/models.py", hot)
+    assert [(x["callee"], x["unseen"]) for x in d["scan_only"]] == [(f"{M}Cfg", True), (f"{M}Prop", True)], d["scan_only"]
+    # 有 setter 的 property：self.v = 5 调 setter、self.v 调 getter，scan 都记了
+    pv = hot["calls"][f"{M}Prop.bump|{M}Prop.v"]
+    assert [y["status"] for y in pv["lines"]] == ["both", "both"] and pv["only"] == 0, pv
+    # 没有调用行的老 run：在整个函数里认构造，次数一样
+    c = runs.load_counts(runs.resolve(repo, "ct")[1], None)
+    c.pop("func_lines")
+    old = align.to_package_graph(c, idx)
+    og = {k.partition("|")[2]: x for k, x in old["calls"].items() if k.startswith(U + "|")}
+    assert {k: x["n"] for k, x in og.items()} == {k: x["n"] for k, x in got.items()}, og
+    assert og[f"{M}Own"]["lines"] is None and og[f"{M}Own"]["guessed"] == [L["a"], L["e"]], og[f"{M}Own"]
+    # 「时间顺序」：Leaf() 跑到 root.py 的 __init__，时刻算在 use → leaf 上，和图上的边一致
+    run, rd, _ = runs.resolve(repo, "ct")
+    te = seq.edge_times(idx, rd, run, open_=opened, keymap=hot["keymap"], redirect=hot["redirect"])
+    assert "ct/use.py|ct/leaf.py" in te["edges"] and "ct/use.py|ct/root.py" not in te["edges"], te["edges"]
+    raw = seq.edge_times(idx, rd, run, open_=opened)
+    assert "ct/use.py|ct/root.py" in raw["edges"], raw["edges"]
+    # 录制之后文件挪了几行：次数、时刻都按函数名挪回来（seq 走 keymap）
+    for rel in ("ct/root.py", "ct/models.py"):
+        (repo / rel).write_text("# moved\n\n" + (repo / rel).read_text())
+    cs("scan", repo)
+    idx2 = ui_load.load_index(repo)
+    hot2, _ = ui_load.load_hot(repo, idx2, "ct")
+    assert {k: x["n"] for k, x in hot2["calls"].items()} == {k: x["n"] for k, x in hot["calls"].items()}, hot2["calls"]
+    te2 = seq.edge_times(idx2, rd, run, open_=opened, keymap=hot2["keymap"], redirect=hot2["redirect"])
+    assert {k: v["n"] for k, v in te2["edges"].items()} == {k: v["n"] for k, v in te["edges"].items()}, te2["edges"]
+
+
+_NT = {
+    "nt/__init__.py": "",
+    "nt/lib.py": "def plain(x):\n    return x\n",
+    "nt/base.py": ("class Base:\n    def run(self):\n        return self.step()\n\n"
+                   "    def step(self):\n        return 1\n\n\n"
+                   "class Sub(Base):\n    def step(self):\n        return 2\n"),
+    "nt/deco.py": "def deco(fn):\n    def wrapper(*a):\n        return fn(*a)\n    return wrapper\n",
+    "nt/app.py": ("import os\n\nfrom nt import lib\nfrom nt.base import Sub\nfrom nt.deco import deco\n\n\n"
+                  "@deco\ndef work(x):\n    return x\n\n\n"
+                  "def run(xs):\n"
+                  "    sq = sum(lib.plain(i) for i in xs)\n"
+                  "    f = lambda v: lib.plain(v)\n"
+                  "    s = Sub().run()\n"
+                  "    return work(1) + f(2) + sq + s + len(os.getcwd())\n\n\n"
+                  "run([1, 2])\n"),
+}
+
+
+def test_trace_only_notes():
+    """只有 trace 的调用，说明 scan 在那一行看到了什么：写的是基类的方法、跑的是子类覆盖的（override）；
+    这一行代码里调的是别的（经仓库里的装饰器转了一道），连同仓库外的、定不下的一起列出（line）。
+    调用方自己里面的 lambda、生成器表达式算两边都有。代码窗口只标只有 trace 的那几行，跳到被调方的定义。
+    老 run（没有调用行）按整个函数比：没有同名的调用就不猜。录制之后文件开头加了两行：模块顶层的调用行挪不了，
+    记成不知道哪一行、按整个函数比，不能判成只有 trace。时间段的调用行按整个 run 的比例摊，和按阶段看的一样分类"""
+    repo = tmpdir("cs-nt-") / "repo"
+    for rel, src in _NT.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "nt", "--events", "--", PY, "-m", "nt.app")
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, "nt")
+    app = _NT["nt/app.py"].splitlines()
+    ln = lambda s: next(i for i, x in enumerate(app, 1) if s in x)
+    C = hot["calls"]
+    ov = C["nt/base.py#Base.run|nt/base.py#Sub.step"]
+    assert [(y["status"], y["note"]) for y in ov["lines"]] == [("trace", {"k": "override", "w": "nt/base.py#Base.step"})], ov
+    wr = C["nt/app.py#run|nt/deco.py#deco.wrapper"]["lines"]
+    assert [y["l"] for y in wr] == [ln("return work(1)")] and wr[0]["status"] == "trace", wr
+    assert wr[0]["note"]["k"] == "line" and wr[0]["note"]["c"] == ["nt/app.py#work"] and "f" in wr[0]["note"]["names"], wr
+    local = [x for k, x in C.items() if k.startswith("nt/app.py#run|nt/app.py#run.<L")]
+    assert len(local) == 2 and all(x["only"] == 0 for x in local), local      # 生成器表达式、lambda
+    # Sub().run()：scan 不推调用结果的类型，只知道名字 run
+    sr = C["nt/app.py#run|nt/base.py#Base.run"]["lines"]
+    assert [(y["l"], y["note"]) for y in sr] == [(ln("Sub().run()"), {"k": "name", "names": ["run"]})], sr
+    rt = ui_source.runtime_lines(idx, "nt/app.py", hot)
+    assert sorted(rt) == [ln("Sub().run()"), ln("return work(1)")], rt
+    assert rt[ln("return work(1)")][0]["def"] == {"f": "nt/deco.py", "l": 2}, rt
+    rb = ui_source.runtime_lines(idx, "nt/base.py", hot)
+    assert [(l, [r["callee"] for r in v]) for l, v in rb.items()] == [(3, ["nt/base.py#Sub.step"])], rb
+    # 老 run：整个函数里没有叫 wrapper 的调用，不猜；只有 trace 的那一对 guessed 是空的
+    c = runs.load_counts(runs.resolve(repo, "nt")[1], None)
+    c.pop("func_lines")
+    old = align.to_package_graph(c, idx)["calls"]
+    o = old["nt/app.py#run|nt/deco.py#deco.wrapper"]
+    assert o["lines"] is None and o["status"] == "trace" and o["note"] == {"k": "nomatch"} and o["guessed"] == [], o
+    assert old["nt/base.py#Base.run|nt/base.py#Sub.step"]["note"] == {"k": "override", "w": "nt/base.py#Base.step"}
+    assert ui_source.runtime_lines(idx, "nt/app.py", {"calls": old}) == {}
+    # 时间段（整个 run）：调用行按整个 run 的比例摊，跨文件的调用分类和次数都和按阶段看一样
+    full = f"{runs.resolve(repo, 'nt')[0]['id']}@t=0-{meta['end_us'] + 1}"
+    wh, _ = ui_load.load_hot(repo, idx, full)
+    assert wh["lines_approx"] and not hot["lines_approx"]
+    cross = {k: (x["n"], x["only"]) for k, x in C.items() if x["a"] != x["b"]}
+    assert {k: (x["n"], x["only"]) for k, x in wh["calls"].items() if x["a"] != x["b"]} == cross, (wh["calls"], cross)
+    assert ui_edge.edge_detail(repo, idx, "nt/app.py", "nt/deco.py", wh)["lines_approx"] is True
+    # 录制之后 app.py 开头加两行：模块顶层的 run([1, 2]) 调用行挪不了，记成 0、按整个函数比，两边都有
+    (repo / "nt/app.py").write_text("# a\n# b\n" + _NT["nt/app.py"])
+    cs("scan", repo)
+    idx2 = ui_load.load_index(repo)
+    hot2, _ = ui_load.load_hot(repo, idx2, "nt")
+    top = hot2["calls"]["nt/app.py#<module>|nt/app.py#run"]
+    assert [(y["l"], y["status"]) for y in top["lines"]] == [(0, "both")] and top["only"] == 0, top
+    assert sorted(ui_source.runtime_lines(idx2, "nt/app.py", hot2)) == [ln("Sub().run()") + 2, ln("return work(1)") + 2]
 
 
 if __name__ == "__main__":

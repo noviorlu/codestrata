@@ -51,7 +51,7 @@ window.CS = window.CS || {};
         }
         if (window.MutationObserver)
           new MutationObserver(retint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-        // 开关（runtime / 动态分派 / 只看跑到的）改了看得见的边：时间顺序重排名次，开关上的数跟着变
+        // 开关（这次跑了 / 代码里看不出 / 只看跑到的）改了看得见的边：时间顺序重排名次，开关上的数跟着变
         CS.graph.onTimed = function (n) {
           var c = document.querySelector('#edgechips [data-t=timeorder] .n');
           if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
@@ -64,7 +64,7 @@ window.CS = window.CS || {};
         CS.graph.onExpand = function (id) { self.expand(id); };
         CS.graph.phaseMarks = self.phaseMarks();
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
-                      { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges });
+                      { rtOnly: d.runtimeOnlyEdges });
         self.applyTimes();
         self.edgeChips();
         self.controls();
@@ -174,11 +174,10 @@ window.CS = window.CS || {};
         s.textContent = v ? v.files + ' 个文件 · ' + v.classes + ' 个类 · ' + v.funcs + ' 个函数' : '';
       } else if (a) {
         t.textContent = CS.panel.short(a) + ' → ' + CS.panel.short(b);
-        s.textContent = (CS.graph.edgeInfo(a, b) || {}).kind === 'type' ? '只在 if TYPE_CHECKING: 里 import：运行时不存在，不算依赖'
-                      : '这条依赖具体用了对方哪些函数 / 类';
+        s.textContent = '这条边上是哪些函数在调用：代码里写的、这次跑到的';
       } else {
         t.textContent = '详情';
-        s.textContent = '点图上的节点或箭头，在这里看它的文件、类 / 函数，或者这条依赖上实际调了哪些函数';
+        s.textContent = '点图上的节点或箭头，在这里看它的文件、类 / 函数，或者这条边上是哪些函数在调用';
       }
     },
 
@@ -524,7 +523,7 @@ window.CS = window.CS || {};
       var hm = this.data && this.data.hot && this.data.hotMeta;
       var cur = hm ? hm.run_id : '';
       var h = '<button class="rr" role="menuitem" data-run="" aria-current="' + !cur + '"><span class="rt">静态图</span>'
-        + '<span class="rm">不叠 runtime，只看 import 结构</span><span></span></button>';
+        + '<span class="rm">不叠 runtime，只看代码里写的调用</span><span></span></button>';
       if (!list.length) {
         h += '<div class="empty">还没有录下的 run。录一个：<code>codestrata trace &lt;repo&gt; --case NAME -- 命令</code></div>';
       }
@@ -584,10 +583,10 @@ window.CS = window.CS || {};
       this.homeLink();
       this.wireHelp();
       document.getElementById('lede').innerHTML =
-        '纵轴是<b>依赖的层次</b>：箭头尽量都从上指向下——调用方在上、被调用的在下，最下面的谁也不调；'
-        + '叠了 run 时按这次实际的调用分层（所以换 run 时节点会上下挪）。横轴用重心排序减少交叉。'
-        + ' 灰实线是真的用到了对方符号的 import，灰虚线是只 import 没用到的。'
-        + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的部分。' : '')
+        '纵轴是<b>调用的层次</b>：箭头尽量都从上指向下——调用方在上、被调用的在下（按 import 关系排，'
+        + '叠了 run 时再按这次实际的调用排，所以换 run 时节点会上下挪）。横轴用重心排序减少交叉。'
+        + ' 图上的边只有<b>调用</b>：灰实线是代码里写了的调用。'
+        + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的，边上是调用次数；橙虚线是代码里看不出会调到它的。' : '')
         + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。';
       var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
                 ['符号', r.n_symbols || 0], ['图上的边', d.graph.edges.length],
@@ -643,17 +642,13 @@ window.CS = window.CS || {};
 
     /* 边的开关兼图例：每个开关上画的线就是图上那种边的样子，数字是条数 */
     edgeChips: function () {
-      var DYN_TIP = '跑到的调用在代码里找不到对应的引用：插件 / getattr / 注册表 / self.model 这类接口分派。'
-        + '两端之间可能没有 import，也可能有 import、但 import 的东西这次一次都没跑到';
+      var DYN_TIP = '这次跑了，但代码里看不出会调到它：多态（self.model 按配置挑的类）、注册表 / 插件 / getattr、回调、'
+        + '框架转了一道。点边详情看调用写在哪一行、scan 在那一行看到的是什么';
       var c = CS.graph.counts, hot = !!CS.graph.hot, s = CS.graph.state;
-      var defs = [['refs', 'e ref', '引用', c.ref, 'import 了，并且真的用到了对方的符号', false],
-                  ['imp', 'e imp', '只 import', c.imp,
-                   '一个符号都没用到：再导出 / 为了副作用 / 死 import', false]];
-      if (c.type) defs.push(['type', 'e type', '仅类型', c.type,
-                             '两端之间只有 if TYPE_CHECKING: 里的 import：只给类型标注用，运行时不存在，不算进架构高度', false]);
+      var defs = [['scan', 'e', '代码里的调用', c.scan, '代码里写了、scan 定下了被调方的调用（灰实线；跑到了的画成橙色）', false]];
       if (hot) {
-        defs.push(['hot', 'e ref warm', 'runtime', c.warm, '这次 case 真的调用过，粗细 ∝ 调用次数', true]);
-        if (c.dyn) defs.push(['dyn', 'e dyn warm', '动态分派', c.dyn, DYN_TIP, true]);
+        defs.push(['hot', 'e warm', '这次跑了', c.warm, '这次 case 真的调用过、代码里也看得出的（橙实线）；粗细不变，边上标调用次数', true]);
+        if (c.dyn) defs.push(['dyn', 'e dyn warm', '代码里看不出', c.dyn, DYN_TIP, true]);
         if (this.canTimeOrder())
           defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : CS.graph.timed || 0) : '',
                      '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
@@ -800,7 +795,7 @@ window.CS = window.CS || {};
         if ((!h || !drawn(h)) && st.onlyHot && self.homeOf(id, kind, self.data.graph)) { exitHot(); h = self.homeOf(id, kind); }
         if (h && drawn(h)) return show(h);
         var f = frameOf(id);
-        return f ? showFrame(f, '它在图上没有节点（没有类、函数，也没有依赖——比如空的 __init__.py）') : null;
+        return f ? showFrame(f, '它在图上没有节点（没有类、函数，也没有 import 关系——比如空的 __init__.py）') : null;
       }
       if (frames().some(function (f) { return f.id === id; })) return Promise.resolve(showFrame(id));
       if (this.data.open.indexOf(id) >= 0) {       // 只有一个根时根就是整张图，不画框
@@ -842,7 +837,7 @@ window.CS = window.CS || {};
       var d = this.data, s = CS.graph.state;
       CS.graph.phaseMarks = this.phaseMarks();
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
-                    { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges });
+                    { rtOnly: d.runtimeOnlyEdges });
       this.applyTimes();
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();
@@ -852,7 +847,7 @@ window.CS = window.CS || {};
 
     controls: function () {
       var s = CS.graph.state, self = this;
-      var KEY = { refs: 'refs', imp: 'imp', type: 'type', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot',
+      var KEY = { scan: 'scan', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot',
                   timeorder: 'timeOrder' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
@@ -863,9 +858,8 @@ window.CS = window.CS || {};
         b.onclick = function () {
           s[key] = b.getAttribute('aria-pressed') !== 'true';
           b.setAttribute('aria-pressed', s[key]);
-          // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置；
-          // 仅类型的边关着时不画（不占接点），开关一动也要重画
-          if ((key === 'onlyHot' && self.data.graphHot) || key === 'type') self.redraw();
+          // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
+          if (key === 'onlyHot' && self.data.graphHot) self.redraw();
           else if (key === 'timeOrder') self.applyTimes();
           else CS.graph.paint();
         };

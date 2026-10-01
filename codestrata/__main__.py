@@ -79,7 +79,7 @@ def cmd_scan(a) -> int:
     print(f"→ {p.parent / 'symbols.json'}")
     # 交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用）和 graph 的调用（同一遍走出来）。和符号表同一时刻的快照，行号才对得上
     gb = _graph.Builder(idx)
-    x = _xref.build(repo, idx, on_file=gb.add_file)
+    x = _xref.build(repo, idx, on_file=gb.add_file, on_end=gb.add_ctors)
     xp = _xref.write(p.parent, x)
     print(f"→ {xp}  （{sum(len(v) for v in x['files'].values())} 处能解析的名字）")
     g = gb.result()

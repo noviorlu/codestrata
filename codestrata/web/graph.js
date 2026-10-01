@@ -1,12 +1,10 @@
 /* SVG 绘图。纯函数式：喂数据进来，画出来，把交互回调交给调用方。
  *
- * 边的颜色只表达「这条边是什么」，不表达「选没选中」：
- *   灰实线  静态引用——import 了，而且真的用到了对方的符号
- *   灰虚线  只 import——一个符号都没用到（再导出 / 类型标注 / 副作用 / 死 import）
- *   橙色    这次 runtime 真的走过，粗细 ∝ log(调用次数)
- *   橙虚线  动态分派——跑到的调用在代码里找不到对应的引用（插件、getattr、注册表、self.model 这类接口）。
- *           两端之间可能根本没有 import，也可能有 import、但 import 的东西这次没跑到；后一种不能画成
- *           实线：收起时实线、展开后变成灰边加一条虚线，看起来就像箭头「消失」了
+ * 图上的边只有调用（graph：scan 看到的和 trace 看到的）。边的颜色只表达「这条边是什么」，不表达「选没选中」：
+ *   灰实线  代码里写了的调用（scan 定下了被调方），这次没录到——或者还没叠 run
+ *   橙实线  这次运行真的发生了；粗细不变，边上标调用次数
+ *   橙虚线  这次跑了，但全都是代码里看不出会调到它的（只有 trace：多态、注册表、回调、框架转了一道）。
+ *           一部分看不出的画实线，悬停和边详情里说明有几次
  * 选中用蓝色光晕叠在边下面，边本身的颜色不变——否则选中一个节点后，
  * 它的所有边都变成同一种颜色，恰好把最想看的信息（哪些是真调用）抹掉了。 */
 window.CS = window.CS || {};
@@ -16,6 +14,8 @@ window.CS = window.CS || {};
   function el(t, a) { var e = document.createElementNS(NS, t); for (var k in a) e.setAttribute(k, a[k]); return e; }
 
   function sameLane(a, b) { return Math.abs(a.cy - b.cy) < 2; }
+  /* 边上的次数：太长的缩成「1.2万」 */
+  function fmtN(n) { return n >= 10000 ? (n / 10000).toFixed(n >= 100000 ? 0 : 1) + '万' : String(n); }
 
   /* 每条边在两端节点上的接点：同一个节点同一条边（顶 / 底）上的接点沿宽度摊开，按另一端的横坐标
      排序——左边来的接在左边、右边来的接在右边，交叉最少。早先都接在正中间，一个节点展开后
@@ -59,19 +59,15 @@ window.CS = window.CS || {};
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
     zoom: 1, panMode: false,   // 缩放倍数（相对「适应宽度」）；移动模式：按住任意位置拖动
     // timeOrder：跑到的边按「第一次被调用」的先后上色、标序号（setTimes 给数据，app.applyTimes 取）
-    state: { sel: null, selEdge: null, selFrame: null, refs: true, imp: true, type: false, hot: true, dyn: true,
+    state: { sel: null, selEdge: null, selFrame: null, scan: true, hot: true, dyn: true,
              timeOrder: false,
              onlyHot: false },
-    counts: { ref: 0, imp: 0, type: 0, warm: 0, dyn: 0 },
+    counts: { scan: 0, warm: 0, dyn: 0 },
 
     draw: function (svg, G, hot, extra) {
       extra = extra || {};
       this.G = G; this.hot = hot || null;
-      var kinds = extra.kinds || {}, rtOnly = extra.rtOnly || [], dynOnly = {}, rtKey = {};
-      (extra.dynOnly || []).forEach(function (k) { dynOnly[k] = 1; });
-      rtOnly.forEach(function (e) { rtKey[e[0] + '|' + e[1]] = 1; });
-      // 仅类型（TYPE_CHECKING 里的 import）：这次跑到了的，由 runtime 那条边代表，不再叠一条
-      var typeOnly = (extra.typeOnly || []).filter(function (e) { return !rtKey[e[0] + '|' + e[1]]; });
+      var rtOnly = extra.rtOnly || [];
       svg.textContent = '';
       svg.setAttribute('viewBox', '0 0 ' + G.width + ' ' + G.height);
       this.svg = svg;
@@ -149,67 +145,59 @@ window.CS = window.CS || {};
       var hotPk = (hot && hot.packages) || {}, hotEd = (hot && hot.edges) || {};
       var hotDyn = (hot && hot.dyn) || {};
       this.hitPk = hotPk;
-      // 「只看跑到的」也留下 runtime 边（含动态分派）的两端：调用方不一定有被调用的次数（一直在跑的外层函数、
+      // 「只看跑到的」也留下 runtime 边（含只有 trace 的）的两端：调用方不一定有被调用的次数（一直在跑的外层函数、
       // import 时执行的模块顶层），少了它边就没有起点。和 payload 里 graphHot 的节点同一个口径
       this.onPath = {};
       for (var ek in hotEd) if (hotEd[ek]) ek.split('|').forEach(function (x) { self.onPath[x] = 1; });
-      var maxE = 1; for (var k in hotEd) maxE = Math.max(maxE, hotEd[k]);
-      // 三层：光晕在最下，可见的边在中间，透明的宽命中区在最上（但仍在节点下面，节点照样能点）
-      var hg = el('g', {}), eg = el('g', {}), xg = el('g', {});
+      // 四层：光晕在最下，可见的边、边上的次数在中间，透明的宽命中区在最上（但仍在节点下面，节点照样能点）
+      var hg = el('g', {}), eg = el('g', {}), lg = el('g', { class: 'ecnts' }), xg = el('g', {});
       this.tg = el('g', { class: 'tord' });     // 时间顺序的序号牌：画在节点上面（见下面），不挡点击
-      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(xg); svg.appendChild(fh);
+      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(lg); svg.appendChild(xg); svg.appendChild(fh);
       // 框头上的数紧跟在名字后面：名字的实际宽度要画出来才量得准（估算对长名字会偏）
       Object.keys(this.heads).forEach(function (f) {
         var h = self.heads[f], w = h._label.getComputedTextLength ? h._label.getComputedTextLength() : 0;
         if (w) h._count.setAttribute('x', h._tx + w + 8);
       });
       this.edges = [];
-      var cnt = { ref: 0, imp: 0, type: 0, warm: 0, dyn: 0 };
-
-      // 仅类型默认不显示：关着就不画、也不占接点（开关一动整张图重画，见 app.controls）。
-      // 节点详情里照样列出来（typeOnly），不管开关
-      this.typeOnly = typeOnly;
-      var types = this.state.type ? typeOnly : [];
-      var P = ports(N, G.edges.concat(rtOnly, types));
-      function add(src, dst, kind, hits, info) {
+      var cnt = { scan: G.edges.length, warm: 0, dyn: 0 };
+      var P = ports(N, G.edges.concat(rtOnly));
+      // scan：这两个节点之间代码里写了几处调用（没写是 0）；hits：这次跑了几次；only：其中代码里看不出的次数
+      function add(src, dst, scan, hits) {
         var a = N[src], b = N[dst]; if (!a || !b) return;
-        var px = P[src + '|' + dst], d = route(a, b, px[0], px[1]);
-        var E = { a: src, b: dst, kind: kind, hits: hits, info: info,
-                  dynOnly: kind !== 'dyn' && !!dynOnly[src + '|' + dst],
-                  w: hits ? 1.2 + 2.2 * Math.log1p(hits) / Math.log1p(maxE) : 1.2 };
+        var key = src + '|' + dst, px = P[key], d = route(a, b, px[0], px[1]);
+        var only = Math.min(hotDyn[key] || 0, hits);
+        var E = { a: src, b: dst, scan: scan, hits: hits, only: only, dashed: hits > 0 && only >= hits };
         E.halo = el('path', { d: d, class: 'halo' });
-        E.gap = el('path', { d: d, class: 'gap' });   // 光晕中间垫一道底色，灰虚线在蓝底上才看得清
+        E.gap = el('path', { d: d, class: 'gap' });   // 光晕中间垫一道底色，虚线在蓝底上才看得清
         E.p = el('path', { d: d });
         E.x = el('path', { d: d, class: 'ehit' });
         var tip = el('title', {});
         tip.textContent = src + ' → ' + dst + '\n'
-          + (kind === 'dyn' ? '静态 import 图里没有这条边（动态分派）'
-             : kind === 'type' ? '只在 if TYPE_CHECKING: 里 import（仅类型）：运行时不存在，不算进架构高度'
-             : (info.uses ? '用到对方 ' + info.uses + ' 个符号' : '只 import，没用到任何符号')
-               + (info.dead ? '　·　' + info.dead + ' 个 import 没被引用' : ''))
-          + (hits ? '\nruntime 调用 ' + hits + ' 次' : '')
-          + (E.dynOnly ? '\n跑到的调用全是动态分派：这条边上的 import / 引用这次都没跑到，跑到的调用不经过它们'
-             : kind === 'dyn' ? ''
-             : hotDyn[src + '|' + dst] ? '\n其中 ' + hotDyn[src + '|' + dst] + ' 次是动态分派（代码里看不到引用）' : '')
-          + (kind === 'type' ? '\n点击看 import 语句' : '\n点击看具体是哪些函数');
+          + (scan ? '代码里写了 ' + scan + ' 处调用' : '代码里没写这两者之间的调用')
+          + (hits ? '\n这次跑了 ' + hits + ' 次' + (E.dashed ? '，全都是代码里看不出会调到的（只有 trace）'
+                                                 : only ? '，其中 ' + only + ' 次代码里看不出' : '') : '')
+          + '\n点击看具体是哪些函数';
         E.x.appendChild(tip); E.tip = tip; E.tipBase = tip.textContent;
         E.x.onclick = function (ev) {
           ev.stopPropagation();
-          if (self.state.selEdge === src + '|' + dst) self.clear(); else self.pickEdge(src, dst);   // 再点一次取消选中
+          if (self.state.selEdge === key) self.clear(); else self.pickEdge(src, dst);   // 再点一次取消选中
         };
         E.x.onmouseenter = function () { E.p.classList.add('hover'); E.halo.classList.add('hover'); };
         E.x.onmouseleave = function () { E.p.classList.remove('hover'); E.halo.classList.remove('hover'); };
         hg.appendChild(E.halo); hg.appendChild(E.gap); eg.appendChild(E.p); xg.appendChild(E.x);
+        if (hits) {                                   // 边上的调用次数：标在线的中点
+          var L = E.p.getTotalLength ? E.p.getTotalLength() : 0, pt = L ? E.p.getPointAtLength(L / 2) : null;
+          if (pt) {
+            E.lab = el('text', { x: pt.x, y: pt.y + 3, class: 'ecnt', 'text-anchor': 'middle' });
+            E.lab.textContent = fmtN(hits);
+            lg.appendChild(E.lab);
+          }
+        }
         self.edges.push(E);
-        cnt[kind]++; if (E.dynOnly) cnt.dyn++; else if (hits && kind !== 'dyn') cnt.warm++;
+        if (E.dashed) cnt.dyn++; else if (hits) cnt.warm++;
       }
-      G.edges.forEach(function (e) {
-        var key = e[0] + '|' + e[1], info = kinds[key] || { uses: 1, dead: 0 };
-        add(e[0], e[1], info.uses ? 'ref' : 'imp', hotEd[key] || 0, info);
-      });
-      rtOnly.forEach(function (e) { add(e[0], e[1], 'dyn', e[2], {}); });
-      types.forEach(function (e) { add(e[0], e[1], 'type', 0, {}); });
-      cnt.type = typeOnly.length;              // 关着也要数：图例上的开关靠它出现
+      G.edges.forEach(function (e) { add(e[0], e[1], e[2], hotEd[e[0] + '|' + e[1]] || 0); });
+      rtOnly.forEach(function (e) { add(e[0], e[1], 0, e[2]); });
       this.counts = cnt;
 
       var ng = el('g', {}); svg.appendChild(ng); this.nodes = {};
@@ -415,7 +403,7 @@ window.CS = window.CS || {};
     },
 
     /* 时间顺序的序号牌：上了色的边上画一个同色的小牌子「序号」，反复调用的在序号后面加一个 ↻。
-       位置先试路径的中点，被节点框或已经放下的牌子挡住就沿着路径往两边挪（0.4、0.6、0.3 …） */
+       位置先试路径的中点，被节点框、次数标签或已经放下的牌子挡住就沿着路径往两边挪（0.4、0.6、0.3 …） */
     _paintOrder: function (keep) {
       var tg = this.tg, self = this;
       if (!tg) return;
@@ -423,7 +411,11 @@ window.CS = window.CS || {};
       var boxes = Object.keys(this.N || {}).filter(function (id) { return self.vis(id); }).map(function (id) {
         var n = self.N[id]; return [n.cx - n.w / 2 - 3, n.cy - n.h / 2 - 3, n.cx + n.w / 2 + 3, n.cy + n.h / 2 + 3];
       });
-      var placed = [];
+      // 边上的次数标签也占位置：牌子不盖住它
+      var placed = this.edges.filter(function (E) { return E.lab && E._show; }).map(function (E) {
+        var x = +E.lab.getAttribute('x'), y = +E.lab.getAttribute('y') - 3, w = 6.2 * E.lab.textContent.length + 4;
+        return [x - w / 2, y - 6, x + w / 2, y + 6];
+      });
       function free(p, w) {
         var r = [p.x - w / 2, p.y - 8, p.x + w / 2, p.y + 8];
         return !boxes.concat(placed).some(function (b) { return r[0] < b[2] && r[2] > b[0] && r[1] < b[3] && r[3] > b[1]; });
@@ -460,7 +452,7 @@ window.CS = window.CS || {};
       this.paint();
     },
 
-    /* 看得见、这次跑到了（runtime 或动态分派画成跑到的样子）、又有时间的边按 first（控制流第一次走到
+    /* 看得见、这次跑到了（实线或虚线）、又有时间的边按 first（控制流第一次走到
        这条边的时刻）排名：E._t = {k, n, first, last, calls, repeat}，序号总是 1…N、和开关对得上。
        按名次（不按时刻）上色：模型加载这种长时段会把按时刻插值的颜色都挤到一头。
        repeat（后端算）：够多次、而且同一个进程里从头到尾隔了这段时间的一半以上——轮询、每个 token
@@ -516,7 +508,7 @@ window.CS = window.CS || {};
       return id;
     },
 
-    /* 静态邻居（详情面板的「依赖 / 被依赖」用） */
+    /* 代码里写了调用的邻居（详情面板的「调用 / 被调用」用） */
     nb: function (id) {
       var i = [], o = [];
       this.G.edges.forEach(function (e) { if (e[0] === id) o.push(e[1]); if (e[1] === id) i.push(e[0]); });
@@ -538,11 +530,11 @@ window.CS = window.CS || {};
     paint: function () {
       var s = this.state, self = this, keep = null;
       this.edges.forEach(function (E) {
-        // 有 import、但跑到的调用全是动态分派的边：「动态分派」开着就画成橙虚线，关了就退回没跑到的静态边
-        E._dyn = E.kind === 'dyn' || (E.dynOnly && s.dyn);
-        E._warm = E.hits > 0 && s.hot && E.kind !== 'dyn' && !E.dynOnly;
-        E._show = (E.kind === 'dyn' ? s.dyn : E.kind === 'type' ? s.type
-                   : (E._warm || E._dyn || (E.kind === 'ref' ? s.refs : s.imp))) && self.vis(E.a) && self.vis(E.b);
+        // 跑了的边：全是代码里看不出的画虚线（「代码里看不出」开关），其余画橙实线（「这次跑了」开关）；
+        // 关掉对应的开关，代码里写了的退回灰实线，没写的整条不画
+        E._dyn = E.hits > 0 && E.dashed && s.dyn;
+        E._warm = E.hits > 0 && s.hot && !E.dashed;
+        E._show = (E._warm || E._dyn || (E.scan > 0 && s.scan)) && self.vis(E.a) && self.vis(E.b);
       });
       this._rankTimes();
       // 选中节点时留亮的：它自己和看得见的边连着的节点（关掉的那类边不算）
@@ -561,7 +553,7 @@ window.CS = window.CS || {};
         // hot 视图里没被调用的静态边退到背景：要看的是这个 case 走过的路
         var lit = warm || dyn;
         var tone = lit ? ' warm' : '';
-        var cls = 'e ' + (dyn ? 'dyn' : E.kind) + (lit ? tone : (s.onlyHot ? ' bg' : ''))
+        var cls = 'e' + (dyn ? ' dyn' : '') + (lit ? tone : (s.onlyHot ? ' bg' : ''))
                 + (keep && !mine ? ' dim' : '') + (mine ? ' hi' : '');
         // 时间顺序：排上名次的边换成按名次的颜色；没跑到的静态边退到背景；跑到了却没有时间的照原样
         var tm = s.timeOrder && self.times;
@@ -569,16 +561,20 @@ window.CS = window.CS || {};
         if (tm && !lit) cls += ' bg';
         E.p.setAttribute('class', cls + (tc ? ' tm' : ''));
         E.p.style.stroke = tc || '';
-        E.p.style.strokeWidth = (lit ? E.w : 1.2) + (mine ? 1 : 0);
+        E.p.style.strokeWidth = (lit ? 1.8 : 1.2) + (mine ? 1 : 0);   // 粗细不表示次数：次数标在边上
         E.p.setAttribute('marker-end', 'url(#' + (tc ? self._marker(tc)
           : !lit ? 'a' : 'ah') + ')');
         E._tc = tc && show ? tc : null;
         E._mine = mine;
         [E.p, E.x, E.halo, E.gap].forEach(function (x) { x.style.display = show ? '' : 'none'; });
+        if (E.lab) {
+          E.lab.style.display = show && lit ? '' : 'none';
+          E.lab.setAttribute('class', 'ecnt' + (keep && !mine ? ' dim' : '') + (tc ? ' tm' : ''));
+        }
         E.halo.classList.toggle('on', !!s.selEdge && mine);
         E.gap.classList.toggle('on', !!s.selEdge && mine);
         // 选中的边挪到各自那一层的最上面：线可以叠在一起，但选中时要看得出哪根指到哪
-        if (mine) [E.halo, E.gap, E.p, E.x].forEach(function (x) { x.parentNode.appendChild(x); });
+        if (mine) [E.halo, E.gap, E.p, E.lab, E.x].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
       this._paintOrder(keep);
       Object.keys(this.nodes).forEach(function (id) {

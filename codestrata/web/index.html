@@ -22,11 +22,11 @@
         <p class="lede" id="lede"></p>
         <h3>怎么操作</h3>
         <ul class="howto">
-          <li>点<b>节点</b>在下面的抽屉里看模块：依赖谁、文件树、类 / 函数；再点一次、点空白处或按 Esc 取消选中。</li>
-          <li>点<b>箭头</b>看这条依赖具体用了对方哪些函数 / 类、在哪一行。</li>
+          <li>点<b>节点</b>在下面的抽屉里看模块：调用谁、被谁调用、文件树、类 / 函数；再点一次、点空白处或按 Esc 取消选中。</li>
+          <li>点<b>箭头</b>看这条边上是哪个函数调了哪个、写在哪一行、几次；代码里看不出的说明 scan 在那一行看到了什么。</li>
           <li>节点左上角的 <b>＋</b> 就地展开成子模块（框在一个框里），框头的 <b>−</b> 收起；展开 / 收起不会取消选中。</li>
           <li>缩放：图左上角的 ＋ / －，或按住 <b>Ctrl</b> 滚滚轮；✥ 打开后按住任意位置拖动图。<span id="panhint" hidden>现在图比图框宽：按住空白处也能拖，或 Shift + 滚轮横着滚。</span></li>
-          <li>全文窗口和源码片段里，按住 <b>Ctrl</b>（Mac 上 ⌘）点名字跳到定义，旁边一栏列出定义和所有引用。</li>
+          <li>全文窗口和源码片段里，按住 <b>Ctrl</b>（Mac 上 ⌘）点名字跳到定义，旁边一栏列出定义和所有引用。叠着 run 时，代码里看不出调到谁的那一行行尾标出这次调到了谁，点了跳过去。</li>
           <li>右上角的搜索：<b>/</b> 或 <b>Ctrl+K</b>；按名字找模块、文件、类 / 函数，词里带 . 或 / 才按路径找。拖左边 / 下边改大小。</li>
           <li>下面的详情栏浮在图上：点标题栏展开 / 收起，拖上沿 / 左右边框改大小。</li>
         </ul>
@@ -81,7 +81,7 @@
       <div class="dhead" id="dhead">
         <button class="dtog" id="dtog" aria-expanded="false" aria-controls="dbody" title="展开 / 收起详情">▴</button>
         <span class="dtitle" id="dtitle">详情</span>
-        <span class="dsub" id="dsub">点图上的节点或箭头，在这里看它的文件、类 / 函数，或者这条依赖上实际调了哪些函数</span>
+        <span class="dsub" id="dsub">点图上的节点或箭头，在这里看它的文件、类 / 函数，或者这条边上是哪些函数在调用</span>
       </div>
       <div class="dbody" id="dbody">
         <section class="det" id="det"></section>

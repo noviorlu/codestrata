@@ -15,8 +15,11 @@ graph 是 codestrata 的中心数据结构（见 ARCHITECTURE 开头）：节点
   calls    {调用方: [[被调方下标, 行, 末行, 种类], ...]}   定下了被调方的调用
   sites    {调用方: [[名字, 行, 末行, 种类], ...]}         定不下被调方的调用处：名字是写的那个
            （x.m(…) 的 m；语法触发的是特殊方法名）；没有名字（f()()、fs[i]()）是 null
+  ctors    {类: [方法, ...]}   构造过的类（种类 1 的被调方）构造时跑到的仓库里的 __new__ / __init__ / __post_init__
+           （沿继承找，见 xref 的 ctor_methods）；[] 是构造时跑的都不在仓库里（dataclass 生成的 __init__、
+           仓库外基类的），trace 看不到
 行、末行是调用那个表达式占的行（跨行的调用末行更大）。种类：
-  0 调用  1 构造（被调方是类）  2 装饰器（@x 定义时调 x）  3 取 property（调 getter）
+  0 调用  1 构造（被调方是类）  2 装饰器（@x 定义时调 x）  3 用 property（读、赋值、del 调 getter、setter、deleter）
   4 语法触发的特殊方法（with、for、[]、运算符、len() 这类，只记仓库里有类定义过的特殊方法）
   5 getattr(…, "名字")  6 调的是仓库外的（名字是写的那个）
 """
@@ -34,7 +37,7 @@ _HOW = {_xref.HOW_CALL: CALL, _xref.HOW_DECO: DECO, _xref.HOW_PROP: PROP, _xref.
 
 
 class Builder:
-    """xref.build(…, on_file=b.add_file) 走完之后，b.result() 就是 graph.json 的内容"""
+    """xref.build(…, on_file=b.add_file, on_end=b.add_ctors) 走完之后，b.result() 就是 graph.json 的内容"""
 
     def __init__(self, index: dict):
         self.symbols = index.get("symbols") or {}
@@ -45,6 +48,7 @@ class Builder:
         self._cid: dict[str, int] = {}
         self.calls: dict[str, list] = {}
         self.sites: dict[str, list] = {}
+        self.ctors: dict[str, list] = {}
 
     def add_file(self, rel: str, tree, calls: list, spans: list) -> None:
         syms = self.symbols
@@ -71,12 +75,17 @@ class Builder:
                 for name in sorted(syn[l]):
                     self.sites.setdefault(node[l], []).append([name, l, l, SYN])
 
+    def add_ctors(self, ctor_methods) -> None:
+        news = {self.callees[i] for xs in self.calls.values() for i, _, _, k in xs if k == NEW}
+        self.ctors = {c: ms for c in sorted(news) if (ms := ctor_methods(c)) is not None}
+
     def result(self) -> dict:
         for v in self.calls.values():
             v.sort()
         for v in self.sites.values():
             v.sort(key=lambda x: (x[1], x[2], x[3], x[0] or ""))
-        return {"format": _cut.INDEX_FORMAT, "callees": self.callees, "calls": self.calls, "sites": self.sites}
+        return {"format": _cut.INDEX_FORMAT, "callees": self.callees, "calls": self.calls, "sites": self.sites,
+                "ctors": self.ctors}
 
 
 def _line_nodes(spans: list, last: int, top: str) -> list[str]:

@@ -6,16 +6,14 @@
     format     2（单元、目录按路径认；1 是点分名）
     packages   单元：每个 .py 文件一个，id 是相对仓库根的路径；label 是点分的模块名（包的 __init__.py 是
                <包>.__init__），sep 是 "."；含「架构高度」
-    edges      单元之间的 import 边，权重 = import 语句条数（不含 TYPE_CHECKING 里的）
-    type_edges 只在 `if TYPE_CHECKING:` 里的 import：运行时不执行，不是依赖——不算架构高度，图上是「仅类型」
+    edges      单元之间的 import 边，权重 = import 语句条数（不含 TYPE_CHECKING 里的）。图上不画（图上只有调用，
+               见 graph.py），只给排版当权重、算架构高度
     dirs       目录树；default_open 是默认切面（图上显示哪一层，见 cut.py）
   symbols.json（按需加载，大）
     symbols    每个类/函数的 file:line、结束行、基类、所属单元
     files      文件 → 单元的映射，给 runtime tracer 反查用
     aux        包目录里的 C/C++/CUDA 文件 → 所在目录
-    edge_sites 每条边背后的 import 语句
-    edge_uses  每条边上实际引用了对方的哪些符号、在哪一行
-    edge_dead  导入了但运行时没引用的名字，以及原因（TYPE_CHECKING 里的都在这里，只在标注里引用也算）
+    name_refs  字符串里按名字提到的仓库内的类（注册表、getattr、插件表）
     docs       作者写的文档 → 目录 / 单元（包内 README、frontmatter 声明了代码路径的设计文档）
 
 「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
@@ -124,15 +122,6 @@ def _deco_names(node) -> list[str]:
         except Exception:
             pass
     return out
-
-
-def _use(store: dict, a: str, b: str, sym: str, f: str, line: int) -> None:
-    """记一次跨包使用。同一行重复出现（a.x.y 链）只记一次。"""
-    if not b or a == b:
-        return
-    lst = store.setdefault((a, b), {}).setdefault(sym, [])
-    if not lst or lst[-1] != [f, line]:
-        lst.append([f, line])
 
 
 def _skip_dir(parent: str, name: str) -> bool:
@@ -428,10 +417,6 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     pkg_cls: dict[str, int] = {}
     pkg_fn: dict[str, int] = {}
     edges: dict[tuple[str, str], int] = {}
-    type_edges: dict[tuple[str, str], int] = {}
-    edge_sites: dict[tuple[str, str], list] = {}
-    edge_uses: dict[tuple[str, str], dict] = {}
-    edge_dead: dict[tuple[str, str], list] = {}
     file_loc: dict[str, int] = {}          # 文件 → 行数（含 C/C++/CUDA）
     file_sha: dict[str, str] = {}          # .py 文件 → 内容哈希
     str_refs: dict[str, list] = {}         # 像类名的字符串 → [[文件, 行], ...]（扫完只留仓库里有的类名）
@@ -543,11 +528,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                 if i not in in_all:
                     str_refs.setdefault(v, []).append([str(rel), ln] + ([mod] if mod else []))
 
-            # 单元间 import 边（只算内部依赖）
-            bound: dict[str, dict] = {}
-            typed: dict[str, dict] = {}       # TYPE_CHECKING 里绑定的名字（本地名 / import a.b.c 的点分名）
-            # `if TYPE_CHECKING:` 里的 import 只服务于类型标注，运行时根本不执行：引用它的名字（标注、
-            # 字符串标注、TYPE_CHECKING 块里的定义）都不算运行时的依赖
+            # 单元间 import 边（只算内部依赖）。`if TYPE_CHECKING:` 里的 import 只服务于类型标注，运行时根本
+            # 不执行：不算依赖
             typeonly: set[int] = set()
             for n2 in ast.walk(tree):
                 if isinstance(n2, ast.If):
@@ -558,26 +540,14 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                             for n4 in ast.walk(n3):
                                 if isinstance(n4, (ast.Import, ast.ImportFrom)):
                                     typeonly.add(id(n4))
-            # 函数体内的延迟 import：运行到那里才加载。常用来打破循环，或按需分派到实现——
-            # 一条依赖如果全部是延迟 import，它在 import 时并不存在
-            lazy: set[int] = set()
-            for fn in ast.walk(tree):
-                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for n4 in ast.walk(fn):
-                        if isinstance(n4, (ast.Import, ast.ImportFrom)):
-                            lazy.add(id(n4))
             is_init = rel.name == "__init__.py"
-            chains: dict[str, dict] = {}
-            src_lines = src.split("\n")
             for node in ast.walk(tree):
-                # (目标模块, 别名, 绑定方式)。每个导入名各自解析：`from pkg import a, b` 里
-                # a、b 可能是子模块，也可能是 pkg 里的名字。早先整条语句只算一个目标，
-                # 一行导入多个名字时，绑定关系会被最后一个目标覆盖。
-                entries: list[tuple[str, ast.alias, str]] = []
+                # 每个导入名各自解析：`from pkg import a, b` 里 a、b 可能是子模块，也可能是 pkg 里的名字
+                targets: list[str] = []
                 if isinstance(node, ast.ImportFrom):
                     mod0 = None
                     if node.level:
-                        # 相对 import。先算出“点号指向的那个包”：一个点是当前文件所在的包。
+                        # 相对 import。先算出「点号指向的那个包」：一个点是当前文件所在的包。
                         # __init__.py 的模块名就是包本身，所以它不用再往上退一层——早先按
                         # 普通模块处理，pkg/__init__.py 里的 `from .x import` 被解析成
                         # 兄弟包 x，vllm-omni 上凭空多出 15 条指向不存在的包的边。
@@ -591,113 +561,20 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         for a in node.names:
                             sub = f"{mod0}.{a.name}"
                             # from . import layout / from pkg import submodule：导入的是子模块
-                            entries.append((sub, a, "mod") if a.name != "*" and sub in unit_of_module
-                                           else (mod0, a, "name"))
+                            targets.append(sub if a.name != "*" and sub in unit_of_module else mod0)
                 elif isinstance(node, ast.Import):
-                    for a in node.names:
-                        if a.name.split(".")[0] in top | bare_scripts:
-                            entries.append((canon(a.name), a, "import"))
-                if not entries:
-                    continue
-                names = [a.name for a in node.names]
-                try:
-                    stmt = ast.unparse(node)
-                except Exception:
-                    stmt = ""
-                # 记下这条 import 在本文件里引入的本地名字，第二遍用来找「实际用到了什么」
-                why = ("type" if id(node) in typeonly
-                       else "reexport" if is_init else None)
-                # TYPE_CHECKING 里的：绑定的名字另记（typed，引用它的只有类型标注，不算「用到」），
-                # 边也另记（type_edges，不算依赖、不进架构高度）
-                into, into_chain, weights = ((typed, typed, type_edges) if why == "type"
-                                             else (bound, chains, edges))
+                    targets = [canon(a.name) for a in node.names if a.name.split(".")[0] in top | bare_scripts]
                 seen_dst: set[str] = set()
-                for target, a, how in entries:
+                for target in targets:
                     dst = unit_of_module.get(target)
                     if dst is None:
                         # 指向仓库里不存在的模块（构建时生成的 _version.py、可选依赖的桩……）：
                         # 没有节点可画，只记数
                         unresolved[(pkg, target)] = unresolved.get((pkg, target), 0) + 1
                         continue
-                    if dst == pkg:
-                        continue
-                    if dst not in seen_dst:
+                    if dst != pkg and dst not in seen_dst and id(node) not in typeonly:
                         seen_dst.add(dst)
-                        weights[(pkg, dst)] = weights.get((pkg, dst), 0) + 1
-                        # 点开一条边时要看到「具体用了对方的哪些东西、在哪一行」
-                        edge_sites.setdefault((pkg, dst), []).append({
-                            "f": str(rel), "l": node.lineno, "s": stmt[:200],
-                            "m": target, "n": names[:12],
-                            "lazy": id(node) in lazy, "type": id(node) in typeonly})
-                    # sym：这个名字指向什么，和符号键同一种写法——模块是它的文件路径（dst），
-                    # 模块里的名字是 <文件路径>#<名字>
-                    if how == "mod":
-                        # from .ui import graphview as _graphview → _graphview 是模块别名
-                        into[a.asname or a.name] = {"kind": "mod", "sym": dst, "dst": dst,
-                                                    "line": node.lineno, "orig": a.name, "why": why}
-                    elif how == "name":
-                        if a.name == "*":
-                            continue                    # 通配导入无法追踪
-                        into[a.asname or a.name] = {"kind": "name", "sym": f"{dst}#{a.name}",
-                                                    "dst": dst, "line": node.lineno,
-                                                    "orig": a.name, "why": why}
-                    elif a.asname:
-                        into[a.asname] = {"kind": "mod", "sym": dst, "dst": dst,
-                                          "line": node.lineno, "orig": a.name, "why": why}
-                    elif "." in a.name:
-                        # import a.b.c：绑定的是根名 a，使用形如 a.b.c.X。
-                        # 没有任何这样的使用时，几乎总是为了副作用（注册、打补丁）。
-                        into_chain[a.name] = {"kind": "chain", "sym": dst, "dst": dst,
-                                              "line": node.lineno, "orig": a.name,
-                                              "why": why or "sideeffect"}
-
-            # 第二遍：本地名字的实际使用点。`_graphview.graph_payload(...)` → 用了 graph_payload；
-            # `Orchestrator(...)` → 用了 Orchestrator。这才回答得了「具体用了对方哪些函数」。
-            used: set[str] = set()
-            if bound or chains:
-                for node in ast.walk(tree):
-                    if chains and isinstance(node, ast.Attribute):
-                        # 还原 a.b.c.X 这条链，前缀命中某个 import a.b.c 就算用了 X
-                        parts, cur = [], node
-                        while isinstance(cur, ast.Attribute):
-                            parts.append(cur.attr)
-                            cur = cur.value
-                        if isinstance(cur, ast.Name):
-                            parts.append(cur.id)
-                            parts.reverse()
-                            for cut in range(len(parts) - 1, 0, -1):
-                                mod = ".".join(parts[:cut])
-                                c = chains.get(mod)
-                                if c:
-                                    used.add(mod)
-                                    _use(edge_uses, pkg, c["dst"], f"{c['dst']}#{parts[cut]}",
-                                         str(rel), node.lineno)
-                                    break
-                    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                        b = bound.get(node.value.id)
-                        if b and b["kind"] == "mod":
-                            used.add(node.value.id)
-                            _use(edge_uses, pkg, b["dst"], f"{b['dst']}#{node.attr}",
-                                 str(rel), node.lineno)
-                    elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                        b = bound.get(node.id)
-                        if b:
-                            used.add(node.id)
-                            if b["kind"] == "name":
-                                _use(edge_uses, pkg, b["dst"], b["sym"], str(rel), node.lineno)
-            # 导入了但本文件运行时从没引用过。TYPE_CHECKING 里的一律在这里（why=type）——除非同一个名字
-            # 还有运行时的 import（函数里再 import 一次），那时引用算在运行时的那个上
-            dead = [(k, b) for k, b in list(bound.items()) + list(chains.items()) if k not in used]
-            dead += [(k, b) for k, b in typed.items() if k not in bound and k not in chains]
-            for local, b in dead:
-                why = b["why"]
-                if not why:
-                    ln = src_lines[b["line"] - 1] if 0 < b["line"] <= len(src_lines) else ""
-                    # 作者用 noqa: F401 明确说了「这个没用的 import 是故意的」
-                    why = "intentional" if ("noqa" in ln and "F401" in ln) else "unused"
-                edge_dead.setdefault((pkg, b["dst"]), []).append({
-                    "f": str(rel), "l": b["line"], "n": b["orig"],
-                    "sym": b["sym"], "why": why})
+                        edges[(pkg, dst)] = edges.get((pkg, dst), 0) + 1
 
     # 架构高度
     out: dict[str, int] = {}
@@ -765,18 +642,10 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                  "unresolved_imports": sorted(f"{a} → {b}" for a, b in unresolved),
                  "n_aux": len(aux)},
         "aux": aux,
-        "edge_sites": {f"{a}|{b}": v for (a, b), v in edge_sites.items()},
-        # 用到的对方符号：{"a|b": {"模块:名字": [[文件, 行], ...]}}
-        "edge_uses": {f"{a}|{b}": v for (a, b), v in edge_uses.items()},
-        # 导入了但没引用。why：unused 真的没用 / type 只在 TYPE_CHECKING 里 /
-        # reexport __init__ 里的再导出 / sideeffect import a.b.c 为了注册或打补丁 /
-        # intentional 行上带 noqa: F401，作者说了是故意的
-        "edge_dead": {f"{a}|{b}": v for (a, b), v in edge_dead.items()},
         # 字符串里按名字提到的仓库内的类：{"类名": [[文件, 行], ...]}（注册表、getattr、插件表）
         "name_refs": {k: v for k, v in sorted(str_refs.items()) if k in class_names},
         "packages": packages,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
-        "type_edges": [[a, b, w] for (a, b), w in sorted(type_edges.items())],
         "symbols": {k: s.as_json() for k, s in symbols.items()},
         "files": files,
         "file_sha": file_sha,
@@ -795,24 +664,19 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     symbols = index.pop("symbols", {})
     files = index.pop("files", {})
     aux = index.pop("aux", {})
-    sites = index.pop("edge_sites", {})
-    uses = index.pop("edge_uses", {})
-    dead = index.pop("edge_dead", {})
     name_refs = index.pop("name_refs", {})
     docs = index.pop("docs", {})
     file_loc = index.pop("file_loc", {})
     file_sha = index.pop("file_sha", {})
     (outdir / "symbols.json").write_text(
         json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs, "file_loc": file_loc,
-                    "file_sha": file_sha,
-                    "edge_sites": sites, "edge_uses": uses, "edge_dead": dead, "name_refs": name_refs},
+                    "file_sha": file_sha, "name_refs": name_refs},
                    ensure_ascii=False),
         encoding="utf-8")
     index["n_symbols"] = len(symbols)
     p = outdir / "index.json"
     p.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     index["symbols"], index["files"], index["aux"] = symbols, files, aux   # 调用方还要用
-    index["edge_sites"], index["edge_uses"], index["edge_dead"] = sites, uses, dead
     index["name_refs"] = name_refs
     index["docs"] = docs
     index["file_loc"] = file_loc

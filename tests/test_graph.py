@@ -82,7 +82,7 @@ def test_calls_and_sites():
     repo = _repo()
     cs("scan", repo)
     g = json.loads((repo / ".codestrata" / "graph.json").read_text())
-    assert g["format"] == 4, g["format"]
+    assert g["format"] == 5, g["format"]
     E = _edges(g)
     U, B = "pkg/use.py", "pkg/base.py"
     lu = lambda s: _line(U, s)
@@ -126,12 +126,12 @@ def test_xref_unchanged_by_graph():
 
 
 def test_old_index_format_refused():
-    """索引格式升到 4（多了 graph.json）：旧格式的索引提示重新 scan"""
+    """索引格式升到 5（graph.json 多了 ctors）：旧格式的索引提示重新 scan"""
     repo = _repo()
     cs("scan", repo)
     p = repo / ".codestrata" / "index.json"
     d = json.loads(p.read_text())
-    d["format"] = 3
+    d["format"] = 4
     p.write_text(json.dumps(d))
     try:
         ui_load.load_index(repo)
@@ -139,6 +139,50 @@ def test_old_index_format_refused():
     except SystemExit as e:
         assert "重新跑一次 codestrata scan" in str(e), e
     assert ui_load.index_summary(repo)["outdated"] is True
+
+
+_CTOR_SRC = {
+    "ck/__init__.py": "",
+    "ck/root.py": "class Root:\n    def __init__(self):\n        self.r = 1\n",
+    "ck/m.py": (
+        "from dataclasses import dataclass\n\nfrom ck.root import Root\nfrom other_lib import Ext\n\n\n"
+        "class Own:\n    def __init__(self):\n        self.x = 1\n\n\n"
+        "class Inherit(Root):\n    pass\n\n\n"
+        "class Both:\n    def __new__(cls):\n        return super().__new__(cls)\n\n"
+        "    def __init__(self):\n        self.ok = True\n\n\n"
+        "@dataclass\nclass Cfg:\n    n: int = 1\n\n\n"
+        "@dataclass\nclass Post(Root):\n    n: int = 1\n\n    def __post_init__(self):\n        self.m = self.n\n\n\n"
+        "class Plain:\n    pass\n\n\n"
+        "class Mixed(Ext, Root):\n    pass\n\n\n"
+        "class Prop:\n"
+        "    @property\n    def v(self):\n        return 1\n\n"
+        "    @v.setter\n    def v(self, x):\n        pass\n\n"
+        "    def bump(self):\n        self.v = 5\n        del self.v\n        return self.v\n\n\n"
+        "def make():\n    return Own(), Inherit(), Both(), Cfg(), Post(), Plain(), Mixed()\n"
+    ),
+}
+
+
+def test_ctor_methods_and_property_setters():
+    """构造过的类在 graph.json 的 ctors 里记下构造时跑到的仓库里的方法（沿继承找；dataclass 生成的 __init__、
+    只有仓库外基类的都不在仓库里，是 []；仓库外基类后面的仓库里的基类照样找）。
+    有 setter 的 property：读、赋值、del 都是调用（PROP）"""
+    d = tmpdir("cs-graph-") / "repo"
+    for rel, text in _CTOR_SRC.items():
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text(text)
+    cs("scan", d)
+    g = json.loads((d / ".codestrata" / "graph.json").read_text())
+    M, R = "ck/m.py#", "ck/root.py#"
+    assert g["ctors"] == {
+        f"{M}Own": [f"{M}Own.__init__"], f"{M}Inherit": [f"{R}Root.__init__"],
+        f"{M}Both": [f"{M}Both.__new__", f"{M}Both.__init__"],
+        f"{M}Cfg": [], f"{M}Post": [f"{M}Post.__post_init__"],       # 生成的 __init__ 盖住了 Root.__init__
+        f"{M}Plain": [], f"{M}Mixed": [f"{R}Root.__init__"]}, g["ctors"]
+    src = _CTOR_SRC["ck/m.py"].splitlines()
+    want = {i for i, x in enumerate(src, 1) if x.strip() in ("self.v = 5", "del self.v", "return self.v")}
+    got = {l for i, l, _, k in g["calls"][f"{M}Prop.bump"] if k == graph.PROP and g["callees"][i] == f"{M}Prop.v"}
+    assert got == want, (got, want)
 
 
 if __name__ == "__main__":

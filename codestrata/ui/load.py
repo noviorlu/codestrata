@@ -38,13 +38,13 @@ def load_index(repo: Path) -> dict:
         idx["symbols"] = extra.get("symbols", {})
         idx["files"] = extra.get("files", {})
         idx["aux"] = extra.get("aux", {})
-        idx["edge_sites"] = extra.get("edge_sites", {})
-        idx["edge_uses"] = extra.get("edge_uses", {})
-        idx["edge_dead"] = extra.get("edge_dead", {})
         idx["name_refs"] = extra.get("name_refs")    # 老的 symbols.json 没有：None（不显示接线点）
         idx["docs"] = extra.get("docs", {})
         idx["file_loc"] = extra.get("file_loc", {})
         idx["file_sha"] = extra.get("file_sha")      # 老的 symbols.json 没有：None
+    gp = d / "graph.json"
+    # graph 的 scan 记录（函数之间的调用），scan-trace alignment 和图上的边都靠它；格式 4 的索引都有
+    idx["graph"] = json.loads(gp.read_text(encoding="utf-8")) if gp.exists() else {"callees": [], "calls": {}, "sites": {}}
     return idx
 
 

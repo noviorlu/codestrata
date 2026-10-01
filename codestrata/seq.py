@@ -99,10 +99,12 @@ class _Map:
                 line = int(ln)
             except ValueError:
                 line = 0
-            unit = self.files.get(rel)
-            hit = self._memo[key] = (self.node_of.get(unit) if unit else None,
-                                     bool(_align.defining(self.syms, self.loc, rel, line)))
+            hit = self._memo[key] = (self.file_node(rel), bool(_align.defining(self.syms, self.loc, rel, line)))
         return hit
+
+    def file_node(self, rel: str):
+        unit = self.files.get(rel)
+        return self.node_of.get(unit) if unit else None
 
 
 # ---------------------------------------------------------------- 每条边的时间
@@ -185,10 +187,12 @@ def _calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = Fals
     return i1 - i0 + 1, t + round(i0 * step), t + round(i1 * step)
 
 
-def window_counts(rd: Path, t0: int, t1: int) -> dict:
+def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> dict:
     """时间段里的调用（折叠行按 _calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges}
     （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。时序事件只记跨文件的调用：同一个文件里的
-    调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError"""
+    调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError。
+    ref_lines：整个 run 的调用行（counts.json.gz 的 func_lines）。span 不记调用行，给了的话每对的次数按它在整个 run
+    里各行的比例摊到行上（spread_lines），也返回 func_lines，和 scan 比的时候才和按阶段看一样按行比"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（codestrata trace --events）：只能按阶段看，不能选时间段")
@@ -204,7 +208,33 @@ def window_counts(rd: Path, t0: int, t1: int) -> dict:
             a, b, n = keys[r[4]], keys[r[5]], got[0]
             funcs[b] = funcs.get(b, 0) + n
             edges[f"{a}|{b}"] = edges.get(f"{a}|{b}", 0) + n
-    return {"funcs": funcs, "func_edges": edges}
+    out = {"funcs": funcs, "func_edges": edges}
+    if ref_lines is not None:
+        out["func_lines"] = spread_lines(edges, ref_lines)
+    return out
+
+
+def spread_lines(edges: dict, ref_lines: dict) -> dict:
+    """{"a|b": 次数} 按 ref_lines（{"a|b|行": 次数}）里这一对在各行的比例摊成 {"a|b|行": 次数}：整数、每对加起来
+    正好是它的次数（最大余数法）。ref_lines 里没有这一对的记在第 0 行（不知道是哪一行）"""
+    by: dict[str, list] = {}
+    for k, m in ref_lines.items():
+        ab, _, l = k.rpartition("|")
+        by.setdefault(ab, []).append((int(l), m))
+    out: dict[str, int] = {}
+    for ab, n in edges.items():
+        ls = by.get(ab)
+        if not ls:
+            out[f"{ab}|0"] = n
+            continue
+        tot = sum(m for _, m in ls)
+        share = sorted(((n * m // tot, n * m % tot, l) for l, m in ls), key=lambda s: (-s[1], s[2]))
+        left = n - sum(s[0] for s in share)
+        for i, (q, _, l) in enumerate(share):
+            v = q + int(i < left)
+            if v:
+                out[f"{ab}|{l}"] = v
+    return out
 
 
 def _pairs(spans: Path, run: dict, window: tuple[int, int] | None = None) -> tuple[tuple, dict]:
@@ -276,14 +306,18 @@ def _pairs_scan(spans: Path, ix: dict, iv: dict, lo: int, hi: int) -> dict:
     return {"iv": iv, "agg": agg, "keys": ix["keys"], "truncated": ix.get("truncated") or []}
 
 
-def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = None) -> dict:
+def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = None, keymap=None,
+               redirect: dict | None = None) -> dict:
     """切面上每条节点间的边在一个阶段（None 是整个 run）里什么时候被调用：
     {"window": [起, 止], "intervals": [(起, 止)…], "span_us": 各段加起来多长,
      "edges": {"a|b": {first, last, n, spread, repeat}}, "truncated"}（微秒，相对 run 起点）。
     模块图的「时间顺序」按 first 排名上色：控制流第一次走到这条边的时刻，讲一条调用链时的先后就是它。
     spread 是同一个进程里第一次到最后一次隔了多久（取各进程里最长的）；repeat（反复调用）要至少 REPEAT_MIN 次、
     而且 spread 超过这段时间的一半——每个进程各调一次的、只调两次的都不算。
-    两端落在同一个节点的（节点内部的调用）、import / 类体这种定义时的执行、落不到 index 里的都不算"""
+    两端落在同一个节点的（节点内部的调用）、import / 类体这种定义时的执行、落不到 index 里的都不算。
+    keymap：录制时的键 → 现在的（align.key_mapper；录制之后改过的文件里函数挪了位置），没给就原样用。
+    redirect：同一个 run（阶段、时间段）的 hot["redirect"]——构造 C(…) 跑到的 __init__ 这类，模块图上算在 F→C 上
+    （align.classify），这里也算到 C 的文件上，时刻才落在图上画着的那条边上"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（codestrata trace --events）")
@@ -293,7 +327,8 @@ def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = Non
         phase = None                                   # 时间段：只有一张表（_pairs 的 window）
     elif phase not in P["iv"]:
         raise LookupError(f"这个 run 里没有阶段 {phase} 的时刻：不知道它从什么时候开始，没法按时间排")
-    key = (pkey, id(idx), None if open_ is None else ",".join(sorted(open_)), phase)
+    key = (pkey, id(idx), None if open_ is None else ",".join(sorted(open_)), phase, keymap is not None,
+           bool(redirect))
     with _LOCK:
         hit = _EDGES.get(key)
     if hit is not None and hit[0] is idx:              # 连 idx 一起存：id 不会被重新扫出来的 index 复用
@@ -302,8 +337,12 @@ def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = Non
     edges: dict[str, dict] = {}
     pids: dict[str, dict] = {}
     for (a, b), (first, last, n, per) in P["agg"][phase].items():
-        na = m.of(keys[a] if 0 <= a < len(keys) else "?")[0]
-        nb, defining = m.of(keys[b] if 0 <= b < len(keys) else "?")
+        ka, kb = keys[a] if 0 <= a < len(keys) else "?", keys[b] if 0 <= b < len(keys) else "?"
+        if keymap is not None:
+            ka, kb = keymap(ka), keymap(kb)
+        na = m.of(ka)[0]
+        to = redirect.get(f"{ka}|{kb}") if redirect else None
+        nb, defining = (m.file_node(to), False) if to else m.of(kb)
         if na is None or nb is None or na == nb or defining:
             continue
         k = f"{na}|{nb}"

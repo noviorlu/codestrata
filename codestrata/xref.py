@@ -39,9 +39,6 @@
   attrs    {属性名: [[文件, 行, 起, 止, 种类], ...]}   解析不了的 `<表达式>.属性名`（种类只有 0 / 1），
            只收和仓库里某个类的成员（方法、嵌套类、类属性、实例属性）同名、而且接收者的类型确实拿不准的
            （字面量、模块、函数、MRO 全在仓库里的类都不算）：引用面板据此列出「同名调用，接收者类型没核实」
-  names    {"<文件路径>#<名字>": 目标下标}   scan 的边明细（edge_uses）引用了、却不在符号表里的名字——模块级变量、
-           __init__ 等处再导出的类 / 函数 / 变量——按 `from 模块 import 名字` 追到的类 / 函数 / 变量（s: / v:）。
-           边详情的「to」据此和 Ctrl+点击落在同一个地方
 种类：0 引用、1 调用、2 import、3 定义本身。
 
 build 的 on_file：给了的话，第二遍每走完一个文件就把这个文件里的调用交给它（graph.py 用它产出 graph 的
@@ -51,9 +48,11 @@ scan 记录，见那里），xref.json 本身不变。一条调用是 (调用方
            （3.12 起它们不再是单独的帧）
   目标     解析出来的目标（和 xref.json 的 targets 同一种写法），解析不了是 None
   名字     写的名字：f(…) 的 f、x.m(…) 的 m、getattr(x, "m") 的 m；没有名字（f()()、fs[i]()）是 None
-  怎么调的 HOW_CALL 调用；HOW_DECO 装饰器（@x 在定义时调 x）；HOW_PROP 取 property（调 getter）；
+  怎么调的 HOW_CALL 调用；HOW_DECO 装饰器（@x 在定义时调 x）；HOW_PROP 用 property（读调 getter，赋值、del 调 setter、deleter）；
            HOW_STR getattr(…, "名字")（按字符串取，多半接着就调）
 还有这个文件里每个节点占的行 [(起, 止, 节点)]，按名字找不到的东西（语法触发的特殊方法）靠它归到节点上。
+build 的 on_end：第二遍走完调一次，交给它 ctor_methods(类的符号键) → 构造这个类时会跑到的仓库里的
+__new__ / __init__ / __post_init__ 的符号键（见 _Repo.ctor_methods）；不是仓库里的类是 None。
 """
 from __future__ import annotations
 
@@ -81,6 +80,8 @@ _ASSIGNS = (ast.Assign, ast.AnnAssign, ast.AugAssign)
 _COMPS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 # 类型一眼就知道（内置类型）的接收者：`"".join`、`[...].append` 不进 attrs
 _LITERALS = frozenset((ast.Constant, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict, ast.Set) + _COMPS)
+# 自己没写 __init__ 时会生成一个的类装饰器（装饰器名只留最后一段：@dataclasses.dataclass(…) → dataclass）
+_GENERATES_INIT = frozenset(("dataclass", "define"))
 # 仓库外、但不带什么普通属性的基类：MRO 上碰到它们接着往后找（dunder 除外）
 _TRANSPARENT = frozenset({"x:typing.Generic", "x:typing.Protocol", "x:typing_extensions.Generic",
                           "x:typing_extensions.Protocol", "x:abc.ABC"})
@@ -167,9 +168,15 @@ def _strs(node):
     return None
 
 
-def _is_property(sym: dict | None) -> bool:
-    """符号表条目是 property 这类（取属性就是调 getter）：装饰器名以 property 结尾（property、cached_property）"""
-    return bool(sym) and any(x.endswith("property") for x in sym.get("d") or ())
+def _is_property(sym: dict | None, ctx: type = ast.Load) -> bool:
+    """x.attr 在这个上下文里是不是在调 property 的方法：读（Load）调 getter，赋值（Store）调 setter，del 调 deleter。
+    符号表里同名的几个 def 只留最后一个的装饰器：只有 getter 的是 property / cached_property 这类（名字以 property
+    结尾），写了 setter / deleter 的留下的是 setter / deleter。cached_property 赋值不调方法，所以赋值、del 只认后一种"""
+    d = (sym or {}).get("d") or ()
+    accessors = any(x in ("setter", "deleter") for x in d)
+    if ctx is ast.Load:
+        return accessors or any(x.endswith("property") for x in d)
+    return accessors
 
 
 def _is_static(fn) -> bool:
@@ -571,6 +578,24 @@ class _Repo:
                 if s[0] == head:
                     del s[0]
             seqs = [s for s in seqs if s]
+        return out
+
+    def ctor_methods(self, key: str) -> list[str] | None:
+        """构造 key 这个类（C(…)）时跑到的仓库里的方法：__new__、__init__、__post_init__ 沿 MRO 各取第一个定义的。
+        仓库外 / 解析不了的基类跳过去接着找（它的方法多半经 super() 再调回仓库里的）；dataclass / attrs 的类自己
+        没写 __init__ 时 __init__ 是生成的、不在仓库里，找到它就停。都没有是 []：构造时跑的代码 trace 看不到"""
+        if (self.symbols.get(key) or {}).get("k") != "class":
+            return None
+        out = []
+        for attr in ("__new__", "__init__", "__post_init__"):
+            for c in self.mro(key) or [key]:
+                if c[0] in "?~":
+                    continue
+                if f"{c}.{attr}" in self.symbols:
+                    out.append(f"{c}.{attr}")
+                    break
+                if attr == "__init__" and _GENERATES_INIT & set(self.symbols[c].get("d") or ()):
+                    break
         return out
 
     def class_member(self, key: str, attr: str, skip_self: bool):
@@ -1262,8 +1287,8 @@ class _Walk:
                         self.seen.add(r)              # 这个类里第一次 self.x = …：实例属性的定义
                         k = DEF
                     self.emit(n.end_lineno, n.end_col_offset, attr, r, k, True)
-                    if (self.calls is not None and kind != CALL and type(n.ctx) is ast.Load and r[0] == "s"
-                            and _is_property(self.symbols.get(r[2:]))):
+                    if (self.calls is not None and kind != CALL and r[0] == "s"
+                            and _is_property(self.symbols.get(r[2:]), type(n.ctx))):
                         self.note(n, r, attr, HOW_PROP)
             elif (attr in self.repo.member_names and type(n.value) not in _LITERALS
                     and self.repo.unsure(base, attr)):
@@ -1387,19 +1412,20 @@ class _Walk:
 
 ATTRS_MAX_SAME = 3       # 同名成员超过这么多个的名字，不记「同名的 .xxx」（见 _build 末尾）
 
-def build(root: Path, index: dict, on_file=None) -> dict:
-    """on_file(文件, AST, 调用, 节点的范围)：第二遍每走完一个文件调一次（见开头的说明）；AST 只在调用期间有效"""
+def build(root: Path, index: dict, on_file=None, on_end=None) -> dict:
+    """on_file(文件, AST, 调用, 节点的范围)：第二遍每走完一个文件调一次（见开头的说明）；AST 只在调用期间有效。
+    on_end(ctor_methods)：第二遍走完调一次"""
     # 建 AST 时一路触发的分代 GC 白白扫描几百万个节点；这里不产生循环引用，先关掉
     was = gc.isenabled()
     gc.disable()
     try:
-        return _build(root, index, on_file)
+        return _build(root, index, on_file, on_end)
     finally:
         if was:
             gc.enable()
 
 
-def _build(root: Path, index: dict, on_file=None) -> dict:
+def _build(root: Path, index: dict, on_file=None, on_end=None) -> dict:
     repo = _Repo(index)
     for m, rel in repo.file_of.items():              # 第一遍：先把所有模块顶层的绑定、类的成员收齐
         text, tree = _read(root / rel)
@@ -1432,21 +1458,14 @@ def _build(root: Path, index: dict, on_file=None) -> dict:
         if toks:
             toks.sort()
             files[rel] = toks
-    # 边详情引用的名字（<文件路径>#<名字>）按 `from 模块 import 名字` 的语义追到定义（和 Ctrl+点击同一套解析）
-    mod_of = {rel: m for m, rel in repo.file_of.items()}
-    in_index = index.get("symbols") or {}
-    names = {}
-    for uses in (index.get("edge_uses") or {}).values():
-        for key in uses:
-            if key in in_index or key in names:
-                continue
-            path, _, name = key.partition("#")
-            mod = mod_of.get(path)
-            if not mod or not name:
-                continue
-            t = repo.from_import(mod, name)
-            if t and t[:2] in ("s:", "v:") and repo.where(t):
-                names[key] = repo.t(t)
+    if on_end is not None:
+        syms = index.get("symbols") or {}
+
+        def ctor_methods(key: str) -> list[str] | None:
+            s = syms.get(key)
+            ms = repo.ctor_methods(f"{s['m']}:{s['n']}") if s and s.get("m") else None
+            return None if ms is None else [_out_target(repo.file_of, "s:" + k)[2:] for k in ms]
+        on_end(ctor_methods)
     # 「同名的 .xxx」只对罕见的名字有用：仓库里叫这个名字的成员超过 3 个（get、shape、to、append……），
     # 按名字列出来的一大半都不是它，还占掉 xref.json 的三分之一。这些就不记了
     same: dict[str, int] = {}
@@ -1461,7 +1480,7 @@ def _build(root: Path, index: dict, on_file=None) -> dict:
         v.sort()
     return {"targets": [_out_target(repo.file_of, t) for t in repo.targets],
             "where": [repo.where(t) for t in repo.targets], "files": files,
-            "fp": fp, "attrs": attrs, "names": names}
+            "fp": fp, "attrs": attrs}
 
 
 def _out_target(file_of: dict, t: str) -> str:

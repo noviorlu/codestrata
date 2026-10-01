@@ -127,9 +127,21 @@ window.CS = window.CS || {};
     _render: function (fv, line, at) {
       syms = fv.symbols || []; curFile = fv.file; curLine = line || 1; X = fv.xref || null;
       var hl = fv.lines || [], rows = [];   // 服务端（Pygments）已按行高亮好
-      for (var i = 0; i < hl.length; i++)
+      // 叠着 run 时：代码里看不出会调到谁、这次运行却调到了的那一行，行尾标出调到了谁，点了跳过去
+      // 时间段的每行次数是按整个 run 的调用行比例摊的（seq.window_counts），标成约数
+      var RT = fv.runtime || {}, nRT = 0, ap = CS.graph && CS.graph.hot && CS.graph.hot.lines_approx ? '≈' : '';
+      for (var i = 0; i < hl.length; i++) {
+        var rt = RT[i + 1];
+        if (rt) nRT++;
         rows.push('<div class="ln" id="vL' + (i + 1) + '"><span class="no">' + (i + 1)
-          + '</span><span class="tx' + (hl[i] ? '' : ' e') + '">' + (hl[i] || ' ') + '</span></div>');   // 空行 .e：查找时当空行
+          + '</span><span class="tx' + (hl[i] ? '' : ' e') + '">' + (hl[i] || ' ') + '</span>'   // 空行 .e：查找时当空行
+          + (rt ? '<span class="rtj">' + rt.slice(0, 3).map(function (r) {
+                var q = r.callee.slice(r.callee.indexOf('#') + 1);
+                return '<button data-rf="' + esc(r.def.f) + '" data-rl="' + r.def.l + '" title="这一行代码里看不出会调到谁；这次运行调到了 '
+                  + esc(r.callee) + '，' + ap + r.n + ' 次。点击跳过去">→ ' + esc(q) + ' ×' + ap + r.n + '</button>';
+              }).join('') + (rt.length > 3 ? '<span>还有 ' + (rt.length - 3) + ' 个</span>' : '') + '</span>' : '')
+          + '</div>');
+      }
       var hot = CS.graph && CS.graph.hot;
       var outline = syms.map(function (s, k) {
         var h = (hot && hot.symbols && hot.symbols[s.key]) || 0;
@@ -149,6 +161,8 @@ window.CS = window.CS || {};
         + (hist.length ? '<button class="vbtn" data-back title="回到跳过来之前的位置">← 返回</button>' : '')
         + (X && X.stale ? '<span class="vhint stale" title="xref 是 scan 时的快照，文件改过之后行列号对不上，链接会指错地方">文件在 scan 之后改过：重新 scan 才能 Ctrl+点击</span>'
            : X && X.toks.length ? '<span class="vhint" title="Ctrl（Mac 上 ⌘）+ 点击名字跳到定义；点定义列出所有引用">Ctrl+点击：定义 / 引用</span>' : '')
+        + (nRT ? '<span class="vhint rt" title="叠着的 run 里，这些行的调用代码里看不出会调到谁（多态、注册表、回调、框架转了一道）；行尾是这次运行实际调到的，点击跳过去">'
+             + nRT + ' 行代码里看不出调到谁：行尾 → 是这次跑到的</span>' : '')
         + '<button class="vbtn" data-find title="在这个文件里查找（Ctrl+F）">查找</button>'
         + '<button class="vbtn" data-copy="' + esc(fv.file) + '">复制路径</button>'
         + '<button class="vbtn" data-edit="1">编辑器打开</button>'
@@ -175,6 +189,9 @@ window.CS = window.CS || {};
       };
       var ed = root.querySelector('[data-edit]');
       if (ed) ed.onclick = function () { CS.ds.openEditor(fv.file, cur); };
+      [].forEach.call(root.querySelectorAll('.rtj [data-rf]'), function (b) {
+        b.onclick = function (ev) { ev.stopPropagation(); self.here(b); self.jump(b.dataset.rf, +b.dataset.rl); };
+      });
       codeEl.onclick = function (ev) {                 // 点某行 → 记下来，复制/跳编辑器都用它
         if (CS.xref.click(ev)) return;                // Ctrl+点击名字：跳定义 / 列引用
         var ln = ev.target.closest && ev.target.closest('.ln'); if (!ln) return;

@@ -17,6 +17,12 @@ export default async function (t) {
   const badges = await page.ev(`[...document.querySelectorAll('#g .tord .tn')].map(g => g.textContent)`);
   ok(badges.length === 3 && badges.some(b => b.includes('↻')), '边上有序号，反复调用的 truth→callee 带 ↻ ' + JSON.stringify(badges));
   ok(await page.ev(`new Set(CS.graph.edges.filter(E => E._tc).map(E => E._tc)).size`) === 3, '三种颜色（早 → 晚）');
+  const hidden = await page.ev(`(() => {                 // 序号牌不盖住边上的次数
+    const labs = CS.graph.edges.filter(E => E.lab && E._show).map(E => E.lab.getBBox());
+    return [...document.querySelectorAll('#g .tord .tn rect')].map(r => r.getBBox()).filter(b => labs.some(l =>
+      b.x < l.x + l.width && b.x + b.width > l.x && b.y < l.y + l.height && b.y + b.height > l.y)).length;
+  })()`);
+  ok(hidden === 0, '序号牌没有盖住次数标签（' + hidden + ' 个盖住了）');
   ok((await page.ev(`(document.querySelector('.tmleg') || {}).textContent || ''`)).includes('早'), '有图例');
 
   // 换阶段：按 loop 的时间窗重排（exec 那条不在）

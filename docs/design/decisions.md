@@ -57,7 +57,7 @@
 - 在哪：`layout.py` 的 `layers`、`MAX_LANES`；`scan.py` 模块说明末段；架构高度在 `cut.view` 里算。
 
 ### 叠了 run 时，分层按这次的调用加权
-- 决定：静态边权重 `1 + log1p(import 语句数)`；叠了 run 时，切面上节点间的调用另作为 runtime 边加进来，权重
+- 决定：import 边（图上不画，见「图上只有调用边」）当排版的静态权重 `1 + log1p(import 语句数)`；叠了 run 时，切面上节点间的调用另作为 runtime 边加进来，权重
   `RUNTIME_WEIGHT`（10）× `(1 + log1p(次数))`。
 - 为什么：基类回调子类、按注册表分派这类和 import 方向相反的调用，按静态边分层会往上指。实测 runtime 边往上指的份额：
   vllm-omni 展开 entrypoints 从 23% 到 0%，nerfstudio 16% 到 6%，pip 47% 到 12%。log 是为了几百条 import 的一对不压过几十对只有一条的。
@@ -72,7 +72,8 @@
   一大半都不是它，还会占掉 xref.json 的三分之一。
 - 放弃的方案：没有类型推断的「按名字全列」。
 - 在哪：`xref.py`（模块说明、`_Repo.class_member` / `unsure`、`ATTRS_MAX_SAME`）；`ui/source.py` 的 `_stale`、`_changed`、`xref_for`。
-  这属于冻结区（见「工程」第一条），只修 bug。
+  这属于冻结区（见「工程」第一条），只修 bug。graph 的 scan 记录和 xref 同一遍、同一套名字解析，但定不下被调方的调用处另存在
+  graph.json 里（给 scan-trace alignment 对行用），跳转不用它，这一条不变。
 
 ---
 
@@ -81,42 +82,46 @@
 ### import 触发的模块执行、类体执行都不是调用
 - 决定：第 0 行（`<module>` 帧，含 3.12 泛型的定义帧）和落在类符号那一行的帧（class 语句执行时跑一次的类体）算「定义时的执行」，
   （哪些符号有这种执行由扫描端标 `x: ["defexec"]`，Python 给类标；`defining` 只认标记，不认语言）
-  不计入符号、单元、文件的次数，作为被调方时单独记进 `edge_import_exec`，不把边染成橙色；「时间顺序」用同一个判断。
+  不计入符号、单元、文件的次数，作为被调方时不算调用，不把边染成橙色；「时间顺序」用同一个判断。
 - 为什么：否则每条 import 边都会因为「导入过」被染成橙色，只被 import、一个函数都没调过的包也显示成「跑到了」。
   类体那一半起因是 httpx 的试用：sync 阶段惰性 import 了 httpcore，一堆 Async 类的类体被算成 sync 调了 async 的类。按行号认，已经录好的老 run 加载时一样分得出来。
 - 放弃的方案：把 `<module>` 帧当普通调用。
 - 在哪：`align.py` 的 `defining`、`to_package_graph`（`module_exec`、`class_frames`）；`seq.py` 的 `_Map.of`。测试 `test_class_body_is_definition_not_call`。
 
-### 每条边都是「静态引用 × runtime 调用」的交叉
-- 决定：边详情分成 confirmed（引用了也调到了）、static（引用了、这次没走到）、dynamic（调到了、代码里没有静态引用）、
-  import_only（只 import，原因再分 unused / reexport / type / sideeffect / intentional）。静态上引用的是类、runtime 调到的是方法时，
-  方法收到类上再对齐。排序 confirmed → dynamic → static。
-- 为什么：「import 了不等于用了，用了不等于这次跑到了」（旧 README）；真调用和静态盲区最值得先看。副作用 import 有 runtime 数据时
-  还能标出对方模块的顶层这次执行了没有。
-- 放弃的方案：只画 import 边、或只画 runtime 边。理由未另外记录。
-- 在哪：`align.py` 的 `top`、`pair_items`、`merged_status`；`ui/edge.py` 的 `_pair_detail`、`edge_detail`；`scan.py` 记 `edge_uses` / `edge_dead`（第二遍扫名字的读取）。
-
-### 动态分派按被调符号判，而且按当前切面算
-- 决定：被调符号（方法收到类）不在这条切面边的静态引用里就算动态分派；一条静态边上跑到的调用全是动态分派时，也画成橙虚线（`dynOnlyEdges`）。
-  次数在切面上汇总后再判，不在单元对上判完再加。
-- 为什么：两端之间碰巧有别的 import（比如只引用了一个常量）时，收起的边按「有静态边」画成实线，展开之后实线变成没跑到的灰边加一条虚线，
-  看上去箭头「消失」了（vllm-omni 的 worker → models）。同一个符号可能一对单元里静态引用、另一对里 runtime 调到，合成一条边后算确认。
-- 放弃的方案：按单元对算完再相加；有静态边就画实线。
-- 在哪：`align.py` 的 `hot_on_cut`、`dyn_only`；`ui/graphview.py` 的 `graph_payload`；前端 `web/graph.js`。
+### 图上只有调用边，scan 和 trace 按调用行对上
+- 决定：图上的边只有调用（函数 → 函数，含构造 `C(…)`、装饰器 `@x`、用 property、语法触发的特殊方法），每条边记 scan 看到的和
+  trace 看到的。只 import、只读常量、类当参数、类型标注、`isinstance` 不成边；import 关系只当排版的权重。trace 说 F 在第 L 行调了 G，
+  看 scan 在 F 的第 L 行记的调用：定下的被调方就是 G，或者写的是构造 `C(…)`、跑的是它沿继承找到的 `__init__` / `__new__` /
+  `__post_init__`，两边都有；其余是只有 trace（代码里看不出会调到它），记下 scan 在那一行看到的是什么——基类的方法（子类覆盖的不算对上）、
+  只知道名字、这一行别的调用（仓库里的、仓库外的、定不下的一起列出）、什么都没有。构造的调用算在 F→C 上（被调方是类），
+  和 scan 的那条记录对上，一次构造只算一次；构造时跑的代码不在仓库里的（dataclass 生成的 `__init__`、仓库外基类的）trace 看不到，
+  边详情里单独说明，不说「没录到」。没有调用行的老 run 在整个函数里比，调用处按名字猜。画法：只有 scan 的灰实线；有 trace 的橙色、
+  粗细不变、边上标次数，全都是只有 trace 的画虚线（收起后的一条边底下有一部分是的画实线，写明其中几次）。
+- 为什么：graph 是核心模型（ARCHITECTURE 开头）：scan 和 trace 都落在同一张函数级的图上，scan-trace alignment 找两边的差别。
+  早先在切面上比（被调的方法收到类上，在这条切面边的静态引用里就算「确认」）：这个文件 import 过那个类就算，调用落不到函数、更落不到行；
+  按名字在调用方里找调用处，同一个函数里同名的调用好几处时分不出是哪一处（vllm-omni 的 `restore_queues` 有两处，`compute_logits` 四处），
+  经框架调到的（`nn.Module.__call__` → `forward`、`map`）根本找不到。按行对之后这些都是实测的。子类覆盖算差别：
+  多态正是要照亮的地方（基类的调用跑到了哪个子类）。只 import 的边、「仅类型」的边、死 import 的原因都不画了：它们不承载调用。
+  构造挪到 F→C：trace 记的是 F→`Base.__init__`，基类在别的文件里时不挪就会多出一条「代码里没写」的边，而代码里写的那条 F→C 反倒是灰的；
+  `__new__` 和 `__init__` 都在仓库里的类，一次构造 trace 记两次。
+- 放弃的方案：每条边是「静态引用 × runtime 调用」的交叉（confirmed / static / dynamic / import_only，2026-09-30 之前）；
+  三种边的分类名（「确认调用」「只有静态」「运行调用」）；按名字猜调用处（只留给没有调用行的老 run）；收起的边底下有一条只有 trace 就画虚线。
+- 在哪：`graph.py`（scan 记录）；`align.py` 的 `to_package_graph`、`classify`、`judge`、`hot_on_cut`、`scan_edges_on_cut`；
+  `ui/graphview.py`、`ui/edge.py`；`web/graph.js`、`web/panel.js`。测试 `test_trace_only_consistent_across_cuts`、`test_call_lines_for_syntax_calls`、
+  `test_constructor_calls_counted_once`、`test_trace_only_notes`、`test_ctor_methods_and_property_setters`。
 
 ### `if TYPE_CHECKING:` 里的 import 不是依赖
-- 决定：这种 import 记进 `type_edges`，不进 `edges`、不算架构高度和分层；标注里引用到也不算「用到」。切面上两端之间没有运行时 import 的，
-  画成「仅类型」，默认不显示。xref 照样解析这些名字（标注里能 Ctrl+点击）。
+- 决定：这种 import 不进 `edges`，不算架构高度和分层。类型标注不是调用，图上也没有它。xref 照样解析这些名字（标注里能 Ctrl+点击）。
 - 为什么：运行时不执行。早先它和普通 import 一样算边，`from __future__ import annotations` 下标注里的名字又被算成「用到了 1 个符号」，
   图上凭空多一条实线回边、高度也被带偏。
 - 放弃的方案：和普通 import 一样算边。
-- 在哪：`scan.py`（`typed` / `type_edges`）；`ui/graphview.py` 的 `graph_payload`（`typeOnlyEdges`）、`ui/edge.py` 的 `_pair_detail`（`type_edge`）；`web/graph.js`。
+- 在哪：`scan.py`（`typeonly`）。测试 `test_type_checking_imports_are_not_dependencies`。
 
 ### 调用方是栈上最近的仓库帧；case 自己的代码例外
 - 决定：标准库、site-packages 等仓库外的帧不入栈，A → 框架 → B 记成 A → B。入口脚本同一层目录（执行目录在仓库外时还有
   `CODESTRATA_CASE_DIRS`）里直接放着的 `.py` 算 case 的代码：只在栈上当调用方，键记成 `<外部代码>/文件名:行`，不计数、不上图。
 - 为什么：只入栈仓库帧才能在大框架上保持低开销（仓库外的代码第一次命中就 DISABLE）。case 例外的起因：case 里定义、被仓库回调的函数
-  （Flask 的视图）再调仓库函数时，调用方会落到最近的仓库帧上，画出 `dispatch_request → jsonify` 这种并不存在的动态分派边。
+  （Flask 的视图）再调仓库函数时，调用方会落到最近的仓库帧上，画出 `dispatch_request → jsonify` 这种并不存在的边。
   代价（已知问题）：穿过框架事件循环的调用显示成直接调用。
 - 放弃的方案：栈上只有仓库帧。
 - 在哪：`trace/hook.py` 的 `_case_rel`、`_rel`、`_enter`。测试 `test_callbacks_from_case_code`、`test_case_code_detection`。
@@ -390,10 +395,12 @@
 
 ### 读代码的功能冻结，只修 bug
 - 决定：代码窗口、Ctrl+点击跳转、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。
-  核心（边上的静态 × runtime、录制、叠加、时间轴）继续做深。
+  核心（graph：scan × trace、录制、叠加、时间轴）继续做深。
+  例外（2026-09-30）：xref 的名字解析和 graph 的 scan 记录同一遍产出；代码窗口在「代码里看不出调到谁」的那一行行尾标出这次运行调到了谁、
+  点了跳过去——这是 scan-trace alignment 的结果，属于核心。
 - 为什么：定位是「仓库的运行路径工具」，真正别人没有的是运行时叠加；跳转定义这类事 pyright / jedi 和用户手边的编辑器做得更好，自己再造一个是往「浏览器里的 IDE」横向扩张。
 - 放弃的方案：继续把 codestrata 做成通用的读代码工具。
-- 在哪：`web/viewer.js`、`web/findbar.js`、`web/search.js`、`web/hl.js`、`xref.py`、`app.py`。
+- 在哪：`web/viewer.js`、`web/findbar.js`、`web/search.js`、`web/hl.js`、`xref.py`、`app.py`；例外在 `ui/source.py` 的 `runtime_lines`、`web/viewer.js` 的 `.rtj`。
 
 ### 不做模块讲解层，重心是运行路径怎么走
 - 决定：不提供「给每个模块写讲解」的功能（原来的解读层：tasks / pack / note / check、`notes/` 目录、页面右栏的解读和节点上的徽标都去掉）。

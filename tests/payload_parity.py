@@ -4,7 +4,7 @@
 
 把 <旧提交> 的 codestrata 导出到临时目录，和现在工作区里的代码（或 --new 给的另一个提交）各跑一遍，对同一份索引和 run 算：
   - 几个切面（默认、全部收起、展开两层以内的目录）上的图：不叠 run，和叠每个 RUN；
-  - 这些图上每条边（含只在 runtime 出现的、仅类型的）的边详情（展开的切面上边太多时只算跑到的）；
+  - 这些图上每条边（含只在 runtime 出现的、老代码里仅类型的）的边详情（展开的切面上边太多时只算跑到的）；
   - 每个 RUN（录了时序事件的）在默认切面上的「时间顺序」。
 两边的结果按 JSON 逐项比，列出前几处不一样的地方。RUN 的写法同 serve --hot（id、case 名、@阶段、@t=起-止）。
 两边要认得同一个索引格式（新代码改了格式就先用旧代码……这个工具就不适用了）。
@@ -41,7 +41,7 @@ for ref in [None] + refs:
     for name, open_ in cuts.items():
         g = G.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=open_)
         pairs = sorted({(e[0], e[1]) for e in g["graph"]["edges"]}
-                       | {(e[0], e[1]) for e in g["runtimeOnlyEdges"] + g["typeOnlyEdges"]})
+                       | {(e[0], e[1]) for e in g["runtimeOnlyEdges"] + g.get("typeOnlyEdges", [])})   # 老的有「仅类型」的边
         if name == "deep" and len(pairs) > 400:
             # 展开得深的大仓库上边太多：只算这次跑到的边；没跑到的单元对已经在另外两种切面的边详情里合进去了
             hot_edges = set((g.get("hot") or {}).get("edges") or {})

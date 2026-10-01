@@ -6,6 +6,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
+from .. import align as _align
 from .. import highlight as _hl
 from .. import xref as _xref
 
@@ -36,9 +37,9 @@ def file_outline(repo: Path, idx: dict, rel: str) -> dict | None:
     return {"file": rel, "symbols": fv["symbols"] if fv else [], "outline_kind": "lexer"}
 
 
-def file_view(repo: Path, idx: dict, rel: str) -> dict | None:
+def file_view(repo: Path, idx: dict, rel: str, hot: dict | None = None) -> dict | None:
     """整个文件（逐行高亮）+ 符号大纲。Python 的大纲来自 ast（精确），
-    C++/CUDA 的来自词法 token（启发式）。"""
+    C++/CUDA 的来自词法 token（启发式）。叠着一个 run（hot）时还有 runtime：见 runtime_lines"""
     pkg = known_file(idx, rel)
     if pkg is None:
         return None
@@ -56,7 +57,41 @@ def file_view(repo: Path, idx: dict, rel: str) -> dict | None:
         kind = "lexer"
     return {"file": rel, "pkg": pkg, "lang": h["lang"], "lang_label": h["label"],
             "n_lines": len(h["lines"]), "lines": h["lines"],
-            "symbols": syms, "outline_kind": kind, "xref": xref_for(repo, rel)}
+            "symbols": syms, "outline_kind": kind, "xref": xref_for(repo, rel),
+            **({"runtime": runtime_lines(idx, rel, hot)} if hot else {})}
+
+
+def node_def(idx: dict, key: str) -> dict:
+    """graph 节点的定义在哪 {f, l, k}：符号是它的 def 行；<文件>#<module>、<文件>#<改过、对不上> 是文件头；
+    <外层>.<L行> 是那一行"""
+    syms = idx.get("symbols") or {}
+    s = syms.get(key)
+    if s:
+        return {"f": s["f"], "l": s["l"], "k": s["k"]}
+    base, _, rest = key.partition(".<L")
+    s = syms.get(base)
+    f = s["f"] if s else base.partition("#")[0]
+    return {"f": f, "l": int(rest.rstrip(">")) if rest else (s["l"] if s else 1), "k": "anon" if rest else "module"}
+
+
+def runtime_lines(idx: dict, rel: str, hot: dict) -> dict:
+    """这个文件里「只有 trace」的调用处：{行: [{callee, def: {f, l}, n}]}——代码里看不出会调到谁的那一行，
+    这次运行调到了谁、几次；代码窗口在这一行给出跳到它的链接。只有记了调用行的 run 才有（老 run 是空的）；
+    不知道是哪一行的（录制之后改过的文件）、被调方对不上的不标"""
+    out: dict = {}
+    for pk, x in (hot.get("calls") or {}).items():
+        if not x.get("only") or x["lines"] is None:
+            continue
+        caller, _, callee = pk.partition("|")
+        if node_def(idx, _align.base_node(caller))["f"] != rel or callee.endswith("#" + _align.UNMATCHED):
+            continue
+        d = node_def(idx, callee)
+        for ln in x["lines"]:
+            if ln["status"] == "trace" and ln["l"]:
+                out.setdefault(ln["l"], []).append({"callee": callee, "def": {"f": d["f"], "l": d["l"]}, "n": ln["n"]})
+    for v in out.values():
+        v.sort(key=lambda r: -r["n"])
+    return out
 
 
 def symbol_source(repo: Path, idx: dict, key: str, lines: int = 40) -> dict | None:
@@ -150,16 +185,16 @@ def xref_for(repo: Path, rel: str, lo: int | None = None, hi: int | None = None)
 
 
 @lru_cache(maxsize=256)
-def _lines_of(path: str, mtime_ns: int) -> tuple:
+def lines_of(path: str, mtime_ns: int) -> tuple:
     try:
         return tuple(Path(path).read_text(encoding="utf-8", errors="replace").split("\n"))
     except OSError:
         return ()
 
 
-def _line_text(repo: Path, rel: str, line: int) -> str:
+def line_text(repo: Path, rel: str, line: int) -> str:
     try:
-        ls = _lines_of(str(repo / rel), (repo / rel).stat().st_mtime_ns)   # 按修改时间失效
+        ls = lines_of(str(repo / rel), (repo / rel).stat().st_mtime_ns)   # 按修改时间失效
     except OSError:
         return ""
     return ls[line - 1] if 0 < line <= len(ls) else ""
@@ -205,7 +240,7 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
 
     out = []
     for r in rows[:limit]:
-        r["text"] = _line_text(repo, r["f"], r["l"]).strip()[:200]
+        r["text"] = line_text(repo, r["f"], r["l"]).strip()[:200]
         if stale(r["f"]):
             r["stale"] = True
         out.append(r)
@@ -214,7 +249,7 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
     res = {"target": target, "where": wh, "total": sum(counts.values()), "lines": len(rows),
            "counts": counts, "refs": out,
            # 定义本身也放进列表（最上面一条）：跳到某个引用之后，点它就回到定义
-           "def": ({"f": wh[0], "l": wh[1], "text": _line_text(repo, wh[0], wh[1]).strip()[:200],
+           "def": ({"f": wh[0], "l": wh[1], "text": line_text(repo, wh[0], wh[1]).strip()[:200],
                     **({"stale": True} if stale(wh[0]) else {})} if wh else None),
            "calls": ((hot or {}).get("symbols") or {}).get(key, 0) if kind == "s" else 0}
     qual = key.partition("#")[2]
@@ -233,7 +268,7 @@ def refs(repo: Path, target: str, hot: dict | None = None, limit: int = 500) -> 
                 m["n"] += 1
         mrows = sorted(mrows.values(), key=lambda r: (-r["k"], r["f"], r["l"]))
         for r in mrows[:limit]:
-            r["text"] = _line_text(repo, r["f"], r["l"]).strip()[:200]
+            r["text"] = line_text(repo, r["f"], r["l"]).strip()[:200]
             if stale(r["f"]):
                 r["stale"] = True
         res["maybe"] = {"name": name, "same": same, "total": len(maybe), "lines": len(mrows),

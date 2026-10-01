@@ -5,11 +5,14 @@
 测试数据是仓库自带的假服务（tests/trace_cases/fake_repo）当场录的两次 run，不依赖开发机上的任何录制：
   A = truth：--events，--phase 切出 loop / forks 两个阶段（加上开头的 start），跨模块的调用多，时间顺序有得排
   B = offline：另一个 run，给「换 run」用
-另有一个只 scan 的小仓库（_CUT：嵌套目录、一个又有子目录又有十几个文件的目录），给展开 / 收起、搜索定位用（base2）。
+另有一个只 scan 的小仓库（_CUT：嵌套目录、一个又有子目录又有十几个文件的目录），给展开 / 收起、搜索定位用（base2）；
+再一个录过的小仓库（_DYN：runner 经 self.model.forward 调到按字符串加载的类，代码里看不出），给虚线边用（base3）；
+它录了两次，第二次去掉调用行当老 run。
 serve 用随机端口，测完关掉；Chrome 由 tests/web/cdp.mjs 自己起、自己关。
 """
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -52,6 +55,22 @@ _CUT = {"cx/__init__.py": "", "cx/app.py": "from cx.sansio import app as a\nfrom
         **{f"cx/big/f{i:02d}.py": f"from cx.ops import util\n\n\ndef f{i:02d}():\n    return util.u()\n" for i in range(14)}}
 
 
+# runner 经 self.model.forward 调到的 Net 是按字符串加载的：这条调用代码里看不出（图上是橙虚线）
+_DYN = {
+    "dyn/__init__.py": "",
+    "dyn/models/__init__.py": "",
+    "dyn/models/net.py": ("class Net:\n    def __init__(self):\n        self.k = 2\n\n"
+                          "    def forward(self, x):\n        return x * self.k\n\n\ndef helper():\n    return 0\n"),
+    "dyn/runner.py": ("from dyn.models import net\n\n\n"
+                      "class Runner:\n    def __init__(self, model):\n        self.model = model\n\n"
+                      "    def step(self):\n        return self.model.forward(1)\n\n"
+                      "    def warm(self):\n        return net.helper()\n"),
+    "dyn/main.py": ("import importlib\n\nfrom dyn.runner import Runner\n\n\n"
+                    "def build():\n    return getattr(importlib.import_module('dyn.models.net'), 'Net')()\n\n\n"
+                    "if __name__ == '__main__':\n    r = Runner(build())\n    for _ in range(3):\n        r.step()\n"),
+}
+
+
 def _serve(repo) -> tuple:
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
     srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
@@ -81,9 +100,24 @@ def fixture() -> dict:
         (cut / rel).write_text(src)
     cs("scan", cut)
     srv2, base2 = _serve(cut)
+    dyn = tmpdir("cs-browser-dyn-") / "dynrepo"
+    for rel, src in _DYN.items():
+        (dyn / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dyn / rel).write_text(src)
+    cs("scan", dyn)
+    cs("trace", dyn, "--case", "dyn", "--", PY, "-m", "dyn.main")
+    # 同样跑一次、去掉调用行，当 2026-09-30 之前录的老 run
+    cs("trace", dyn, "--case", "dynold", "--", PY, "-m", "dyn.main")
+    cp = dyn / ".codestrata" / "runs" / _run_id(dyn, "dynold") / "counts.json.gz"
+    c = json.loads(gzip.decompress(cp.read_bytes()))
+    for ph in c["phases"].values():
+        ph.pop("func_lines", None)
+    cp.write_bytes(gzip.compress(json.dumps(c).encode()))
+    srv3, base3 = _serve(dyn)
+    _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
                a=_run_id(repo, "truth"), b=_run_id(repo, "offline"))
-    fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2")}
+    fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))
     _FX["path"] = str(path)
@@ -132,11 +166,15 @@ def test_cut():
     _spec("cut")
 
 
+def test_calls():
+    _spec("calls")
+
+
 if __name__ == "__main__":
     try:
         rc = run_tests(globals(), sys.argv[1:])
     finally:
-        for k in ("srv", "srv2"):
+        for k in ("srv", "srv2", "srv3"):
             if _FX.get(k):
                 _FX[k].kill()
                 _FX[k].wait()

@@ -1,4 +1,4 @@
-/* 详情面板：选中的节点（依赖、文件树、符号、源码片段）或箭头（这条依赖上实际调了哪些函数、次数、调用处）。 */
+/* 详情面板：选中的节点（调用谁 / 被谁调用、文件树、符号、源码片段）或箭头（这条边上哪个函数调了哪个、次数、写在哪一行）。 */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
@@ -28,6 +28,7 @@ window.CS = window.CS || {};
     if (sk) {
       var parts = sk[0].split('/'), stem = parts.pop().replace(/\.[^.]*$/, '');
       if (stem === '__init__' && parts.length) stem = parts.pop();
+      if (sk[1].indexOf('<module>') === 0) return stem + ' 顶层' + sk[1].slice(8);   // 模块顶层的代码（和它里面的 lambda）
       return stem + ':' + sk[1];
     }
     var i = k.lastIndexOf(':'); if (i < 0) return k;
@@ -47,93 +48,88 @@ window.CS = window.CS || {};
   }
   function fname(f) { return f.split('/').pop(); }
 
-  /* 调用方里没找到调它的那一行（sites 是空的）：为什么。payload 的 how 是怎么找的、form 是那种写法 */
-  function via(c) {
-    var f = esc(c.form || c.callee + '(…)');
-    if (c.how === 'implicit') return f + ' 隐式调到它：看不出是调用方里的哪一行';
-    // 按语法找也只认得出写在明面上的记号：说不准是哪种，两种可能都列出来
-    if (c.how === 'syntax') return '调用方里没找到 ' + f + ' 这种写法：可能是仓库外的代码触发的（contextlib、sorted 之类），'
-      + '也可能是没有记号的隐式触发（解包、当参数传进内置函数、容器里比较之类）';
-    return '没直接写 ' + f + '：' + ({
-      attr: '这个属性是经由 getattr、代理对象或仓库外的代码取的'
-    }[c.how] || '是经由变量或别名（cls(…)）、__call__、装饰器、回调或仓库外的代码调到的');
+  /* 和 scan 怎么对上的说明（align.judge / classify 的 note）：只有 trace 的为什么、构造跑的是哪个方法 */
+  function nameList(ns) {
+    var named = ns.filter(function (n) { return n; });
+    if (!named.length) return '';
+    return named.join('、') + (named.length < ns.length ? '（还有调一个表达式的结果的）' : '');
   }
+  function noteText(nt) {
+    if (!nt) return '';
+    switch (nt.k) {
+      case 'ctor': return '代码里写的是构造，跑的是 ' + nt.via.map(symLabel).join('、') + '（沿继承找到的）';
+      case 'override': return '代码里写的是 ' + symLabel(nt.w) + '，跑的是这个（子类覆盖了它，或者同名的别的方法）';
+      case 'name': return '代码里只知道名字 ' + nt.names.join('、') + '，定不下调到谁';
+      case 'line':
+        var c = nt.c || [], ext = nt.ext || [], ns = nt.names || [];
+        var kinds = (c.length ? 1 : 0) + (ext.length ? 1 : 0) + (ns.length ? 1 : 0);
+        if (kinds === 1 && c.length) return '这一行代码里调的是 ' + c.map(symLabel).join('、') + '，经它转了一道才到这里';
+        if (kinds === 1 && ext.length) return '这一行调的是仓库外的 ' + (nameList(ext) || '函数') + '，经它回调到这里';
+        if (kinds === 1) return nameList(ns) ? '这一行只知道名字 ' + nameList(ns) + '，定不下调到谁'
+                                             : '这一行调的是一个表达式的结果（f()()、fs[i]() 这类），定不下调到谁';
+        return '这一行 scan 看到的调用：' + [c.length ? '仓库里的 ' + c.map(symLabel).join('、') : '',
+          ext.length ? '仓库外的 ' + (nameList(ext) || '函数') : '',
+          ns.length ? '定不下的 ' + (nameList(ns) || '表达式的结果') : ''].filter(function (x) { return x; }).join('；')
+          + '——经其中一个转了一道才到这里';
+      case 'none': return '这一行 scan 没看到调用（取属性、框架或仓库外的代码触发的）';
+      case 'nomatch': return '调用方里没有同名的调用';
+    }
+    return '';
+  }
+  var SCAN_KIND = ['调用', '构造', '装饰器', 'property', '语法触发', 'getattr', '仓库外'];
 
-  /* 边详情的主体：每一对「谁调了谁」一张卡片——被调的函数、from（调用方里调它的那一行）、
-     to（被调函数的签名）。按次数排。 */
+  /* 边详情的主体：每一对「谁调了谁」一张卡片——被调的函数、from（调用写在调用方的哪一行）、
+     to（被调函数的签名）。只有 trace 的（代码里看不出会调到它）在前，再按次数排 */
   function callCards(E) {
-    var pairs = [], by = {};
-    E.items.forEach(function (x) {
-      (x.runtime || []).forEach(function (r) {
-        r.callers.forEach(function (c) {
-          var k = r.sym + '|' + c.sym, P = by[k];
-          if (!P) { P = by[k] = { r: r, c: c, n: 0, dyn: x.status === 'dynamic' }; pairs.push(P); }
-          P.n += c.n;
-          if (!P.c.sites && c.sites) P.c = c;
-        });
-      });
-    });
-    pairs.sort(function (p, q) { return q.n - p.n; });
-    var MAX = 40;
-    return { n: pairs.length, html: pairs.slice(0, MAX).map(function (P) {
-      var r = P.r, c = P.c, q = r.sym.slice(r.sym.indexOf('#') + 1), parts = q.split('.');
-      var site = c.sites && c.sites[0];
-      var from = site ? jump(site, fname(site.f) + ':' + site.l) : jump(c.def, fname(c.def ? c.def.f : '') + ':' + (c.def ? c.def.l : ''));
-      var more = site && c.sites.length > 1 ? c.sites.slice(1).map(function (t) { return jump(t, ':' + t.l); }).join('') : '';
-      var cnt = '<span class="rt">×' + P.n + '</span>';
-      return '<div class="call' + (P.dyn ? ' dyn' : '') + '">'
-        + '<div class="ch">' + cnt + '<b>' + esc(parts.pop()) + '</b>'
-        + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '')
-        + (P.dyn ? '<span class="dtag" title="动态分派：调用方手里的对象要到运行时才知道是哪个类（self.model、注册表、getattr），'
-            + '代码里没有 import 或引用这个类">动态</span>' : '') + '</div>'
+    return E.calls.map(function (P) {
+      var q = P.callee.slice(P.callee.indexOf('#') + 1), parts = q.split('.');
+      var name = parts.pop(), only = P.status === 'trace', mixed = P.status === 'mixed';
+      var lines = P.lines || P.guessed || [];
+      var first = lines.filter(function (x) { return x.l; })[0];
+      var from = first ? jump(first, fname(first.f) + ':' + first.l) : jump(P.caller_def, fname(P.caller_def.f) + ':' + P.caller_def.l);
+      var more = lines.filter(function (x) { return x.l && x !== first; }).map(function (x) {
+        return jump(x, ':' + x.l + (x.n ? ' ×' + x.n : '')); }).join('');
+      var notes = {}, unk = 0;
+      (P.lines || []).forEach(function (x) { if (x.note) notes[noteText(x.note)] = 1; if (!x.l) unk += x.n; });
+      if (!P.lines && P.note) notes[noteText(P.note)] = 1;
+      var tag = only ? '<span class="dtag" title="这次跑了，但代码里看不出会调到它：多态、注册表、回调、框架转了一道">代码里看不出</span>'
+              : mixed ? '<span class="dtag" title="有的调用处代码里看得出，有的看不出">其中 ' + P.only + ' 次代码里看不出</span>' : '';
+      return '<div class="call' + (only ? ' dyn' : '') + '">'
+        + '<div class="ch"><span class="rt">×' + P.n + '</span><b>' + esc(name) + '</b>'
+        + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '') + tag + '</div>'
         + '<div class="cs"><span class="lab">from</span>' + from + more
-        + '<span class="who">' + esc(symLabel(c.sym)) + '</span></div>'
-        + (site ? code([site.s]) : code(c.sig) + (c.sites ? '<div class="via">' + via(c) + '</div>' : ''))
-        + '<div class="cs"><span class="lab">to</span>' + jump(r.def, r.def ? fname(r.def.f) + ':' + r.def.l : '（没找到定义）') + '</div>'
-        + code(r.sig)
+        + '<span class="who">' + esc(symLabel(P.caller)) + '</span></div>'
+        + (first && first.s ? code([first.s]) : '')
+        + (P.guessed ? '<div class="via">' + (P.guessed.length ? '这个 run 没记调用行：上面是在调用方里按名字找到的，不一定是这一处'
+                                                               : '这个 run 没记调用行，不知道是哪一行') + '</div>' : '')
+        + (unk ? '<div class="via">其中 ' + unk + ' 次不知道是哪一行（录制之后这个文件改过，调用行挪不过来），按调用方整个函数比</div>' : '')
+        + Object.keys(notes).map(function (t) { return '<div class="via">' + esc(t) + '</div>'; }).join('')
+        + '<div class="cs"><span class="lab">to</span>' + jump(P.def, P.def ? fname(P.def.f) + ':' + P.def.l : '（没找到定义）') + '</div>'
+        + code(P.sig)
+        + (P.wiring ? '<div class="via">仓库里按名字提到 ' + esc(symLabel(P.wiring.cls)) + ' 的地方（注册表、插件表，接线多半在这）'
+             + (P.wiring.same_name > 1 ? '；仓库里有 ' + P.wiring.same_name + ' 个同名类，不一定指它' : '') + '：'
+             + P.wiring.refs.map(function (t) { return jump(t, fname(t.f) + ':' + t.l); }).join(' ') + '</div>' : '')
         + '</div>';
-    }).join('') + (pairs.length > MAX ? '<p class="hint">…还有 ' + (pairs.length - MAX) + ' 对，调用次数更少</p>' : '') };
-  }
-
-  /* 引用了但没跑到（没有 runtime 数据时就是全部静态引用）：from 第一处引用，to 被引用的定义 */
-  function refCards(items) {
-    return items.map(function (x) {
-      var u = x.uses[0];
-      return '<div class="call ref">'
-        + '<div class="ch"><b>' + esc(CS.ids.tail(x.name)) + '</b>'
-        + (x.n_uses > 1 ? '<span class="cls">引用 ' + x.n_uses + ' 处</span>' : '') + '</div>'
-        + (u ? '<div class="cs"><span class="lab">from</span>' + jump(u, fname(u.f) + ':' + u.l) + '</div>' + code(x.use_s ? [x.use_s] : null) : '')
-        + '<div class="cs"><span class="lab">to</span>' + jump(x.def, x.def ? fname(x.def.f) + ':' + x.def.l : '（没找到定义）') + '</div>'
-        + code(x.sig) + '</div>';
     }).join('');
   }
 
-  var WHY = {
-    unused: ['没用到', '导入了但本文件从没引用——死 import，通常可以删。'],
-    reexport: ['再导出', '写在 __init__.py 里，是给包外使用者的公开接口，本包自己不用。'],
-    type: ['仅类型', '只在 TYPE_CHECKING 下导入，给类型标注用，运行时根本不存在。'],
-    sideeffect: ['副作用', '导入即执行：要的是模块顶层代码（注册、打补丁），名字本身不用。'],
-    intentional: ['故意保留', '标了 noqa: F401——作者明确说这个没用到的 import 是有意的。']
-  };
-  function deadSec(E) {
-    var L = E.import_only;
-    if (!L.length) return '';
-    var by = {};
-    L.forEach(function (x) { (by[x.why] = by[x.why] || []).push(x); });
-    var h = '<div class="esec"><h4>只 import、没引用<span class="n">' + L.length + '</span></h4>'
-      + '<p class="why">这些导入不承载任何调用。箭头上<b>不</b>应该算它们——除非它们是为了副作用。</p>';
-    ['sideeffect', 'intentional', 'reexport', 'type', 'unused'].forEach(function (w) {
-      (by[w] || []).forEach(function (x) {
-        h += '<div class="ei import_only"><div class="eh"><span class="whytag ' + w + '">' + WHY[w][0] + '</span>'
-          + '<span style="color:var(--ink)">' + esc(x.n) + '</span>'
-          + jump(x, x.f.split('/').pop() + ':' + x.l)
-          + (w === 'sideeffect' && E.has_runtime
-             ? (x.module_ran ? '<span class="ran y">这次运行里它的顶层代码执行了</span>'
-                             : '<span class="ran n">这次运行没执行到它</span>') : '')
-          + '</div><div class="eb">' + esc(WHY[w][1]) + '</div></div>';
-      });
-    });
-    return h + '</div>';
+  /* 代码里写了、这次没录到的调用（没叠 run 时就是全部）：from 调用那一行，to 被调的定义 */
+  function scanCards(items) {
+    return items.map(function (x) {
+      var q = x.callee.slice(x.callee.indexOf('#') + 1), parts = q.split('.'), u = x.lines[0];
+      return '<div class="call ref">'
+        + '<div class="ch"><b>' + esc(parts.pop()) + '</b>'
+        + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '')
+        + (u && u.k ? '<span class="cls">' + esc(SCAN_KIND[u.k] || '') + '</span>' : '')
+        + (x.n_lines > 1 ? '<span class="cls">' + x.n_lines + ' 处</span>' : '') + '</div>'
+        + (x.unseen ? '<div class="via">构造这个类不跑仓库里的代码（dataclass 生成的 __init__、仓库外基类的），'
+                      + '跑没跑 trace 都看不到</div>' : '')
+        + (u ? '<div class="cs"><span class="lab">from</span>' + jump(u, fname(u.f) + ':' + u.l)
+             + x.lines.slice(1).map(function (t) { return jump(t, ':' + t.l); }).join('')
+             + '<span class="who">' + esc(symLabel(x.caller)) + '</span></div>' + code(u.s ? [u.s] : null) : '')
+        + '<div class="cs"><span class="lab">to</span>' + jump(x.def, x.def ? fname(x.def.f) + ':' + x.def.l : '（没找到定义）') + '</div>'
+        + code(x.sig) + '</div>';
+    }).join('');
   }
 
   CS.panel = {
@@ -148,54 +144,46 @@ window.CS = window.CS || {};
     reset: function () {
       this._detTok++;
       delete det.dataset.pkg;
-      det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是依赖的一层，箭头尽量从上指向下：'
-        + '越上面越靠入口、越下面越是被调用的叶子；节点大小编码文件数。'
-        + '点节点看它依赖谁、里面有什么符号；点箭头看这条依赖上实际调了哪些函数。</p>';
+      det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是一层，箭头尽量从上指向下：'
+        + '越上面越靠入口、越下面越是被调用的叶子；节点大小编码文件数。图上的边只有调用。'
+        + '点节点看它调用谁、里面有什么符号；点箭头看这条边上是哪些函数在调用。</p>';
     },
 
     /* ---- 左：机器事实 ---- */
     showPkg: function (id, symKey) {
       this._detTok++;
       var v = (D.pkgs || {})[id] || {}, x = CS.graph.nb(id);
-      // 静态 import 图里没有、只在 runtime 出现的依赖（按名字加载、注册表、鸭子类型）
-      // 仅类型的（TYPE_CHECKING 里的 import）：图上默认不画，这里照样列出来
-      var dyn = { i: [], o: [] }, typ = { i: [], o: [] };
+      // 代码里没写、这次运行才出现的调用（按名字加载、注册表、回调、self.model 这类）
+      var dyn = { i: [], o: [] };
       CS.graph.edges.forEach(function (E) {
-        if (E.kind !== 'dyn') return;
+        if (E.scan || !E.hits) return;
         if (E.a === id) dyn.o.push(E.b); if (E.b === id) dyn.i.push(E.a);
-      });
-      (CS.graph.typeOnly || []).forEach(function (e) {
-        if (e[0] === id) typ.o.push(e[1]); if (e[1] === id) typ.i.push(e[0]);
       });
       var list = (D.pkgSyms || {})[id] || [];
       var hot = CS.graph.hot, hits = (hot && hot.packages[id]) || 0;
-      function pills(a, l, out, kind) {       // kind：图上没画出来的边（关着的仅类型）是哪种
+      function pills(a, l, out) {
         if (!a.length) return '';
         return '<div class="kv"><span>' + l + '</span>' + a.map(function (i) {
-          var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || { kind: kind }, inf = E.info || {};
-          var tone = E.hits ? ' warm' : '';
-          var tag = E.kind === 'dyn' ? E.hits + ' 次'
-                  : E.kind === 'type' ? '仅类型'
-                  : (inf.uses ? inf.uses + ' 符号' : '只 import')
-                    + (E.dynOnly ? ' · 动态分派 ' + E.hits + ' 次' : '');
+          var s = out ? id : i, t = out ? i : id, E = CS.graph.edgeInfo(s, t) || {};
+          var tag = E.hits ? E.hits + ' 次' + (E.dashed ? ' · 代码里看不出' : E.only ? ' · 其中 ' + E.only + ' 次代码里看不出' : '')
+                           : (E.scan || 0) + ' 处调用';
           return '<span class="dep"><button class="chip" data-go="' + esc(i) + '">' + esc(short(i))
-            + '</button><button class="eb2' + (inf.uses || E.kind === 'dyn' ? '' : ' imp') + tone
-            + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边具体用了什么">' + tag + ' ⇢</button></span>';
+            + '</button><button class="eb2' + (E.hits ? ' warm' : '')
+            + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边上具体是哪些函数在调用">' + tag + ' ⇢</button></span>';
         }).join('') + '</div>';
       }
       det.dataset.pkg = id;
       det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
-        + '<div class="sub">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
-        + '　出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
+        + '<div class="sub" title="按 import 算：(出 − 入) / (出 + 入)，+1 靠入口、−1 是叶子">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
+        + '　import 出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
         + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
         + '<span>函数（含方法）<b>' + (v.funcs || 0) + '</b></span></div>'
         + this._cutRow(id, v)
-        + pills(x.o, '依赖 →', true) + pills(x.i, '← 被依赖', false)
-        + pills(dyn.o, 'runtime 才出现 →', true) + pills(dyn.i, '← runtime 才出现', false)
-        + pills(typ.o, '仅类型 →', true, 'type') + pills(typ.i, '← 仅类型', false, 'type')
+        + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
+        + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false)
         + this._docs(id)
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
@@ -580,38 +568,23 @@ window.CS = window.CS || {};
 
     _renderEdge: function (E) {
       var c = E.counts, rt = E.has_runtime;
-      // 「引用了，这次没跑到」
-      var calls = callCards(E), stat = E.items.filter(function (x) { return x.status === 'static'; });
-      var wired = E.items.filter(function (x) { return x.wiring; });
-      // 两端之间只有 if TYPE_CHECKING: 里的 import：运行时不存在，不是依赖（图上的「仅类型」）
-      var typeOnly = !E.static_edge && E.type_edge;
-      var sub = rt ? 'runtime <b>' + c.calls + '</b> 次'
-                     + ' · ' + calls.n + ' 对调用' + (E.static_edge ? '' : typeOnly ? ' · 只有 TYPE_CHECKING 里的 import' : ' · 没有 import')
-                   : (E.note ? esc(E.note) : stat.length + ' 个被引用的符号 · 没有 runtime 数据');
+      var sub = rt ? 'trace <b>' + c.calls + '</b> 次 · ' + c.pairs + ' 对调用'
+                     + (c.only ? ' · 其中 <b>' + c.only + '</b> 次代码里看不出' : '')
+                   : c.scan_only + ' 对调用 · 没有叠 run（只看代码里写的）';
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'
         + '<div class="sub">' + sub
         + '<span class="dep" style="margin-left:10px"><button class="chip" data-go="' + esc(E.a) + '">' + esc(short(E.a))
         + '</button><button class="chip" data-go="' + esc(E.b) + '" style="border-radius:0 999px 999px 0">' + esc(short(E.b)) + '</button></span></div>';
-      if (typeOnly && !calls.n)
-        h += '<p class="hint">仅类型：只在 if TYPE_CHECKING: 里 import，给类型标注用，运行时不存在，不算依赖。import 语句在下面。</p>';
-      else h += rt ? calls.html || '<p class="hint">这次运行没有跨这条边的调用</p>' : refCards(stat);
-      // 次要的都折叠在下面；仅类型的边要看的就是 import 语句，那一栏直接展开
-      function fold(title, n, body, open) {
-        return n ? '<details class="efold"' + (open ? ' open' : '') + '><summary>' + esc(title) + '<span class="n">' + n + '</span></summary>'
-          + body + '</details>' : '';
+      function more(shown, all) {
+        return all > shown ? '<p class="hint more">只列了前 ' + shown + ' 对，还有 ' + (all - shown) + ' 对（次数 / 调用处更少）</p>' : '';
       }
-      if (rt) h += fold('引用了，这次没跑到', stat.length, refCards(stat));
-      h += fold('按名字登记', wired.length, wired.map(function (x) {
-        return '<div class="call"><div class="ch"><b>' + esc(x.name) + '</b>'
-          + (x.wiring.same_name > 1 ? '<span class="cls">仓库里有 ' + x.wiring.same_name + ' 个同名类</span>' : '') + '</div>'
-          + x.wiring.refs.map(function (t) {
-              return '<div class="cs">' + jump(t, fname(t.f) + ':' + t.l) + '</div>' + code([t.s]); }).join('') + '</div>';
-      }).join(''));
-      h += fold('只 import、没引用', E.import_only.length, deadSec(E));
-      if (E.sites.length)
-        h += fold('全部 import 语句', E.n_sites, E.sites.map(function (x) {
-            return '<div class="cs">' + jump(x, fname(x.f) + ':' + x.l) + '</div>' + code([x.s]); }).join('')
-          + (E.n_sites > E.sites.length ? '<p class="hint">…只列前 ' + E.sites.length + ' 条</p>' : ''), typeOnly && !calls.n);
+      if (E.lines_approx)
+        h += '<p class="hint">时间段的次数来自时序事件，不带调用行：每一行的次数是按整个 run 记的调用行比例摊的</p>';
+      h += rt ? (callCards(E) || '<p class="hint">这次运行没有跨这条边的调用</p>') + more(E.calls.length, c.pairs)
+              : scanCards(E.scan_only) + more(E.scan_only.length, c.scan_only);
+      if (rt && E.scan_only.length)
+        h += '<details class="efold"><summary>代码里写了，这次没录到<span class="n">' + c.scan_only + '</span></summary>'
+          + scanCards(E.scan_only) + more(E.scan_only.length, c.scan_only) + '</details>';
       det.innerHTML = h;
       this._wireDet(E.a);
     }

@@ -37,7 +37,8 @@ window.CS = window.CS || {};
       return j('api/seq/edges?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
     },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
-    file: function (f) { return j('api/file?f=' + encodeURIComponent(f)); },
+    // 叠着 run 时带上它：代码窗口里标出「代码里看不出、这次运行调到了谁」的那几行
+    file: function (f) { return j('api/file?f=' + encodeURIComponent(f) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     outline: function (f) { return j('api/outline?f=' + encodeURIComponent(f)); },
     edge: function (a, b) {
       return j('api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
