@@ -968,9 +968,13 @@ def _spans(rd: Path):
     from codestrata import events
     keys = json.loads((rd / "events" / "spans" / "keys.json").read_text())
     out = []
-    for t0, dur, tid, depth, a, b, rep, ns in events.read_spans(rd / "events" / "spans"):
-        out.append({"t0": t0, "dur": dur, "tid": tid, "depth": depth, "a": keys["keys"][a], "b": keys["keys"][b],
-                    "rep": rep, "susp": ns})
+    idx = json.loads((rd / "events" / "spans" / "index.json").read_text())
+    for pid in dict.fromkeys(p["pid"] for p in idx["procs"]):      # exec 前后同一个 pid 有两份映像
+        rows = events.read_spans(rd / "events" / "spans", pid)
+        base = len(out)
+        for t0, dur, tid, depth, a, b, rep, ns, par in rows:
+            out.append({"t0": t0, "dur": dur, "tid": tid, "depth": depth, "a": keys["keys"][a], "b": keys["keys"][b],
+                        "rep": rep, "susp": ns, "pid": pid, "parent": base + par if par >= 0 else None})
     return out, keys
 
 
@@ -990,8 +994,8 @@ def _line(repo: Path, rel: str, needle: str) -> str:
 
 
 def test_events_truth():
-    """7.1 的真值：同步嵌套、返回后再调、生成器、异常、asyncio 交错、多线程、fork、exec 都配对正确；
-    span 的调用次数之和 = 计数里跨文件的 func_edges 之和。"""
+    """7.1 的真值：同步嵌套、返回后再调、生成器、异常、asyncio 交错、多线程、fork、exec 都配对正确，父 span 对；
+    span 的调用次数之和 = 计数里的 func_edges 之和（同文件的调用也记）。"""
     repo = fresh()
     cs("trace", repo, "--case", "truth", "--events", "--", PY, "-m", "fakesvc.truth")
     run, det, rd = latest(repo)
@@ -1003,10 +1007,11 @@ def test_events_truth():
         got = [s for s in sp if s["a"] == a and s["b"] == b]
         assert len(got) >= 1, (a, b, [(s["a"], s["b"]) for s in sp])
         return got
-    # 半路丢掉的生成器：只挂起过一次、没返回；之后同文件生成器里的调用深度是 0（不挂在死掉的 span 下）
+    # 半路丢掉的生成器：只挂起过一次、没返回；之后同文件生成器里的调用挂在那个生成器下面，不挂在死掉的 span 下
     dropped = one(k(T, "s_drop"), k(C, "gen")) + one(k(T, "_started_gen"), k(C, "gen"))
     assert len(dropped) == 25 and all(s["susp"] == 1 and s["dur"] == -1 for s in dropped), dropped
-    assert all(s["depth"] == 0 for s in one(k(T, "local_gen"), k(C, "one"))), one(k(T, "local_gen"), k(C, "one"))
+    lg = one(k(T, "local_gen"), k(C, "one"))
+    assert all(sp[s["parent"]]["b"] == k(T, "local_gen") for s in lg), [(s, sp[s["parent"]]) for s in lg]
     # close() / 取消：清理代码里的调用，调用方是生成器 / 协程自己，深一层
     gc = one(k(T, "s_close"), k(C, "gen_cleanup"))[0]
     fin = one(k(C, "gen_cleanup"), k(O, "deep"))[0]
@@ -1058,11 +1063,16 @@ def test_events_truth():
     assert ex["dur"] == -1
     post = one("fakesvc/execd.py:0", k("fakesvc/work.py", "after_exec"))[0]
     assert post["tid"] != ex["tid"], (ex, post)
-    # 次数对得上：Σrep = 跨文件的 func_edges
+    # 次数对得上：Σrep = func_edges（同文件的也记）
     counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
-    xf = sum(v for ph in counts.values() for e, v in ph["func_edges"].items()
-             if e.split("|")[0].rpartition(":")[0] != e.split("|")[1].rpartition(":")[0])
+    xf = sum(v for ph in counts.values() for v in ph["func_edges"].values())
     assert run["events"]["n_calls"] == xf, (run["events"], xf)
+    assert idx["scope"] == "all", idx
+    # 父 span：同一个进程、同一个线程，调用那一刻在跑；它的被调方就是这次的调用方（或者是同一个文件里转过来的不可能：都记了）
+    for s in sp:
+        if s["parent"] is not None:
+            p_ = sp[s["parent"]]
+            assert p_["pid"] == s["pid"] and p_["tid"] == s["tid"] and p_["t0"] <= s["t0"] and p_["b"] == s["a"], (p_, s)
 
 
 def test_events_fake_service():
@@ -1073,8 +1083,7 @@ def test_events_fake_service():
     run, det, rd = latest(repo)
     assert run["status"] == "ok" and run["events"] and not run["events"]["truncated"], run
     counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
-    xf = sum(v for ph in counts.values() for e, v in ph["func_edges"].items()
-             if e.split("|")[0].rpartition(":")[0] != e.split("|")[1].rpartition(":")[0])
+    xf = sum(v for ph in counts.values() for v in ph["func_edges"].values())     # 同文件的调用也记
     assert run["events"]["n_calls"] == xf, (run["events"], xf)
     # serving 阶段的时间窗里有请求处理（handle → work 的调用）
     ph = {p["name"]: p["t_us"] for p in run["phases"]}
@@ -1864,8 +1873,7 @@ def test_callbacks_from_case_code():
     # 时序事件和计数同一个口径：没有 dispatch_request → jsonify 这种 span
     sp_, _ = _spans(rd_out)
     assert not [s for s in sp_ if s["a"].startswith("web/app.py") and s["b"].startswith(("web/json", "web/templ"))], sp_
-    xf = sum(v for e, v in c["func_edges"].items()
-             if e.split("|")[0].rpartition(":")[0] != e.split("|")[1].rpartition(":")[0])
+    xf = sum(c["func_edges"].values())                                           # 同文件的调用也记
     assert out_run["events"]["n_calls"] == xf, (out_run["events"], xf)
 
 
@@ -2334,10 +2342,31 @@ _PA = {
 }
 
 
+def _drop_same_file_events(rd: Path) -> None:
+    """把一个 run 的原始事件日志改成 2026-10-01 之前的样子（只记跨文件的调用，没有 M 行），之后 runs merge 重新整理"""
+    import io
+    import tarfile
+    tb = rd / "events" / "raw.tar.gz"
+    out = io.BytesIO()
+    with tarfile.open(tb) as src, tarfile.open(fileobj=out, mode="w:gz") as dst:
+        for m in src.getmembers():
+            lines = src.extractfile(m).read().decode().splitlines(keepends=True)
+            keys = {ln.split()[1]: ln.split()[2] for ln in lines if ln.startswith("K ")}
+            same = {ln.split()[3] for ln in lines if ln.startswith("C ")
+                    and keys[ln.split()[4]].rpartition(":")[0] == keys[ln.split()[5].strip()].rpartition(":")[0]}
+            keep = [ln for ln in lines if not ln.startswith("M ")
+                    and not (ln[:1] in "CRYS" and ln.split()[3] in same)]
+            data = "".join(keep).encode()
+            m.size = len(data)
+            dst.addfile(m, io.BytesIO(data))
+    tb.write_bytes(out.getvalue())
+
+
 def test_request_path():
-    """请求路径：一个阶段里每个进程、每个线程按第一次调用的先后排的函数级调用树。跨文件的调用有时刻；
-    同一个文件里调过来的（serve → loop）没有时刻，挂到同文件的调用方下面、标 untimed；反复调用标 rep；
-    线程分开（主线程在前）；每一行带调用写在哪一行、代码里看不看得出。命令行 codestrata path 打出同样的树"""
+    """请求路径：一个阶段里每个进程、每个线程按第一次调用的先后排的函数级调用树。每次调用都有时刻（同一个文件里的
+    serve → loop 也有），父亲是调用那一刻真正在跑的那个；反复调用标 rep；线程分开（主线程在前）；每一行带调用写在哪一行、
+    代码里看不看得出。命令行 codestrata path 打出同样的树。老 run（时序事件只记了跨文件的）：同一个文件里调过来的
+    没有时刻，挂到同文件的调用方下面、标 untimed"""
     from codestrata import path as cs_path
     repo = tmpdir("cs-pa-") / "repo"
     for rel, src in _PA.items():
@@ -2354,16 +2383,27 @@ def test_request_path():
     assert [th["name"] for th in ths] == ["MainThread", "worker"], [th["name"] for th in ths]
     E, A = "pa/engine.py#Engine.", "pa/app.py#"
     rows = [(r["d"], r["fn"], r["untimed"], r["rep"], r["n"]) for r in ths[0]["rows"]]
-    assert rows == [(0, f"{A}serve", False, False, None), (1, f"{E}add", False, False, 1),
-                    (1, f"{A}loop", True, False, None), (2, f"{E}step", False, True, 20)], rows
+    assert P["scope"] == "all", P["scope"]
+    assert rows == [(0, f"{A}main", False, False, None), (1, f"{A}serve", False, False, 1), (2, f"{E}add", False, False, 1),
+                    (2, f"{A}loop", False, False, 1), (3, f"{E}step", False, True, 20)], rows
     app = _PA["pa/app.py"].splitlines()
-    step = ths[0]["rows"][3]["line"]
+    step = ths[0]["rows"][4]["line"]
     assert step["f"] == "pa/app.py" and app[step["l"] - 1].strip() == "e.step()" and step["status"] == "trace", step
     assert [(r["d"], r["fn"]) for r in ths[1]["rows"]] == [(0, f"{A}worker"), (1, f"{E}work")], ths[1]["rows"]
     assert all(r["t"] >= P["window"][0] for th in ths for r in th["rows"])
     out = cs("path", repo, "pa@serve").stdout
-    assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" in out and "← app.py:" in out, out
+    assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
     assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
+    # 老 run：时序事件只记了跨文件的调用
+    _drop_same_file_events(rd)
+    cs("runs", repo, "merge", run["id"])
+    run, rd, phase = runs.resolve(repo, "pa@serve")
+    P = cs_path.request_path(idx, rd, run, phase, hot)
+    assert P["scope"] == "cross", P["scope"]
+    rows = [(r["d"], r["fn"], r["untimed"], r["rep"], r["n"]) for r in P["procs"][0]["threads"][0]["rows"]]
+    assert rows == [(0, f"{A}serve", False, False, None), (1, f"{E}add", False, False, 1),
+                    (1, f"{A}loop", True, False, None), (2, f"{E}step", False, True, 20)], rows
+    assert "（同文件）" in cs("path", repo, "pa@serve").stdout
 
 
 _DF = {

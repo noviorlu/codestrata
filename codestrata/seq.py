@@ -1,6 +1,6 @@
 """一个 run 的时序事件（events.py 整理好的 span）→ 当前切面上每条边什么时候被调用：模块图的「时间顺序」上色。
 
-span 记的是「文件:首行号 → 文件:首行号」的跨文件调用，带开始时刻、时长、进程。这里：
+span 记的是「文件:首行号 → 文件:首行号」的调用（老 run 只有跨文件的），带开始时刻、时长、进程、父 span。这里：
 
   1. 把整个 run 的 span 解压、读一遍（_pairs），按阶段聚合成 (调用方键, 被调方键) → 第一次 / 最后一次 /
      次数 / 每个进程里的首末——大 run 上解压读一遍要两秒多，所以换切面、换阶段都不再读。
@@ -190,8 +190,8 @@ def _calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = Fals
 
 def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> dict:
     """时间段里的调用（折叠行按 _calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges}
-    （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。时序事件只记跨文件的调用：同一个文件里的
-    调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError。
+    （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。老 run 的时序事件只记了跨文件的调用：那种 run 上
+    同一个文件里的调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError。
     ref_lines：整个 run 的调用行（counts.json.gz 的 func_lines）。span 不记调用行，给了的话每对的次数按它在整个 run
     里各行的比例摊到行上（spread_lines），也返回 func_lines，和 scan 比的时候才和按阶段看一样按行比"""
     spans = rd / "events" / "spans"
@@ -308,10 +308,10 @@ def _pairs_scan(spans: Path, ix: dict, iv: dict, lo: int, hi: int) -> dict:
 
 
 def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
-    """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的跨文件调用（请求路径用，见 path.py）：
+    """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的调用（请求路径用，见 path.py）：
     {"window": [起, 止], "span_us": 各段加起来多长, "keys": [键], "threads": {pid: {tid: 名字}}, "truncated": [pid],
-     "calls": {(pid, tid, a, b): [first, last, n]}}——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。
-    折叠行按 _calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点（同 _pairs）。时序事件只记跨文件的调用。
+     "scope": "all" | "cross"（老 run 的时序事件只记了跨文件的调用）, "calls": {(pid, tid, a, b): [first, last, n]}}
+    ——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。折叠行按 _calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点（同 _pairs）。
     没有 span、没有这个阶段的时刻抛 LookupError，span 读不出来抛 OSError / ValueError"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
@@ -349,7 +349,8 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
                 else:
                     e[0], e[1], e[2] = min(e[0], f), max(e[1], last), e[2] + n
     out = {"window": [segs[0][0], segs[-1][1]], "span_us": sum(b - a for a, b in segs), "keys": ix["keys"],
-           "threads": ix["threads"], "truncated": ix.get("truncated") or [], "calls": calls}
+           "threads": ix["threads"], "truncated": ix.get("truncated") or [], "scope": ix.get("scope") or "cross",
+           "calls": calls}
     _put(_CALLS, key, out, cap=8)
     return out
 

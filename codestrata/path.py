@@ -1,12 +1,12 @@
 """请求路径：一个阶段里，每个进程、每个线程按第一次调用的先后排出来的函数级调用树——「这次请求走了哪条路」。
 
-数据：时序事件（seq.phase_calls：跨文件的调用，带时刻、进程、线程）+ 这次 run 的叠加（hot：函数对、调用行、和 scan 比的结果）。
+数据：时序事件（seq.phase_calls：每次调用，带时刻、进程、线程；老 run 只有跨文件的）+ 这次 run 的叠加（hot：函数对、调用行、和 scan 比的结果）。
   1. 每个（进程, 线程）里，trace 的键落到 graph 的节点上（align.node_labeler；录制之后改过的文件先走 hot["keymap"]）。
      定义时的执行（import 触发的模块顶层、类体）不算；整个挪到构造 F→C 上的（hot["redirect"]）算到类上。
   2. 一个函数挂在第一次调用它的那个调用方下面，同一个调用方下面按第一次被调用的先后排。
-     找不到带时刻的调用方的是根：线程的入口、经仓库外的代码调进来的（vllm 的引擎循环调 scheduler）、同一个文件里调过来的。
-  3. 同一个文件里的调用没有时刻（时序事件只记跨文件的）：根要是在 hot 里有同一个文件里的调用方、而它也在这棵树上，
-     就挂到它下面，标 untimed（这一跳没有时刻，位置是按它自己第一次往外调的时刻排的）。
+     找不到带时刻的调用方的是根：线程的入口、这一段之前就进去了的。
+  3. 老 run（2026-10-01 之前录的）的时序事件只记了跨文件的调用，同一个文件里的调用没有时刻：根要是在 hot 里有同一个文件里的
+     调用方、而它也在这棵树上，就挂到它下面，标 untimed（这一跳没有时刻，位置是按它自己第一次往外调的时刻排的）。
   4. 反复调用（seq.REPEAT_MIN 次以上、首末隔了这段时间的一半以上：轮询、每个 token 都走一遍）标 rep。
 每一行带调用写在调用方的哪一行（hot 里这对函数次数最多的那一行）、代码里看不看得出（status、note，见 align.judge）。
 """
@@ -22,7 +22,7 @@ MAX_ROWS = 4000          # 一张图（整个 run、不分阶段）上可能有�
 
 
 def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -> dict:
-    """{"phase", "window": [起, 止], "span_us", "truncated": [pid], "rows_cut": 截掉的行数,
+    """{"phase", "window": [起, 止], "span_us", "truncated": [pid], "rows_cut": 截掉的行数, "scope": "all" | "cross",
         "procs": [{"pid", "name", "first", "threads": [{"name", "n": 同名线程几个, "first", "rows": [行]}]}]}。
     行：{"d": 深度, "t": 第一次的时刻（微秒、相对 run 起点）, "fn": 节点, "def": {f, l}, "from": 调用方 或 null,
          "n": 这个线程里这对调用的次数（根、untimed 的是 null）, "rep": 反复调用, "untimed": 同一个文件里调过来的（没有时刻）,
@@ -40,7 +40,7 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -
     span = pc["span_us"] or 1
     procs: dict[int, dict] = {}
     for (pid, tname), edges in by.items():
-        rows = _tree(edges, calls, idx, span)
+        rows = _tree(edges, calls, idx, span, pc["scope"] != "all")
         if not rows:
             continue
         p = procs.setdefault(pid, {"pid": pid, "name": names.get(pid) or f"pid {pid}", "threads": []})
@@ -61,7 +61,7 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -
                 th["rows"] = th["rows"][:left]
             left -= len(th["rows"])
     return {"phase": phase, "window": pc["window"], "span_us": pc["span_us"], "truncated": pc["truncated"],
-            "rows_cut": cut, "procs": out}
+            "rows_cut": cut, "scope": pc["scope"], "procs": out}
 
 
 def first_calls(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -> dict[str, int]:
@@ -98,8 +98,9 @@ def _labeled(idx: dict, pc: dict, hot: dict):
         yield pid, tid, tname, label(ka), to or label(kb), first, last, n
 
 
-def _tree(edges: dict, calls: dict, idx: dict, span: int) -> list[dict]:
-    """一个线程里的调用 {(F, G): [first, last, n]} → 按先后排好的行（见 request_path）"""
+def _tree(edges: dict, calls: dict, idx: dict, span: int, fill_same_file: bool) -> list[dict]:
+    """一个线程里的调用 {(F, G): [first, last, n]} → 按先后排好的行（见 request_path）。fill_same_file：
+    时序事件只记了跨文件的调用（老 run），同一个文件里调过来的按 hot 补上（第 3 条）"""
     first_in: dict[str, tuple] = {}              # G → (第一次被调的时刻, 那次的调用方)
     seen: dict[str, int] = {}                     # 节点 → 在这个线程里第一次出现（被调或往外调）的时刻
     for (f_, g), (t, _, _) in edges.items():
@@ -110,7 +111,7 @@ def _tree(edges: dict, calls: dict, idx: dict, span: int) -> list[dict]:
     parent = {g: fc for g, (_, fc) in first_in.items()}
     untimed: set[str] = set()
     # 同一个文件里调过来的根：挂到同文件的调用方下面（这一跳没有时刻）
-    for r in [x for x in seen if x not in parent]:
+    for r in [x for x in seen if x not in parent] if fill_same_file else ():
         file_r = _file(r)
         cands = [c for c in seen if c != r and _file(c) == file_r and f"{c}|{r}" in calls and not _below(c, r, parent)]
         if cands:
@@ -198,8 +199,8 @@ def format_text(path: dict, max_depth: int | None = None) -> str:
     """命令行打印：一个线程一节，缩进是调用的层次；+秒数是相对这一段开头的第一次调用"""
     t0 = path["window"][0]
     out = [f"请求路径{'（阶段 ' + path['phase'] + '）' if path['phase'] else ''}："
-           f"{t0 / 1e6:.2f}–{path['window'][1] / 1e6:.2f} s。只有跨文件的调用有时刻，↻ 是反复调用，"
-           "（同文件）是同一个文件里调过来的、没有时刻，[看不出] 是代码里看不出会调到它"]
+           f"{t0 / 1e6:.2f}–{path['window'][1] / 1e6:.2f} s。↻ 是反复调用，[看不出] 是代码里看不出会调到它"
+           + ("；这个 run 的时序事件只记了跨文件的调用，（同文件）是同一个文件里调过来的、没有时刻" if path.get("scope") != "all" else "")]
     for p in path["procs"]:
         for th in p["threads"]:
             out.append(f"\n== {p['name']}（pid {p['pid']}）· {th['name']}" + (f"（{th['n']} 个线程）" if th["n"] > 1 else ""))

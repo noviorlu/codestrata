@@ -142,8 +142,8 @@ if _root and _out:
         return rel + ":" + ("0" if n[0] == "<" and (n == "<module>" or n.startswith("<generic parameters of "))
                             else str(code.co_firstlineno))
 
-    # ---- 时序事件（CODESTRATA_EVENTS=1，只有 sys.monitoring 才有）：只记跨文件的调用，
-    # 口径和 func_edges 相同（调用方是栈顶的仓库帧、和被调方不在同一个文件）。每次调用给一个
+    # ---- 时序事件（CODESTRATA_EVENTS=1，只有 sys.monitoring 才有）：记每一次调用（同文件的也记，2026-10-01 起），
+    # 口径和 func_edges 相同（调用方是栈顶的仓库帧，递归自调用不算）。每次调用给一个
     # span 号，返回 / 挂起 / 恢复按帧（id(帧)）找回 span 号——不按栈的顺序配，所以同一线程里
     # asyncio 协程交错也配得对。日志的行格式见 events.py 开头的说明。
     _EV = os.environ.get("CODESTRATA_EVENTS") == "1" and getattr(sys, "monitoring", None) is not None
@@ -159,7 +159,7 @@ if _root and _out:
     # id(帧) -> (span 号, code)：跨文件进来的、还没返回的帧。连 code 一起存：半路被丢掉的生成器
     # 在 3.12 上关闭时不发任何事件，它的帧地址之后会被别的帧复用，code 对不上就知道是旧账
     _xf = {}
-    _xc = set()              # 当过跨文件被调方的 code（的 id）：只有它们的返回 / 挂起 / 恢复才要查帧
+    _xc = set()              # 当过被调方的 code（的 id）：只有它们的返回 / 挂起 / 恢复才要查帧
     _gen = [0]               # fork 代数：线程号缓存在线程局部变量里，fork 之后要作废
     # 编号用 itertools.count：next() 在 CPython 里是原子的，多个线程同时调用不会拿到同一个号
     _ids = [itertools.count(1), itertools.count(1), itertools.count(1)]    # span、键、线程
@@ -260,12 +260,10 @@ if _root and _out:
                     _fcode[ck] = f.f_code if f is not None else None
                 else:
                     _fcalls[ck] = n + 1
-                if _EV and st[-1].rpartition(":")[0] != rel:
+                if _EV:
                     _ev_call(st[-1], k, code)
-                elif _EV and id(code) in _xc:
-                    _xf.pop(id(sys._getframe(2)), None)   # 同文件里新起的一帧，地址上若有旧账（被丢掉的
-                                                          # 同一个函数的生成器）就作废，免得它的事件记到旧 span 上
-            elif _EV and id(code) in _xc:
+            elif _EV and id(code) in _xc:                 # 递归自调用 / 没有调用方：新起的一帧不记，地址上若有旧账
+                                                          # （被丢掉的同一个函数的生成器）就作废，免得它的事件记到旧 span 上
                 _xf.pop(id(sys._getframe(2)), None)
         elif _EV and id(code) in _xc:
             _ev_mark("S", code, False)                          # 生成器 / 协程恢复（含 throw 进来的）
@@ -516,7 +514,7 @@ if _root and _out:
             # _dump 重试时这些行还在。utf-8 + backslashreplace：文件名不是 UTF-8 也不丢整块
             with open(name, "a", encoding="utf-8", errors="backslashreplace") as f:
                 if name not in _ev_file:
-                    f.write("H %d %d %d\\n" % (os.getpid(), _t0[0], os.getppid()))
+                    f.write("H %d %d %d\\nM all\\n" % (os.getpid(), _t0[0], os.getppid()))   # M all：同文件的调用也记了
                     _ev_file.append(name)
                 f.write(data)
         except OSError:

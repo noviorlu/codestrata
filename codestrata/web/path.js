@@ -21,7 +21,7 @@ window.CS = window.CS || {};
       + esc(short(r.fn)) + '</button>'
       + (r.n ? '<span class="pn">×' + r.n + '</span>' : '')
       + (r.rep ? '<span class="prep" title="反复调用：轮询、每个 token 都走一遍">↻</span>' : '')
-      + (r.untimed ? '<span class="pun" title="同一个文件里调过来的：时序事件只记跨文件的调用，这一跳没有时刻，排的位置按它自己第一次往外调的时刻">同文件</span>' : '')
+      + (r.untimed ? '<span class="pun" title="同一个文件里调过来的：这个 run 的时序事件只记了跨文件的调用，这一跳没有时刻，排的位置按它自己第一次往外调的时刻">同文件</span>' : '')
       + why
       + (ln && ln.l ? '<button class="pfrom" data-f="' + esc(ln.f) + '" data-l="' + ln.l + '" title="调用写在 '
           + esc(short(r.from)) + ' 的这一行（点了看）">← ' + esc(fname(ln.f)) + ':' + ln.l + '</button>' : '')
@@ -50,9 +50,10 @@ window.CS = window.CS || {};
 
     render: function (P) {
       var t0 = P.window[0], nrows = 0;
-      var h = '<p class="hint">时刻从这一段（' + ((P.window[1] - t0) / 1e6).toFixed(2) + ' s）的开头算。只有跨文件的调用有时刻：'
-        + '同一个文件里调过来的标「同文件」。↻ 是反复调用。点函数名看定义，点「← 文件:行」看调用写在哪；'
-        + '没有调用方的是根（线程的入口、经仓库外的代码调进来的）。</p>';
+      var h = '<p class="hint">时刻从这一段（' + ((P.window[1] - t0) / 1e6).toFixed(2) + ' s）的开头算。'
+        + (P.scope === 'all' ? '' : '这个 run 的时序事件只记了跨文件的调用：同一个文件里调过来的标「同文件」、没有时刻。')
+        + '↻ 是反复调用。点函数名看定义，点「← 文件:行」看调用写在哪；'
+        + '没有调用方的是根（线程的入口、这一段之前就进去了的）。</p>';
       P.procs.forEach(function (p) {
         p.threads.forEach(function (th) {
           nrows += th.rows.length;
@@ -62,7 +63,7 @@ window.CS = window.CS || {};
             + th.rows.map(function (r, i) { return rowHtml(r, th.rows[i + 1], t0); }).join('') + '</div></details>';
         });
       });
-      if (!nrows) h += '<p class="hint">这一段里没有跨文件的调用。</p>';
+      if (!nrows) h += '<p class="hint">这一段里没有调用。</p>';
       if (P.rows_cut) h += '<p class="hint">还有 ' + P.rows_cut + ' 行没列出（命令行 codestrata path 能看全）。</p>';
       if (P.truncated && P.truncated.length)
         h += '<p class="hint warn">进程 ' + P.truncated.join('、') + ' 的时序事件录到了上限，之后的调用不在这里。</p>';

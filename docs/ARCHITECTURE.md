@@ -89,11 +89,11 @@ flowchart LR
 | `align.py` | 478 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
-| `trace/hook.py` | 703 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
+| `trace/hook.py` | 701 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
-| `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
+| `events.py` | 257 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠 |
 | `seq.py` | 414 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用） |
 | `path.py` | 223 | 请求路径：一个阶段里每个进程、每个线程按第一次调用的先后排的函数级调用树（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
@@ -188,6 +188,7 @@ flowchart LR
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 - `bench/python_versions.py`：trace 在 3.10 / 3.11 / 3.12 上的开销（usage「实测数字」里那张表），不是回归测试。
+- `bench/events_overhead.py`：时序事件的录制和整理开销（不录 / `--no-events` / 记每一次调用 / 拿老代码只记跨文件的对照），不是回归测试。
 - `bench/quality.py`：核心质量的基准数（只有 trace 的占比按成因分、请求路径上到模型函数的链有几跳看不出、`/api/graph` 的大小），
   改判定 / 类型推断前后各跑一次比；默认在本机 vllm-omni 的 MiniCPM run 上，不是回归测试。
 - `payload_parity.py`：重构用的对拍工具，不是回归测试：拿某个旧提交和工作区的代码，对同一份索引和 run 各算一遍几个切面上的图、边详情、时间顺序，逐项比。

@@ -275,8 +275,9 @@
 
 ## 6 时序事件
 
-录时序事件（`trace` 默认录，`--no-events` 不录；需要 Python 3.12 的 `sys.monitoring`）才有。只记**跨文件**的调用：口径和 `func_edges` 相同
-（调用方是栈上最近的仓库帧），再加上「调用方和被调方不在同一个文件」。同文件的调用只在计数里有。
+录时序事件（`trace` 默认录，`--no-events` 不录；需要 Python 3.12 的 `sys.monitoring`）才有。记每一次调用，口径和 `func_edges` 相同
+（调用方是栈上最近的仓库帧，递归自调用不算）。2026-10-01 之前录的只记了**跨文件**的调用（调用方和被调方不在同一个文件），
+同文件的只在计数里有：日志里没有 `M` 行，index.json 的 `scope` 是 `"cross"`。
 
 ### 6.1 原始日志 ev-<pid>-<t0ns>.log
 
@@ -284,6 +285,7 @@
 
 ```
 H <pid> <t0_ns> <ppid>                      文件头（没有时从文件名取 pid 和 t0）
+M all                                       同文件的调用也记了（2026-10-01 起，紧跟在 H 后面；没有这一行的只记了跨文件的）
 N <tid> <线程名>                             线程登记：进程内的小整数 → 线程名
 K <id> <函数键>                              键登记：进程内的小整数 → rel:首行
 C <t_us> <tid> <span> <调用方 id> <被调方 id>   调用
@@ -320,7 +322,7 @@ R 3784145 1 2
 **index.json**（真实例子，节选）：
 
 ```json
-{"pairing": "frame",
+{"pairing": "frame", "scope": "all",
  "chunks": [{"pid": 1380721, "chunk": "p1380721-000.jsonl.gz", "t0_us": 10136895, "t1_us": 109501360, "n": 2939}, "…"],
  "procs": [{"pid": 1380721, "ppid": 1380497, "t0_us": 6353053, "n_events": 10726, "n_spans": 2939, "truncated": false}, "…"],
  "truncated": [], "n_lines": 238784, "n_spans": 102634, "n_calls": 114546}
@@ -329,6 +331,7 @@ R 3784145 1 2
 | 字段 | 类型 | 含义 | 谁读 |
 |---|---|---|---|
 | `pairing` | str | 固定 `"frame"`（按帧配对） | 没有代码读 |
+| `scope` | str | `"all"`：每次调用都有 span；`"cross"`：只有跨文件的（老 run，没有这个字段也是）；`"mixed"`：几个进程不一样（录到一半换了 codestrata） | `seq.phase_calls` → `path`（老 run 才按计数补同文件的那一跳） |
 | `chunks` | [{pid, chunk, t0_us, t1_us, n}] | 每块 span 文件：属于哪个 pid、文件名、块里最早的开始、最晚的结束（`max(t0 + max(dur, 0))`）、行数。**块上没有 truncated 字段** | `seq`：按 `t0_us` / `t1_us` 跳过和时间段不重叠的块；`seq.run_end` 取所有块的 `t1_us` 最大值当时间轴终点的候选 |
 | `procs` | [{pid, ppid, t0_us, n_events, n_spans, truncated}] | 每个进程映像一条（同一 pid exec 前后是两条）；`n_events` 是 C/R/Y/S 行数；`truncated` 是这个映像到了行数上限 | `runs._build_events`（数进程） |
 | `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.edge_times` 原样带出 |
@@ -341,11 +344,12 @@ R 3784145 1 2
 线程号加上之前映像的最大线程号）。例：`{"keys": ["fakesvc/server.py:0", "fakesvc/work.py:0", "fakesvc/server.py:45", …], "threads": {"1633882": {"1": "MainThread"}}}`。
 
 **p\<pid\>-NNN.jsonl.gz**：gzip 的 JSON 行，每行一条 span；每个 pid 一组文件，按 `(t0, depth)` 排好，每块最多 100,000 行，`NNN` 从 000 开始。
+一个 pid 的几块连起来数下标（`parent` 用的就是这个下标）。
 
 ### 6.3 一行 span
 
 ```
-[t0, dur, tid, depth, a, b, rep, n_susp]
+[t0, dur, tid, depth, a, b, rep, n_susp, parent]
 ```
 
 | 下标 | 字段 | 含义 |
@@ -357,12 +361,13 @@ R 3784145 1 2
 | 4 / 5 | `a` / `b` | 调用方 / 被调方在 keys.json `keys` 里的下标 |
 | 6 | `rep` | 这一行合了几次调用（≥1） |
 | 7 | `n_susp` | 挂起了几次；>0 就是 async 的 span（折叠行一定是 0） |
+| 8 | `parent` | 父 span 在这个 pid 的 span 里的下标，没有（线程的根、父亲在行数上限之后）是 `-1`。父 span 是调用那一刻这个线程上最里层正在执行的 span（挂起的不算），按原始日志重放得到，async 的也准。`scope` 是 `"all"` 时父 span 的被调方就是这一行的调用方。2026-10-01 之前整理的 span 没有这一列，`runs merge` 从原始日志重建就有 |
 
 真实的行（vllm-omni）：`[89391161, 25097353, 2, 0, 994, 995, 2268, 0]` 是一个轮询：同一对函数连续调了 2268 次、
-从 89.4 秒到 114.5 秒；`[6338823, 4321, 2, 1, 572, 574, 1, 1]` 是一次挂起过一次的 async 调用。
+从 89.4 秒到 114.5 秒；`[6338823, 4321, 2, 1, 572, 574, 1, 1]` 是一次挂起过一次的 async 调用（这两行是加 `parent` 之前的）。
 
 **第一级折叠**（`events.fold`）：同一个线程上、同一个**父 span** 下、中间这个线程没有挂起 / 恢复、同一对 `a → b`、
-自己没挂起过、没有跨文件子调用、已经返回的连续调用，合成一行，`rep` 是次数，`dur` 从第一次开始到最后一次结束。
+自己没挂起过、没有记下的子调用、已经返回的连续调用，合成一行，`rep` 是次数，`dur` 从第一次开始到最后一次结束。
 按父 span 而不按深度认兄弟：同一线程上交错的两个协程，子调用深度相同但不是兄弟。
 
 **怎么读 rep > 1 的行**（`seq._calls_in`，时间段和时间顺序都这样算）：把 `rep` 次调用**均匀摊在 `[t0, t0 + dur]` 上**，
@@ -375,7 +380,7 @@ R 3784145 1 2
 ### 6.4 从 span 算出来的东西（不存盘）
 
 - **时间段的次数**（`seq.window_counts`，`@t=起-止`）：落在 `[起, 止]` 里的调用 → 和 counts 同形状的 `{funcs, func_edges, func_lines}`
-  （被调方算一次进入）。只有跨文件的调用，比按阶段看的次数少（页面上注明）。span 不记调用行：每一对的次数按它在整个 run 的
+  （被调方算一次进入）。老 run 只有跨文件的调用，比按阶段看的次数少（页面上注明）。span 不记调用行：每一对的次数按它在整个 run 的
   `func_lines` 里各行的比例摊到行上（`seq.spread_lines`，最大余数法，每对加起来正好是它的次数；整个 run 里没有这一对的记在第 0 行），
   和 scan 比的结果和按阶段看的一样；每行的次数是约数（`hot.lines_approx`，页面上注明）。老 run 没有 `func_lines` 就不给。
 - **请求路径**（`seq.phase_calls` → `path.request_path`，`/api/path`、`codestrata path`）：一个阶段（或时间段）里每个（进程, 线程, 调用方键, 被调方键）
