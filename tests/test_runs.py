@@ -2376,6 +2376,10 @@ def test_lanes():
     assert ("queue", main["id"], C, cons["id"], C, 1) in hs, hs
     z = [h for h in hs if h[0] == "zmq"]
     assert len(z) == 2 and {by[h[1]]["pid"] == main["pid"] for h in z} == {True, False} and all(h[4] == C for h in z), hs
+    # 只跑仓库外代码的线程（stdlib-put）是交接的一头：给它一列空的（external），连到主线程的 take_job 上
+    ext = next(x for x in L["lanes"] if x["thread"] == "stdlib-put")
+    assert ext.get("external") and not ext["nodes"], ext
+    assert ("queue", ext["id"], None, main["id"], C, 1) in hs, hs
 
 
 _PA = {

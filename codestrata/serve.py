@@ -6,7 +6,8 @@
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/seq/edges?run=&open=   切面上每条边在 run 选的阶段里第一次 / 最后一次被调用的时刻和次数
                                   （模块图的「时间顺序」上色）
-    GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程按第一次调用排的函数级调用树（path.py）
+    GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
+    GET  /api/lanes?run=&open=    按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
@@ -38,6 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import cut as _cut
+from . import lanes as _lanes
 from . import path as _path
 from . import runs as _runs
 from . import seq as _seq
@@ -222,6 +224,22 @@ class Handler(BaseHandler):
         except (OSError, ValueError) as e:
             return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 
+    def _lanes(self, q: dict):
+        """/api/lanes：按进程 · 线程分列（lanes.build）。run 必填，@阶段（或 @t=）决定时间段，open 是切面"""
+        ref = (q.get("run") or [""])[0].strip()
+        if not ref:
+            return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
+        raw = (q.get("open") or [None])[0]
+        open_ = None if raw is None else sorted(_cut.norm_open(self.idx, [o for o in raw.split(",") if o]))
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+            hot = self._hot(q)[0]
+            return self._json(_lanes.build(self.idx, rd, run, phase, hot, open_))
+        except (SystemExit, LookupError) as e:
+            return self._json({"error": str(e)}, 404)
+        except (OSError, ValueError) as e:
+            return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
+
     def _seq(self, path: str, q: dict):
         """/api/seq/edges：模块图「时间顺序」上色要的数据。run 必填（run id 或 case 名，@阶段决定时间窗）。"""
         ref = (q.get("run") or [""])[0].strip()
@@ -302,6 +320,9 @@ class Handler(BaseHandler):
 
         if path == "/api/path":
             return self._path(q)
+
+        if path == "/api/lanes":
+            return self._lanes(q)
 
         hot = hot_meta = hot_key = None
         if path in ("/api/graph", "/api/edge", "/api/refs", "/api/file"):

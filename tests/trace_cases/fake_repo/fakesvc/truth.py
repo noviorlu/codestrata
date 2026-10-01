@@ -86,6 +86,14 @@ def s_queue():                # 进程内的队列交接：主线程 put、consu
     t.join()
 
 
+def s_queue_ext():            # 只跑仓库外代码的线程（Thread(target=q.put)）把对象交给主线程
+    q = queue.Queue()
+    t = threading.Thread(target=q.put, args=({"job": 2},), name="stdlib-put")
+    t.start()
+    t.join()
+    callee.take_job(q)
+
+
 def s_zmq():                  # 跨进程的 ZMQ 交接（测试给了假的 zmq 才跑），照 vLLM 的收发方式：
     try:                      # 父进程的 ROUTER 发（第一帧是对方的身份）、子进程的 DEALER 收；子进程先 send 一帧带 SNDMORE、
         import zmq            # 再 send_multipart 其余的回过来，父进程收
@@ -180,6 +188,7 @@ def main():
     s_exec()
     s_spawn()
     s_queue()
+    s_queue_ext()
     s_zmq()
 
 

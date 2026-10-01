@@ -22,9 +22,10 @@ from . import seq as _seq
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -> dict:
     """{"phase", "window": [起, 止], "scope", "lanes": [列], "links": [连线]}。列按进程启动的先后排，进程里主线程在前。
     列：{"id": "pid:线程名", "pid", "proc": 进程名, "thread": 线程名, "n_threads", "first", "last", "entry": 入口节点,
-         "nodes": {节点: {"n": 被调次数, "first"}}, "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first"}]}
+         "nodes": {节点: {"n": 被调次数, "first"}}, "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first"}],
+         "external": 只跑仓库外的代码、因为是交接的一头才有这一列（没有节点）}
     连线：{"kind": "spawn" | "handoff", "via": thread / exec / fork / queue / asyncio / janus / zmq,
-           "from": {"lane", "node", "t"}, "to": {"lane", "node", "t"}, "n"}（spawn 的 n 是 1）。
+           "from": {"lane", "node", "t"}, "to": {"lane", "node", "t"}, "n"}——同样两头、同一种的合成一条，n 是几次，t 是最早的一次。
     没有时序事件、没有这个阶段的时刻抛 LookupError"""
     ix = _seq.span_index(rd)
     segs, win, end = _seq.window_segments(run, rd, phase)
@@ -99,44 +100,61 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -
                     e["only"] += n * only
                     e["first"] = min(e["first"], first)
 
-    def end_of(pid: int, tid: int, row: int, t: int | None) -> dict | None:
-        """一条连线的一头：哪一列、哪个节点（span 的被调方；不在任何 span 里就是这一列的入口）"""
+    def end_of(pid: int, tid: int, row: int, t: int | None, create: bool = False) -> dict | None:
+        """一条连线的一头：哪一列、哪个节点（span 的被调方；不在任何 span 里就是这一列的入口）。只跑仓库外代码的线程
+        （vLLM 收发 ZMQ 的线程）没有列：create（交接的两头）时给它一列空的（external），交接链才不断"""
         lid = tid_lane.get((pid, tid))
-        if lid is None or lid not in lanes:
-            return None
+        if lid is None:
+            tname = (threads.get(str(pid)) or {}).get(str(tid)) or f"线程 {tid}"
+            lid = tid_lane[(pid, tid)] = f"{pid}:{tname}"
+        if lid not in lanes:
+            if not create or t is None:
+                return None
+            lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": lid.partition(":")[2],
+                          "tids": {tid}, "first": t, "last": t, "entry": None, "entry_t": None, "nodes": {}, "edges": {},
+                          "external": True}
+        L = lanes[lid]
+        if L.get("external") and t is not None:
+            L["tids"].add(tid)
+            L["first"], L["last"] = min(L["first"], t), max(L["last"], t)
         rows = rows_of.get(pid) or []
         r = rows[row] if 0 <= row < len(rows) else None
         nd = node(r[5]) if r else None
         return {"lane": lid, "node": nd or lanes[lid]["entry"], "t": t if t is not None else (r[0] if r else None)}
 
-    links = []
+    agg: dict[tuple, dict] = {}                  # 同样两头、同一种的连线合起来：(起点列, 起点节点, 终点列, 终点节点, 种类, 通道)
+
+    def link(kind: str, via: str, a: dict, b: dict) -> None:
+        k = (a["lane"], a["node"], b["lane"], b["node"], kind, via)
+        x = agg.get(k)
+        if x is None:
+            agg[k] = {"kind": kind, "via": via, "from": a, "to": b, "n": 1}
+        else:
+            x["n"] += 1
+            for end, new in (("from", a), ("to", b)):  # 时刻取最早的一次
+                if new["t"] is not None and (x[end]["t"] is None or new["t"] < x[end]["t"]):
+                    x[end] = new
+
     for pid, by_tid in (ix.get("thread_from") or {}).items():
         for tid, (ftid, frow) in by_tid.items():
             a, b = end_of(int(pid), ftid, frow, None), _lane_start(lanes, tid_lane.get((int(pid), int(tid))))
             if a and b and a["lane"] != b["lane"]:
-                links.append({"kind": "spawn", "via": "thread", "from": a, "to": b, "n": 1})
+                link("spawn", "thread", a, b)
     for s in ix.get("spawns") or []:
         a = end_of(s["pid"], s["tid"], s["row"], s.get("t_us"))
         main = min((lid for (p, _), lid in tid_lane.items() if p == s["child"] and lid in lanes),
                    key=lambda lid: lanes[lid]["first"], default=None)
         b = _lane_start(lanes, main)
         if a and b:
-            links.append({"kind": "spawn", "via": s["how"], "from": a, "to": b, "n": 1})
-    agg: dict[tuple, dict] = {}
+            link("spawn", s["how"], a, b)
     for h in ix.get("handoffs") or []:
         t = h["to"][3]
         if not any(x <= t <= y for x, y in segs):
             continue
-        a, b = end_of(*h["from"]), end_of(*h["to"])
-        if not a or not b or a["lane"] == b["lane"]:
-            continue
-        k = (a["lane"], a["node"], b["lane"], b["node"], h["via"])
-        x = agg.get(k)
-        if x is None:
-            agg[k] = {"kind": "handoff", "via": h["via"], "from": a, "to": b, "n": 1}
-        else:
-            x["n"] += 1
-    links.extend(agg.values())
+        a, b = end_of(*h["from"], create=True), end_of(*h["to"], create=True)
+        if a and b and a["lane"] != b["lane"]:
+            link("handoff", h["via"], a, b)
+    links = list(agg.values())
 
     out = []
     for L in lanes.values():
