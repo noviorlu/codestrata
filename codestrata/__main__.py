@@ -490,7 +490,7 @@ def cmd_path(a) -> int:
     run, rd, phase = _runs.resolve(repo, a.run)
     hot, _ = _runs.load(repo, idx, a.run)
     try:
-        p = _path.request_path(idx, rd, run, phase, hot)
+        p = _path.request_path(idx, rd, run, phase, hot, max_rows=None)
     except LookupError as e:
         raise SystemExit(str(e)) from None
     print(json.dumps(p, ensure_ascii=False) if a.json else _path.format_text(p, a.depth))

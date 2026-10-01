@@ -6,7 +6,12 @@ window.CS = window.CS || {};
   'use strict';
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
-  function short(k) { return k ? k.slice(k.indexOf('#') + 1) : ''; }
+  /* 节点的短名字：限定名；模块顶层的带上文件名（光写 <module> 认不出是哪个文件） */
+  function short(k) {
+    if (!k) return '';
+    var q = k.slice(k.indexOf('#') + 1);
+    return q.indexOf('<module>') === 0 ? fname(k.slice(0, k.indexOf('#'))) + ':' + q : q;
+  }
   function fname(f) { return f.split('/').pop(); }
 
   function rowHtml(r, next, t0) {
@@ -16,7 +21,8 @@ window.CS = window.CS || {};
           + (ln.guessed ? '（这个 run 没记调用行，调用处是按名字猜的）' : '')) + '">代码里看不出</span>' : '';
     return '<div class="prow" data-d="' + r.d + '" style="--d:' + r.d + '">'
       + (kids ? '<button class="pt" aria-expanded="true" title="收起 / 展开它下面的调用">▾</button>' : '<span class="pt"></span>')
-      + '<span class="ptime">+' + ((r.t - t0) / 1e6).toFixed(3) + 's</span>'
+      + (r.before ? '<span class="ptime" title="这一段之前就在跑（这一段里没再调过它），列出来是为了看清下面的调用是在谁里面">之前</span>'
+          : '<span class="ptime">+' + ((r.t - t0) / 1e6).toFixed(3) + 's</span>')
       + '<button class="pfn" data-f="' + esc(r.def.f) + '" data-l="' + r.def.l + '" title="' + esc(r.fn) + '（点了看定义）">'
       + esc(short(r.fn)) + '</button>'
       + (r.n ? '<span class="pn">×' + r.n + '</span>' : '')
@@ -53,7 +59,8 @@ window.CS = window.CS || {};
       var h = '<p class="hint">时刻从这一段（' + ((P.window[1] - t0) / 1e6).toFixed(2) + ' s）的开头算。'
         + (P.scope === 'all' ? '' : '这个 run 的时序事件只记了跨文件的调用：同一个文件里调过来的标「同文件」、没有时刻。')
         + '↻ 是反复调用。点函数名看定义，点「← 文件:行」看调用写在哪；'
-        + '没有调用方的是根（线程的入口、这一段之前就进去了的）。</p>';
+        + (P.scope === 'all' ? '每一行挂在调用它的那一次调用下面；标「之前」的是这一段之前就在跑的上层（引擎循环这类）。'
+           : '没有调用方的是根（线程的入口、这一段之前就进去了的）。') + '</p>';
       P.procs.forEach(function (p) {
         p.threads.forEach(function (th) {
           nrows += th.rows.length;
@@ -64,7 +71,7 @@ window.CS = window.CS || {};
         });
       });
       if (!nrows) h += '<p class="hint">这一段里没有调用。</p>';
-      if (P.rows_cut) h += '<p class="hint">还有 ' + P.rows_cut + ' 行没列出（命令行 codestrata path 能看全）。</p>';
+      if (P.rows_cut) h += '<p class="hint">还有 ' + P.rows_cut + ' 行没列出（命令行 codestrata path 打全部）。</p>';
       if (P.truncated && P.truncated.length)
         h += '<p class="hint warn">进程 ' + P.truncated.join('、') + ' 的时序事件录到了上限，之后的调用不在这里。</p>';
       var det = document.getElementById('det');

@@ -2392,6 +2392,7 @@ _PA = {
                   "def serve(e):\n"
                   "    e.add(1)\n"
                   "    loop(e)\n"
+                  "    e.step()\n"
                   "    t = threading.Thread(target=worker, args=(e,), name='worker')\n"
                   "    t.start()\n    t.join()\n\n\n"
                   "def main():\n    e = Engine()\n    serve(e)\n\n\n"
@@ -2439,17 +2440,20 @@ def test_request_path():
     ths = P["procs"][0]["threads"]
     assert [th["name"] for th in ths] == ["MainThread", "worker"], [th["name"] for th in ths]
     E, A = "pa/engine.py#Engine.", "pa/app.py#"
-    rows = [(r["d"], r["fn"], r["untimed"], r["rep"], r["n"]) for r in ths[0]["rows"]]
+    rows = [(r["d"], r["fn"], r["before"], r["rep"], r["n"]) for r in ths[0]["rows"]]
     assert P["scope"] == "all", P["scope"]
-    assert rows == [(0, f"{A}main", False, False, None), (1, f"{A}serve", False, False, 1), (2, f"{E}add", False, False, 1),
-                    (2, f"{A}loop", False, False, 1), (3, f"{E}step", False, True, 20)], rows
+    # 调用上下文树：serve 之前就在跑的 <module> → main 列出来当上下文；step 在 loop 下面（×20）和 serve 下面（×1）各一个
+    assert rows == [(0, f"{A}<module>", True, False, None), (1, f"{A}main", True, False, None),
+                    (2, f"{A}serve", False, False, 1), (3, f"{E}add", False, False, 1),
+                    (3, f"{A}loop", False, False, 1), (4, f"{E}step", False, True, 20), (3, f"{E}step", False, False, 1)], rows
     app = _PA["pa/app.py"].splitlines()
-    step = ths[0]["rows"][4]["line"]
+    step = ths[0]["rows"][5]["line"]
     assert step["f"] == "pa/app.py" and app[step["l"] - 1].strip() == "e.step()" and step["status"] == "trace", step
     assert [(r["d"], r["fn"]) for r in ths[1]["rows"]] == [(0, f"{A}worker"), (1, f"{E}work")], ths[1]["rows"]
-    assert all(r["t"] >= P["window"][0] for th in ths for r in th["rows"])
+    assert all(r["t"] >= P["window"][0] for th in ths for r in th["rows"] if not r["before"])
     out = cs("path", repo, "pa@serve").stdout
     assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
+    assert "（之前）  app.py:<module>" in out, out
     assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
     # 老 run：时序事件只记了跨文件的调用
     _drop_same_file_events(rd)
@@ -2460,6 +2464,7 @@ def test_request_path():
     rows = [(r["d"], r["fn"], r["untimed"], r["rep"], r["n"]) for r in P["procs"][0]["threads"][0]["rows"]]
     assert rows == [(0, f"{A}serve", False, False, None), (1, f"{E}add", False, False, 1),
                     (1, f"{A}loop", True, False, None), (2, f"{E}step", False, True, 20)], rows
+    # 老做法：每个函数只挂在第一个调用方下面，serve 直接调 step 的那一次挂不上（调用上下文树修的就是这个）
     assert "（同文件）" in cs("path", repo, "pa@serve").stdout
 
 
