@@ -47,7 +47,7 @@ scan 记录，见那里），xref.json 本身不变。一条调用是 (调用方
            lambda / 生成器表达式是 <外层>.<L行>（它们运行时是单独的帧）；列表 / 集合 / 字典推导式算外层
            （3.12 起它们不再是单独的帧）
   目标     解析出来的目标（和 xref.json 的 targets 同一种写法），解析不了是 None
-  名字     写的名字：f(…) 的 f、x.m(…) 的 m、getattr(x, "m") 的 m；没有名字（f()()、fs[i]()）是 None
+  名字     写的名字：f(…) 的 f、x.m(…) 的 m、super().m(…) 的 super().m、getattr(x, "m") 的 m；没有名字（f()()、fs[i]()）是 None
   怎么调的 HOW_CALL 调用；HOW_DECO 装饰器（@x 在定义时调 x）；HOW_PROP 用 property（读调 getter，赋值、del 调 setter、deleter）；
            HOW_STR getattr(…, "名字")（按字符串取，多半接着就调）
 还有这个文件里每个节点占的行 [(起, 止, 节点)]，按名字找不到的东西（语法触发的特殊方法）靠它归到节点上。
@@ -1341,7 +1341,11 @@ class _Walk:
             r = self.ex(f, CALL)
             if self.calls is not None:
                 tf = type(f)
-                self.note(n, r, f.id if tf is ast.Name else f.attr if tf is ast.Attribute else None, HOW_CALL)
+                name = f.id if tf is ast.Name else f.attr if tf is ast.Attribute else None
+                if (tf is ast.Attribute and type(f.value) is ast.Call and type(f.value.func) is ast.Name
+                        and f.value.func.id == "super"):
+                    name = "super()." + f.attr        # 调的是 MRO 上下一个类的（多半在仓库外）：别和别的类里的同名方法对上
+                self.note(n, r, name, HOW_CALL)
                 if (tf is ast.Name and f.id == "getattr" and r is None and len(n.args) >= 2
                         and type(n.args[1]) is ast.Constant and type(n.args[1].value) is str):
                     self.note(n, None, n.args[1].value, HOW_STR)

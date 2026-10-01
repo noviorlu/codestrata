@@ -71,6 +71,9 @@ STMT_CONTAINERS = tuple(t for t in (
 
 # 字符串里写的带模块的类路径：插件表、配置里的 worker_cls 之类（"a.b.Cls"、entry point 式的 "a.b:Cls"）
 _QUALNAME_STR = re.compile(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[.:]([A-Z]\w*)")
+# 打日志 / 打印的调用：参数里的字符串（"AsyncOmniEngine started"）不是按名字接线
+_LOG_CALLS = frozenset(("debug", "info", "warning", "warn", "error", "exception", "critical", "log", "print",
+                        "info_once", "warning_once", "debug_once"))
 
 
 @dataclass
@@ -523,9 +526,24 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             # 字符串里写着的类名：注册表按名字登记类（{"Arch": ("pkg", "mod", "Cls")}）、getattr(mod, "Cls")、
             # 插件表。先收下所有像类名的字符串（大写开头的标识符），扫完再只留仓库里真有这个类名的——
             # 动态分派调到的类，边详情（align.hints）靠它回答「是在哪儿按名字接上的」。__all__ 里的是再导出清单，不算
+            # 类型标注里的字符串（前向引用 `x: "Cls"`、`-> "Cls"`）、f-string、打日志的字符串也不算：它们不是在接线
             in_all: set[int] = set()
             named: list[tuple[str, int]] = []
             for n2 in ast.walk(tree):
+                skip = None
+                if isinstance(n2, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    skip = [a.annotation for a in n2.args.args + n2.args.posonlyargs + n2.args.kwonlyargs
+                            + [n2.args.vararg, n2.args.kwarg] if a is not None and a.annotation is not None] + [n2.returns]
+                elif isinstance(n2, ast.AnnAssign):
+                    skip = [n2.annotation]
+                elif isinstance(n2, ast.JoinedStr):
+                    skip = [n2]
+                elif (isinstance(n2, ast.Call) and isinstance(n2.func, (ast.Attribute, ast.Name))
+                      and (n2.func.attr if isinstance(n2.func, ast.Attribute) else n2.func.id) in _LOG_CALLS):
+                    skip = n2.args
+                for s in skip or ():
+                    if s is not None:
+                        in_all.update(id(c) for c in ast.walk(s))
                 if isinstance(n2, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
                     tg = n2.targets if isinstance(n2, ast.Assign) else [n2.target]
                     if any(isinstance(t, ast.Name) and t.id == "__all__" for t in tg) and n2.value is not None:

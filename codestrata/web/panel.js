@@ -58,6 +58,9 @@ window.CS = window.CS || {};
     if (!nt) return '';
     switch (nt.k) {
       case 'ctor': return '代码里写的是构造，跑的是 ' + nt.via.map(symLabel).join('、') + '（沿继承找到的）';
+      case 'deferred': return '代码里写在第 ' + nt.at.join('、') + ' 行；生成器 / 协程 / with 到这一行才真正开始跑';
+      case 'prop': return '这一行读了属性 ' + nt.name + '（property），接收者的类型 scan 定不下';
+      case 'getattr': return '这一行读的属性在类里没有定义，走了 __getattr__（接收者的类型 scan 定不下）';
       case 'override': return '代码里写的是 ' + symLabel(nt.w) + '，跑的是这个（子类覆盖了它，或者同名的别的方法）';
       case 'name': return '代码里只知道名字 ' + nt.names.join('、') + '，定不下调到谁';
       case 'line':
@@ -65,8 +68,8 @@ window.CS = window.CS || {};
         var kinds = (c.length ? 1 : 0) + (ext.length ? 1 : 0) + (ns.length ? 1 : 0);
         if (kinds === 1 && c.length) return '这一行代码里调的是 ' + c.map(symLabel).join('、') + '，经它转了一道才到这里';
         if (kinds === 1 && ext.length) return '这一行调的是仓库外的 ' + (nameList(ext) || '函数') + '，经它回调到这里';
-        if (kinds === 1) return nameList(ns) ? '这一行只知道名字 ' + nameList(ns) + '，定不下调到谁'
-                                             : '这一行调的是一个表达式的结果（f()()、fs[i]() 这类），定不下调到谁';
+        if (kinds === 1) return nameList(ns) ? '这一行调了 ' + nameList(ns) + '（scan 定不下它是谁），经它转了一道才到这里'
+                                             : '这一行调的是一个表达式的结果（f()()、fs[i]() 这类），scan 定不下它是谁，经它转了一道才到这里';
         return '这一行 scan 看到的调用：' + [c.length ? '仓库里的 ' + c.map(symLabel).join('、') : '',
           ext.length ? '仓库外的 ' + (nameList(ext) || '函数') : '',
           ns.length ? '定不下的 ' + (nameList(ns) || '表达式的结果') : ''].filter(function (x) { return x; }).join('；')

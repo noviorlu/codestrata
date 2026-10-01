@@ -299,15 +299,26 @@ def ctor_classes(index: dict, recs: list, callee: str) -> list[str]:
     return out
 
 
-def judge(recs: list, callee: str, whole: bool = False) -> tuple[str, dict | None]:
+# 把生成器 / 协程真正跑起来的写法：这一行写的是它们的时候，被调方多半写在函数里别处（晚一步才启动）
+_STARTERS = frozenset(("__enter__", "__aenter__", "__next__", "next", "send", "asend", "__anext__", "__await__"))
+_NEAR = 3                 # with ( / 推导式的开头一行，往下看这么多行
+
+
+def judge(recs: list, callee: str, whole: bool = False, *, fn: list | None = None, line: int = 0,
+          prop: bool = False) -> tuple[str, dict | None]:
     """scan 在这一行记的调用（whole：不知道是哪一行，调用方整个函数的）和「trace 调到了 callee」对不对得上
-    （构造另算，见 classify）：("both", None) / ("trace", 说明)。说明：
+    （构造另算，见 classify）：("both", 说明 或 None) / ("trace", 说明)。fn 是调用方整个函数的记录、line 是这一行，
+    prop 是被调方是 property（或 __getattr__）。说明：
+      {"k": "deferred", "at": [行]}   两边都有：写在第几行，到这一行才开始跑（生成器、协程、with：帧在被消费的那一行才起）
       {"k": "override", "w": 被调方}   写的是 w（比如基类的方法），跑的是 callee（子类覆盖的）
       {"k": "name", "names": [名字]}  scan 只知道写的名字，就是 callee 的名字（构造方法也认类名），定不下被调方
                                       （self.model.compute_logits、语法触发的特殊方法、getattr(m, "Net")()）
+      {"k": "prop", "name": 名字}     这一行读了属性（property），接收者的类型定不下
+      {"k": "getattr"}                这一行读的属性在类里没定义，走了 __getattr__
       {"k": "line", "c": [...], "ext": [...], "names": [...]}   这一行 scan 看到的别的调用，经其中一个转了一道：
                                       c 定下的仓库里的函数（装饰器、框架），ext 仓库外的（sorted(key=…)、线程池回调），
-                                      names 定不下的名字（"" 是调一个表达式的结果：f()()、fs[i]()）；没有的键不给
+                                      names 定不下的名字（"" 是调一个表达式的结果：f()()、fs[i]()；super().x 是 MRO 上的下一个类）；
+                                      只看从这一行开始的调用（跨过这一行的多行外层调用不算），语法触发的特殊方法不算；没有的键不给
       {"k": "none"}                   这一行 scan 没看到调用（取普通属性触发的、模块级 __getattr__）
       {"k": "nomatch"}                whole：调用方里没有同名的调用（不知道是哪一行，别的就不猜了）"""
     last = _last(callee)
@@ -322,9 +333,26 @@ def judge(recs: list, callee: str, whole: bool = False) -> tuple[str, dict | Non
         return "trace", {"k": "name", "names": named}
     if whole:
         return "trace", {"k": "nomatch"}
-    seen = {"c": sorted({r[2] for r in recs if r[2]})[:4],
-            "ext": sorted({r[3] or "" for r in recs if r[2] is None and r[4] == _graph.EXT}),
-            "names": sorted({r[3] or "" for r in recs if r[2] is None and r[4] != _graph.EXT})}
+    here = [r for r in recs if r[0] == line] if line else []
+    if fn is not None and line:
+        # 这一行没有写明的调用（只有语法触发的、或者 x.__enter__() / next(g) 这种把生成器跑起来的）
+        quiet = all(r[4] == _graph.SYN or (r[2] is None and (r[3] or "") in _STARTERS) for r in here)
+        # 生成器 / 协程 / with：写的地方和真正开始跑的地方不是同一行
+        later = sorted({r[0] for r in fn if r[2] == callee and (
+            any(o[2] != callee and o[0] <= r[0] <= o[1] for o in here)     # 写在这一行那个调用的参数里：await wait_for(self.f(…))
+            or quiet)})                                                    # 这一行是 for x in g / with ( / next(g)：写在函数里别处
+        if later:
+            return "both", {"k": "deferred", "at": later[:3]}
+        if quiet:                     # 推导式、with 的开头一行：下面几行里有同名的（for 子句里的 __iter__）
+            below = sorted({r[3] for r in fn if line < r[0] <= line + _NEAR and r[2] is None and r[3] in own})
+            if below:
+                return "trace", {"k": "name", "names": below}
+    if prop:
+        return "trace", {"k": "getattr"} if last == "__getattr__" else {"k": "prop", "name": last}
+    pool = [r for r in (here or recs) if r[4] != _graph.SYN]
+    seen = {"c": sorted({r[2] for r in pool if r[2]})[:4],
+            "ext": sorted({r[3] or "" for r in pool if r[2] is None and r[4] == _graph.EXT}),
+            "names": sorted({r[3] or "" for r in pool if r[2] is None and r[4] != _graph.EXT})}
     seen = {k: v for k, v in seen.items() if v}
     return "trace", {"k": "line", **seen} if seen else {"k": "none"}
 
@@ -341,6 +369,7 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
     一次构造只算一次：同一行的 __new__ 和 __init__ 取多的那个；一行里几处构造都会跑到这个方法（A(B())，A、B
     继承同一个 __init__）时平分。moved：整个挪到了同一个类上的函数对 → 类"""
     by = scan_by_base(index)
+    syms = index.get("symbols") or {}
     out: dict[str, dict] = {}
     built: dict[str, dict] = {}         # "F|C" → {"a", "lines": {行: {方法: 次数}}}；老 run 的行是 None
     moved: dict[str, str] = {}
@@ -356,6 +385,7 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
         caller, _, callee = pk.partition("|")
         recs = by.get(base_node(caller), [])
         local = ".<L" in callee and base_node(callee) == base_node(caller)
+        prop = _last(callee) == "__getattr__" or _is_prop(syms.get(base_node(callee)))
         if x["lines"] is None:
             cs = ctor_classes(index, recs, callee)
             if cs:
@@ -376,7 +406,7 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
                 move(caller, cs, l, callee, n, x["a"])
                 to.update(cs)
                 continue
-            st, note = ("both", None) if local else judge(at, callee, whole=not l)
+            st, note = ("both", None) if local else judge(at, callee, whole=not l, fn=recs, line=l, prop=prop)
             keep.append({"l": l, "n": n, "status": st, "note": note})
         if keep:
             out[pk] = {**x, "n": sum(y["n"] for y in keep), "lines": keep,
@@ -396,6 +426,11 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
                   for l, per in sorted(y["lines"].items())]
             out[pk] = {"a": y["a"], "b": b, "n": sum(z["n"] for z in ls), "lines": ls, "only": 0, "guessed": None}
     return out, moved
+
+
+def _is_prop(sym: dict | None) -> bool:
+    """符号是 property 这类（读、写属性就是调它）：装饰器名以 property 结尾，或者是 setter / deleter"""
+    return any(x.endswith("property") or x in ("setter", "deleter") for x in (sym or {}).get("d") or ())
 
 
 def node_unit(index: dict, key: str) -> str | None:

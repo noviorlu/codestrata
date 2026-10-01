@@ -1741,7 +1741,7 @@ _SYN = {
 def test_call_lines_for_syntax_calls():
     """不写名字的调用：property 取属性就是调用（有 setter 的 getter、setter 都是），特殊方法由 with / for / [] / + 触发，
     对象(…) 调 __call__。边详情里的调用行是 trace 记的那一行（docstring、注释里的字样不会被当成调用处），
-    再说清楚 scan 在那一行看到了什么：接收者 b 是参数、类型定不下——取属性那一行 scan 没看到调用，
+    再说清楚 scan 在那一行看到了什么：接收者 b 是参数、类型定不下——取属性那一行说明是读了 property，
     语法触发的特殊方法、b(…) 只知道名字；类名(…) 构造、@deco 两边都有。"""
     repo = tmpdir("cs-syn-") / "repo"
     for rel, src in _SYN.items():
@@ -1763,7 +1763,7 @@ def test_call_lines_for_syntax_calls():
         c = got[q]
         assert [x["s"] for x in c["lines"]] == lines, (q, c["lines"])
         assert all(use[x["l"] - 1].strip() == x["s"] and x["status"] == "trace" for x in c["lines"]), (q, c["lines"])
-    assert got["Box.value"]["lines"][0]["note"] == {"k": "none"}, got["Box.value"]
+    assert got["Box.value"]["lines"][0]["note"] == {"k": "prop", "name": "value"}, got["Box.value"]   # 读了 property
     assert "__enter__" in got["Box.__enter__"]["lines"][0]["note"]["names"], got["Box.__enter__"]
     assert "__getitem__" in got["Box.__getitem__"]["lines"][0]["note"]["names"], got["Box.__getitem__"]
     assert got["Box.__call__"]["lines"][0]["note"] == {"k": "line", "names": ["b"]}, got["Box.__call__"]
@@ -2361,6 +2361,63 @@ def test_request_path():
     out = cs("path", repo, "pa@serve").stdout
     assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" in out and "← app.py:" in out, out
     assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
+
+
+_DF = {
+    "df/__init__.py": "",
+    "df/lib.py": ("import contextlib\n\n\n"
+                  "@contextlib.contextmanager\ndef ctx(n):\n    yield n\n\n\n"
+                  "def gen(n):\n    for i in range(n):\n        yield i\n\n\n"
+                  "async def coro(x):\n    return x\n"),
+    "df/app.py": ("import asyncio\nimport collections\n\nfrom df import lib\n\n\n"
+                  "class Worker(collections.UserDict):\n"
+                  "    def __init__(self, data):\n        super().__init__(data)\n\n"
+                  "    def __setitem__(self, k, v):\n        self.data[k] = v\n\n\n"
+                  "def run():\n"
+                  "    g = lib.gen(3)\n"
+                  "    total = 0\n"
+                  "    for x in g:\n"
+                  "        total += x\n"
+                  "    with (\n"
+                  "        lib.ctx(1) as c,\n"
+                  "    ):\n"
+                  "        total += c\n\n"
+                  "    async def main():\n"
+                  "        return await asyncio.wait_for(\n"
+                  "            lib.coro(1),\n"
+                  "            5)\n"
+                  "    total += asyncio.run(main())\n"
+                  "    Worker({'a': 1})\n"
+                  "    return total\n\n\n"
+                  "if __name__ == '__main__':\n    run()\n"),
+}
+
+
+def test_deferred_starts_and_super():
+    """生成器、with、await：帧在被消费的那一行才起，写调用的地方在别处——scan 在调用方里定下了同一个被调方，
+    算两边都有（说明写在第几行）。super().__init__ 经仓库外的基类回调到仓库里的方法：说明列的是 super().__init__，
+    不和别的类里的 __init__ 同名对上"""
+    repo = tmpdir("cs-df-") / "repo"
+    for rel, src in _DF.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "df", "--", PY, "-m", "df.app")
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "df")
+    app = _DF["df/app.py"].splitlines()
+    ln = lambda s: next(i for i, x in enumerate(app, 1) if s in x)
+    C, L = hot["calls"], "df/lib.py#"
+
+    def lines(caller, callee):
+        return [(y["l"], y["status"], y["note"]) for y in C[f"df/app.py#{caller}|{L}{callee}"]["lines"]]
+    assert lines("run", "gen") == [(ln("for x in g"), "both", {"k": "deferred", "at": [ln("g = lib.gen(3)")]})], lines("run", "gen")
+    got = lines("run", "ctx")
+    assert all(st == "both" for _, st, _ in got) and got, got
+    co = lines("run.main", "coro")
+    assert co == [(ln("return await asyncio.wait_for("), "both", {"k": "deferred", "at": [ln("lib.coro(1),")]})], co
+    sw = C["df/app.py#Worker.__init__|df/app.py#Worker.__setitem__"]["lines"]
+    assert [(y["status"], y["note"]) for y in sw] == [("trace", {"k": "line", "names": ["super().__init__"]})], sw
 
 
 if __name__ == "__main__":

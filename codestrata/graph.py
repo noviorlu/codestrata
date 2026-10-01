@@ -217,7 +217,7 @@ def syntax_facts(tree) -> tuple[frozenset, frozenset, dict]:
                 truth(v)
         elif t in (ast.Dict, ast.Set):
             for k in (n.keys if t is ast.Dict else n.elts):
-                if k is not None:
+                if k is not None and type(k) is not ast.Constant:   # 字面量的键（"scheduler_cls"）不调仓库里的方法
                     mark(k.lineno, ("__hash__", "__eq__"))
         elif t is ast.Assign and any(type(x) in (ast.Tuple, ast.List, ast.Starred) for x in n.targets):
             mark(n.value.lineno, _ITERATES)

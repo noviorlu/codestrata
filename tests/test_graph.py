@@ -238,5 +238,38 @@ def test_script_imports_and_lazy_annotations():
     assert not any(b == f"{D}json.py" for _, b in edges), edges
 
 
+_REFS_SRC = {
+    "rf/__init__.py": "",
+    "rf/m.py": (
+        "import logging\n\nlogger = logging.getLogger(__name__)\n\n\n"
+        "class Engine:\n    def __eq__(self, o):\n        return True\n\n    def __hash__(self):\n        return 1\n\n\n"
+        "REGISTRY = {'fast': ('rf', 'm', 'Engine')}\n\n\n"
+        "def build(cfg: 'Engine') -> 'Engine':\n"
+        "    logger.info('Engine started')\n"
+        "    print(f'Engine {cfg}')\n"
+        "    out = {'scheduler_cls': cfg}\n"
+        "    return {cfg: out}\n"),
+}
+
+
+def test_name_refs_and_constant_keys():
+    """按名字接线的线索（name_refs）只收注册表这类：类型标注里的字符串、打日志 / 打印的字符串、f-string 不算。
+    字面量的字典键不调仓库里的 __eq__ / __hash__（变量当键才调）"""
+    d = tmpdir("cs-graph-") / "repo"
+    for rel, text in _REFS_SRC.items():
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text(text)
+    cs("scan", d)
+    refs = json.loads((d / ".codestrata" / "symbols.json").read_text())["name_refs"]
+    src = _REFS_SRC["rf/m.py"].splitlines()
+    reg = next(i for i, s in enumerate(src, 1) if s.startswith("REGISTRY"))
+    assert [r[1] for r in refs["Engine"]] == [reg], refs
+    g = json.loads((d / ".codestrata" / "graph.json").read_text())
+    lit = next(i for i, s in enumerate(src, 1) if "'scheduler_cls'" in s)
+    var = next(i for i, s in enumerate(src, 1) if "return {cfg" in s)
+    syn = {(n, l) for n, l, _, k in g["sites"].get("rf/m.py#build", []) if k == graph.SYN}
+    assert not any(l == lit for _, l in syn) and ("__hash__", var) in syn, syn
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))
