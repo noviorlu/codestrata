@@ -293,8 +293,8 @@ _TI_SRC = {
         "    @property\n    def current(self) -> Engine:\n        return self.engine\n\n"
         "    async def later(self) -> Engine:\n        return Engine()\n\n"
         "    def run(self, e: Engine, o: Optional[Engine] = None, p: 'Engine | None' = None):\n"
-        "        x = Engine()\n"
-        "        x.step()  # local\n"
+        "        loc = Engine()\n"
+        "        loc.step()  # local\n"
         "        Engine().step()  # direct\n"
         "        self.engine.step()  # attr\n"
         "        self.alt.step()  # cond\n"
@@ -325,7 +325,14 @@ _TI_SRC = {
         "        x.step()  # rebound\n"
         "        return x\n\n\n"
         "def make():\n    return Engine()\n\n\n"
-        "def build() -> 'Engine':\n    return Engine()\n"),
+        "def build() -> 'Engine':\n    return Engine()\n\n\n"
+        "class Slow:\n    def run(self):\n        return 1\n\n\n"
+        "class Fast:\n    def run(self):\n        return 2\n\n\n"
+        "def branchy(flag):\n    e = Slow()\n    if flag:\n        e = Fast()\n    e.run()  # branchy\n\n\n"
+        "def tried():\n    try:\n        e = Fast()\n    except Exception:\n        e = Slow()\n    e.run()  # tried\n\n\n"
+        "def loopy(n):\n    e = Fast()\n    for _ in range(n):\n        e.run()  # loopy\n        e = Slow()\n\n\n"
+        "def reparam(e: Fast):\n    e = make()\n    e.run()  # reparam\n\n\n"
+        "def once(flag):\n    e = Fast() if flag else None\n    if e:\n        e.run()  # once\n"),
 }
 
 
@@ -333,7 +340,7 @@ def test_type_inference():
     """scan 推一点类型：x = C(…) 之后的 x.m()、C().m()、self.x = C(…)（含 C(…) if … else None）之后的 self.x.m()、
     参数标注 C / Optional[C] / "C | None" 的 x.m()、类体里的 x: C、self.x = 标了类型的参数、list[C] / dict[K, C] 的
     下标 / 循环 / enumerate / .items() / .get() / 推导式、getattr(self, "x")、函数 / 方法 / property 的返回值标注都定下被调方；
-    self.x 赋的是别的调用的结果、几处赋的推不一样、局部变量后来拆包赋了别的，就不猜。
+    self.x 赋的是别的调用的结果、几处赋的推不一样、局部变量在函数里绑定过不止一次（不管分支和先后），就不猜。
     MRO 上隔着仓库外基类的 mixin 方法：graph 的调用记录按它算（近似），跳转不给（宁可不跳也不跳错）"""
     d = tmpdir("cs-graph-") / "repo"
     for rel, text in _TI_SRC.items():
@@ -351,6 +358,11 @@ def test_type_inference():
     assert (ln("mixin"), f"{M}Mixin.helper") in got, sorted(got)
     for tag in ("unknown", "mixed", "rebound", "async"):         # 推不出 / 赋了别的 / 协程：不猜
         assert (ln(tag), f"{M}Engine.step") not in got, (tag, sorted(got))
+    # 局部变量在函数里绑定过不止一次（分支、try、循环里先用后赋、参数被重新赋值）：不管先后都不推
+    calls = {(l, g["callees"][i]) for xs in g["calls"].values() for i, l, _, _ in xs}
+    for tag in ("branchy", "tried", "loopy", "reparam"):
+        assert not any(l == ln(tag) and c.endswith(".run") for l, c in calls), (tag, sorted(calls))
+    assert (ln("once"), f"{M}Fast.run") in calls, sorted(calls)
     x = json.loads((d / ".codestrata" / "xref.json").read_text())
     T = x["targets"]
     toks = {(l, T[ti]) for l, a, b, ti, k in x["files"]["ti/m.py"]}

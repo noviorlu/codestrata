@@ -3,7 +3,8 @@
 只推代码里写明的：构造 `C(…)`（含 `C(…) if … else None`）；类型标注（参数、`x: C`、类体里的字段、`self.x: C`，
 `Optional[C]`、`C | None`、字符串的前向引用也认）；函数 / 方法 / property 的返回值标注（`async def` 不算：调了是协程）；
 `list[C]`、`dict[K, C]` 这类容器取出来的元素；`getattr(obj, "x")`。属性在几处赋的推不一样、有一处推不出的，就当不知道
-（留给 trace）；有标注的只按标注。
+（留给 trace）；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推（参数：没被重新赋值），
+不管分支、循环、try 的先后——`e = Slow(); if flag: e = Fast()` 之后的 `e.run()` 不推（rebound）。
 
 推出来的值是字符串 "{种类}:模块:类"：
   i  C 的实例
@@ -70,6 +71,55 @@ def ann_class(ann):
     if t is ast.Name or t is ast.Attribute:
         return ann, "i"
     return None
+
+
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def rebound(fn) -> set:
+    """函数 fn 里绑定过不止一次的名字（参数算一次；赋值、for / with / except 的目标、del、import、:=、里面的 def / class 各算一次；
+    global / nonlocal 的名字也算在里面）：它们的类型不推。不进里层的函数、类、lambda（它们的名字算一次）。
+    推导式的循环变量也数进来（多数一点只会少推，不会推错）"""
+    n: dict[str, int] = {}
+
+    def bind(name: str, k: int = 1) -> None:
+        n[name] = n.get(name, 0) + k
+
+    a = fn.args
+    for x in a.posonlyargs + a.args + a.kwonlyargs + [a.vararg, a.kwarg]:
+        if x is not None:
+            bind(x.arg)
+    stack = list(fn.body)
+    while stack:
+        x = stack.pop()
+        t = type(x)
+        if t in _SCOPES:
+            if t is not ast.Lambda:
+                bind(x.name)
+                stack.extend(x.decorator_list)
+            continue
+        if t is ast.Name:
+            if type(x.ctx) is not ast.Load:
+                bind(x.id)
+            continue
+        if t is ast.AnnAssign and x.value is None:   # 只有标注、没有赋值：不算绑定
+            stack.append(x.annotation)
+            continue
+        if t is ast.Global or t is ast.Nonlocal:
+            for name in x.names:
+                bind(name, 2)
+            continue
+        if t is ast.ExceptHandler and x.name:
+            bind(x.name)
+        elif t is ast.Import or t is ast.ImportFrom:
+            for al in x.names:
+                bind((al.asname or al.name).split(".")[0])
+        elif getattr(x, "name", None) and t.__name__ in ("MatchAs", "MatchStar"):
+            bind(x.name)
+        elif t.__name__ == "MatchMapping" and x.rest:
+            bind(x.rest)
+        stack.extend(ast.iter_child_nodes(x))
+    return {k for k, v in n.items() if v > 1}
 
 
 def iter_types(tg, it, names: list) -> dict:

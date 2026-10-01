@@ -63,7 +63,8 @@ import json
 import os
 from pathlib import Path
 
-from .xtypes import TypeResolver, ann_class, builtin_call, if_value, is_none, iter_types, method_call, subscript, typed
+from .xtypes import (TypeResolver, ann_class, builtin_call, if_value, is_none, iter_types, method_call, rebound, subscript,
+                     typed)
 
 REF, CALL, IMPORT, DEF = 0, 1, 2, 3
 HOW_CALL, HOW_DECO, HOW_PROP, HOW_STR = "call", "deco", "prop", "str"
@@ -985,6 +986,7 @@ class _Walk:
         self.lazy_ann = False                         # 有 from __future__ import annotations（run 里定）
         self.loose = None                             # 刚解析的方法调用：按「隔着仓库外基类」找到的（见 class_member_past_unknown）
         self.recv = None                              # 刚走过的 a.b 里 a 的值（a.get(…) 这类按 a 的类型推结果）
+        self.multi: set = set()                       # 当前函数里绑定过不止一次的名字（xtypes.rebound）：不推类型
 
     def run(self, tree) -> list[tuple]:
         # from __future__ import annotations：标注不求值，是字符串。类里有个同名的方法 Config 时，方法签名里的
@@ -1193,10 +1195,12 @@ class _Walk:
         self.bind_types({x.id: v if type(tg) is ast.Name else None for tg in targets for x in _names(tg, [])})
 
     def bind_types(self, types: dict) -> None:
-        """函数里的局部名字 → 推出来的类型（None 是不知道）。模块顶层 / 类体里的名字不推"""
+        """函数里的局部名字 → 推出来的类型（None 是不知道）。模块顶层 / 类体里的名字、函数里绑定过不止一次的名字不推"""
         if not self.fn:
             return
         for name, v in types.items():
+            if name in self.multi:
+                v = None
             for sc in reversed(self.scopes):
                 if name in sc:
                     if sc[name] is not _GLOBAL and type(sc) is not _ClsScope and (sc[name] is None or typed(sc[name])):
@@ -1276,8 +1280,9 @@ class _Walk:
             if col is not None:
                 self.emit(st.lineno, col, st.name, f"s:{key}", DEF)
         loc = _fn_locals(st, key, cls, self.symbols, self.walrus, self.import_binding)
+        multi = rebound(st)                           # 绑定过不止一次的局部名字：不推类型（不管分支和先后）
         for x in _all_args(a):                        # 参数的类型标注写明了是仓库里的类：x.m() 按它解析
-            if x.annotation is not None and loc.get(x.arg) is None:
+            if x.annotation is not None and loc.get(x.arg) is None and x.arg not in multi:
                 it = ann_types.get(x.arg)
                 if it:
                     loc[x.arg] = it
@@ -1285,9 +1290,9 @@ class _Walk:
         self.cscope = None
         self.fn = True
         self.meth = cls if _first_param(st, cls) else None
-        was = self.enter(key, st.lineno, st.end_lineno or st.lineno)
+        was, multi_was, self.multi = self.enter(key, st.lineno, st.end_lineno or st.lineno), self.multi, multi
         self.block(st.body, qn + ".", None)
-        self.cur = was
+        self.cur, self.multi = was, multi_was
         self.scopes, self.cscope, self.fn, self.late, self.meth = saved
         if self.cscope is not None:
             self.cscope[st.name] = f"s:{key}" if key in self.symbols else None
