@@ -392,7 +392,7 @@ def test_rerun_command_reproduces():
     UI 的元数据里也有。录制时 shell 里相关的环境变量另存（像密钥的不存，--env 写明的不重复）。"""
     repo = fresh()
     trace_offline(repo, "rr", "--events", "--phase", "generate=fakesvc.offline:Engine.generate",
-                  "--env", "CUDA_VISIBLE_DEVICES=0",
+                  "--env", "CUDA_VISIBLE_DEVICES=0", "--env", "MY_DIRS=/a:/b:/c:/d:/e",
                   env={"VLLM_FAKE_KNOB": "7", "HF_TOKEN": "hf_secret", "MY_API_KEY": "x", "CUDA_VISIBLE_DEVICES": "5"})
     run, _, rd = latest(repo)
     inv = run["invocation"]
@@ -405,6 +405,8 @@ def test_rerun_command_reproduces():
     cmd = line.split("复刻", 1)[1].strip()
     assert cmd.startswith("cd ") and "--phase generate=fakesvc.offline:Engine.generate" in cmd, cmd
     assert "VLLM_FAKE_KNOB=7" in show and "hf_secret" not in show, show
+    env_line = next(ln for ln in show.splitlines() if ln.strip().startswith("环境"))
+    assert "MY_DIRS=/a:/b:…（共 5 段" in env_line and "MY_DIRS=/a:/b:/c:/d:/e" in cmd, (env_line, cmd)   # 长列表只列前几段
     idx = ui_load.load_index(repo)
     _, meta = ui_load.load_hot(repo, idx, run["id"])
     assert meta["rerun"] == cmd and meta["rerun_exact"] is True, meta["rerun"]
@@ -416,7 +418,7 @@ def test_rerun_command_reproduces():
     run2, _, rd2 = latest(repo)
     assert rd2 != rd and run2["case"] == "rr" and run2["rec"]["events"] is True
     assert [p[0] for p in run2["phase_log"]] == ["start", "generate"], run2["phase_log"]
-    assert run2["env"] == {"CUDA_VISIBLE_DEVICES": "0"}, run2["env"]
+    assert run2["env"] == {"CUDA_VISIBLE_DEVICES": "0", "MY_DIRS": "/a:/b:/c:/d:/e"}, run2["env"]
 
 
 def test_trace_cwd():

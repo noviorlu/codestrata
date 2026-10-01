@@ -651,7 +651,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
         "docs": docs, "file_loc": file_loc,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
                  "n_files": n_files, "n_parse_errors": n_err,
-                 "unresolved_imports": sorted(f"{a} → {b}" for a, b in unresolved),
+                 # 哪个文件 import 了哪个模块：文件写路径，模块写 import 语句里的点分名（仓库里没有它，也就没有路径）
+                 "unresolved_imports": sorted(f"{a}：import {b}" for a, b in unresolved),
                  "n_aux": len(aux)},
         "aux": aux,
         # 字符串里按名字提到的仓库内的类：{"类名": [[文件, 行], ...]}（注册表、getattr、插件表）

@@ -256,6 +256,14 @@ _STATUS = {"ok": "完整录完", "partial": "录到了但不完整", "failed": "
            "recording": "录制中"}
 
 
+def _brief_path(v: str, keep: int = 2) -> str:
+    """PATH 这类冒号分隔的长列表只列前几段（完整的在「复刻」那一行里）：又长、又把本机的目录全摆出来"""
+    parts = v.split(":")
+    if len(parts) <= keep + 1:
+        return v
+    return ":".join(parts[:keep]) + f":…（共 {len(parts)} 段，完整的见下面的复刻命令）"
+
+
 def _size(n: int) -> str:
     for u in ("B", "KB", "MB", "GB"):
         if n < 1024 or u == "GB":
@@ -335,7 +343,7 @@ def cmd_runs(a) -> int:
                 print(f"  {label:<6}{run[k]}")
         print(f"  命令  {' '.join(run.get('cmd') or [])}")
         if run.get("env"):
-            print("  环境  " + " ".join(f"{k}={v}" for k, v in run["env"].items()))
+            print("  环境  " + " ".join(f"{k}={_brief_path(v)}" for k, v in run["env"].items()))
         if run.get("git"):
             g = run["git"]
             print(f"  git   {g['commit'][:12]}" + (f" ({g['branch']})" if g.get("branch") else "")
