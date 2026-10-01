@@ -234,7 +234,8 @@ class Handler(BaseHandler):
         try:
             run, rd, phase = _runs.resolve(self.repo, ref)
             hot = self._hot(q)[0]
-            return self._json(_lanes.build(self.idx, rd, run, phase, hot, open_))
+            return self._json(_lanes.build(self.idx, rd, run, phase, hot, open_,
+                                           text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160]))
         except (SystemExit, LookupError) as e:
             return self._json({"error": str(e)}, 404)
         except (OSError, ValueError) as e:

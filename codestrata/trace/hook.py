@@ -184,20 +184,25 @@ if _root and _out:
         _tls.ev = (_gen[0], i)
         th = threading.current_thread()
         _ev.append("N %d %s" % (i, _clean(th.name)))
+        try:
+            th._codestrata_tid = (_gen[0], i)            # join 它的那一方（_join）按这个认出是哪条线程
+        except Exception:
+            pass
         fr = getattr(th, "_codestrata_from", None)      # 谁起的这个线程（_th_start 记的）；fork 之前起的不算
         if fr is not None and fr[0] == _gen[0]:
-            _ev.append("F %d %d %d %d" % (i, fr[1], fr[2], fr[3]))
+            _ev.append("F %d %d %d %d %d %d" % (i, fr[1], fr[2][0], fr[2][1], fr[3], 1 if th.daemon else 0))
         return i
 
     def _ev_here():
-        # 当前线程上最里层正在执行的 span 号（没有是 0）：从调用者的调用者往外找第一个记过账的帧
+        # (span 号, 行号)：当前线程上最里层正在执行的 span（没有是 0），和它正执行到的那一行（起线程、放 / 取、发 / 收的
+        # 那一行代码；经仓库外的代码转了一道的，是调进仓库外代码的那一行）。从调用者的调用者往外找第一个记过账的帧
         f = sys._getframe(2)
         while f is not None:
             x = _xf.get(id(f))
             if x is not None and x[1] is f.f_code:
-                return x[0]
+                return x[0], f.f_lineno or 0
             f = f.f_back
-        return 0
+        return 0, 0
 
     def _ev_t():
         return (time.monotonic_ns() - _t0[0]) // 1000
@@ -663,7 +668,9 @@ if _root and _out:
         _start_flusher()
     os.register_at_fork(after_in_child=_after_fork)
 
-    # ---- 谁起了谁（时序事件开着时）。线程：Thread.start 时记下在哪个线程的哪个 span 里（新线程第一次登记时写 F 行）。
+    # ---- 谁起了谁、谁回收了谁（时序事件开着时）。线程：Thread.start 时记下在哪个线程的哪个 span 里（新线程第一次登记时写 F 行）；
+    # 线程的 run 跑完时它自己写一行 X（只记登记过的、也就是碰过仓库代码或交接的线程）；join 返回、被等的线程已经结束时，
+    # 在等的那个线程里写一行 J（在哪个 span 里等到的哪条线程）。线程池的 shutdown(wait=True) 也是逐个 join。
     # 子进程：exec 出来的（subprocess、multiprocessing 的 spawn 都经 _posixsubprocess.fork_exec；还有 os.posix_spawn）
     # 起完才知道 pid，在父进程里写 P 行；fork 出来的（os.fork、multiprocessing 的 fork）fork 之前记下，子进程里写 B 行。
     # 只包一层、照原样调，出错不影响被 trace 的程序
@@ -673,16 +680,43 @@ if _root and _out:
         def _start(self, *a, **kw):
             try:
                 self._codestrata_from = (_gen[0], _ev_tid(), _ev_here(), _ev_t())
+                run0 = self.run
+                def run(*a2, **kw2):
+                    try:
+                        return run0(*a2, **kw2)
+                    finally:
+                        try:
+                            c = getattr(_tls, "ev", None)
+                            if c is not None and c[0] == _gen[0]:
+                                _ev.append("X %d %d" % (c[1], _ev_t()))
+                        except Exception:
+                            pass
+                self.run = run
             except Exception:
                 pass
             return _th_start(self, *a, **kw)
         threading.Thread.start = _start
 
+        _th_join = threading.Thread.join
+        def _join(self, *a, **kw):
+            r = _th_join(self, *a, **kw)
+            try:
+                tt = getattr(self, "_codestrata_tid", None)
+                if tt is not None and tt[0] == _gen[0] and not self.is_alive() and not getattr(self, "_codestrata_joined", False):
+                    self._codestrata_joined = True        # 只记第一次等到它的那一处（之后再 join 立刻返回）
+                    sp, ln = _ev_here()
+                    _ev.append("J %d %d %d %d %d" % (_ev_t(), _ev_tid(), sp, ln, tt[1]))
+            except Exception:
+                pass
+            return r
+        threading.Thread.join = _join
+
         def _spawned(fn):
             def wrap(*a, **kw):
                 pid = fn(*a, **kw)
                 try:
-                    _ev.append("P %d %d %d %d" % (_ev_t(), _ev_tid(), _ev_here(), pid))
+                    sp, ln = _ev_here()
+                    _ev.append("P %d %d %d %d %d" % (_ev_t(), _ev_tid(), sp, ln, pid))
                 except Exception:
                     pass
                 return pid
@@ -698,15 +732,27 @@ if _root and _out:
             if hasattr(os, _n):
                 setattr(os, _n, _spawned(getattr(os, _n)))
 
+        _waitpid0 = os.waitpid
+        def _waitpid(pid, options, *a, **kw):
+            r = _waitpid0(pid, options, *a, **kw)
+            try:
+                if r[0] > 0 and (os.WIFEXITED(r[1]) or os.WIFSIGNALED(r[1])):
+                    sp, ln = _ev_here()
+                    _ev.append("W %d %d %d %d %d" % (_ev_t(), _ev_tid(), sp, ln, r[0]))
+            except Exception:
+                pass
+            return r
+        os.waitpid = _waitpid
+
         def _before_fork():
             try:
-                _fork_from[0] = (_t0[0], _ev_tid(), _ev_here())
+                _fork_from[0] = (_t0[0], _ev_tid()) + _ev_here()
             except Exception:
                 _fork_from[0] = None
         def _after_fork_ev():                         # 在 _after_fork 之后跑（按注册的先后）
             fr = _fork_from[0]
             if fr is not None:
-                _ev.append("B %d %d %d" % fr)
+                _ev.append("B %d %d %d %d" % fr)
         os.register_at_fork(before=_before_fork, after_in_child=_after_fork_ev)
 
     # ---- 谁把数据交给谁（时序事件开着时）。进程内的队列：put 时、get 时各写一行（Q / G），带队列和对象的 id——
@@ -715,7 +761,8 @@ if _root and _out:
     # 这些模块不为了打补丁主动 import：第一次 import 完的时候打（_OnImport），已经 import 过的马上打
     def _ev_put(tag, kind, q, item):
         if _ev_room():
-            _ev.append("%s %d %d %d %s %d %d" % (tag, _ev_t(), _ev_tid(), _ev_here(), kind, id(q), id(item)))
+            sp, ln = _ev_here()
+            _ev.append("%s %d %d %d %d %s %d %d" % (tag, _ev_t(), _ev_tid(), sp, ln, kind, id(q), id(item)))
 
     def _queue_patch(cls, kind, put_name, get_name):
         put0, get0 = cls.__dict__.get(put_name), cls.__dict__.get(get_name)
@@ -756,9 +803,9 @@ if _root and _out:
             h.update(m[-32:])
         return h.hexdigest()
 
-    def _ev_msg(tag, span, parts):
+    def _ev_msg(tag, here, parts):
         if _ev_room():
-            _ev.append("%s %d %d %d %s" % (tag, _ev_t(), _ev_tid(), span, _fp(parts)))
+            _ev.append("%s %d %d %d %d %s" % (tag, _ev_t(), _ev_tid(), here[0], here[1], _fp(parts)))
 
     import weakref
     _zshadow = weakref.WeakSet()  # asyncio 版 socket 背后真正收发的同步 socket：它们的收发由 asyncio 版那一层记
@@ -844,7 +891,7 @@ if _root and _out:
             def recv_multipart(self, *a, **kw):
                 fut = recv0(self, *a, **kw)
                 try:
-                    sp = _ev_here()                   # 等它的协程；收到的时候（回调里）已经不在它的帧上了
+                    sp = _ev_here()                   # 等它的协程（和 await 的那一行）；收到的时候（回调里）已经不在它的帧上了
                     def done(f, sp=sp, sock=self):
                         try:
                             if not f.cancelled() and f.exception() is None:

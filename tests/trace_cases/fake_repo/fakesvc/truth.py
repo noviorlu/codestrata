@@ -165,6 +165,20 @@ def s_async2():               # 两个协程交错，各自的子调用不能合
     asyncio.run(main())
 
 
+def in_daemon(ev):            # 守护线程：一个跑完了没人 join，一个到进程结束还卡着
+    callee.slow(0.01)
+    if ev is not None:
+        ev.wait()
+
+
+def s_daemon():
+    done = threading.Thread(target=in_daemon, args=(None,), name="bg-done", daemon=True)
+    done.start()
+    threading.Thread(target=in_daemon, args=(threading.Event(),), name="bg-stuck", daemon=True).start()
+    while done.is_alive():
+        callee.slow(0.01)
+
+
 def s_threads2():             # 先后起的线程（glibc 会复用 ident）：各有各的号和名字
     for i in range(4):
         t = threading.Thread(target=in_thread, name=f"req-{i}")
@@ -190,6 +204,7 @@ def main():
     s_queue()
     s_queue_ext()
     s_zmq()
+    s_daemon()
 
 
 if __name__ == "__main__":

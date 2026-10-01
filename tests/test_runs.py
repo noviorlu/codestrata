@@ -996,7 +996,8 @@ def _line(repo: Path, rel: str, needle: str) -> str:
 def test_events_truth():
     """7.1 的真值：同步嵌套、返回后再调、生成器、异常、asyncio 交错、多线程、fork、exec 都配对正确，父 span 对；
     span 的调用次数之和 = 计数里的 func_edges 之和（同文件的调用也记）。谁起了谁（线程、fork、subprocess）、
-    谁把数据交给谁（进程内的队列、跨进程的 ZMQ——用 trace_cases/fakezmq 这个假的 pyzmq）都记在对的那次调用上。"""
+    谁把数据交给谁（进程内的队列、跨进程的 ZMQ——用 trace_cases/fakezmq 这个假的 pyzmq）、谁回收了谁（join、waitpid）
+    都记在对的那次调用、对的那一行上。"""
     repo = fresh()
     cs("trace", repo, "--case", "truth", "--events", "--", PY, "-m", "fakesvc.truth",
        env={"PYTHONPATH": str(HERE / "trace_cases" / "fakezmq")})
@@ -1077,10 +1078,36 @@ def test_events_truth():
     tf = idx["thread_from"][str(main_pid)]
     workers = {t_: v for t_, v in tf.items() if tn[t_].startswith("worker-")}
     assert len(workers) == 2 and all(rows[main_pid][r]["b"] == k(T, "s_threads") and tn[str(ft)] == "MainThread"
-                                     for ft, r in workers.values()), (tf, tn)
+                                     for ft, r, *_ in workers.values()), (tf, tn)
     how = {(s["how"], rows[main_pid][s["row"]]["b"]) for s in idx["spawns"] if s["pid"] == main_pid and s["row"] >= 0}
     assert {("fork", k(T, "s_fork")), ("fork", k(T, "s_exec")), ("exec", k(T, "s_spawn"))} <= how, idx["spawns"]
     assert all(s["child"] for s in idx["spawns"]), idx["spawns"]
+
+    def at(rel, fn, needle):
+        """fn 函数体里第一个以 needle 开头（去掉缩进）的那一行的行号"""
+        src = (repo / rel).read_text().splitlines()
+        i0 = int(k(rel, fn).rpartition(":")[2])
+        return next(i for i, ln in enumerate(src[i0:], i0 + 1) if ln.strip().startswith(needle))
+    # 起线程、fork / exec 的那一行；守护线程标出来
+    assert {tuple(v[2:3]) for v in workers.values()} == {(at(T, "s_threads", "t.start()"),)}, workers
+    assert not any(v[4] for v in workers.values()), workers
+    byname = {tn[t_]: v for t_, v in tf.items()}
+    assert byname["bg-done"][4] and byname["bg-stuck"][4] and byname["bg-done"][2] == at(T, "s_daemon", "done.start()"), byname
+    assert {(s["how"], s["line"]) for s in idx["spawns"] if s["pid"] == main_pid and s["row"] >= 0} >= \
+        {("fork", at(T, "s_fork", "pid = os.fork()")), ("exec", at(T, "s_spawn", "subprocess.run("))}, idx["spawns"]
+    # 谁回收了谁：worker 在 s_threads 的 t.join() 那一行被等到，consumer 在 s_queue 的；跑完没人 join 的守护线程只有结束时刻，
+    # 卡到最后的什么都没有。子进程：waitpid 等到的那一行（subprocess.run 是在仓库外的 Popen.wait 里等的：记 s_spawn 里调它的那一行）
+    te = {tn[t_]: v for t_, v in idx["thread_end"][str(main_pid)].items()}
+    for nm, fn in (("worker-0", "s_threads"), ("worker-1", "s_threads"), ("consumer", "s_queue"), ("stdlib-put", "s_queue_ext")):
+        jt, jrow, jln, jat = te[nm]["by"]
+        assert tn[str(jt)] == "MainThread" and rows[main_pid][jrow]["b"] == k(T, fn) and jln == at(T, fn, "t.join()"), (nm, te[nm])
+        assert te[nm]["t"] is not None and te[nm]["t"] <= jat, (nm, te[nm])
+    assert te["bg-done"]["by"] is None and te["bg-done"]["t"] is not None, te
+    assert te["bg-stuck"] == {"t": None, "by": None}, te
+    reaps = {(rows[main_pid][s["row"]]["b"], s["line"]) for s in idx["reaps"] if s["pid"] == main_pid}
+    assert {(k(T, "s_fork"), at(T, "s_fork", "os.waitpid(")), (k(T, "s_exec"), at(T, "s_exec", "os.waitpid(")),
+            (k(T, "s_spawn"), at(T, "s_spawn", "subprocess.run("))} <= reaps, idx["reaps"]
+    assert {s["child"] for s in idx["reaps"]} <= {s["child"] for s in idx["spawns"]} | {p["pid"] for p in idx["procs"]}
     # 谁把数据交给谁：主线程 put_job → consumer 线程 take_job（queue）；父进程 zmq_send → 子进程 zmq_recv（zmq）
     def side(x):
         return x[0], keys["threads"][str(x[0])][str(x[1])], rows[x[0]][x[2]]["b"] if x[2] >= 0 else None
@@ -1088,6 +1115,10 @@ def test_events_truth():
     want_q = ("queue", (main_pid, "MainThread", k(C, "put_job")), None)
     got_q = [h for h in hs if h[:2] == want_q[:2]]
     assert len(got_q) == 1 and got_q[0][2][1:] == ("consumer", k(C, "take_job")), (hs, idx["handoffs"])
+    # 两头都带着那一行：put_job 里 q.put 的那一行、take_job 里 q.get 的那一行；ZMQ 是 send_multipart / recv_multipart 那一行
+    lines = {(h["via"], h["from"][4], h["to"][4]) for h in idx["handoffs"]}
+    assert ("queue", at(C, "put_job", "q.put("), at(C, "take_job", "return q.get(")) in lines, lines
+    assert ("zmq", at(C, "zmq_send", "sock.send_multipart("), at(C, "zmq_recv", "return sock.recv_multipart(")) in lines, lines
     # ZMQ 照 vLLM 的方式：ROUTER 发（带身份帧）→ DEALER 收；回来的一条是 send(第一帧, SNDMORE) + send_multipart(其余的)
     got_z = {(h[1][2], h[2][2], h[1][0] == main_pid) for h in hs if h[0] == "zmq"}
     assert got_z == {(k(C, "zmq_reply"), k(C, "zmq_recv"), False), (k(C, "zmq_send"), k(C, "zmq_recv"), True)}, \
@@ -1166,6 +1197,24 @@ def test_events_parse_partial_line():
     assert [e[0] for e in log["ev"]] == ["C", "R", "C"], log["ev"]
     sp = events.pair(log)
     assert sp[0][1] == 20 and sp[1][1] is None, sp
+
+
+def test_events_parse_old_origins():
+    """2026-10-01 之前的日志：F / P / B / Q / G / O / I 没有行号（F 也没有守护），照样读，行记成 0；新的带行号、X / J / W"""
+    from codestrata import events
+    d = tmpdir("cs-runs-")
+    old, new = d / "ev-300-1000.log", d / "ev-301-2000.log"
+    old.write_text("H 300 1000 1\nN 1 MainThread\nN 2 w\nF 2 1 5 40\nP 50 1 5 777\nB 900 1 3\n"
+                   "Q 60 1 5 q 11 22\nG 70 2 6 q 11 22\nO 80 1 5 abcd\nI 90 2 6 abcd\n")
+    new.write_text("H 301 2000 1\nN 1 MainThread\nN 2 w\nF 2 1 5 12 40 1\nP 50 1 5 13 777\nW 55 1 5 14 777\n"
+                   "B 900 1 3 9\nQ 60 1 5 15 q 11 22\nG 70 2 6 16 q 11 22\nO 80 1 5 17 abcd\nI 90 2 6 18 abcd\n"
+                   "X 2 95\nJ 99 1 5 19 2\nJ 120 1 5 30 2\n")
+    a, b = events.parse(old), events.parse(new)
+    assert a["from"] == {2: (1, 5, 40, 0, False)} and a["spawns"] == [(50, 1, 5, 777, 0)] and a["forked"] == (900, 1, 3, 0), a
+    assert [m[5] for m in a["msgs"]] == [0, 0, 0, 0] and not a["exits"] and not a["joins"] and not a["reaps"], a
+    assert b["from"] == {2: (1, 5, 40, 12, True)} and b["spawns"] == [(50, 1, 5, 777, 13)] and b["forked"] == (900, 1, 3, 9), b
+    assert b["reaps"] == [(55, 1, 5, 777, 14)] and [m[5] for m in b["msgs"]] == [15, 16, 17, 18], b
+    assert b["exits"] == {2: 95} and b["joins"] == {2: (99, 1, 5, 19)}, b       # 只记第一次等到它的那一处
 
 
 def test_events_pair_duplicates():
@@ -2346,8 +2395,10 @@ def test_trace_only_notes():
 
 def test_lanes():
     """运行时按进程 · 线程分列（lanes.build）：一列一类线程（名字归一之后同名的合成一列），列里是这条线程调到的节点和边；
-    列之间：谁起了谁（Thread.start、fork、subprocess）、谁把数据交给谁（queue、zmq）连到对的列和节点上"""
+    列之间：谁起了谁（Thread.start、fork、subprocess）、谁把数据交给谁（queue、zmq）、谁回收了谁（join、waitpid）连到对的列和节点上，
+    两头带着那一行代码；每列有起止的摘要"""
     from codestrata import lanes
+    from codestrata.ui import source
     repo = fresh()
     cs("scan", repo)
     cs("trace", repo, "--case", "truth", "--", PY, "-m", "fakesvc.truth",
@@ -2355,7 +2406,7 @@ def test_lanes():
     idx = ui_load.load_index(repo)
     hot, _ = ui_load.load_hot(repo, idx, "truth")
     run, rd, phase = runs.resolve(repo, "truth")
-    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]))
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]), text=lambda f, l: source.line_text(repo, f, l).strip())
     T, C = "fakesvc/truth.py", "fakesvc/callee.py"
     by = {x["id"]: x for x in L["lanes"]}
     main = next(x for x in L["lanes"] if x["thread"] == "MainThread" and T in x["nodes"])
@@ -2391,8 +2442,32 @@ def test_lanes():
     ext = next(x for x in L["lanes"] if x["thread"] == "stdlib-put")
     assert ext.get("external") and not ext["nodes"], ext
     assert ("queue", ext["id"], None, main["id"], C, 1) in hs, hs
-    xq = next(x for x in L["links"] if x["from"]["lane"] == ext["id"])
+    xq = next(x for x in L["links"] if x["from"]["lane"] == ext["id"] and x["kind"] == "handoff")
     assert xq["pairs"][0]["a"] is None and xq["pairs"][0]["xa"] and xq["pairs"][0]["b"] == "fakesvc/callee.py#take_job", xq
+    # 两头的那一行代码：放 / 取的那一行，起线程的那一行（被起的那一头是入口函数，没有行）
+    assert (q["pairs"][0]["ta"], q["pairs"][0]["tb"]) == ("q.put(job)", "return q.get()"), q["pairs"]
+    assert q["from"]["line"] == q["pairs"][0]["la"] > 0 and q["to"]["line"] == q["pairs"][0]["lb"] > 0, q
+    ws = next(x for x in L["links"] if x["kind"] == "spawn" and x["to"]["lane"] == by[f"{main['pid']}:worker"]["id"])
+    assert [(p_["a"], p_["ta"], p_["lb"], p_["n"]) for p_ in ws["pairs"]] == [("fakesvc/truth.py#s_threads", "t.start()", 0, 2)], ws
+    assert ws["first"] is not None and ws["from"]["t"] == ws["first"], ws
+    # 谁回收了谁：从被回收的那一列（入口节点）连到 join / waitpid 的那一行；外部线程（stdlib-put）也有
+    js = {(x["via"], x["from"]["lane"], x["to"]["lane"], x["to"]["node"]): x for x in L["links"] if x["kind"] == "join"}
+    for nm, fn in (("worker", "s_threads"), ("consumer", "s_queue"), ("stdlib-put", "s_queue_ext")):
+        j = js[("join", f"{main['pid']}:{nm}", main["id"], T)]
+        assert [(p_["a"], p_["b"], p_["tb"], p_["la"]) for p_ in j["pairs"]] == [(None if nm == "stdlib-put" else
+                f"fakesvc/truth.py#in_{nm if nm == 'consumer' else 'thread'}", f"fakesvc/truth.py#{fn}", "t.join()", 0)], j
+    waits = [x for x in js.values() if x["via"] == "wait"]
+    assert len(waits) >= 3 and all(by[x["from"]["lane"]]["pid"] != main["pid"] and x["to"]["lane"] == main["id"] for x in waits), js
+    assert {x["pairs"][0]["tb"] for x in waits} == {"os.waitpid(pid, 0)"}, waits    # subprocess 起的 python -c pass 不跑仓库代码，没有列
+    # 起止摘要：worker ×2 都是主线程起、主线程收；守护线程一个跑完没人收、一个到最后还在跑；fork 出来的子进程被 waitpid 收了
+    w = by[f"{main['pid']}:worker"]
+    assert w["start"] == {"n": 2, "t": w["start"]["t"], "lane": main["id"], "daemon": 0} and w["start"]["t"] is not None, w["start"]
+    assert w["stop"]["joined"] == 2 and w["stop"]["lane"] == main["id"] and not w["stop"]["exited"] + w["stop"]["running"], w["stop"]
+    assert by[f"{main['pid']}:bg-done"]["stop"] == {"joined": 0, "t": None, "lane": None, "exited": 1, "running": 0}
+    assert by[f"{main['pid']}:bg-stuck"]["stop"]["running"] == 1 and by[f"{main['pid']}:bg-stuck"]["start"]["daemon"] == 1
+    kid = by[forks[0][3]]
+    assert kid["start"]["lane"] == main["id"] and kid["stop"]["joined"] == 1 and kid["stop"]["lane"] == main["id"], kid
+    assert main["start"] is None and main["stop"] is None, main
 
 
 _PA = {

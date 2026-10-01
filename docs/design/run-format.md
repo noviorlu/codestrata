@@ -293,16 +293,23 @@ R <t_us> <tid> <span>                       返回，或异常展开
 Y <t_us> <tid> <span>                       挂起（yield、await）
 S <t_us> <tid> <span>                       恢复
 T                                           达到行数上限，之后不再记调用（计数不受影响）
-F <tid> <起它的 tid> <span> <t_us>           谁起的这个线程：在哪个线程的哪个 span 里 Thread.start（span 0：不在任何 span 里）。新线程第一次登记（N）时写
-P <t_us> <tid> <span> <子进程 pid>           在这个 span 里 exec 出一个子进程（subprocess、multiprocessing 的 spawn、os.posix_spawn）
-B <父进程映像的 t0_ns> <tid> <span>          这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的（os.fork、multiprocessing 的 fork）
-Q <t_us> <tid> <span> <种类> <队列 id> <对象 id>  往进程内的队列里放了一个对象（种类 q：queue.Queue 及子类，a：asyncio.Queue 及子类，j：janus）
-G <t_us> <tid> <span> <种类> <队列 id> <对象 id>  从队列里取出一个对象
-O <t_us> <tid> <span> <指纹>                  ZMQ 发出一条消息（按帧记，带 SNDMORE 的攒到最后一帧；指纹是数据帧的长度 + 首尾 32 字节的 blake2b，ROUTER 的身份帧不算）
-I <t_us> <tid> <span> <指纹>                  ZMQ 收到一条消息（recv_multipart；asyncio 版的 span 是等它的那个协程）
+F <tid> <起它的 tid> <span> <行> <t_us> <守护>   谁起的这个线程：在哪个线程的哪个 span 里、哪一行 Thread.start（span 0：不在任何 span 里）；守护 1 是 daemon。新线程第一次登记（N）时写
+X <tid> <t_us>                              这个线程的 run 跑完了（Thread.start 起的、登记过的线程才有；守护线程到进程结束还没跑完的没有）
+J <t_us> <tid> <span> <行> <被等的 tid>       join 等到了那个线程结束（只记第一次等到它的那一处；线程池的 shutdown(wait=True) 也是逐个 join）
+P <t_us> <tid> <span> <行> <子进程 pid>       在这个 span 里 exec 出一个子进程（subprocess、multiprocessing 的 spawn、os.posix_spawn）
+W <t_us> <tid> <span> <行> <子进程 pid>       waitpid 等到这个子进程退出（Popen.wait、multiprocessing 的 Process.join 都经它；poll() 收的不记）
+B <父进程映像的 t0_ns> <tid> <span> <行>      这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的（os.fork、multiprocessing 的 fork）
+Q <t_us> <tid> <span> <行> <种类> <队列 id> <对象 id>  往进程内的队列里放了一个对象（种类 q：queue.Queue 及子类，a：asyncio.Queue 及子类，j：janus）
+G <t_us> <tid> <span> <行> <种类> <队列 id> <对象 id>  从队列里取出一个对象
+O <t_us> <tid> <span> <行> <指纹>             ZMQ 发出一条消息（按帧记，带 SNDMORE 的攒到最后一帧；指纹是数据帧的长度 + 首尾 32 字节的 blake2b，ROUTER 的身份帧不算）
+I <t_us> <tid> <span> <行> <指纹>             ZMQ 收到一条消息（recv_multipart；asyncio 版的 span 和行是 await 它的那个协程、那一行）
 ```
 
-F / P / B / Q / G / O / I 是 2026-10-01 起才有的，和 C 一样算进行数上限（F、B 除外）。
+`<行>` 是那个 span 的函数里正执行到的那一行：起线程、放 / 取、发 / 收、join、waitpid 的那一行代码；经仓库外的代码转了一道的（`executor.submit`、
+`subprocess.run`），是调进仓库外代码的那一行。不在任何 span 里是 0。
+
+F / P / B / Q / G / O / I 是 2026-10-01 起才有的；`<行>`、`<守护>` 和 X / J / W 是同一天晚些时候加的，之前录的日志没有，照样读（行记成 0）。
+Q / G / O / I 和 C 一样算进行数上限；F / X / J / P / W / B 不算（和线程、子进程一样多）。
 
 真实片段（vllm-omni 的一个 engine core 进程）：
 
@@ -344,9 +351,11 @@ R 3784145 1 2
 | `chunks` | [{pid, chunk, t0_us, t1_us, n}] | 每块 span 文件：属于哪个 pid、文件名、块里最早的开始、最晚的结束（`max(t0 + max(dur, 0))`）、行数。**块上没有 truncated 字段** | `seq`：按 `t0_us` / `t1_us` 跳过和时间段不重叠的块；`seq.run_end` 取所有块的 `t1_us` 最大值当时间轴终点的候选 |
 | `procs` | [{pid, ppid, t0_us, n_events, n_spans, truncated}] | 每个进程映像一条（同一 pid exec 前后是两条）；`n_events` 是 C/R/Y/S 行数；`truncated` 是这个映像到了行数上限 | `runs._build_events`（数进程） |
 | `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.edge_times` 原样带出 |
-| `thread_from` | {"\<pid\>": {"\<tid\>": [起它的 tid, span 下标]}} | 线程是谁起的（F 行）：在同一个进程的哪个线程、哪个 span 里 `Thread.start`；span 下标是 `-1` 时不在任何 span 里（模块顶层、线程的入口函数）。没记到的线程（2026-10-01 之前的 run、主线程）没有 | （P0 的运行时模型） |
-| `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us]`，`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （P0 的运行时模型） |
-| `spawns` | [{pid, tid, row, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （P0 的运行时模型） |
+| `thread_from` | {"\<pid\>": {"\<tid\>": [起它的 tid, span 下标, 行, t_us, 守护]}} | 线程是谁起的（F 行）：在同一个进程的哪个线程、哪个 span 里、哪一行 `Thread.start`；span 下标是 `-1` 时不在任何 span 里（模块顶层、线程的入口函数），行 0 是不知道。没记到的线程（2026-10-01 之前的 run、主线程）没有；老的只有前两项 | `lanes`（谁起了谁） |
+| `thread_end` | {"\<pid\>": {"\<tid\>": {"t": t_us 或 null, "by": [join 它的 tid, span 下标, 行, t_us] 或 null}}} | 线程怎么结束的（X / J 行）：`t` 是 run 跑完的时刻（null：到录制结束还在跑），`by` 是第一次 join 等到它的那一处（null：没人 join）。只有 `thread_from` 里有的线程才有；老 run 没有这个字段 | `lanes`（谁回收了谁、列头的起 / 收） |
+| `reaps` | [{pid, tid, row, line, child, t_us}] | 子进程是谁收的（W 行）：waitpid 等到 `child` 退出的那一边。老 run 没有 | `lanes` |
+| `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us, 行]`（老的没有行），`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （P0 的运行时模型） |
+| `spawns` | [{pid, tid, row, line, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` / `line` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里；`line` 0 是不知道，老 run 没有），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （P0 的运行时模型） |
 | `n_lines` | int | 所有日志的 C/R/Y/S 行数 | run.json 的 `events` |
 | `n_spans` | int | span 行数（折叠后） | 同上 |
 | `n_calls` | int | 调用次数（`Σ rep`） | 同上 |

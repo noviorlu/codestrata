@@ -125,13 +125,16 @@
   列的先后：进程按启动先后，进程里顺着交接走。只跑仓库外代码、但是交接一头的线程给一列空的。
   叠了录了时序事件的 run 就是它，没有切回一张图的开关（用户 10-01：运行时一律按线程分，不要把所有线程合成一张的功能）；
   「这次跑了」「其中代码里看不出」管列里的边，时间顺序把列里的边和交接连线放在一起、跨线程按第一次发生的先后排名。
-  列之间的连线可以点（详情里两头的函数），走两行节点之间的空隙、不从节点上穿过，标签放在节点上面当把手。
+  列之间的连线可以点（详情里两头的函数和那一行代码），走两行节点之间的空隙、不从节点上穿过，标签放在节点上面当把手。
+  线程的起和收（用户 10-01：「每一个 thread 应该都有一个地方 launch 一个地方 recycle，类似于 sequence 的 start 和 end 一样高亮」）：
+  起线程、回收线程的节点照阶段起点 / 终点的样子描绿 / 红、写「▶ 起 / ■ 收」，列头写起 / 收的时刻；谁回收了谁是第四种连线（红色细虚线）。
+  起线程和交接的连线要标出两边的代码（用户 10-01）：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
 - 为什么：多进程、多线程的服务（vLLM：主线程、orchestrator、每个 stage 的收请求 / 主循环 / 输出 / 收发 chunk 的线程）合在一张图上
   看不出谁交给谁；请求路径按线程分节、只展开主线程，交接散在几节里。用户的原话是「有几个 thread 就把那个 thread call 到的 module duplicate
   对应的 thread 数量然后平行和主 thread 放置，这样我们就能够很清晰的看到 thread 和 thread 之间的 collaboration」。
   共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条（外部评审量的），按同一高度对齐就看得出。
 - 放弃的方案（设计说明里比过）：泳道时间线（Perfetto 那种，自己做工作量最大）、按时间合并的一张表（看不出重叠）、顺序图（箭头没有录的话只能按时刻猜）。
-- 在哪：`lanes.py`（`build`、`thread_group`、`_order`、连线的 `pairs`）、`serve.py` 的 `/api/lanes`、`web/lanes.js`（`draw`、`linkRoute`、`paint`、`showLink`）、
+- 在哪：`lanes.py`（`build`、`thread_group`、`_order`、连线的 `pairs`）、`serve.py` 的 `/api/lanes`、`web/lanes.js`（`draw`、`linkRoute`、`paint`）、`web/lanedetail.js`（`link`）、
   `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`。
   测试 `test_lanes`、`tests/web/specs/lanes.mjs`。
 
@@ -374,6 +377,21 @@
 - 放弃的方案：按时刻猜（子进程的起始时刻落在父进程的哪个 span 里——同一时刻好几个线程都在跑）；包 `subprocess.Popen`、`multiprocessing.Process.start`
   （要 import 它们、而且漏掉直接用 `os.fork` 的）。asyncio 的 `create_task` 不记：task 跑在同一个线程里，不另起一列。
 - 在哪：`trace/hook.py` 的 `_ev_here`、`_start`、`_spawned`、`_before_fork`、`_after_fork_ev`；`events.py` 的 `parse`、`_origins`。测试 `test_events_truth`。
+
+### 谁回收了谁、在哪一行：线程跑完自己记、join / waitpid 等到时记；所有「哪个 span 里」都带上那一行
+- 决定：`Thread.start` 的包装顺手把实例的 `run` 包一层，跑完（返回或抛异常）时这个线程自己写一行 X；`Thread.join` 返回、被等的线程确实结束了时，
+  在等的线程里写一行 J（只记第一次等到它的那一处）；`os.waitpid` 等到子进程退出时写一行 W。F / P / B / Q / G / O / I / J / W 都带上「那一行」：
+  `_ev_here` 往外找到第一个记过账的帧时，顺便取它的 `f_lineno`——就是起线程、放 / 取、发 / 收、join 的那一行（经仓库外的代码转了一道的，是调进去的那一行）。
+  F 行顺便带上是不是守护线程。lanes 里谁回收了谁从被回收的那一列的入口节点连到 join 的那一行所在的节点；等它的线程没有列（asyncio.run 收尾时起的
+  `_do_shutdown` 线程替它 join 线程池）就顺着「谁起了它」往上找。行号按录制时的文件记，录制之后文件改过的跟着函数的首行一起挪（`align.key_mapper`）。
+- 为什么：用户 10-01 要每条线程的起和收像阶段的起点 / 终点那样标出来，起线程、交接的连线要标出两边的代码。线程池的 `shutdown(wait=True)`、`Popen.wait`、
+  `multiprocessing.Process.join` 最后都经 `Thread.join` / `os.waitpid`，包这两处就够。只在 join 等到结束时记：带超时的 join 返回时线程可能还活着。
+  行号取帧上现成的 `f_lineno`，不另外走栈；老日志没有这一列，按字段数认，照样读。
+- 放弃的方案：按线程最后一个 span 的结束当它结束的时刻（线程可能在仓库外的代码里又跑了很久）；包 `ThreadPoolExecutor.shutdown`、`Popen.wait`
+  （漏掉直接 join 的）；`threading._shutdown` 里解释器等非守护线程的那一下不算回收（不是代码里写的），列头写「没收」、悬停说明。
+  `Popen.poll()` 收的子进程不记（它绑定的是 import 时的 `os.waitpid`）。
+- 在哪：`trace/hook.py` 的 `_ev_here`、`_start`、`_join`、`_waitpid`；`events.py` 的 `parse`、`_ends`；`lanes.py` 的 `end_via`、`_lane_end`、`_start_sum`、`_stop_sum`；
+  `web/lanes.js` 的 `life`、`codeTags`，`web/lanedetail.js` 的 `link`、`marks`。测试 `test_events_truth`、`test_lanes`、`test_events_parse_old_origins`、`tests/web/specs/lanes.mjs`。
 
 ### 谁把数据交给谁：盯几种常见的通道，进程内按对象、跨进程按消息指纹配对
 - 决定：时序事件开着时，hook 在 `queue`（Queue / PriorityQueue / LifoQueue 的 `_put` / `_get`）、`asyncio.queues`（同）、`janus`（`_put_internal` / `_get`）、

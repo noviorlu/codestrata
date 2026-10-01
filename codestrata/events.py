@@ -13,13 +13,20 @@
     Y <t_us> <tid> <span>               挂起（生成器 / 协程 yield、await）
     S <t_us> <tid> <span>               恢复
     T                                   达到行数上限，之后不再记（计数不受影响）
-    F <tid> <起它的 tid> <span> <t_us>   谁起的这个线程：在哪个线程的哪个 span 里 Thread.start（span 0：不在任何 span 里）
-    P <t_us> <tid> <span> <子进程 pid>   在这个 span 里 exec 出一个子进程（subprocess、multiprocessing 的 spawn）
-    B <父进程映像的 t0_ns> <tid> <span>  这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的
-    Q <t_us> <tid> <span> <种类> <队列 id> <对象 id>   往进程内的队列里放了一个对象（种类：q queue.Queue，a asyncio.Queue，j janus）
-    G <t_us> <tid> <span> <种类> <队列 id> <对象 id>   从队列里取出一个对象
-    O <t_us> <tid> <span> <指纹>          ZMQ 发出一条消息（指纹：每一段的长度 + 首尾 32 字节的哈希）
-    I <t_us> <tid> <span> <指纹>          ZMQ 收到一条消息（asyncio 版的 span 是等它的那个协程）
+    F <tid> <起它的 tid> <span> <行> <t_us> <守护>   谁起的这个线程：在哪个线程的哪个 span 里、哪一行 Thread.start（span 0：不在任何 span 里）；
+                                        守护：1 是 daemon 线程
+    X <tid> <t_us>                      这个线程的 run 跑完了（Thread.start 起的、碰过仓库代码或交接的线程才有）
+    J <t_us> <tid> <span> <行> <被等的 tid>   join 等到了这个线程结束（只记第一次等到它的那一处）
+    P <t_us> <tid> <span> <行> <子进程 pid>   在这个 span 里 exec 出一个子进程（subprocess、multiprocessing 的 spawn）
+    W <t_us> <tid> <span> <行> <子进程 pid>   waitpid 等到了这个子进程退出（Popen.wait、Process.join 都经它）
+    B <父进程映像的 t0_ns> <tid> <span> <行>  这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的
+    Q <t_us> <tid> <span> <行> <种类> <队列 id> <对象 id>   往进程内的队列里放了一个对象（种类：q queue.Queue，a asyncio.Queue，j janus）
+    G <t_us> <tid> <span> <行> <种类> <队列 id> <对象 id>   从队列里取出一个对象
+    O <t_us> <tid> <span> <行> <指纹>     ZMQ 发出一条消息（指纹：每一段的长度 + 首尾 32 字节的哈希）
+    I <t_us> <tid> <span> <行> <指纹>     ZMQ 收到一条消息（asyncio 版的 span 和行是 await 它的那个协程、那一行）
+
+<行> 是那个 span 的函数里正执行到的那一行（起线程、放 / 取、发 / 收、join 的那一行代码；经仓库外的代码转了一道的，是调进仓库外
+代码的那一行），不在任何 span 里是 0。2026-10-01 之前录的日志没有 <行>、没有守护、没有 X / J / W 行，照样读（行记成 0）。
 
 span 号在进程内唯一；返回、挂起、恢复是 hook 按帧（id(帧)）找回的 span 号，不靠栈的顺序，
 所以同一线程里交错执行的 asyncio 协程也配得对。
@@ -41,13 +48,16 @@ events/raw.tar.gz 里永久保留）：
     最里层正在执行的 span（挂起的不算）：async 的也准——协程恢复之后调的，父亲是它自己，不是时间上包住它的别的协程。
     老的 span（2026-10-01 之前整理的）没有这一列，`runs merge` 从原始日志重建就有了。
 
-谁起了谁（F / P / B 行，2026-10-01 起）整理进 index.json：thread_from {pid: {tid: [起它的 tid, span 下标]}}、
-spawns [{pid, tid, row, child, how, t_us}]（pid / tid / row 是起它的那一边，row 是 span 下标、-1 是不在任何 span 里；
-how 是 exec / fork；t_us 只有 exec 的有）。谁把数据交给谁（Q / G / O / I 行）整理进 handoffs：
-[{via, from: [pid, tid, row, t_us], to: [pid, tid, row, t_us]}]，via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按
-（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）。同一个线程里自己放自己取的不算交接。
+谁起了谁（F / P / B 行，2026-10-01 起）整理进 index.json：thread_from {pid: {tid: [起它的 tid, span 下标, 行, t_us, 守护]}}
+（老的只有前两项）、spawns [{pid, tid, row, line, child, how, t_us}]（pid / tid / row / line 是起它的那一边，row 是 span 下标、
+-1 是不在任何 span 里，line 0 是不知道；how 是 exec / fork；t_us 只有 exec 的有）。
+谁回收了谁（X / J / W 行）：thread_end {pid: {tid: {"t": run 跑完的 t_us 或 null, "by": [join 它的 tid, row, line, t_us] 或 null}}}
+（只有起它的时候记下了 F 行的线程才有）、reaps [{pid, tid, row, line, child, t_us}]（waitpid 等到子进程退出的那一边）。
+谁把数据交给谁（Q / G / O / I 行）整理进 handoffs：[{via, from: [pid, tid, row, t_us, line], to: [pid, tid, row, t_us, line]}]，
+via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配
+（发的时刻不晚于收的）。同一个线程里自己放自己取的不算交接。
 
-写出 events/spans/：keys.json {keys, threads}、index.json {chunks, truncated, scope, thread_from, spawns, ...}、
+写出 events/spans/：keys.json {keys, threads}、index.json {chunks, truncated, scope, thread_from, spawns, thread_end, reaps, ...}、
 p<pid>-NNN.jsonl.gz（按 t0 排好，每块最多 10 万行）。
 """
 from __future__ import annotations
@@ -65,7 +75,8 @@ def parse(path: Path) -> dict:
     """读一个 ev 日志：{pid, t0, ppid, keys: {id: key}, threads: {tid: 名}, ev: [(tag, t, tid, span, a, b)],
     truncated}。坏行（进程被强杀时最后一行可能只写了一半）跳过。"""
     out = {"pid": None, "t0": None, "ppid": None, "keys": {}, "threads": {}, "ev": [], "truncated": False,
-           "scope": "cross", "from": {}, "spawns": [], "forked": None, "msgs": []}
+           "scope": "cross", "from": {}, "spawns": [], "forked": None, "msgs": [], "exits": {}, "joins": {},
+           "reaps": []}
     name = path.name                              # ev-<pid>-<t0>.log：没有 H 行时从文件名取
     try:
         pid_s, t0_s = name[len("ev-"):-len(".log")].split("-")[:2]
@@ -100,20 +111,38 @@ def parse(path: Path) -> dict:
                 elif ln == "M all\n":
                     out["scope"] = "all"
                 elif ln.startswith("F "):
-                    _, tid, ftid, fsp, ft = ln.split()
-                    out["from"][int(tid)] = (int(ftid), int(fsp), int(ft))
-                elif ln.startswith("P "):
-                    _, pt, ptid, psp, child = ln.split()
-                    out["spawns"].append((int(pt), int(ptid), int(psp), int(child)))
+                    x = ln.split()
+                    if len(x) == 5:                        # 老格式：没有行、没有守护
+                        x = x[:4] + ["0"] + x[4:] + ["0"]
+                    _, tid, ftid, fsp, fln, ft, dmn = x
+                    out["from"][int(tid)] = (int(ftid), int(fsp), int(ft), int(fln), dmn == "1")
+                elif ln.startswith("P ") or ln.startswith("W "):
+                    x = ln.split()
+                    if len(x) == 5:
+                        x = x[:4] + ["0"] + x[4:]
+                    tag, pt, ptid, psp, pln, child = x
+                    out["spawns" if tag == "P" else "reaps"].append((int(pt), int(ptid), int(psp), int(child), int(pln)))
                 elif ln.startswith("B "):
-                    _, pt0, ptid, psp = ln.split()
-                    out["forked"] = (int(pt0), int(ptid), int(psp))
+                    x = ln.split()
+                    out["forked"] = (int(x[1]), int(x[2]), int(x[3]), int(x[4]) if len(x) > 4 else 0)
+                elif ln.startswith("X "):
+                    _, tid, xt = ln.split()
+                    out["exits"][int(tid)] = int(xt)
+                elif ln.startswith("J "):
+                    _, jt, jtid, jsp, jln, target = ln.split()
+                    out["joins"].setdefault(int(target), (int(jt), int(jtid), int(jsp), int(jln)))
                 elif ln[:2] in ("Q ", "G "):
-                    tag, mt, mtid, msp, kind, qid, oid = ln.split()
-                    out["msgs"].append((tag, int(mt), int(mtid), int(msp), (kind, qid, oid)))
+                    x = ln.split()
+                    if len(x) == 7:
+                        x = x[:4] + ["0"] + x[4:]
+                    tag, mt, mtid, msp, mln, kind, qid, oid = x
+                    out["msgs"].append((tag, int(mt), int(mtid), int(msp), (kind, qid, oid), int(mln)))
                 elif ln[:2] in ("O ", "I "):
-                    tag, mt, mtid, msp, fp = ln.split()
-                    out["msgs"].append((tag, int(mt), int(mtid), int(msp), fp))
+                    x = ln.split()
+                    if len(x) == 5:
+                        x = x[:4] + ["0"] + x[4:]
+                    tag, mt, mtid, msp, mln, fp = x
+                    out["msgs"].append((tag, int(mt), int(mtid), int(msp), fp, int(mln)))
             except (ValueError, IndexError):
                 continue
     return out
@@ -218,7 +247,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
         off = tid_base.get(log["pid"], 0)
         tid_base[log["pid"]] = off + max(log["threads"], default=0)
         images.append((img, log["pid"], off, base,
-                       {k: log[k] for k in ("ppid", "t0", "from", "spawns", "forked", "msgs")}))
+                       {k: log[k] for k in ("ppid", "t0", "from", "spawns", "forked", "msgs", "exits", "joins", "reaps")}))
         threads.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["threads"].items()})
         raw = pair(log)
         by_tid: dict[int, list] = {}
@@ -253,6 +282,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
             r[8] = at.get(r[8], -1)                     # 父亲被截断在上限之后（没有调用行）的也是 -1
             del r[9]
     thread_from, spawns = _origins(images, at)
+    thread_end, reaps = _ends(images, at)
     handoffs = _handoffs(images, at)
     for pid, rows in sorted(per_pid.items(), key=lambda kv: kv[0] or 0):
         for ci in range(0, max(len(rows), 1), CHUNK):
@@ -268,7 +298,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
         n_calls += sum(r[6] for r in rows)
     index = {"pairing": "frame", "scope": "all" if scopes == {"all"} else "mixed" if "all" in scopes else "cross",
              "chunks": chunks, "procs": procs, "truncated": sorted(p for p in truncated if p),
-             "thread_from": thread_from, "spawns": spawns, "handoffs": handoffs,
+             "thread_from": thread_from, "spawns": spawns, "thread_end": thread_end, "reaps": reaps, "handoffs": handoffs,
              "n_lines": n_lines, "n_spans": n_spans, "n_calls": n_calls}
     (tmp / "keys.json").write_text(json.dumps({"keys": keys, "threads": threads}, ensure_ascii=False),
                                    encoding="utf-8")
@@ -287,19 +317,36 @@ def _origins(images: list[tuple], at: dict) -> tuple[dict, list]:
     thread_from: dict[str, dict] = {}
     spawns: list[dict] = []
     for img, pid, off, base, lg in images:
-        for tid, (ftid, fsp, _) in lg["from"].items():
-            thread_from.setdefault(str(pid), {})[str(tid + off)] = [ftid + off, at.get((img, fsp), -1)]
-        for t, tid, sp, child in lg["spawns"]:
-            spawns.append({"pid": pid, "tid": tid + off, "row": at.get((img, sp), -1), "child": child,
+        for tid, (ftid, fsp, ft, fln, dmn) in lg["from"].items():
+            thread_from.setdefault(str(pid), {})[str(tid + off)] = [ftid + off, at.get((img, fsp), -1), fln, base + ft, dmn]
+        for t, tid, sp, child, ln in lg["spawns"]:
+            spawns.append({"pid": pid, "tid": tid + off, "row": at.get((img, sp), -1), "line": ln, "child": child,
                            "how": "exec", "t_us": base + t})
         if lg["forked"] is not None and lg["ppid"]:
-            pt0, ptid, psp = lg["forked"]
+            pt0, ptid, psp, pln = lg["forked"]
             pimg = f"ev-{lg['ppid']}-{pt0}.log"
             poff = by_name.get(pimg, (None, 0))[1]
-            spawns.append({"pid": lg["ppid"], "tid": ptid + poff, "row": at.get((pimg, psp), -1), "child": pid,
+            spawns.append({"pid": lg["ppid"], "tid": ptid + poff, "row": at.get((pimg, psp), -1), "line": pln, "child": pid,
                            "how": "fork"})
     spawns.sort(key=lambda s: (s["pid"], s["child"]))
     return thread_from, spawns
+
+
+def _ends(images: list[tuple], at: dict) -> tuple[dict, list]:
+    """X / J / W 行 → index.json 的 thread_end、reaps（见模块说明）。线程只整理起它的时候记下了 F 行的（它们才有起点）"""
+    thread_end: dict[str, dict] = {}
+    reaps: list[dict] = []
+    for img, pid, off, base, lg in images:
+        for tid in lg["from"]:
+            x, j = lg["exits"].get(tid), lg["joins"].get(tid)
+            thread_end.setdefault(str(pid), {})[str(tid + off)] = {
+                "t": base + x if x is not None else None,
+                "by": [j[1] + off, at.get((img, j[2]), -1), j[3], base + j[0]] if j else None}
+        for t, tid, sp, child, ln in lg["reaps"]:
+            reaps.append({"pid": pid, "tid": tid + off, "row": at.get((img, sp), -1), "line": ln, "child": child,
+                          "t_us": base + t})
+    reaps.sort(key=lambda s: (s["pid"], s["child"]))
+    return thread_end, reaps
 
 
 _VIA = {"q": "queue", "a": "asyncio", "j": "janus"}
@@ -312,8 +359,8 @@ def _handoffs(images: list[tuple], at: dict) -> list[dict]:
     recvs: dict[str, list] = {}
     for img, pid, off, base, lg in images:
         puts: dict[tuple, list] = {}
-        for tag, t, tid, sp, what in sorted(lg["msgs"], key=lambda m: m[1]):
-            side = [pid, tid + off, at.get((img, sp), -1), base + t]
+        for tag, t, tid, sp, what, ln in sorted(lg["msgs"], key=lambda m: m[1]):
+            side = [pid, tid + off, at.get((img, sp), -1), base + t, ln]
             if tag == "Q":
                 puts.setdefault(what, []).append(side)
             elif tag == "G":

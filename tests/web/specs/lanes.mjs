@@ -1,6 +1,7 @@
 // 按进程 · 线程分列（lanes.js）：叠着录了时序事件的 run 就是它，没有切回一张图的开关（用户 10-01）；列按进程分组，
 // 列里是这条线程调到的节点；鼠标停在节点上连上它在别的列里的副本；列里的边接点错开、点哪条开哪条；列之间的连线能点，
-// 详情里是两头的函数；「这次跑了」管列里的边；进程能收起；没录时序事件的 run 照旧是一张图
+// 详情里是两头的代码，选中时两头的节点下面标出那一行；起线程 / 回收线程的节点描绿 / 红、列头写起 / 收；「这次跑了」管列里的边；
+// 进程能收起；没录时序事件的 run 照旧是一张图
 import { sleep, waitRun } from '../lib.mjs';
 
 /* 一条边 / 连线（CS.lanes 里的 E）上点得到它的一点（屏幕坐标）：先滚到看得见，从 f 处开始沿路径找最上面就是它（命中区或标签）的地方，
@@ -78,22 +79,83 @@ export default async function (t) {
   await click(page, ep);
   ok(await page.wait(`!CS.lanes.sel && !document.querySelector('#g .ln-e.sel')`, 3000), '再点一次：取消选中');
 
-  // 列之间的连线：点粗线开详情，写两头的函数
+  // 列之间的连线：点粗线开详情，写两头的代码；图上两头的节点下面标出那一行
   const lp = await at(page, `CS.lanes.links.find(E => E.k.kind === 'handoff' && E.k.via === 'queue' && /consumer/.test(E.k.to.lane))`, 0.5);
   await click(page, lp);
   ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(lp.key)} && document.getElementById('drawer').classList.contains('open')
-                      && /两头的函数/.test(document.getElementById('det').textContent) && /put_job/.test(document.getElementById('det').textContent)
+                      && /两头的代码/.test(document.getElementById('det').textContent) && /put_job/.test(document.getElementById('det').textContent)
                       && /take_job/.test(document.getElementById('det').textContent)`, 5000), '点交接的连线：详情里是 put_job → take_job');
   ok(/queue/.test(await page.ev(`document.getElementById('dtitle').textContent`)), '详情的标题写通道');
-  await page.ev(`document.querySelector('#det .lk-fn').click()`);
-  ok(await page.wait(`!document.getElementById('viewer').hidden`, 5000), '点函数名：开代码窗口');
+  const codes = await page.ev(`[...document.querySelectorAll('#det .lk-code')].map(c => c.textContent)`);
+  ok(JSON.stringify(codes) === JSON.stringify(['q.put(job)', 'return q.get()']), '详情里两头的那一行代码：' + JSON.stringify(codes));
+  const tags = await page.ev(`[...document.querySelectorAll('#g .ln-code text')].map(g => g.textContent)`);
+  ok(tags.length === 2 && /^放 \/ 发 · put_job:\d+ {2}q\.put\(job\)$/.test(tags[0]) && /^取 \/ 收 · take_job:\d+ {2}return q\.get\(\)$/.test(tags[1]),
+     '图上两头的节点下面标出那一行 ' + JSON.stringify(tags));
+  const putLine = +(await page.ev(`document.querySelector('#det .lk-code').dataset.l`));
+  await page.ev(`document.querySelector('#det .lk-code').click()`);
+  ok(await page.wait(`!document.getElementById('viewer').hidden && (document.querySelector('.vhead b') || {}).textContent === 'fakesvc/callee.py'
+                      && !!document.querySelector('#vL${putLine}.focus') && document.querySelectorAll('#viewer .ln.focus').length === 1`, 5000),
+     '点那一行代码：开代码窗口、只标出那一行（第 ' + putLine + ' 行）');
   await page.wait(`document.activeElement && document.activeElement.matches('#viewer .vclose')`, 3000);   // 窗口开好、焦点到了关闭按钮
   await page.key('Escape', 'Escape', 27);
   ok(await page.wait(`document.getElementById('viewer').hidden`, 3000), 'Esc 关掉代码窗口');
-  const sp = await at(page, `CS.lanes.links.find(E => E.k.kind === 'spawn')`, 0.5);
+  await page.ev(`document.querySelector('#det .lk-fn').click()`);
+  ok(await page.wait(`!document.getElementById('viewer').hidden`, 5000), '点函数名：也开代码窗口');
+  await page.wait(`document.activeElement && document.activeElement.matches('#viewer .vclose')`, 3000);
+  await page.key('Escape', 'Escape', 27);
+  await page.wait(`document.getElementById('viewer').hidden`, 3000);
+
+  // 谁起了谁：绿色细线，起线程的那一头标出 t.start() 那一行；点图上的代码标签开代码窗口
+  const sp = await at(page, `CS.lanes.links.find(E => E.k.kind === 'spawn' && /:worker$/.test(E.k.to.lane))`, 0.5);
   await click(page, sp);
   ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(sp.key)} && /谁起了谁/.test(document.getElementById('det').textContent)`, 5000),
      '点「谁起了谁」的细线也开详情');
+  const st = await page.ev(`[...document.querySelectorAll('#g .ln-code text')].map(g => g.textContent)`);
+  ok(/^起 · s_threads:\d+ {2}t\.start\(\)$/.test(st[0]) && /^入口 · in_thread（入口函数）$/.test(st[1]), '起线程的那一行、被起的入口函数 ' + JSON.stringify(st));
+  ok(await page.ev(`getComputedStyle(document.querySelector('#g .ln-link.spawn')).strokeDasharray !== 'none'`), '起线程的连线是虚线');
+  await page.ev(`document.querySelector('#g .ln-code.a').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  ok(await page.wait(`!document.getElementById('viewer').hidden && document.querySelectorAll('#viewer .ln.focus').length === 1
+                      && document.querySelector('#viewer .ln.focus').textContent.includes('t.start()')`, 5000), '点图上的代码标签：代码窗口标出 t.start() 那一行');
+  await page.wait(`document.activeElement && document.activeElement.matches('#viewer .vclose')`, 3000);
+  await page.key('Escape', 'Escape', 27);
+  await page.wait(`document.getElementById('viewer').hidden`, 3000);
+  await page.key('Escape', 'Escape', 27);
+  ok(await page.wait(`!CS.lanes.sel && !document.querySelector('#g .ln-code')`, 3000), 'Esc 取消选中：代码标签撤掉');
+
+  // 起 / 收：起线程、回收线程的节点描绿 / 红、上面写「▶ 起 worker」「■ 收 worker」；列头写起 / 收的时刻，没人收的写明
+  const cols = JSON.parse(await page.ev(`JSON.stringify([...document.querySelectorAll('#g .ln-col')].filter(c => c.querySelector('.ln-th'))
+    .map(c => [c.querySelector('.ln-th').textContent, [...c.querySelectorAll('.ln-life')].map(x => x.textContent)]))`));
+  const lf = {};
+  cols.forEach(([k, v]) => { (lf[k] = lf[k] || []).push(v); });
+  for (const k in lf) if (k !== 'MainThread') lf[k] = lf[k][0];
+  ok(/^▶ 起 ×2 \+\d+\.\d{3} s$/.test(lf['worker ×2'][0]) && /^■ 收 ×2 \+\d+\.\d{3} s$/.test(lf['worker ×2'][1]), '列头：worker ×2 起、收的时刻 ' + JSON.stringify(lf['worker ×2']));
+  ok(lf['bg-done'][1] === '■ 没收 · 跑完了' && lf['bg-stuck'][1] === '■ 没收 · 还在跑', '没人 join 的守护线程写明 ' + JSON.stringify([lf['bg-done'], lf['bg-stuck']]));
+  ok(lf['MainThread'][0].length === 0 && lf['MainThread'].slice(1).some(v => /^▶ 起 \+\d/.test(v[0]) && /^■ 收 \+\d/.test(v[1])),
+     '程序的主线程没有起 / 收；fork 出来的进程有（waitpid 收的）' + JSON.stringify(lf['MainThread']));
+  // 节点上的标签：主线程在 truth.py 里起了 / 收了好几列（文件这一层看是同一个节点）
+  const mk = await page.ev(`[...document.querySelectorAll('#g .ln-nd.pstart .ln-mark, #g .ln-nd.pend .ln-mark')].map(x => x.firstChild.textContent)`);
+  const nk = await page.ev(`(() => {
+    const main = CS.lanes.L.lanes[0].id, at = 'fakesvc/truth.py';
+    const sp = CS.lanes.links.filter(E => E.k.kind === 'spawn' && E.k.from.lane === main && E.k.from.node === at).map(E => E.k.to.lane);
+    const jn = CS.lanes.links.filter(E => E.k.kind === 'join' && E.k.to.lane === main && E.k.to.node === at).map(E => E.k.from.lane);
+    return [new Set(sp).size, new Set(jn).size]; })()`);
+  ok(nk[0] > 2 && nk[1] > 2 && mk.includes('▶ 起 ' + nk[0] + ' 列') && mk.includes('■ 收 ' + nk[1] + ' 列'),
+     '主线程的 truth.py 上标「▶ 起 ' + nk[0] + ' 列」「■ 收 ' + nk[1] + ' 列」（几列写列数） ' + JSON.stringify(mk));
+  ok(await page.ev(`document.querySelectorAll('#g .ln-link.join').length`) >= 3, '谁回收了谁：红色细线（线程的 join、子进程的 waitpid）');
+  // 点「■ 收」：这里收了好几列——都高亮，详情里逐条列出 join / waitpid 的那一行；点 worker 看那一条
+  await page.ev(`document.querySelector('#g .ln-mark.end').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  ok(await page.wait(`/^m:end:/.test(CS.lanes.sel || '') && document.querySelectorAll('#g .ln-link.join.sel').length >= 3
+                      && /这里回收的/.test(document.getElementById('dtitle').textContent)
+                      && [...document.querySelectorAll('#det .lk-code')].some(c => c.textContent === 't.join()')
+                      && [...document.querySelectorAll('#det .lk-code')].some(c => c.textContent === 'os.waitpid(pid, 0)')`, 5000),
+     '点「■ 收」：这里收的几条都高亮，详情里是 join / waitpid 的那几行');
+  await page.ev(`[...document.querySelectorAll('#det [data-key]')].find(b => b.textContent === 'worker').click()`);
+  ok(await page.wait(`/^l:/.test(CS.lanes.sel || '') && document.querySelectorAll('#g .ln-link.sel').length === 1
+                      && /谁回收了谁/.test(document.getElementById('det').textContent)
+                      && [...document.querySelectorAll('#g .ln-code text')].some(x => /^收 · s_threads:\\d+ {2}t\\.join\\(\\)$/.test(x.textContent))`, 5000),
+     '点 worker：只选中它那一条，图上标出 t.join() 那一行');
+  await page.key('Escape', 'Escape', 27);
+  ok(await page.wait(`!CS.lanes.sel && !document.querySelector('#g .ln-link.sel')`, 3000), 'Esc 全部取消');
 
   // 「这次跑了」关掉：列里的边藏起来；打开回来
   await page.click('#edgechips [data-t="hot"]');

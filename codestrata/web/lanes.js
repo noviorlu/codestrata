@@ -3,7 +3,10 @@
  * 叠了录了时序事件的 run，运行时的图就是它（用户 10-01：运行时一律按线程分，不要合成一张图的功能）：模块图按
  * 进程 · 线程分成并排的几列，按进程分组；每列只放这条线程调到的节点，列里的边是这条线程里的调用。同一个节点在几列里
  * 各有一份，放在同一高度（纵坐标沿用「只看跑到的」那张图的分层）；鼠标停在一份上（或选中它）时高亮别的列里的副本并连上。
- * 列之间的连线：谁把数据交给谁（handoff，粗线，标通道和次数）、谁起了谁（spawn，细虚线）。
+ * 列之间的连线：谁把数据交给谁（handoff，粗线，标通道和次数）、谁起了谁（spawn，绿色细虚线）、谁回收了谁（join，红色细虚线：
+ * join / waitpid 等到它结束）。起线程、回收线程的那个节点像阶段的起点 / 终点那样描成绿 / 红、上面写「▶ 起 …」「■ 收 …」；
+ * 列头写这一列的线程什么时候起、什么时候收（或者没人收）。选中一条连线，两头的节点下面标出那一行代码（起线程、放 / 取、
+ * 发 / 收、join 的那一行），详情里列出每一对的代码（lanedetail.js），点了在代码窗口里看那一行。
  * 「边」那一行的开关照样管用：这次跑了 / 其中代码里看不出管列里的边，时间顺序把列里的边和交接连线放在一起、
  * 跨线程按第一次发生的先后排名上色、标序号。点节点、点列里的边：和模块图一样开详情；点列之间的连线：详情里列出
  * 两头各是哪个函数、几次、什么时候。缩放、拖动沿用 graph.js 的图框。 */
@@ -18,11 +21,49 @@ window.CS = window.CS || {};
   function short(k) { return k ? k.slice(k.indexOf('#') + 1) : ''; }
   function laneName(id) { return id.slice(id.indexOf(':') + 1); }
   // TOP：图框左上角浮着缩放按钮，进程头、列头往下让一点
-  var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 58, REPEAT = 5;
+  // HEAD：列头（线程名、仓库外的代码、起 / 收两行）的底
+  var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72, REPEAT = 5;
   var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue',
-              thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）' };
+              thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）',
+              join: 'join 等它结束', wait: 'waitpid 等子进程退出' };
+  var KIND = { handoff: '谁把数据交给谁', spawn: '谁起了谁', join: '谁回收了谁' };
+  // 连线两头的那一行代码是什么：放 / 取，起线程 / 线程入口，线程入口 / join 的那一行
+  var ENDS = { handoff: ['放 / 发', '取 / 收'], spawn: ['起', '入口'], join: ['入口', '收'] };
+  /* 微秒 → 相对这一段开头的秒数（这一段之前的是负的） */
+  function when(us, w0) {
+    if (us == null) return '?';
+    var s = (us - w0) / 1e6;
+    return (s < 0 ? '−' : '+') + Math.abs(s).toFixed(3) + ' s';
+  }
+  function clip(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+  /* 列头的起 / 收两行：[{kind: start|end, text, title}] */
+  function life(ln, w0) {
+    var out = [], s = ln.start, e = ln.stop, proc = ln.thread === 'MainThread';
+    function who(id) { return id ? laneName(id) : '不在任何一列里的线程'; }
+    if (s) out.push({ kind: 'start', text: '▶ 起 ' + (s.n > 1 ? '×' + s.n + ' ' : '') + when(s.t, w0),
+      title: '▶ 起：' + (s.n > 1 ? s.n + ' 个' + (proc ? '进程' : '线程') + '，第一个' : '') + '在 ' + when(s.t, w0) + ' 由 ' + who(s.lane) + ' 起'
+        + (s.daemon ? '（其中守护线程 ' + s.daemon + ' 个）' : '') });
+    if (e) {
+      var tot = e.joined + e.exited + e.running, how = proc ? 'waitpid 等到退出' : 'join 等到结束', txt, tt;
+      if (e.joined === tot) {
+        txt = '■ 收 ' + (tot > 1 ? '×' + tot + ' ' : '') + when(e.t, w0);
+        tt = '■ 收：' + (tot > 1 ? '全部 ' + tot + ' 个都被等到了，最后一个' : '') + '在 ' + when(e.t, w0) + ' 被 ' + who(e.lane) + ' ' + how;
+      } else if (proc) {
+        txt = '■ 没看到谁收'; tt = '■ 没看到谁 waitpid 等它退出（可能是轮询 poll() 收的，或者到录制结束还在跑）';
+      } else {
+        txt = e.joined ? '■ 收 ' + e.joined + '/' + tot : e.running ? '■ 没收 · 还在跑' : '■ 没收 · 跑完了';
+        tt = '■ ' + (e.joined ? e.joined + ' 个被 ' + who(e.lane) + ' ' + how + '（最后一个在 ' + when(e.t, w0) + '）；' : '')
+          + (e.exited ? e.exited + ' 个自己跑完了、没人 join；' : '') + (e.running ? e.running + ' 个到录制结束还在跑；' : '')
+          + '\n没人 join 的：非守护线程进程退出时解释器会等它，守护线程直接丢下';
+      }
+      out.push({ kind: 'end', text: txt, title: tt });
+    }
+    return out;
+  }
 
   CS.lanes = {
+    // 详情栏（lanedetail.js）也用的写法和说法
+    fmt: { esc: esc, short: short, laneName: laneName, when: when, VIA: VIA, KIND: KIND, ENDS: ENDS },
     data: null, collapsed: {}, sel: null, edges: [], links: [], nodes: [],
 
     /* 取数并画（app.drawMain 在叠着录了时序事件的 run 时调） */
@@ -47,7 +88,7 @@ window.CS = window.CS || {};
     },
 
     draw: function (svg, L, G, names) {
-      var self = this;
+      var self = this, w0 = (L.window || [0])[0];
       svg.textContent = '';
       this.names = names; this.sel = null;
       // 纵坐标：「只看跑到的」那张图的分层（同一个节点在各列里同一高度）
@@ -93,12 +134,13 @@ window.CS = window.CS || {};
 
       var bg = el('g', {}), eg = el('g', {}), lk = el('g', { class: 'ln-links' }), ng = el('g', {});
       var tw = el('g', { class: 'ln-twins' }), xl = el('g', {}), xg = el('g', {}), lab = el('g', {}), tg = el('g', { class: 'tord' });
-      var lt = el('g', { class: 'ln-ltxts' }), defs = el('defs', {});
+      var lt = el('g', { class: 'ln-ltxts' }), defs = el('defs', {}), ct = el('g', { class: 'ln-codes' });
       // 从下往上：列的底、列里的边、副本之间的虚线、列之间的连线；命中区在它们上面、节点下面（列里的边的在连线的上面：
       // 跨列的长连线会从别的列里的短边上穿过，交叉的地方点到的是短边，长连线换个地方点）；连线的标签在节点上面——
       // 放在路径上不压节点的地方，每条连线都有一个一定点得到的把手；序号牌在最上面
-      [defs, bg, eg, tw, lk, xl, xg, ng, lab, lt, tg].forEach(function (g) { svg.appendChild(g); });
-      this.defs = defs; this._mk = {}; this.tg = tg; this.tw = tw; this.svg = svg; this.L = L;
+      // 选中连线时两头标的那一行代码（ct）在最上面
+      [defs, bg, eg, tw, lk, xl, xg, ng, lab, lt, tg, ct].forEach(function (g) { svg.appendChild(g); });
+      this.defs = defs; this._mk = {}; this.tg = tg; this.tw = tw; this.ct = ct; this.svg = svg; this.L = L; this.W = W;
       var pos = {}, laneOf = {};                     // "列|节点" → 中心 {cx, cy, w, h}；列 id → 列的几何
       this.pos = pos;
       function nodeY(id) { return top + (yOf(id) - y0); }
@@ -147,6 +189,12 @@ window.CS = window.CS || {};
           var sub = el('text', { x: C.x + C.w / 2, y: TOP + 58, 'text-anchor': 'middle', class: 'ln-ext' });
           sub.textContent = '仓库外的代码'; col.appendChild(sub);
         }
+        life(ln, w0).forEach(function (x, i) {        // 起 / 收：像阶段的起点 / 终点
+          var lt2 = el('text', { x: C.x + C.w / 2, y: TOP + (ln.external ? 71 : 58) + 13 * i, 'text-anchor': 'middle',
+                                 class: 'ln-life ' + x.kind });
+          lt2.textContent = x.text; col.appendChild(lt2);
+          tip.textContent += '\n' + x.title;
+        });
         laneOf[ln.id] = { x: C.x, w: C.w };
         // 这一列的节点：同一高度上按「只看跑到的」图里的左右顺序排
         Object.keys(C.rows).forEach(function (k) {
@@ -224,21 +272,65 @@ window.CS = window.CS || {};
         taken.push([best.x - w / 2, best.y - 13, best.x + w / 2, best.y - 1]);
         return best;
       }
+      // 起线程 / 回收线程的节点：像阶段的起点 / 终点那样描成绿 / 红，上面写起了 / 收了哪一列（标签也占位置，连线的标签让开）
+      var marks = {};
+      (L.links || []).forEach(function (k, i) {
+        var at = k.kind === 'spawn' ? k.from : k.kind === 'join' ? k.to : null;
+        if (!at || !at.node || !pos[at.lane + '|' + at.node]) return;
+        var m = marks[at.lane + '|' + at.node] = marks[at.lane + '|' + at.node] || { start: [], end: [] };
+        m[k.kind === 'spawn' ? 'start' : 'end'].push({ i: i, name: laneName((k.kind === 'spawn' ? k.to : k.from).lane), k: k });
+      });
+      var markEls = [];
+      this.nodes.forEach(function (x) {
+        var m = marks[x.lane + '|' + x.id];
+        if (!m) return;
+        var p = pos[x.lane + '|' + x.id], row = 0;
+        x.g.classList.add(m.start.length ? 'pstart' : 'pend');
+        [['start', '▶ 起 '], ['end', '■ 收 ']].forEach(function (z) {
+          var xs = m[z[0]];
+          if (!xs.length) return;
+          var ids = xs.map(function (y) { return (z[0] === 'start' ? y.k.to : y.k.from).lane; })
+            .filter(function (v, j, a) { return a.indexOf(v) === j; });
+          // 一列写名字，几列写列数（名字在悬停提示和点开的详情里）；不出这一列
+          var txt = z[1] + (ids.length > 1 ? ids.length + ' 列' : clip(xs[0].name, 14));
+          var y = p.cy - p.h / 2 - 5 - 12 * row++, hw = 3.6 * txt.length + 4, C = laneOf[x.lane];
+          var cx = Math.max(C.x + hw, Math.min(C.x + C.w - hw, p.cx));
+          var tx = el('text', { x: cx, y: y, class: 'pmark ln-mark ' + z[0], 'text-anchor': 'middle', role: 'button' });
+          tx.textContent = txt;
+          var tt = el('title', {});
+          tt.textContent = xs.map(function (y2) {
+            var pr = (y2.k.pairs || [])[0] || {}, la = z[0] === 'start' ? pr.la : pr.lb, ta = z[0] === 'start' ? pr.ta : pr.tb;
+            return (z[0] === 'start' ? '这里起了 ' : '这里收了 ') + y2.name + (y2.k.n > 1 ? ' ×' + y2.k.n : '')
+              + (la ? '：' + short(z[0] === 'start' ? pr.a : pr.b) + ':' + la + (ta ? '  ' + ta : '') : '');
+          }).join('\n') + '\n点击看那条连线';
+          tx.appendChild(tt);
+          x.g.appendChild(tx);
+          taken.push([cx - hw, y - 10, cx + hw, y + 2]);
+          markEls.push({ el: tx, xs: xs, kind: z[0], lane: x.lane, node: x.id });
+        });
+      });
+      var byIdx = {};
       (L.links || []).forEach(function (k, i) {
         var a = end(k.from), b = end(k.to);
         if (!a || !b || (Math.abs(a.cx - b.cx) < 1 && Math.abs(a.cy - b.cy) < 1)) return;   // 收起的同一个进程里的
         var d = self.linkRoute(a, b, chan);
-        var E = { kind: 'link', k: k, key: 'l:' + i, first: k.first, last: k.last, n: k.n };
+        var E = { kind: 'link', k: k, key: 'l:' + i, first: k.first, last: k.last, n: k.n, A: a, B: b };
+        byIdx[i] = E;
         E.p = el('path', { d: d, class: 'ln-link ' + k.kind + ' via-' + k.via });
         E.x = el('path', { d: d, class: 'ln-hit lk' });
-        E.tipBase = (k.kind === 'handoff' ? '谁把数据交给谁：经 ' + (VIA[k.via] || k.via) : '谁起了谁：' + (VIA[k.via] || k.via))
+        var pr = (k.pairs || [])[0], ends = ENDS[k.kind] || ['从', '到'];
+        function code(side, fn, ln, tx) {
+          return '\n' + side + '：' + (fn ? short(fn) + (ln ? ':' + ln + (tx ? '  ' + tx : '') : '') : '仓库外的代码');
+        }
+        E.tipBase = KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
           + '，' + k.n + ' 次\n' + laneName(k.from.lane) + (k.from.node ? '（' + k.from.node + '）' : '')
           + ' → ' + laneName(k.to.lane) + (k.to.node ? '（' + k.to.node + '）' : '')
-          + (k.first != null && L.window ? '\n第一次在 +' + ((k.first - L.window[0]) / 1e6).toFixed(3) + ' s' : '')
-          + '\n点击看两头各是哪个函数';
+          + (pr ? code(ends[0], pr.a, pr.la, pr.ta) + code(ends[1], pr.b, pr.lb, pr.tb) : '')
+          + (k.first != null && L.window ? '\n第一次在 ' + when(k.first, w0) : '')
+          + '\n点击在两头标出那一行代码、看每一对';
         E.tip = el('title', {}); E.tip.textContent = E.tipBase; E.x.appendChild(E.tip);
         lk.appendChild(E.p); xl.appendChild(E.x);
-        var txt = (k.kind === 'handoff' ? k.via : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '');
+        var txt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '');
         var pt = E.p.getTotalLength ? freeAt(E.p, 6.2 * txt.length + 6) : null;
         if (pt) {
           E.lab = el('text', { x: pt.x, y: pt.y - 4, class: 'ln-ltxt ' + k.kind, 'text-anchor': 'middle' });
@@ -247,6 +339,11 @@ window.CS = window.CS || {};
         }
         self.wire(E);
         self.links.push(E);
+      });
+      markEls.forEach(function (m) {                 // 点节点上的「▶ 起 / ■ 收」：只有一条就选中它，几条就都高亮、详情里逐条列出
+        var Es = m.xs.map(function (y) { return byIdx[y.i]; }).filter(Boolean);
+        if (!Es.length) return;
+        m.el.onclick = Es.length === 1 ? Es[0].click : function (ev) { ev.stopPropagation(); CS.laneDetail.marks(m, Es); };
       });
       CS.graph.wireBox(svg.parentNode);
       CS.graph.fit();
@@ -261,7 +358,7 @@ window.CS = window.CS || {};
         if (self.sel === E.key) { CS.graph.clear(); return; }
         self.select(E.key);
         if (E.kind === 'edge') { if (CS.graph.onPickEdge) CS.graph.onPickEdge(E.e.a, E.e.b); }
-        else self.showLink(E.k);
+        else CS.laneDetail.link(E.k);
         CS.app.drawer(true);
       };
       [E.x, E.lab].forEach(function (x) { if (x) x.onclick = E.click; });
@@ -382,7 +479,7 @@ window.CS = window.CS || {};
 
     /* 箭头（marker 不跟着 stroke 变色）：按颜色 / 种类现做、缓存 */
     marker: function (color, kind) {
-      var fill = color || (kind === 'handoff' ? 'var(--cool)' : kind === 'spawn' ? 'var(--muted)' : 'var(--hot)');
+      var fill = color || (kind === 'handoff' ? 'var(--cool)' : kind === 'spawn' ? 'var(--pstart)' : kind === 'join' ? 'var(--pend)' : 'var(--hot)');
       var id = this._mk[fill];
       if (!id) {
         id = this._mk[fill] = 'lnmk' + Object.keys(this._mk).length;
@@ -396,24 +493,58 @@ window.CS = window.CS || {};
 
     /* 选中：节点 n:<id>、列里的边 e:<列>|<a>|<b>、连线 l:<下标>。模块图的状态里记一个非空的 selEdge，
        点图框空白处、按 Esc 时 graph.clear 才会来清（经 app 的 onClear → unselect） */
-    select: function (key) {
-      this.sel = key;
+    select: function (key, many) {
+      this.sel = key; this.selMany = many || null;
       CS.graph.state.selEdge = key; CS.graph.state.sel = CS.graph.state.selFrame = null;
       this.applySel();
     },
 
-    unselect: function () { this.sel = null; this.applySel(); if (this.tw) this.twins(null, false); },
+    unselect: function () { this.sel = this.selMany = null; this.applySel(); if (this.tw) this.twins(null, false); },
 
     applySel: function () {
-      var s = this.sel;
+      var s = this.sel, many = this.selMany;
       this.edges.concat(this.links).forEach(function (E) {
-        var on = s === E.key;
+        var on = s === E.key || (!!many && many.indexOf(E.key) >= 0);
         E.p.classList.toggle('sel', on);
         if (on) [E.p, E.lab].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
       var id = s && s.indexOf('n:') === 0 ? s.slice(2) : null;
       this.nodes.forEach(function (x) { x.g.classList.toggle('sel', !!id && x.id === id); });
       if (this.tg) [].forEach.call(this.tg.childNodes, function (g) { g.classList.toggle('on', g.dataset.key === s); });
+      this.codeTags(this.links.filter(function (E) { return E.key === s; })[0]);
+    },
+
+    /* 选中的连线：两头的节点下面标出那一行代码（次数最多的那一对）——起线程的那一行、放 / 取的那一行、join 的那一行；
+       那一头是线程入口的，标入口函数。点了在代码窗口里看那一行 */
+    codeTags: function (E) {
+      var ct = this.ct, self = this;
+      if (!ct) return;
+      ct.textContent = '';
+      var pr = E && (E.k.pairs || [])[0];
+      if (!pr) return;
+      var ends = ENDS[E.k.kind] || ['从', '到'];
+      [[E.A, pr.a, pr.la, pr.ta, pr.da, ends[0], pr.xa], [E.B, pr.b, pr.lb, pr.tb, pr.db, ends[1], pr.xb]].forEach(function (z, i) {
+        var p = z[0], fn = z[1];
+        if (!p) return;
+        var txt = z[5] + ' · ' + (fn ? short(fn) + (z[2] ? ':' + z[2] + (z[3] ? '  ' + z[3] : '') : '（入口函数）') : '仓库外的代码');
+        txt = clip(txt, 56);
+        var y = p.cy + p.h / 2 + 14 + (i && Math.abs(E.A.cy - E.B.cy) < 1 && Math.abs(E.A.cx - E.B.cx) < 200 ? 18 : 0);
+        var w = 6.1 * txt.length + 14, cx = Math.max(w / 2 + 2, Math.min(self.W - w / 2 - 2, p.cx));   // 不出图框
+        var g = el('g', { class: 'ln-code ' + E.k.kind + (i ? ' b' : ' a'), role: 'button', tabindex: '0' });
+        g.appendChild(el('rect', { x: cx - w / 2, y: y - 11, width: w, height: 16, rx: 4 }));
+        var t = el('text', { x: cx, y: y + 1, 'text-anchor': 'middle' });
+        t.textContent = txt; g.appendChild(t);
+        var tt = el('title', {});
+        tt.textContent = (fn || '仓库外的代码') + (z[2] ? ' 第 ' + z[2] + ' 行' : '') + (z[3] ? '\n' + z[3] : '')
+          + (z[6] ? '\n经仓库外的代码，在这个函数里面' : '') + (fn ? '\n点了在代码窗口里看这一行' : '');
+        g.appendChild(tt);
+        if (fn && z[4]) {
+          var go = function (ev) { ev.stopPropagation(); CS.viewer.open(z[4].f, z[2] || z[4].l); };
+          g.onclick = go;
+          g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(ev); } };
+        }
+        ct.appendChild(g);
+      });
     },
 
     pickNode: function (id) {
@@ -438,48 +569,6 @@ window.CS = window.CS || {};
         for (var i = 1; i < ps.length; i++)
           self.tw.appendChild(el('line', { x1: ps[i - 1].cx + ps[i - 1].w / 2, y1: ps[i - 1].cy,
                                            x2: ps[i].cx - ps[i].w / 2, y2: ps[i].cy, class: 'ln-twin' }));
-      });
-    },
-
-    /* 点了列之间的连线：详情里写清楚是哪种、经什么、几次、什么时候，两头各是哪一列的哪个节点、哪个函数 */
-    showLink: function (k) {
-      var L = this.L, w = L.window || [0, 0], names = this.names || {}, self = this;
-      function sec(us) { return us == null ? '' : '+' + ((us - w[0]) / 1e6).toFixed(3) + ' s'; }
-      function laneOf(id) { return L.lanes.filter(function (x) { return x.id === id; })[0] || { proc: '', thread: laneName(id) }; }
-      function side(e, label) {
-        var ln = laneOf(e.lane);
-        return '<div class="lk-end"><span class="lk-lab">' + label + '</span><b>' + esc(ln.proc) + '</b> · ' + esc(ln.thread)
-          + (ln.n_threads > 1 ? ' ×' + ln.n_threads : '') + (ln.external ? '（只跑仓库外的代码）' : '')
-          + (e.node ? '　<button class="chip" data-node="' + esc(e.node) + '">' + esc(names[e.node] || e.node) + '</button>' : '')
-          + '</div>';
-      }
-      function fn(name, def, ext) {
-        if (!name) return '<span class="hint">仓库外的代码</span>';
-        return '<button class="lk-fn" data-f="' + esc(def && def.f) + '" data-l="' + (def ? def.l : 1) + '" title="' + esc(name)
-          + '（点了看定义）">' + esc(short(name)) + '</button>' + (ext ? '<span class="hint">（经仓库外的代码，在它里面）</span>' : '');
-      }
-      var kind = k.kind === 'handoff' ? '谁把数据交给谁' : '谁起了谁';
-      var h = '<p class="hint">' + kind + '：' + esc(VIA[k.via] || k.via) + '，<b>' + k.n + '</b> 次'
-        + (k.first != null ? '；第一次 ' + sec(k.first) + (k.last != null && k.last !== k.first ? '，最后 ' + sec(k.last) : '') : '')
-        + '（从这一段的开头算）</p>'
-        + side(k.from, '从') + side(k.to, '到')
-        + '<h3>两头的函数</h3><div class="lk-pairs">' + (k.pairs || []).map(function (p) {
-          return '<div class="lk-pair">' + fn(p.a, p.da, p.xa) + '<span class="arr">→</span>' + fn(p.b, p.db, p.xb)
-            + '<span class="pn">×' + p.n + '</span>' + (p.first != null ? '<span class="ptime">' + sec(p.first) + '</span>' : '') + '</div>';
-        }).join('') + '</div>'
-        + (k.n_pairs > (k.pairs || []).length ? '<p class="hint">还有 ' + (k.n_pairs - k.pairs.length) + ' 对（次数更少）</p>' : '')
-        + (k.kind === 'handoff' ? '<p class="hint">配对：进程内的队列按「同一个队列里的同一个对象」，ZMQ 按消息内容的指纹；'
-           + '函数是放 / 取、发 / 收那一刻最里层的仓库函数，发生在仓库外的代码里时写这条线程入口的那个函数。</p>' : '');
-      CS.panel.claim(h);
-      var t = document.getElementById('dtitle'), s = document.getElementById('dsub');
-      if (t) { t.textContent = kind + ' · ' + (VIA[k.via] || k.via); t.title = ''; }
-      if (s) s.textContent = laneName(k.from.lane) + ' → ' + laneName(k.to.lane) + '，' + k.n + ' 次';
-      var det = document.getElementById('det');
-      [].forEach.call(det.querySelectorAll('.lk-fn'), function (b) {
-        b.onclick = function () { if (b.dataset.f) CS.viewer.open(b.dataset.f, +b.dataset.l); };
-      });
-      [].forEach.call(det.querySelectorAll('[data-node]'), function (b) {
-        b.onclick = function () { self.pickNode(b.dataset.node); };
       });
     }
   };

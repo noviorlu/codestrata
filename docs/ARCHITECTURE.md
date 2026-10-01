@@ -89,14 +89,14 @@ flowchart LR
 | `align.py` | 478 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
-| `trace/hook.py` | 960 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
+| `trace/hook.py` | 1007 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
-| `events.py` | 352 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠 |
+| `events.py` | 399 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
 | `seq.py` | 442 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
 | `path.py` | 318 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
-| `lanes.py` | 306 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁把数据交给谁，同样两头的合成一条（`build`，`/api/lanes`）；进程名（`proc_names`） |
+| `lanes.py` | 427 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
 | `ui/graphview.py` | 136 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`） |
 | `ui/edge.py` | 107 | 边详情（`/api/edge`）：两端底下函数之间的调用——trace 的函数对（调用行、和 scan 比的说明、按名字接线的地方）和代码里写了、这次没录到的 |
@@ -117,7 +117,8 @@ flowchart LR
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 339 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/lanes.js` | 486 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；缩放拖动借 graph.js 的图框 |
+| `web/lanes.js` | 575 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；起 / 收的标记、选中连线时两头标出那一行代码；缩放拖动借 graph.js 的图框 |
+| `web/lanedetail.js` | 101 | 分列的详情栏：点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
 | `web/path.js` | 86 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
