@@ -36,6 +36,11 @@ window.CS = window.CS || {};
       document.getElementById('dtitle').textContent = '请求路径' + (m && m.phase ? ' · ' + CS.timebar.label(m.phase) : '');
       document.getElementById('dsub').textContent = '每个进程、每个线程按第一次调用的先后排的函数级调用';
       CS.app.drawer(true);
+      if (!CS.app.runHasEvents()) {
+        document.getElementById('det').innerHTML = '<p class="hint">这个 run 没录时序事件，看不了请求路径：录的时候用了 '
+          + '<code>--no-events</code>，或者被录的 Python 低于 3.12。重新录一次就有（3.12+ 默认录）。</p>';
+        return;
+      }
       CS.ds.path().then(function (P) {
         if (CS.panel.mine(tok)) self.render(P);
       }).catch(function (e) {

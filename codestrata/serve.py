@@ -243,7 +243,7 @@ class Handler(BaseHandler):
                                               keymap=(hot or {}).get("keymap"), redirect=(hot or {}).get("redirect")))
         except (LookupError, FileNotFoundError) as e:
             return self._json({"error": str(e) if isinstance(e, LookupError)
-                               else "这个 run 没有录时序事件（codestrata trace --events），或者 span 没整理好（runs merge 重来）"}, 404)
+                               else "这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12），或者 span 没整理好（runs merge 重来）"}, 404)
         except (OSError, ValueError) as e:            # span 文件坏了：说清楚，不让连接直接断
             return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 

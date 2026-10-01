@@ -55,7 +55,7 @@
 | `parts.tar.gz` | 原始 | `runs._pack_all` | `runs.merge_run` | 录制端写出的全部分片（`part-*.json`、`PHASE`、`PHASE-*.fired`），见 §5。成员是平铺的文件名 |
 | `parts/` | 临时的原始数据 | 各进程的 hook、driver | `analysis.merge`、`runs.merge_run` | 录制中各进程往这里写。收尾时打包成 `parts.tar.gz` 和 `events/raw.tar.gz`，打包核对成功才删 |
 | `files/NN-<文件名>` | 原始 | `runs.capture` | `runs.load`（case 脚本给页面看） | 录制时的 case 脚本、进程命令行里出现的小配置文件、`--attach` 点名的文件。`NN` 是两位序号 |
-| `events/raw.tar.gz` | 原始 | `runs._pack_all` | `runs.merge_run` | 各进程的时序事件日志 `ev-<pid>-<t0ns>.log`，见 §6.1。只有录了事件（`trace --events`）的 run 有 |
+| `events/raw.tar.gz` | 原始 | `runs._pack_all` | `runs.merge_run` | 各进程的时序事件日志 `ev-<pid>-<t0ns>.log`，见 §6.1。只有录了事件的 run 有（`trace` 默认录，被录的 Python 要 3.12+） |
 | `events/spans/` | 派生 | `events.build`（finalize、merge 都会重建） | `seq.py` | 配好对、折叠过的 span，见 §6.2 |
 | `legacy/trace-<case>.json.gz` | 原始 | `runs.migrate` | 没人读（留档） | 只有从老的 `.codestrata/trace-<case>.json` 迁移来的 run 有；逐字节压进来 |
 | `<id>/.merge-<pid>/`、`*.tmp`、`spans.<pid>.tmp` / `.old` | 临时 | merge、原子写、`events.build` | — | 进程死在中途时可能留下，可以删 |
@@ -146,7 +146,7 @@
 | `timeout` | float \| null | `--timeout` 秒数 |
 | `stop_grace` | float | SIGINT 之后等多久再 SIGTERM（默认 90） |
 | `attach` | [str] | `--attach` 的文件（解析成绝对路径） |
-| `events` | bool | 是否 `--events` |
+| `events` | bool | 是否录时序事件（2026-10-01 起默认是；`--no-events` 为否） |
 | `roots` | [str] \| null | `--roots`；null 表示用 scan 时选的目录 |
 | `phase_at` | [{name, func, file, qualname, line}] | `--phase 名字=函数` 解析的结果：命令行上的写法 `func`、落到的文件、qualname、def 行。页面用它标阶段的起点 / 终点节点 |
 
@@ -252,7 +252,7 @@
 | `part-<pid>-<t0ns>@<n>-<阶段>.json` | hook，切阶段时 | 切换那一刻的累计快照 `{funcs, func_edges, func_lines}`；`<n>` 从 0 递增，`<阶段>` 是**刚结束**的那个阶段 |
 | `PHASE` | case 脚本或 hook | 当前阶段。第一行是阶段名；hook 切的有第二行（切换那一刻的 monotonic 纳秒）。case 脚本 `echo serving > $CODESTRATA_OUT/PHASE` 就切过去 |
 | `PHASE-<阶段>.fired` | hook（`--phase`）或 driver（替 case 脚本建） | 这个阶段被切过的标记，内容一行 `hook <pid> <monotonic_ns>` 或 `sh <pid> <monotonic_ns>`。`O_EXCL` 建：每个阶段整个 run 只切一次。收尾和 merge 从它取阶段的精确时刻（`analysis.fired_phases`） |
-| `ev-<pid>-<t0ns>.log` | hook（`--events`） | 时序事件日志，收尾时打包进 `events/raw.tar.gz`（不进 parts.tar.gz），见 §6.1 |
+| `ev-<pid>-<t0ns>.log` | hook（录时序事件时） | 时序事件日志，收尾时打包进 `events/raw.tar.gz`（不进 parts.tar.gz），见 §6.1 |
 | `STOP` | driver | 升级到 SIGTERM 之前建（内容 `stop`）：各进程看到就立刻落一次盘。建过的话也会打进 parts.tar.gz，merge 不读它 |
 
 也认老的命名 `part-<pid>.json`、`part-<pid>@<n>-<阶段>.json`。
@@ -275,7 +275,7 @@
 
 ## 6 时序事件
 
-只有 `trace --events`（需要 Python 3.12 的 `sys.monitoring`）才有。只记**跨文件**的调用：口径和 `func_edges` 相同
+录时序事件（`trace` 默认录，`--no-events` 不录；需要 Python 3.12 的 `sys.monitoring`）才有。只记**跨文件**的调用：口径和 `func_edges` 相同
 （调用方是栈上最近的仓库帧），再加上「调用方和被调方不在同一个文件」。同文件的调用只在计数里有。
 
 ### 6.1 原始日志 ev-<pid>-<t0ns>.log

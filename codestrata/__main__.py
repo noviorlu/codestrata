@@ -223,8 +223,10 @@ def cmd_trace(a) -> int:
               + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限，之后的调用没记时序（计数完整）"
                  if ev["truncated"] else ""))
     elif a.events:
-        print("  ⚠ 要了 --events 但没有录到事件：命令没起来、被 trace 的 Python 低于 3.12（没有 sys.monitoring），"
-              "或者这次根本没有跨文件的调用")
+        old = sorted({v["version"] for v in (detail.get("pythons") or {}).values()
+                      if v.get("version") and tuple(map(int, v["version"].split(".")[:2])) < (3, 12)})
+        print(f"  （被录的 Python 是 {'、'.join(old)}，没有时序事件：要 3.12+。请求路径、时间顺序看不了，计数照常）" if old else
+              "  ⚠ 没有录到时序事件：命令没起来，或者这次根本没有跨文件的调用")
     if detail["leftovers"]:
         print(f"  命令退出后停掉了 {len(detail['leftovers'])} 个残留进程："
               + "，".join(f"{x['pid']}（{x['signal']}）" for x in detail["leftovers"]))
@@ -250,6 +252,8 @@ def cmd_trace(a) -> int:
     # 分了阶段、有 serving 的，默认建议只看 serving（启动时的初始化会淹没请求本身）
     serving = any(p["name"] == "serving" for p in run["phases"])
     print(f"  叠到图上：codestrata serve {a.repo} --hot {run['id']}" + ("@serving" if serving else ""))
+    if ev and not ev.get("error"):
+        print(f"  请求路径：codestrata path {a.repo} {run['id']}" + ("@serving" if serving else ""))
     return 0 if run["status"] != "failed" else 1
 
 
@@ -524,8 +528,9 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--note", default=None, help="给 run 写一句备注")
     t.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
-    t.add_argument("--events", action="store_true",
-                   help="同时记时序事件（每次跨文件调用的起止时刻，模块图的「时间顺序」用；要 Python 3.12+）")
+    t.add_argument("--events", action=argparse.BooleanOptionalAction, default=True,
+                   help="同时记时序事件（每次跨文件调用的起止时刻；请求路径、时间顺序要它）。默认开，被录的 Python "
+                        "低于 3.12 时自动没有；--no-events 关掉")
     t.add_argument("--attach", action="append", default=[], metavar="FILE",
                    help="把这个文件的内容一起存进 run（比如被 case 脚本 source 的 common.sh）")
     t.add_argument("--phase", action="append", default=[], metavar="NAME=FUNC",

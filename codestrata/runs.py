@@ -14,7 +14,7 @@ run 不能重建——一次录制往往要几分钟 GPU（起服务、加载模
   - run 只存原始键（文件:首行号）和录制时实际执行的文件的哈希，加载时现映射到当前的
     index 上（align.py），所以代码改了之后老 run 照样能用；哪些文件在录制
     之后改过，逐个标出来（file_state），而不是让整个 run 作废。
-  - 录了时序事件的（trace --events）：原始日志在 events/raw.tar.gz（原始数据），整理好的 span
+  - 录了时序事件的（trace 默认录，被录的 Python 3.12+）：原始日志在 events/raw.tar.gz（原始数据），整理好的 span
     在 events/spans/（派生，见 events.py）。`runs rm --events-only` 只删这一块。
 
 数据格式见 docs/design/run-format.md，设计决策见 docs/design/decisions.md。
@@ -987,8 +987,8 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
         parts.append(f"--cwd={Path(run['cwd']).resolve()}")
     if rec.get("timeout"):
         parts.append(f"--timeout={fmt_seconds(rec['timeout'])}")
-    if rec.get("events"):
-        parts.append("--events")
+    if not rec.get("events"):                    # 默认录时序事件（09-30 之前默认不录）：没录的照样不录
+        parts.append("--no-events")
     if rec.get("stop_grace") not in (None, 90.0):
         parts.append(f"--stop-grace={fmt_seconds(rec['stop_grace'])}")
     for k, v in (run.get("env") or {}).items():

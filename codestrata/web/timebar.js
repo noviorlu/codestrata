@@ -88,7 +88,7 @@ window.CS = window.CS || {};
           }).join('')
         + (!end ? '' : '<span class="tbar' + (o.canDrag ? ' drag' : '') + '" title="' + (o.canDrag
             ? '点一段看那个阶段；拖两头的把手、拖中间平移、在空白处拖出一段，看任意一段时间。滚轮缩放、Shift+滚轮平移'
-            : '点一段看那个阶段（这个 run 没录时序事件，不能选任意时间段：录的时候加 --events）。滚轮缩放、Shift+滚轮平移') + '">'
+            : '点一段看那个阶段（这个 run 没录时序事件，不能选任意时间段：录的时候用了 --no-events，或者被录的 Python 低于 3.12）。滚轮缩放、Shift+滚轮平移') + '">'
         + segs.map(function (s) {
             var ix = names.indexOf(s[0]), on = !o.window && o.phase === s[0];
             return '<span class="tseg ' + (ix < 0 ? 'nc' : 'p' + (ix % 4)) + (on ? ' on' : '') + '" data-seg="' + esc(s[0])

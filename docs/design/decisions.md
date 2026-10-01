@@ -327,12 +327,13 @@
 - 在哪：`trace/hook.py` 的 `_enter`、`_fcalls` / `_fcode`、`_line_at`、`_write`；`trace/analysis.py` 的 `merge`；`align.remap`（调用行跟着调用方挪）；测试 `test_call_lines`。
 
 ### 时序事件只记跨文件调用，hook 只记、配对和折叠事后做
-- 决定：`--events`（默认不开）时 hook 只写原始行：调用时分配进程内的 span 号，返回 / 挂起 / 恢复按帧找回同一个号写出去；日志里不写帧地址。
+- 决定：录时序事件时（2026-10-01 起默认录，`--no-events` 关掉）hook 只写原始行：调用时分配进程内的 span 号，返回 / 挂起 / 恢复按帧找回同一个号写出去；日志里不写帧地址。
   配对、深度、父子、第一级折叠在 `events` 里事后做，第一级折叠按 (父 span, 段) 认兄弟。上限 `CODESTRATA_EV_MAX`（默认 300 万）只管调用行。
 - 为什么：hook 跑在被 trace 的程序里，每次跨文件调用都要付开销，所以只做最少的事；算法改了不用重录，`runs merge` 从原始日志重建。只记跨文件，量小得多，
   而且能对账：span 的 Σrep 等于跨文件 `func_edges` 之和（`test_events_truth`、`test_events_fake_service`）。按 span 号不按栈：同一线程上交错的 asyncio 协程，
   先开始的不一定先结束。按父 span 不按深度：两个协程各自的子调用深度相同却不是兄弟；看「段」：中间有过挂起 / 恢复，合出来的时间窗会盖住别的协程的调用。
-  上限只管调用行，否则上限前开始的调用会显示成没返回。默认不开：GPU 上的开销还没实测（设计稿第 11 节：serving 变慢不超过 1.3 倍才默认打开）。
+  上限只管调用行，否则上限前开始的调用会显示成没返回。默认录（2026-10-01 起）：请求路径、时间顺序都要它；MiniCPM 离线示例在 5090 上整条命令
+  不录 86.0 s、`trace --events` 87.9 s。之前默认不开，是因为 GPU 上的开销还没实测。
 - 放弃的方案：按栈配对；按深度认兄弟；hook 里直接写 span。
 - 在哪：`trace/hook.py` 的 `_ev_call`、`_ev_mark`、`_ev_room`、`_ev_flush`；`events.py` 的 `parse`、`pair`、`fold`、`build`。
 

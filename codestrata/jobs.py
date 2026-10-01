@@ -138,8 +138,8 @@ class TraceSpec:
         a = ["trace", self.repo, f"--case={self.case}"]
         if self.cwd:
             a.append(f"--cwd={self.cwd}")
-        if self.events:
-            a.append("--events")
+        if not self.events:                      # trace 默认录时序事件
+            a.append("--no-events")
         if self.timeout is not None:
             a.append(f"--timeout={fmt_seconds(self.timeout)}")
         if self.stop_grace is not None:

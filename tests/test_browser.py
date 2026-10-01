@@ -107,7 +107,7 @@ def fixture() -> dict:
     cs("scan", dyn)
     cs("trace", dyn, "--case", "dyn", "--", PY, "-m", "dyn.main")
     # 同样跑一次、去掉调用行，当 2026-09-30 之前录的老 run
-    cs("trace", dyn, "--case", "dynold", "--", PY, "-m", "dyn.main")
+    cs("trace", dyn, "--case", "dynold", "--no-events", "--", PY, "-m", "dyn.main")
     cp = dyn / ".codestrata" / "runs" / _run_id(dyn, "dynold") / "counts.json.gz"
     c = json.loads(gzip.decompress(cp.read_bytes()))
     for ph in c["phases"].values():

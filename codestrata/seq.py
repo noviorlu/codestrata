@@ -196,7 +196,7 @@ def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> 
     里各行的比例摊到行上（spread_lines），也返回 func_lines，和 scan 比的时候才和按阶段看一样按行比"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
-        raise LookupError("这个 run 没有录时序事件（codestrata trace --events）：只能按阶段看，不能选时间段")
+        raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）：只能按阶段看，不能选时间段")
     ix = _index(spans)
     keys, funcs, edges = ix["keys"], {}, {}
     for c in ix["chunks"]:
@@ -315,7 +315,7 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
     没有 span、没有这个阶段的时刻抛 LookupError，span 读不出来抛 OSError / ValueError"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
-        raise LookupError("这个 run 没有录时序事件（codestrata trace --events）：没有请求路径")
+        raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）：没有请求路径")
     ix = _index(spans)
     end = run_end(run, rd) or 0
     win = parse_window(phase)
@@ -368,7 +368,7 @@ def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = Non
     模块图上算在 F→C 上（align.classify），这里也算到 C 的文件上，时刻才落在图上画着的那条边上"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
-        raise LookupError("这个 run 没有录时序事件（codestrata trace --events）")
+        raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）")
     win = parse_window(phase)
     pkey, P = _pairs(spans, run, win)
     if win:

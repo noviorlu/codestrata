@@ -479,8 +479,8 @@ def test_trace_roots_and_attach():
 
 
 def test_rerun_command_legacy():
-    """老 run 没存原始命令：按 run 里的参数拼（仓库写绝对路径，--phase / --events / --roots 都带上），
-    并注明是拼的。"""
+    """老 run 没存原始命令：按 run 里的参数拼（仓库写绝对路径，--phase / --roots 都带上；时序事件默认录，
+    没录的写 --no-events），并注明是拼的。"""
     repo = fresh()
     trace_offline(repo, "old", "--events", "--roots", "fakesvc", "--phase", "g=fakesvc/offline.py:Engine.generate",
                   "--timeout", "60", "--attach", "fake_service.sh")
@@ -492,9 +492,11 @@ def test_rerun_command_legacy():
     assert cmd.startswith("codestrata trace " + str(repo.resolve()) + " --case=old"), cmd
     assert "--cwd" not in cmd, cmd                                        # 在仓库根目录录的
     assert f"--cwd={repo.resolve() / 'fakesvc'}" in runs.rerun_command({**run, "cwd": str(repo / "fakesvc")}, repo)
-    for x in ("--events", "--phase=g=fakesvc/offline.py:Engine.generate", "--roots fakesvc", "--timeout=60",
+    for x in ("--phase=g=fakesvc/offline.py:Engine.generate", "--roots fakesvc", "--timeout=60",
               f"--attach={repo.resolve() / 'fake_service.sh'}", f"-- {PY} -m fakesvc.offline"):
         assert x in cmd, (x, cmd)
+    assert "events" not in cmd, cmd
+    assert "--no-events" in runs.rerun_command({**run, "rec": {**run["rec"], "events": False}}, repo)
     show = cs("runs", repo, "show", run["id"]).stdout
     assert "按 run 里存的参数拼的" in show, show
     _, meta = ui_load.load_hot(repo, ui_load.load_index(repo), run["id"])
@@ -1175,7 +1177,7 @@ def test_edge_times_api():
     import socket
     import urllib.request
     repo, run, det, rd = _truth_run()
-    cs("trace", repo, "--case", "plain", "--", PY, "-m", "fakesvc.truth")
+    cs("trace", repo, "--case", "plain", "--no-events", "--", PY, "-m", "fakesvc.truth")
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
     srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1193,7 +1195,7 @@ def test_edge_times_api():
         st, te = get(f"/api/seq/edges?run={run['id']}")
         assert st == 200 and te["edges"] and all(v["first"] <= v["last"] for v in te["edges"].values()), te
         st, e = get("/api/seq/edges?run=plain")
-        assert st == 404 and "--events" in e["error"], e
+        assert st == 404 and "--no-events" in e["error"], e
         st, e = get(f"/api/seq/edges?run={run['id']}@nosuch")
         assert st == 404, e
         st, tw = get(f"/api/seq/edges?run={run['id']}@t=0-{te['span_us']}")      # 时间段：和整个 run 一样
@@ -1385,13 +1387,13 @@ def test_time_window():
     (tsp / "keys.json").write_text("{坏了")
     _, meta = ui_load.load_hot(trepo, tidx, trun["id"])
     assert meta["end_us"] and meta["window"] is None
-    trace_offline(repo, "plain")                       # 没录事件：阶段照常，时间段说清楚
+    trace_offline(repo, "plain", "--no-events")        # 没录事件：阶段照常，时间段说清楚
     plain, _, _ = latest(repo)
     try:
         ui_load.load_hot(repo, idx, f"{plain['id']}@t=0-5")
         raise AssertionError("没录事件也加载出来了")
     except SystemExit as e:
-        assert "--events" in str(e), e
+        assert "--no-events" in str(e), e
 
 
 def test_call_lines():

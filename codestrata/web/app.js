@@ -371,8 +371,8 @@ window.CS = window.CS || {};
       });
     },
 
-    /* 这个 run 录了时序事件（trace --events）：「时间顺序」上色要用 */
-    _runHasEvents: function () {
+    /* 这个 run 录了时序事件（trace 默认录，3.12+）：「时间顺序」、请求路径要用 */
+    runHasEvents: function () {
       var m = this.data && this.data.hot && this.data.hotMeta;
       var x = m && (this.runList || []).filter(function (r) { return r.id === m.run_id; })[0];
       return !!(x && x.events);
@@ -403,7 +403,7 @@ window.CS = window.CS || {};
       // 时间轴：阶段按钮 + 时间条（录了时序事件的还能在条上拖出任意一段时间；老 run 不知道多长就只有按钮）
       var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
       if (phases.length < 2) phases = [];                       // 没分阶段：只剩全部 / 拖时间段
-      var canDrag = !!(m && m.end_us) && this._runHasEvents();
+      var canDrag = !!(m && m.end_us) && this.runHasEvents();
       if (!m || !(phases.length || canDrag)) { pc.innerHTML = ''; return; }
       var at = Object.create(null), hook = Object.create(null), tips = {};
       (m.phase_at || []).forEach(function (t) { at[t.name] = t; });
@@ -425,7 +425,7 @@ window.CS = window.CS || {};
 
     /* 「时间顺序」开关只在：叠着一个 run、它录了时序事件 */
     canTimeOrder: function () {
-      return !!(this.data && this.data.hot) && this._runHasEvents();
+      return !!(this.data && this.data.hot) && this.runHasEvents();
     },
 
     /* 时间顺序上色要的数据：当前 run（阶段）、当前切面上每条边第一次 / 最后一次被调用的时刻。
@@ -895,8 +895,8 @@ window.CS = window.CS || {};
       var rc = document.getElementById('resetcut');
       if (rc) rc.onclick = function () { self.resetCut(); };
       var pb = document.getElementById('pathbtn');
-      if (pb) {                                  // 请求路径要时序事件：叠着录了 --events 的 run 才有
-        pb.hidden = !(CS.graph.hot && this._runHasEvents());
+      if (pb) {                                  // 叠着 run 就有；没录时序事件的 run 点开说明为什么看不了
+        pb.hidden = !CS.graph.hot;
         pb.onclick = function () { CS.path.show(); };
       }
       document.getElementById('reset').onclick = function () {

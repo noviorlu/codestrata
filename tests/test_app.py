@@ -252,7 +252,7 @@ def test_trace_spec():
     # 值一律写成 --x=值：以 - 开头的备注不会被当成选项；命令按 shell 规则切
     s = TraceSpec(repo=str(repo), case="c", command=f"{OFFLINE} --flag 'a b'", phases=[PHASE],
                   env={"K": "v=1"}, timeout=30, events=False, note="-n", attach=["x.yaml"])
-    assert s.argv() == [PY, "-u", "-m", "codestrata", "trace", str(repo), "--case=c", "--timeout=30",
+    assert s.argv() == [PY, "-u", "-m", "codestrata", "trace", str(repo), "--case=c", "--no-events", "--timeout=30",
                         f"--phase={PHASE[0]}={PHASE[1]}", "--env=K=v=1", "--attach=x.yaml", "--note=-n",
                         "--", PY, "-m", "fakesvc.offline", "--flag", "a b"], s.argv()
     # 复刻：从一个录下的 run 还原的表单，再录一次，录制参数和原来一样

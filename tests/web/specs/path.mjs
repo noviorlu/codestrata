@@ -1,5 +1,5 @@
 // 请求路径：叠着录了时序事件的 run 时有「请求路径」按钮；详情栏里一个线程一节，一行一个函数（缩进是调用的层次）；
-// ▾ 收起下面几层；点函数名看定义、点「← 文件:行」看调用写在哪；没录时序事件的 run 没有这个按钮
+// ▾ 收起下面几层；点函数名看定义、点「← 文件:行」看调用写在哪；没录时序事件的 run 点开说明为什么看不了
 import { sleep, waitRun } from '../lib.mjs';
 
 export default async function (t) {
@@ -53,9 +53,11 @@ export default async function (t) {
   })`);
   ok(order, '卡片按第一次调用的先后');
 
-  // 没录时序事件的 run：没有这个按钮
-  await page.goto(fx.base3 + '#run=' + fx.dyn);
-  ok(await waitRun(page, fx.dyn), '叠上没录时序事件的 run');
+  // 没录时序事件的 run：按钮照样在，点开说明为什么看不了
+  await page.goto(fx.base3 + '#run=' + fx.dynold);
+  ok(await waitRun(page, fx.dynold), '叠上没录时序事件的 run');
   await sleep(300);
-  ok(await page.ev(`document.getElementById('pathbtn').hidden`), '没有「请求路径」按钮');
+  ok(await page.ev(`!document.getElementById('pathbtn').hidden`), '照样有「请求路径」按钮');
+  await page.click('#pathbtn');
+  ok(await page.wait(`/没录时序事件/.test(document.getElementById('det').textContent)`, 5000), '点开说明没录时序事件');
 }
