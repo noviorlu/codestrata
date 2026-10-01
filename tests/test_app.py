@@ -115,7 +115,7 @@ def test_status_browse_symbols():
 
 def test_scan_roots():
     """能选的目录只列不挑：包、src/<包> 这种布局下一层的包、放零散脚本的目录、tests/ 都列出来；
-    scan 给了 roots 就照单全收（tests/ 也扫），不再替用户去掉"""
+    scan 给了 roots 就照单全收（tests/ 也扫），不再替用户去掉；不给就沿用上次的，--roots 不带目录才重新自动探测"""
     repo = tmpdir("cs-app-") / "lay"
     for rel in ("src/pkg/__init__.py", "src/pkg/core.py", "python/other/__init__.py", "tests/__init__.py",
                 "tests/test_core.py", "scripts/run.py", "lib/__init__.py", "docs/conf.py", ".hidden/x.py",
@@ -130,7 +130,10 @@ def test_scan_roots():
     assert ui_load.index_summary(repo)["roots"] == ["tests", "src/pkg"]
     assert projects.scan_choices(repo)["chosen"] == ["tests", "src/pkg"]
     assert "（--roots 指定）" in cs("scan", repo, "--roots", "tests").stdout
-    assert "（自动探测的" in cs("scan", repo).stdout
+    out = cs("scan", repo).stdout                      # 不给 --roots：沿用上次的（重扫不悄悄换掉用户选过的目录）
+    assert "（沿用上次扫描的目录" in out and ui_load.index_summary(repo)["roots"] == ["tests"], out
+    out = cs("scan", repo, "--roots").stdout            # --roots 不带目录：重新自动探测；比上次少了的要说
+    assert "（自动探测的" in out and "上次还扫了 tests" in out, out
     # 上次命令行里给的更深的目录不在候选里：并进来、标 previous，对话框里不会把它丢了
     cs("scan", repo, "--roots", "src/pkg", "docs")
     cs("scan", repo, "--roots", "src")

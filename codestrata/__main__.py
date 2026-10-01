@@ -58,11 +58,21 @@ def _load_index(repo: Path) -> dict:
 def cmd_scan(a) -> int:
     repo = Path(a.repo).resolve()
     depth = None if a.depth == "auto" else int(a.depth)
-    idx = _scan.scan(repo, depth=depth, roots=a.roots, expand=a.expand)
+    # 没给 --roots：沿用上次扫描的目录（重扫不该悄悄换掉用户选过的目录）；--roots 不带目录：重新自动探测
+    prev = [x for x in ((_load.index_summary(repo) or {}).get("roots") or [])
+            if x == _scan.ROOT_SCRIPTS or (repo / x).is_dir()]
+    roots, how = a.roots, "（--roots 指定）"
+    if roots is None and prev:
+        roots, how = prev, "（沿用上次扫描的目录；要重新自动探测就加不带目录的 --roots）"
+    elif not roots:
+        roots, how = None, "（自动探测的；要换就用 --roots 指定）"
+    idx = _scan.scan(repo, depth=depth, roots=roots, expand=a.expand)
     p = _scan.write_index(repo, idx, _outdir(repo))
     r = idx["repo"]
-    print(f"扫描的目录：{'、'.join(r['roots'])}"
-          + ("（--roots 指定）" if a.roots else "（自动探测的；要换就用 --roots 指定）"))
+    print(f"扫描的目录：{'、'.join(r['roots'])}{how}")
+    gone = [x for x in prev if x not in r["roots"]]
+    if gone:
+        print(f"  ⚠ 上次还扫了 {'、'.join(gone)}，这次没扫：图上不再有它们（要加回来就用 --roots 列全）")
     v = _cut.view(idx, set(idx["default_open"]))
     shown = _cut.visible(v)
     print(f"扫描 {r['n_files']} 文件（解析失败 {r['n_parse_errors']}），{len(idx['packages'])} 个模块、"
@@ -508,7 +518,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--roots", nargs="*", default=None, help=roots_help)
 
     s = sub.add_parser("scan", help="静态扫描")
-    common(s)
+    common(s, "要扫描的目录，相对仓库根（给了就照单全收；不给就沿用上次扫描的目录，第一次扫时自动探测、跳过 tests/examples 这类；"
+              "--roots 后面不带目录：重新自动探测）")
     s.add_argument("--depth", default="auto",
                    help="默认切面：auto 按规模自动拆分；给数字就展开所有深度小于它的目录（2 = 二级包）")
     s.add_argument("--expand", action="append", default=[], metavar="DIR",

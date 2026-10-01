@@ -83,7 +83,8 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 
 ### 扫哪些目录
 
-- **不给 `--roots` 时自动探测**，按顺序试：仓库根目录下带 `__init__.py` 的库包（跳过 tests、examples、docs、scripts、benchmarks、tools、ci 这类）→ 没有的话取 `src/` 下的包 → 再没有就收只有测试之类的包 → 最后退到含 `.py` 最多的那个顶层目录。所以没有 `__init__.py` 的目录（比如很多研究代码的 `utils/`）和根目录直接放着的脚本通常不会被挑中。
+- **不给 `--roots` 时沿用上次扫描的目录**（重扫不会悄悄换掉选过的目录），第一次扫才自动探测；`--roots` 后面不带目录是重新自动探测，比上次少扫了的目录会提示。
+- **自动探测**按顺序试：仓库根目录下带 `__init__.py` 的库包（跳过 tests、examples、docs、scripts、benchmarks、tools、ci 这类）→ 没有的话取 `src/` 下的包 → 再没有就收只有测试之类的包 → 最后退到含 `.py` 最多的那个顶层目录。所以没有 `__init__.py` 的目录（比如很多研究代码的 `utils/`）和根目录直接放着的脚本通常不会被挑中。
 - **给了 `--roots` 就照单全收**。仓库根目录直接放着的脚本（`train.py` 这类入口）用 `--roots .` 选，只取这一层，图上装在以仓库名命名的节点里。比如 gaussian-splatting：自动探测只扫到 34 个 `.py` 里的 12 个，`--roots . arguments gaussian_renderer lpipsPyTorch scene utils` 扫到 26 个。
 - 最后一段同名的、或者一个在另一个里面的目录不能一起扫：模块名会撞。
 - **src 布局**（`src/mypkg/...`）的模块名相对 `src/` 算，和代码里的 `import mypkg.x` 对得上。
@@ -390,7 +391,7 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 
 | 命令 | 做什么 | 参数 |
 |---|---|---|
-| `scan [repo]` | 静态扫描 + 交叉引用，打印默认切面上每个节点的架构高度 | `--roots DIR…` 扫哪些目录（不给就自动探测；`--roots .` 取根目录直接放着的脚本）<br>`--depth auto\|N` 默认切面<br>`--expand DIR` 在默认切面上额外展开，可重复 |
+| `scan [repo]` | 静态扫描 + 交叉引用，打印默认切面上每个节点的架构高度 | `--roots DIR…` 扫哪些目录（不给就沿用上次的、第一次扫才自动探测；不带目录是重新自动探测；`--roots .` 取根目录直接放着的脚本）<br>`--depth auto\|N` 默认切面<br>`--expand DIR` 在默认切面上额外展开，可重复 |
 | `app` | 浏览器主菜单 | `--port`（默认 8930）<br>`--no-browser`<br>`--proxy` |
 | `serve [repo]` | 本地网页 | `--port`（默认 8900）<br>`--hot RUN` 页面打开时先叠哪个 run<br>`--roots`（收但不起作用）<br>隐藏参数 `--home` 给主菜单用 |
 | `trace [repo] --case NAME [...] -- CMD` | 跑一次命令、录下真实调用（子进程一起录），存成新的 run | `--case`（必填）<br>`--cwd DIR`<br>`--timeout S`<br>`--stop-grace S`（默认 90）<br>`--tag T`、`--note TEXT`<br>`--env K=V`（可重复）<br>`--attach FILE`<br>`--no-events`<br>`--phase NAME=FUNC`（可重复）<br>`--roots` |
