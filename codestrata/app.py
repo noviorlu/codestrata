@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from . import payload as _payload
+from .ui import load as _load
 from . import projects as _projects
 from . import runs as _runs
 from . import scan as _scan
@@ -127,7 +127,7 @@ def _cookie(header: str, name: str) -> str | None:
 
 def _symbols(repo: Path) -> dict | None:
     """仓库的静态索引里的符号（--phase 按 模块:函数 解析要用）；没 scan 过是 None"""
-    return _payload.load_index(repo).get("symbols") if _payload.index_summary(repo) else None
+    return _load.load_index(repo).get("symbols") if _load.index_summary(repo) else None
 
 
 class AppHandler(BaseHandler):

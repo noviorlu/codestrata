@@ -19,7 +19,8 @@ from pathlib import Path
 from common import FAKE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
 from codestrata import app as app_mod  # noqa: E402
-from codestrata import payload, projects, runs, serve  # noqa: E402
+from codestrata import projects, runs, serve  # noqa: E402
+from codestrata.ui import load as ui_load  # noqa: E402
 from codestrata import scan as scan_mod  # noqa: E402
 from codestrata.jobs import Busy, JobManager, TraceSpec, scan_argv  # noqa: E402
 
@@ -126,7 +127,7 @@ def test_scan_roots():
                    "lib": (1, True), "docs": (1, False)}, got
     assert projects.scan_choices(repo)["chosen"] == []
     cs("scan", repo, "--roots", "tests", "src/pkg")
-    assert payload.index_summary(repo)["roots"] == ["tests", "src/pkg"]
+    assert ui_load.index_summary(repo)["roots"] == ["tests", "src/pkg"]
     assert projects.scan_choices(repo)["chosen"] == ["tests", "src/pkg"]
     assert "（--roots 指定）" in cs("scan", repo, "--roots", "tests").stdout
     assert "（自动探测的" in cs("scan", repo).stdout
@@ -171,7 +172,7 @@ def test_candidate_roots_layouts():
         (one / rel).parent.mkdir(parents=True, exist_ok=True)
         (one / rel).write_text(src)
     cs("scan", one, "--roots", "pkg/", "./pkg")
-    idx = payload.load_index(one)
+    idx = ui_load.load_index(one)
     assert idx["repo"]["roots"] == ["pkg"] and ["pkg/a.py", "pkg/b.py", 1] in idx["edges"], (idx["repo"], idx["edges"])
 
 
@@ -193,7 +194,7 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     got = {c["path"]: c["files"] for c in scan_mod.candidate_roots(repo)}
     assert got["."] == 2 and "build" not in got and "build/lib" not in got, got
     cs("scan", repo, "--roots", ".", "pkg", "sub/proj/ext")
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
     units = set(idx["packages"])
     labels = {v["label"] for v in idx["packages"].values()}
     assert {"pkg/build/wheel.py", "pkg/env/__init__.py", "train.py", "setup_tools.py"} <= units, units
@@ -209,7 +210,7 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     assert idx["file_loc"]["sub/proj/csrc/k.cu"] == 3
     # 根目录的脚本 trace 得到：函数记在 my_repo.train 上
     cs("trace", repo, "--case", "s", "--phase", "work=my_repo.train:main", "--", PY, "train.py")
-    hot, _ = payload.load_hot(repo, idx, "s@work")
+    hot, _ = ui_load.load_hot(repo, idx, "s@work")
     assert hot["symbols"].get("train.py#main") == 1 and hot["symbols"].get("pkg/core.py#f") == 1, hot["symbols"]
     # 仓库名和包名一样：脚本的目录节点加 _scripts
     same = tmpdir("cs-app-") / "pkg"
@@ -225,7 +226,7 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
 
 def test_trace_spec():
     repo = fresh()
-    syms = payload.load_index(repo)["symbols"]
+    syms = ui_load.load_index(repo)["symbols"]
     ok = TraceSpec(repo=str(repo), case="demo", command=OFFLINE, phases=[PHASE], env={"A": "1"})
     ok.validate(syms)
     for spec, want in [(TraceSpec(repo=str(repo), case="a b", command=OFFLINE), "case 名"),

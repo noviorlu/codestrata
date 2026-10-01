@@ -32,7 +32,7 @@ codestrata 围着一个 graph 转：
 
 codestrata 是一个纯标准库的 Python 包（源码高亮用可选的 Pygments）加一套不需要构建的前端，分四部分：
 **静态扫描**（`scan`、`xref`：把仓库变成 `.codestrata/` 下可重建的索引）；**录制**（`trace`、`runs`、`events`：跑一条真实命令，
-存成 `.codestrata/runs/<id>/` 下不可重建的 run）；**组装与交付**（`payload` 把索引和 run 拼成前端数据，`serve` 按请求给；
+存成 `.codestrata/runs/<id>/` 下不可重建的 run）；**组装与交付**（`ui/` 下几个模块从索引和叠上的 run 里取前端要的数据，`serve` 按请求给；
 `cut`、`layout`、`seq`、`highlight` 是零件）；**前端**（`codestrata/web/`）。
 主菜单 `codestrata app`（`app`、`projects`、`jobs`、`viewers`）站在外面，替人敲 `scan` / `trace` / `serve` 命令，不直接调它们的函数。
 
@@ -47,7 +47,7 @@ flowchart LR
   PARTS -->|"analysis.merge → runs.finalize"| RUN["runs/ID/ run.json · detail.json · counts.json.gz · events/"]
   RUN -->|"runs.load: align.remap + align.to_package_graph"| HOT["hot（单元粒度，对当前 index）"]
   IDX --> HOT
-  IDX & HOT -->|"payload.graph_payload: cut.view + layout.build"| PL["payload"]
+  IDX & HOT -->|"ui.graphview.graph_payload: cut.view + layout.build"| PL["ui/（界面取数）"]
   XR --> PL
   RUN -->|"seq.edge_times（events/spans/）"| API
   PL --> API["serve.Handler /api/*"]
@@ -72,9 +72,9 @@ flowchart LR
 5. **映射回当前 index**：`runs.resolve(repo, ref)` 解析 run id / case 名 / `@阶段` / `@t=起-止`；`runs.load` 读计数（`load_counts`，
    时间段则 `seq.window_counts`），`file_state` 拿录制时的文件哈希和 index 的 `file_sha` 比，`align.remap` 把改过的文件里的键按 qualname
    挪到函数现在的行号，`align.to_package_graph(counts, idx)` 折算到单元粒度，返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
-6. **payload**：`payload.load_index` 合并 index.json 和 symbols.json；`graph_payload` 做切面（`cut.view`）、
-   叠加（`align.hot_on_cut`）、排版（`layout.build`）。边详情 `edge_detail`（两边怎么对上由 `align.pair_items` / `merged_status` 定，只有 trace 的调用的线索 `align.hints`），源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
-7. **交付**：`serve.main` 启动时读一次 index；`serve.Handler` 按请求调 payload（`_hot` 按 run id、阶段、文件 mtime 缓存 8 个），
+6. **界面取数**（`ui/`）：`ui.load.load_index` 合并 index.json 和 symbols.json；`ui.graphview.graph_payload` 做切面（`cut.view`）、
+   叠加（`align.hot_on_cut`）、排版（`layout.build`）。边详情 `ui.edge.edge_detail`（两边怎么对上由 `align.pair_items` / `merged_status` 定，只有 trace 的调用的线索 `align.hints`），代码窗口 `ui.source`（`file_view` / `symbol_source` 经 `highlight`，跳转 `xref_for` / `refs`），搜索栏 `ui.search`（`search_index`、`reveal`）。
+7. **交付**：`serve.main` 启动时读一次 index；`serve.Handler` 按请求调 `ui/` 的模块（`_hot` 按 run id、阶段、文件 mtime 缓存 8 个），
    `/api/seq/edges` 交给 `seq.edge_times`（读 `events/spans/`）。
 8. **前端**：数据都经 `web/ds.js` 从 serve 取（见「前端结构」）。
 
@@ -84,12 +84,12 @@ flowchart LR
 |---|---:|---|
 | `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 593 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
+| `__main__.py` | 594 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
 | `scan.py` | 820 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1494 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file` |
 | `graph.py` | 217 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
 | `align.py` | 492 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`to_package_graph`、`defining`），和 scan 记录比（现在还按切面：`top`、`hot_on_cut`、`dyn_only`、`pair_items`、`merged_status`），给只有 trace 的调用找线索（`hints`：调用处、按名字接线的字符串） |
-| `cut.py` | 391 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
+| `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 657 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
@@ -97,11 +97,15 @@ flowchart LR
 | `runs.py` | 1005 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
-| `payload.py` | 595 | 组装前端数据：图、叠加、边详情、源码、引用、搜索 |
+| `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
+| `ui/graphview.py` | 155 | 一个切面上的图：节点、边的种类、框、排版、叠加（`/api/graph`） |
+| `ui/edge.py` | 125 | 边详情（`/api/edge`）：两端底下每对单元的明细合起来 |
+| `ui/source.py` | 241 | 代码窗口：整个文件、符号片段、大纲、Ctrl+点击的跳转和引用、index 落后几个文件 |
+| `ui/search.py` | 33 | 搜索栏的名字表、让一个模块在图上露出来 |
 | `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
-| `serve.py` | 403 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
+| `serve.py` | 407 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
-| `projects.py` | 202 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
+| `projects.py` | 203 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
@@ -117,8 +121,6 @@ flowchart LR
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 
 已知的结构问题：
-- **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`、`align`）、坐标（`layout`）、源码（`highlight`）、
-  交叉引用（`xref`）。
 - 模块之间不用下划线开头的名字（`tests/test_package.py` 的 `test_no_cross_module_private_names` 盯着）。
 
 ## 语言无关 vs Python 专用
@@ -127,7 +129,7 @@ flowchart LR
 - run 的存储：`run.json` / `detail.json` / `counts.json.gz`（各阶段 `funcs`、`func_edges`）、阶段日志 `phase_log`、
   `runs` 的建 / 收尾 / 解析 / 管理 / 复刻命令；`events.py` 的日志格式和 span；`seq.py` 的时间窗和边时刻。
 - 切面和排版：`cut.py`（单元 id 是文件路径、目录 id 是路径加 `/`，显示名来自扫描端给的 `label` / `sep`；`dir_node` 把展开的目录挂到它的 `__init__.py` 上是 Python 的约定）、`layout.py`（只吃 id、显示名和带权边）。
-- 叠加：`align.py` 的 `to_package_graph` / `sym_locs` / `defining` / `hot_on_cut`、`payload.graph_payload`
+- 叠加：`align.py` 的 `to_package_graph` / `sym_locs` / `defining` / `hot_on_cut`、`ui.graphview.graph_payload`
   只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`x`），「第 0 行 = 文件顶层的执行」是约定，「落在标了 `defexec` 的符号的定义行 = 定义时的执行」由扫描端标出来（Python 给类标）。
 - `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
 - 前端全部；`highlight.py` / `hl.js` 本来就认多种语言。

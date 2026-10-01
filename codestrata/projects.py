@@ -12,7 +12,8 @@ import threading
 import time
 from pathlib import Path
 
-from . import payload as _payload
+from .ui import load as _load
+from .ui import source as _source
 from . import runs as _runs
 from . import scan as _scan
 
@@ -99,9 +100,9 @@ def status(repo: Path) -> dict:
            "runs": [], "n_runs": 0, "runs_error": None}
     if not out["exists"]:
         return out
-    out["index"] = _payload.index_summary(repo)
+    out["index"] = _load.index_summary(repo)
     if out["index"]:
-        out["lag"] = _payload.index_lag(repo)
+        out["lag"] = _source.index_lag(repo)
     if _runs.has_runs(repo):                  # 不用 runs_dir：它会顺手建目录，看状态不该往仓库里写
         try:
             rs = _runs.catalog(repo)
@@ -120,7 +121,7 @@ def scan_choices(repo: Path) -> dict:
     同名的一次只能选一个（scan.root_clashes）"""
     repo = Path(repo)
     cands = _scan.candidate_roots(repo)
-    chosen = (_payload.index_summary(repo) or {}).get("roots") or []
+    chosen = (_load.index_summary(repo) or {}).get("roots") or []
     have = {c["path"] for c in cands}
     for r in chosen:
         d = repo / r
@@ -191,7 +192,7 @@ def find_symbols(repo: Path, q: str, limit: int = 20) -> list[str]:
     if not hit or hit[0] != mt:
         # 两个请求同时来会各读一遍（结果一样，后写的覆盖）：比一把全局锁让一个大仓库挡住别的仓库好
         try:
-            syms = _payload.load_index(Path(repo)).get("symbols") or {}
+            syms = _load.load_index(Path(repo)).get("symbols") or {}
         except (OSError, ValueError, SystemExit):     # 正在重新 scan：symbols.json 可能写了一半
             return []
         # 补全出来的是 --phase 的写法「模块:限定名」，不是索引里的符号键

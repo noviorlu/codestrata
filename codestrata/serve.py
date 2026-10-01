@@ -37,9 +37,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import cut as _cut
-from . import payload as _payload
 from . import runs as _runs
 from . import seq as _seq
+from .ui import edge as _edge
+from .ui import graphview as _graphview
+from .ui import load as _load
+from .ui import search as _search
+from .ui import source as _source
 
 WEB = Path(__file__).resolve().parent / "web"
 # 页面自己发的请求带着它：别的网页跨源设不了自定义头（这里不回 CORS），所以带着它的请求一定来自我们的页面。
@@ -202,7 +206,7 @@ class Handler(BaseHandler):
             return self._json({"error": str(e)}, 404)
         raw = (q.get("open") or [None])[0]
         open_ = None if raw is None else [o for o in raw.split(",") if o]
-        open_ = sorted(_payload.norm_open(self.idx, open_))
+        open_ = sorted(_cut.norm_open(self.idx, open_))
         try:
             return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase))
         except (LookupError, FileNotFoundError) as e:
@@ -284,7 +288,7 @@ class Handler(BaseHandler):
             key = (("\u0000" if open_ is None else ",".join(sorted(open_))) + f"@{width}", hot_key)
             body = Handler._graphs.get(key)
             if body is None:
-                body = json.dumps(_payload.graph_payload(
+                body = json.dumps(_graphview.graph_payload(
                     self.repo, self.idx, hot=hot, hot_meta=hot_meta, open_=open_, width=width),
                     ensure_ascii=False).encode()
                 with Handler._lock:
@@ -295,41 +299,41 @@ class Handler(BaseHandler):
 
         if path.startswith("/api/symbol/"):
             key = urllib.parse.unquote(path[len("/api/symbol/"):])
-            s = _payload.symbol_source(self.repo, self.idx, key)
+            s = _source.symbol_source(self.repo, self.idx, key)
             return self._json(s) if s else self._json({"error": "unknown symbol"}, 404)
 
         if path == "/api/edge":
             a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
             if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
                 return self._json({"error": "unknown node"}, 404)
-            return self._json(_payload.edge_detail(self.repo, self.idx, a, b, hot))
+            return self._json(_edge.edge_detail(self.repo, self.idx, a, b, hot))
 
         if path == "/api/search-index":
             if Handler._search is None:
-                Handler._search = json.dumps(_payload.search_index(self.idx), ensure_ascii=False,
+                Handler._search = json.dumps(_search.search_index(self.idx), ensure_ascii=False,
                                              separators=(",", ":")).encode()
             return self._send(200, Handler._search, "application/json; charset=utf-8")
 
         if path == "/api/reveal":
             raw = (q.get("open") or [None])[0]
             open_ = None if raw is None else [o for o in raw.split(",") if o]
-            r = _payload.reveal(self.idx, (q.get("node") or [""])[0], open_)
+            r = _search.reveal(self.idx, (q.get("node") or [""])[0], open_)
             return self._json({"open": r}) if r is not None else self._json({"error": "unknown node"}, 404)
 
         if path == "/api/refs":
-            r = _payload.refs(self.repo, (q.get("t") or [""])[0], hot)
+            r = _source.refs(self.repo, (q.get("t") or [""])[0], hot)
             return self._json(r) if r else self._json({"error": "unknown target"}, 404)
 
         if path == "/api/outline":
             rel = (q.get("f") or [""])[0]
-            ol = _payload.file_outline(self.repo, self.idx, rel) if self._in_repo(rel) else None
+            ol = _source.file_outline(self.repo, self.idx, rel) if self._in_repo(rel) else None
             return self._json(ol) if ol else self._json({"error": "不是已扫描的文件"}, 404)
 
         if path == "/api/file":
             rel = (q.get("f") or [""])[0]
             if not self._in_repo(rel):
                 return self._json({"error": "bad path"}, 404)
-            fv = _payload.file_view(self.repo, self.idx, rel)
+            fv = _source.file_view(self.repo, self.idx, rel)
             return self._json(fv) if fv else self._json({"error": "不是已扫描的文件"}, 404)
 
         if path == "/api/open":
@@ -363,14 +367,14 @@ class Handler(BaseHandler):
 
 
 def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | None = None) -> int:
-    idx = _payload.load_index(repo)
+    idx = _load.load_index(repo)
     Handler.repo, Handler.idx, Handler.home = repo, idx, home
     Handler._graphs, Handler._hots, Handler._stale = {}, {}, {}
     Handler._search = None
     # --hot 只决定页面打开时先选哪个 run（页面上随时能换）；启动时先加载一遍：写错了当场报出来
     h = hm = None
     if hot:
-        h, hm = _payload.load_hot(repo, idx, hot)
+        h, hm = _load.load_hot(repo, idx, hot)
         Handler.default_run = hm["run_id"] + (f"@{hm['phase']}" if hm.get("phase") else "")
     else:
         Handler.default_run = None
@@ -380,7 +384,7 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | No
         print(f"  ⚠ {e}")
         n_runs = 0
     # index 落后多少：图和搜索用的是启动时的 index，落后了就说一声
-    lag = _payload.index_lag(repo)
+    lag = _source.index_lag(repo)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     ed = _editor()
     print(f"codestrata serve → http://127.0.0.1:{port}/")

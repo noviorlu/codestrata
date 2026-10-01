@@ -20,7 +20,8 @@ from pathlib import Path
 
 from common import FAKE, HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
-from codestrata import align, payload, runs  # noqa: E402
+from codestrata import align, cut, runs  # noqa: E402
+from codestrata.ui import edge as ui_edge, graphview as ui_graphview, load as ui_load, source as ui_source  # noqa: E402
 from codestrata.trace import analysis as trace_analysis, driver as trace_driver, hook as trace_hook  # noqa: E402
 
 
@@ -94,11 +95,11 @@ def test_ok():
     assert any(v == "handle" for v in counts["names"].values()), "要记下 qualname"
     no_live(rd)
     # 叠到图上：serving 阶段里有请求处理，没有启动时的初始化
-    idx = payload.load_index(repo)
-    hot, meta = payload.load_hot(repo, idx, "fake@serving")
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, "fake@serving")
     assert meta["run_id"] == run["id"] and meta["phase"] == "serving" and meta["status"] == "ok"
     assert "fakesvc/work.py#handle" in hot["symbols"] and "fakesvc/work.py#init_model" not in hot["symbols"]
-    hot_all, _ = payload.load_hot(repo, idx, "fake")
+    hot_all, _ = ui_load.load_hot(repo, idx, "fake")
     assert "fakesvc/work.py#init_model" in hot_all["symbols"]
     assert meta["file_state"] == {} and meta["stale_files"] == []
     for k in ("case", "cmd", "phase", "phases", "n_procs", "unmapped", "stale_files", "mapped_from",
@@ -210,8 +211,8 @@ def test_driver_killed_then_merge():
     r = cs("runs", repo, "ls")
     assert "中断" not in r.stdout and "partial" in r.stdout, r.stdout
     assert not (rd / "parts").exists() and (rd / "parts.tar.gz").is_file()
-    idx = payload.load_index(repo)
-    hot, meta = payload.load_hot(repo, idx, rd.name)
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, rd.name)
     assert "fakesvc/work.py#handle" in hot["symbols"]
 
 
@@ -237,8 +238,8 @@ def test_file_state():
     r = cs("runs", repo, "show", run["id"])
     assert "录制后改过" in r.stdout and "fakesvc/work.py" in r.stdout, r.stdout
     assert "已删除" in r.stdout and "fakesvc/execd.py" in r.stdout, r.stdout
-    idx = payload.load_index(repo)
-    _, meta = payload.load_hot(repo, idx, "fake")
+    idx = ui_load.load_index(repo)
+    _, meta = ui_load.load_hot(repo, idx, "fake")
     assert meta["file_state"]["fakesvc/work.py"] == "changed"
     assert meta["file_state"]["fakesvc/execd.py"] == "gone"
     assert "fakesvc/work.py" in meta["stale_files"]
@@ -308,12 +309,12 @@ def test_phase_at():
     # 没有触发的阶段在 CLI 里报出来；这里都切到了
     assert "没切到" not in r.stdout, r.stdout
     # 图上标阶段的起点 / 终点：触发函数落在切面的哪个节点上（继承来的按定义它的文件）
-    idx = payload.load_index(repo)
-    hot, meta = payload.load_hot(repo, idx, "off@generate")
-    marks = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["fakesvc/"])["phaseMarks"]
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, "off@generate")
+    marks = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["fakesvc/"])["phaseMarks"]
     assert [(m["name"], m["qualname"], m["node"]) for m in marks] == [
         ("generate", "Engine.generate", "fakesvc/offline.py"), ("shutdown", "BaseEngine.close", "fakesvc/offline.py")], marks
-    assert payload.graph_payload(repo, idx)["phaseMarks"] == []
+    assert ui_graphview.graph_payload(repo, idx)["phaseMarks"] == []
 
 
 def test_layers_point_down():
@@ -404,8 +405,8 @@ def test_rerun_command_reproduces():
     cmd = line.split("复刻", 1)[1].strip()
     assert cmd.startswith("cd ") and "--phase generate=fakesvc.offline:Engine.generate" in cmd, cmd
     assert "VLLM_FAKE_KNOB=7" in show and "hf_secret" not in show, show
-    idx = payload.load_index(repo)
-    _, meta = payload.load_hot(repo, idx, run["id"])
+    idx = ui_load.load_index(repo)
+    _, meta = ui_load.load_hot(repo, idx, run["id"])
     assert meta["rerun"] == cmd and meta["rerun_exact"] is True, meta["rerun"]
     assert meta["rerun_env"].startswith("cd ") and "env " in meta["rerun_env"] and "VLLM_FAKE_KNOB=7" in meta["rerun_env"]
     assert [t["name"] for t in meta["phase_at"]] == ["generate"] and meta["phase_log"][1][0] == "generate"
@@ -494,7 +495,7 @@ def test_rerun_command_legacy():
         assert x in cmd, (x, cmd)
     show = cs("runs", repo, "show", run["id"]).stdout
     assert "按 run 里存的参数拼的" in show, show
-    _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
+    _, meta = ui_load.load_hot(repo, ui_load.load_index(repo), run["id"])
     assert meta["rerun_exact"] is False and meta["rerun_env"] is None
     # 拼出来的那条给网页时也整条隐去：case 命令里的 --api-key 值、--env 里像密钥的值
     old = {**run, "cmd": [PY, "-m", "fakesvc.offline", "--api-key", "sk-555"], "env": {"HF_TOKEN": "hf_x"}}
@@ -683,7 +684,7 @@ def test_rerun_secrets_and_bytes():
                   env={"CODESTRATA_EV_MAX": "500", "TOKENIZERS_PARALLELISM": "false", "VLLM_API_KEY": "k"})
     run, _, rd = latest(repo)
     assert run["env_inherited"].get("TOKENIZERS_PARALLELISM") == "false" and "VLLM_API_KEY" not in run["env_inherited"]
-    _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
+    _, meta = ui_load.load_hot(repo, ui_load.load_index(repo), run["id"])
     for k in ("rerun", "rerun_env"):
         assert "hf_secret123" not in meta[k] and "pw9" not in meta[k] and "<已隐去>" in meta[k], meta[k]
     assert "--env=CODESTRATA_EV_MAX=500" in meta["rerun"] and meta["rerun_redacted"] is True, meta["rerun"]
@@ -692,7 +693,7 @@ def test_rerun_secrets_and_bytes():
     # 网页上显示的 case 命令、进程命令行：--api-key 的值、URL 里的密码也隐去（runs show 给完整的）
     cs("trace", repo, "--case", "sec2", "--", PY, "-m", "fakesvc.offline", "--api-key", "sk-999", "--hf-token=tok-888", "https://u:pw7@h.example/")
     run, _, rd = latest(repo)
-    _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
+    _, meta = ui_load.load_hot(repo, ui_load.load_index(repo), run["id"])
     shown = json.dumps([meta["cmd"], meta["procs"], meta["rerun"]], ensure_ascii=False)
     assert "sk-999" not in shown and "tok-888" not in shown and "pw7" not in shown and "<已隐去>" in shown, shown
     assert "sk-999" in cs("runs", repo, "show", run["id"]).stdout
@@ -755,8 +756,8 @@ def test_migrate_legacy():
     (cdir / "trace-old.json").write_text(json.dumps(old))
     (cdir / "parts-old").mkdir()
     (cdir / "parts-old" / "part-1.json").write_text("{}")
-    idx = payload.load_index(repo)
-    want = payload.load_hot(repo, idx, run["id"])[0]
+    idx = ui_load.load_index(repo)
+    want = ui_load.load_hot(repo, idx, run["id"])[0]
     runs._MIGRATED.clear()
     procs = [subprocess.Popen([PY, "-m", "codestrata", "runs", str(repo), "ls"], cwd=HERE.parent,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
@@ -767,7 +768,7 @@ def test_migrate_legacy():
     assert not (cdir / "trace-old.json").exists() and not (cdir / "parts-old").exists()
     ord_ = cdir / "runs" / olds[0]["id"]
     assert json.loads(gzip.decompress((ord_ / "legacy" / "trace-old.json.gz").read_bytes())) == old
-    got = payload.load_hot(repo, idx, "old")
+    got = ui_load.load_hot(repo, idx, "old")
     a, b = dict(got[0]), dict(want)
     a.pop("run"), b.pop("run")
     assert a == b
@@ -910,8 +911,8 @@ def test_legacy_unicode_case():
            "func_edges": tot["func_edges"], "mapped": {}, "phases": {}, "file_shas": {}}
     (repo / ".codestrata" / "trace-双工+v2.json").write_text(json.dumps(old, ensure_ascii=False))
     runs._MIGRATED.clear()
-    idx = payload.load_index(repo)
-    hot, meta = payload.load_hot(repo, idx, "双工+v2")
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, "双工+v2")
     assert meta["case"] == "双工+v2" and meta["phases"] == {} and hot["symbols"]
 
 
@@ -928,8 +929,8 @@ def test_single_phase_and_extras():
     assert run["status"] == "ok", run
     assert any(f["why"] == "attach" and f["path"].endswith("big.yaml") for f in det["files"]), det["files"]
     assert any(p["argv_cut"] for p in det["procs"]), det["procs"]
-    idx = payload.load_index(repo)
-    _, meta = payload.load_hot(repo, idx, "one")
+    idx = ui_load.load_index(repo)
+    _, meta = ui_load.load_hot(repo, idx, "one")
     assert meta["phases"] == {}, meta["phases"]
     r = cs("runs", repo, "show", "one")
     line = next(ln for ln in r.stdout.splitlines() if ln.strip().startswith("复刻"))
@@ -952,8 +953,8 @@ def test_edit_during_recording():
     assert "fakesvc/work.py" in det["changed_during"], det
     assert any("录制过程中被改过" in x for x in run["problems"]), run["problems"]
     cs("scan", repo)
-    idx = payload.load_index(repo)
-    _, meta = payload.load_hot(repo, idx, "ed")
+    idx = ui_load.load_index(repo)
+    _, meta = ui_load.load_hot(repo, idx, "ed")
     assert meta["file_state"].get("fakesvc/work.py") == "changed", meta["file_state"]
 
 
@@ -1223,7 +1224,7 @@ def test_seq_edge_times():
     repo = fresh()
     trace_offline(repo, "ph", "--events", "--phase", "generate=fakesvc.offline:Engine.generate")
     run, _, rd = latest(repo)
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
     spans, _ = _spans(rd)
     end = seq.run_end(run, rd)
     for phase, opened in ((None, None), ("generate", None), ("generate", ["fakesvc/"])):
@@ -1231,7 +1232,7 @@ def test_seq_edge_times():
         t0, t1 = r["window"]
         assert (t0 > 0) == bool(phase), r["window"]
         inside = lambda c: any(a <= c < b or c == b == end for a, b in r["intervals"])      # noqa: E731
-        v = payload._cut.view(idx, set(opened if opened is not None else idx["default_open"]))
+        v = cut.view(idx, set(opened if opened is not None else idx["default_open"]))
         loc, _ = align.sym_locs(idx["symbols"])
         want: dict = {}
         for x in spans:    # 另算一遍：键 → 单元 → 切面节点；同一个节点、定义时的执行、index 外的不算
@@ -1249,8 +1250,8 @@ def test_seq_edge_times():
         assert want and got == want, (got, want)
         assert all(v["repeat"] == (v["n"] >= seq.REPEAT_MIN and v["spread"] > r["span_us"] / 2) for v in r["edges"].values())
         if phase is None:
-            hot, meta = payload.load_hot(repo, idx, run["id"])
-            he = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=opened)["hot"]["edges"]
+            hot, meta = ui_load.load_hot(repo, idx, run["id"])
+            he = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=opened)["hot"]["edges"]
             assert {k: v["n"] for k, v in r["edges"].items()} == he, (r["edges"], he)
 
 
@@ -1332,10 +1333,10 @@ def test_time_window():
                 if c["func_edges"].get(k) != want_e.get(k)}
         assert c == {"funcs": want_f, "func_edges": want_e} and want_e, (rd, t0, t1, diff, c["funcs"], want_f)
         ref = f"{run['id']}@t={t0}-{t1}"
-        hot, meta = payload.load_hot(repo, idx, ref)
+        hot, meta = ui_load.load_hot(repo, idx, ref)
         assert meta["phase"] == f"t={t0}-{t1}" and meta["window"] == [t0, t1] and hot["run"] == ref, meta["phase"]
         assert meta["end_us"] == end and meta["timeline"] == [list(s) for s in seq.phase_segments(run, end)]
-        he = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta)["hot"]["edges"]
+        he = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta)["hot"]["edges"]
         te = seq.edge_times(idx, rd, run, open_=None, phase=f"t={t0}-{t1}")
         assert te["window"] == [t0, t1] and {k: v["n"] for k, v in te["edges"].items()} == he, (te["edges"], he)
         return c
@@ -1344,13 +1345,13 @@ def test_time_window():
     repo = fresh()
     trace_offline(repo, "ph", "--events", "--phase", "generate=fakesvc.offline:Engine.generate")
     run, _, rd = latest(repo)
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
     end = seq.run_end(run, rd)
     (a, b), = seq.phase_intervals(run, end)["generate"]
     check(repo, idx, run, rd, a, b)
     # 调用多、有折叠行（rep > 1）的：整个 run，和一个不和任何东西对齐的窗口（中间那三分之一的调用）
     trepo, trun, _, trd = _truth_run()
-    tidx = payload.load_index(trepo)
+    tidx = ui_load.load_index(trepo)
     ts = sorted(x["t0"] for x in _spans(trd)[0])
     assert max(x["rep"] for x in _spans(trd)[0]) > 1
     whole_c = check(trepo, tidx, trun, trd, 0, seq.run_end(trun, trd))
@@ -1362,7 +1363,7 @@ def test_time_window():
     lo = x["t0"] + x["dur"] // 2
     cut = check(trepo, tidx, trun, trd, lo, lo + x["dur"])["func_edges"]
     assert 0 < cut[f"{x['a']}|{x['b']}"] < whole_e[f"{x['a']}|{x['b']}"], (x, cut)
-    _, meta = payload.load_hot(repo, idx, f"{run['id']}@generate")
+    _, meta = ui_load.load_hot(repo, idx, f"{run['id']}@generate")
     assert meta["window"] is None and meta["end_us"] == end
     for bad, say in ((f"{run['id']}@t=9-3", "起点要小于终点"), (f"{run['id']}@t=a-b", "t=起-止")):
         try:
@@ -1375,17 +1376,17 @@ def test_time_window():
     chunk = json.loads((tsp / "index.json").read_text())["chunks"][0]["chunk"]
     (tsp / chunk).write_bytes(b"garbage")
     try:
-        payload.load_hot(trepo, tidx, f"{trun['id']}@t=0-{seq.run_end(trun, trd)}")
+        ui_load.load_hot(trepo, tidx, f"{trun['id']}@t=0-{seq.run_end(trun, trd)}")
         raise AssertionError("坏了的 span 也加载出来了")
     except SystemExit as e:
         assert "读不出来" in str(e) and "merge" in str(e), e
     (tsp / "keys.json").write_text("{坏了")
-    _, meta = payload.load_hot(trepo, tidx, trun["id"])
+    _, meta = ui_load.load_hot(trepo, tidx, trun["id"])
     assert meta["end_us"] and meta["window"] is None
     trace_offline(repo, "plain")                       # 没录事件：阶段照常，时间段说清楚
     plain, _, _ = latest(repo)
     try:
-        payload.load_hot(repo, idx, f"{plain['id']}@t=0-5")
+        ui_load.load_hot(repo, idx, f"{plain['id']}@t=0-5")
         raise AssertionError("没录事件也加载出来了")
     except SystemExit as e:
         assert "--events" in str(e), e
@@ -1413,8 +1414,8 @@ def decorated():
     cs("scan", repo)
     cs("trace", repo, "--case", "mv", "--", PY, "-c",
        "import fakesvc; from fakesvc import work; fakesvc.helper(); work.init_model(); work.decorated()")
-    idx = payload.load_index(repo)
-    before, _ = payload.load_hot(repo, idx, "mv")
+    idx = ui_load.load_index(repo)
+    before, _ = ui_load.load_hot(repo, idx, "mv")
     want = {k: before["symbols"].get(k) for k in ("fakesvc/__init__.py#helper", "fakesvc/work.py#init_model",
                                                     "fakesvc/work.py#load_weight", "fakesvc/work.py#decorated",
                                                     "fakesvc/work.py#decorated.inner")}
@@ -1424,8 +1425,8 @@ def decorated():
     src = w.read_text().replace("def init_model", "# a\n# b\n# c\n\ndef init_model").replace("@deco", "# x\n# y\n@deco")
     w.write_text(src)
     cs("scan", repo)
-    idx = payload.load_index(repo)
-    after, meta = payload.load_hot(repo, idx, "mv")
+    idx = ui_load.load_index(repo)
+    after, meta = ui_load.load_hot(repo, idx, "mv")
     got = {k: after["symbols"].get(k) for k in want}
     assert got == want, (got, want)
     assert meta["file_state"].get("fakesvc/work.py") == "changed" and meta["unmatched"] >= 1, meta["unmatched"]
@@ -1436,8 +1437,8 @@ def decorated():
                  .replace("load_weight(i)", "load_weight_renamed(i)"))
     assert w.read_text().splitlines()[old_line - 1].startswith("def other_fn")
     cs("scan", repo)
-    idx = payload.load_index(repo)
-    h3, m3 = payload.load_hot(repo, idx, "mv")
+    idx = ui_load.load_index(repo)
+    h3, m3 = ui_load.load_hot(repo, idx, "mv")
     assert not h3["symbols"].get("fakesvc/work.py#other_fn"), h3["symbols"]
     assert h3["files"]["fakesvc/work.py"] >= before["files"]["fakesvc/work.py"] - 1, (h3["files"], before["files"])
 
@@ -1485,7 +1486,7 @@ def test_class_body_is_definition_not_call():
     cs("trace", repo, "--case", "cls", "--phase", "late=cb.main:late", "--", PY, "-m", "cb.main")
     # 「时间顺序」（seq）和模块图用同一个「定义时的执行」判断（align.defining）
     from codestrata import seq
-    idx0 = payload.load_index(repo)
+    idx0 = ui_load.load_index(repo)
     sm = seq._Map(idx0, ["cb/"])
     S = idx0["symbols"]
     for k, want in (("cb/lazy.py#Pool", True), ("cb/lazy.py#Pool.Options", True), ("cb/lazy.py#Pool.request", False),
@@ -1495,7 +1496,7 @@ def test_class_body_is_definition_not_call():
 
     def check(idx):
         classes = {k for k, s in idx["symbols"].items() if s["k"] == "class"}
-        h, m = payload.load_hot(repo, idx, "cls@late")
+        h, m = ui_load.load_hot(repo, idx, "cls@late")
         assert not classes & set(h["symbols"]), h["symbols"]
         assert h["symbols"] == {"cb/main.py#late": 1, "cb/util.py#deco": 1, "cb/lazy.py#Pool.request": 1,
                                 "cb/lazy.py#factory": 3}, h["symbols"]
@@ -1503,15 +1504,15 @@ def test_class_body_is_definition_not_call():
         assert h["packages"]["cb/lazy.py"] == 4 and h["files"]["cb/lazy.py"] == 4, (h["packages"], h["files"])
         assert set(h["module_exec"]) == {"cb/idle.py", "cb/lazy.py", "cb/util.py"}, h["module_exec"]
         assert h["class_frames"] == 6, h["class_frames"]        # Pool、Options、Idle、Local × 3
-        g = payload.graph_payload(repo, idx, hot=h, open_=["cb/"])
+        g = ui_graphview.graph_payload(repo, idx, hot=h, open_=["cb/"])
         assert "cb/idle.py" not in {n["id"] for n in g["graphHot"]["nodes"]}, g["hot"]["packages"]
         return m
-    check(payload.load_index(repo))
+    check(ui_load.load_index(repo))
     # 录制之后行号变了：类体的键按 qualname 挪到类现在的行上，照样认得出
     lz = repo / "cb" / "lazy.py"
     lz.write_text("# 插两行\n\n" + lz.read_text())
     cs("scan", repo)
-    m = check(payload.load_index(repo))
+    m = check(ui_load.load_index(repo))
     assert m["file_state"].get("cb/lazy.py") == "changed" and m["unmatched"] == 0, (m["file_state"], m["unmatched"])
 
 
@@ -1565,9 +1566,9 @@ def test_dynamic_dispatch_consistent_across_cuts():
     cs("scan", repo)
     cs("trace", repo, "--case", "dyn", "--", PY, "-m", "dd.main")
     cs("trace", repo, "--case", "mix", "--", PY, "-m", "dd.main", "tag")
-    idx = payload.load_index(repo)
-    hd, md = payload.load_hot(repo, idx, "dyn")
-    hm, mm = payload.load_hot(repo, idx, "mix")
+    idx = ui_load.load_index(repo)
+    hd, md = ui_load.load_hot(repo, idx, "dyn")
+    hm, mm = ui_load.load_hot(repo, idx, "mix")
     RM, RI, RH = "dd/runner/|dd/models/", "dd/runner/|dd/models/impl/", "dd/runner/|dd/models/helpers.py"
     MR = "dd/main.py|dd/registry.py"        # 文件对文件：静态引用的是 MODELS，跑到的 lookup 是 getattr 取的
 
@@ -1575,28 +1576,28 @@ def test_dynamic_dispatch_consistent_across_cuts():
         """图上的次数 = 边详情里的次数；图上的动态分派次数 = 边详情里「动态分派」那组的次数"""
         for k, n in g["hot"]["edges"].items():
             a, b = k.split("|")
-            d = payload.edge_detail(repo, idx, a, b, hot)
+            d = ui_edge.edge_detail(repo, idx, a, b, hot)
             dyn = sum(it["calls"] for it in d["items"] if it["status"] == "dynamic")
             assert d["counts"]["calls"] == n and dyn == g["hot"]["dyn"].get(k, 0), (k, n, d["counts"], g["hot"]["dyn"])
 
-    shut = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd/"])
+    shut = ui_graphview.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd/"])
     ids = {n["id"] for n in shut["graph"]["nodes"]}
     assert {"dd/runner/", "dd/models/"} <= ids, ids
     assert RM in shut["edgeKinds"] and shut["hot"]["edges"][RM] == 4 and shut["hot"]["dyn"][RM] == 4, shut["hot"]
     assert RM in shut["dynOnlyEdges"] and MR in shut["dynOnlyEdges"], shut["dynOnlyEdges"]
     agree(shut, hd)
-    opened = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd/", "dd/models/"])
+    opened = ui_graphview.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=["dd/", "dd/models/"])
     assert [RI.split("|")[0], RI.split("|")[1], 4] in opened["runtimeOnlyEdges"], opened["runtimeOnlyEdges"]
     assert RH in opened["edgeKinds"] and not opened["hot"]["edges"].get(RH) and RH not in opened["dynOnlyEdges"]
     agree(opened, hd)
     # 同一条边上也有确认调用（helpers.tag()）：照旧画实线，动态分派的次数单独带着
-    mix = payload.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd/"])
+    mix = ui_graphview.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd/"])
     assert mix["hot"]["edges"][RM] == 7 and mix["hot"]["dyn"][RM] == 4 and RM not in mix["dynOnlyEdges"], mix["hot"]
     agree(mix, hm)
-    agree(payload.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd/", "dd/models/"]), hm)
+    agree(ui_graphview.graph_payload(repo, idx, hot=hm, hot_meta=mm, open_=["dd/", "dd/models/"]), hm)
     # 动态分派的调用处：调用方函数体里那一行；经由 map() 这种仓库外的代码调到的，找过但找不到（[]）
     def callers(a, b):
-        d = payload.edge_detail(repo, idx, a, b, hd)
+        d = ui_edge.edge_detail(repo, idx, a, b, hd)
         return {c["sym"].partition("#")[2]: c for it in d["items"] if it["status"] == "dynamic"
                 for r in it["runtime"] for c in r["callers"]}
     for a, b in (("dd/runner/loop.py", "dd/models/impl/net.py"), ("dd/runner/", "dd/models/")):
@@ -1608,13 +1609,13 @@ def test_dynamic_dispatch_consistent_across_cuts():
     assert len(got) == 1 and "'lookup')(name)" in got[0]["s"], got
     # 按名字登记：带模块的类路径只认模块对得上的，同一处登记留带模块的那一行；只写类名的另起一处；
     # __all__ 是再导出清单不算；仓库里有同名类（helpers.Net）要说出来
-    d = payload.edge_detail(repo, idx, "dd/runner/loop.py", "dd/models/impl/net.py", hd)
+    d = ui_edge.edge_detail(repo, idx, "dd/runner/loop.py", "dd/models/impl/net.py", hd)
     w = next(it for it in d["items"] if it["status"] == "dynamic")["wiring"]
     ln = next(i for i, x in enumerate(_DD["dd/main.py"].splitlines(), 1) if "build('Net')" in x)
     assert [(t["f"], t["l"], t["exact"]) for t in w["refs"]] == [
         ("dd/registry.py", 2, True), ("dd/main.py", ln, False), ("dd/wire.py", 1, False)], w
     assert w["same_name"] == 2 and w["n"] == 3 and "dd.models.impl.net.Net" in w["refs"][0]["s"], w
-    nr = payload.load_index(repo)["name_refs"]
+    nr = ui_load.load_index(repo)["name_refs"]
     assert not any(f.endswith("impl/__init__.py") for f, *_ in nr["Net"]), nr["Net"]
 
 
@@ -1694,9 +1695,9 @@ def test_call_sites_by_syntax():
         (repo / rel).write_text(src)
     cs("scan", repo)
     cs("trace", repo, "--case", "syn", "--", PY, "-m", "sx.use")
-    idx = payload.load_index(repo)
-    hot, _ = payload.load_hot(repo, idx, "syn")
-    d = payload.edge_detail(repo, idx, "sx/use.py", "sx/box.py", hot)
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "syn")
+    d = ui_edge.edge_detail(repo, idx, "sx/use.py", "sx/box.py", hot)
     got = {r["sym"].partition("#")[2]: c for it in d["items"] for r in it["runtime"] for c in r["callers"]
            if c["sym"] == "sx/use.py#run"}
     assert not any("<L" in k for k in got), sorted(got)           # getter 不能成了「Box 里的某个闭包」
@@ -1772,15 +1773,15 @@ def test_callbacks_from_case_code():
     env = ["--env", f"PYTHONPATH={repo}{os.pathsep}{sp}"]
     cs("trace", repo, "--case", "out", "--events", *env, "--", PY, str(case / "case.py"))
     cs("trace", repo, "--case", "in", *env, "--", PY, "examples/case.py")
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
     assert "examples/case.py" not in idx["files"], "examples/ 应当不在 index 里"
-    ho, mo = payload.load_hot(repo, idx, "out")
-    hi, mi = payload.load_hot(repo, idx, "in")
+    ho, mo = ui_load.load_hot(repo, idx, "out")
+    hi, mi = ui_load.load_hot(repo, idx, "in")
     want = {"web/app.py|web/ctx.py": 3, "web/worker.py|web/model.py": 1}
     assert ho["edges"] == want and hi["edges"] == want, (ho["edges"], hi["edges"])
     assert ho["symbols"] == hi["symbols"] and ho["symbols"]["web/json.py#jsonify"] == 2, (ho["symbols"], hi["symbols"])
     assert list(ho["edge_calls"]["web/worker.py|web/model.py"]["web/model.py#Model.forward"]["callers"]) == ["web/worker.py#run"]
-    g = payload.graph_payload(repo, idx, hot=ho, hot_meta=mo)
+    g = ui_graphview.graph_payload(repo, idx, hot=ho, hot_meta=mo)
     assert not g["runtimeOnlyEdges"] and not g["hot"]["dyn"], (g["runtimeOnlyEdges"], g["hot"]["dyn"])
     # 数据里：调用方记成仓库外的 case 代码（index 之外，和 examples/ 里的一样不上图）；funcs 只有仓库代码
     out_run, rd_out, _ = runs.resolve(repo, "out")
@@ -1825,10 +1826,10 @@ def test_case_code_detection():
     cs("scan", repo)
     cs("trace", repo, "--case", "m", "--cwd", t / "m", "--env", f"PYTHONPATH={repo}", "--", PY, "-m", "casepkg.main")
     cs("trace", repo, "--case", "u", "--cwd", t / "u", "--env", f"PYTHONPATH={repo}", "--", PY, "-m", "unittest", "test_views")
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
     for case, src in (("m", "<外部代码>/__init__.py"), ("u", "<外部代码>/test_views.py")):
-        hot, meta = payload.load_hot(repo, idx, case)
-        g = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta)
+        hot, meta = ui_load.load_hot(repo, idx, case)
+        g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta)
         assert not g["runtimeOnlyEdges"] and not g["hot"]["dyn"], (case, g["runtimeOnlyEdges"], g["hot"]["dyn"])
         _, rd, _ = runs.resolve(repo, case)
         c = runs.load_counts(rd, None)
@@ -1859,7 +1860,7 @@ def test_generic_defs_are_definitions():
         (repo / rel).write_text(src)
     cs("scan", repo)
     cs("trace", repo, "--case", "gp", "--phase", "run=gp.main:run", "--", PY, "-m", "gp.main")
-    h, _ = payload.load_hot(repo, payload.load_index(repo), "gp@run")
+    h, _ = ui_load.load_hot(repo, ui_load.load_index(repo), "gp@run")
     assert h["symbols"] == {"gp/main.py#run": 1, "gp/core.py#ident": 1, "gp/core.py#Box.get": 1}, h["symbols"]
     assert h["files"]["gp/core.py"] == 2 and h["class_frames"] == 1, (h["files"], h["class_frames"])
     assert set(h["module_exec"]) == {"gp/core.py"}, h["module_exec"]
@@ -1885,10 +1886,10 @@ def test_edge_defs_vars_and_reexports():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(src)
     cs("scan", repo)
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
 
     def defs(a, b):
-        items = payload.edge_detail(repo, idx, a, b)["items"]
+        items = ui_edge.edge_detail(repo, idx, a, b)["items"]
         return {it["name"]: it["def"] and (it["def"]["f"], it["def"]["l"], it["def"]["k"], it.get("sig"))
                 for it in items}
     assert defs("rx/sessions.py", "rx/models.py") == {
@@ -1901,11 +1902,11 @@ def test_edge_defs_vars_and_reexports():
     alias = defs("rx/sessions.py", "rx/__init__.py")
     assert alias == {"DEFAULT_LIMIT": ("rx/models.py", 1, "var", ["LIMIT: int = 30"])}, alias
     # 和 Ctrl+点击同一处
-    x = payload.xref_for(repo, "rx/sessions.py")
+    x = ui_source.xref_for(repo, "rx/sessions.py")
     ctrl = {t.rpartition("#")[2]: tuple(w) for t, w in x["targets"].values() if t[0] in "sv"}
     assert ctrl["Executor"] == ex["Executor"][:2] and ctrl["LIMIT"] == alias["DEFAULT_LIMIT"][:2], ctrl
     # 目录级的边（合并了几对单元）照样带着
-    d = payload.edge_detail(repo, idx, "rx/sessions.py", "rx/executor/")
+    d = ui_edge.edge_detail(repo, idx, "rx/sessions.py", "rx/executor/")
     assert [it["def"]["f"] for it in d["items"]] == ["rx/executor/abstract.py"], d["items"]
     # 老的 xref.json（没有 names）：没有定义，面板照旧说没找到
     p = repo / ".codestrata" / "xref.json"
@@ -1948,7 +1949,7 @@ def test_type_checking_imports_are_not_dependencies():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(src)
     cs("scan", repo)
-    idx = payload.load_index(repo)
+    idx = ui_load.load_index(repo)
     E = {(a, b): w for a, b, w in idx["edges"]}
     T = {(a, b): w for a, b, w in idx.get("type_edges") or []}
     CTX, APP, CLI, SUB, UTIL = "tc/ctx.py", "tc/app.py", "tc/cli.py", "tc/sub/", "tc/sub/util.py"
@@ -1961,23 +1962,23 @@ def test_type_checking_imports_are_not_dependencies():
     why = lambda k: sorted((x["n"], x["why"]) for x in idx["edge_dead"].get(k, []))
     assert why(f"{CTX}|{APP}") == [("App", "type")] and why(f"{UTIL}|{CTX}") == [("Ctx", "type")]
     assert why(f"{CLI}|{APP}") == [] and "tc/app.py#App" in idx["edge_uses"][f"{CLI}|{APP}"], idx["edge_uses"]
-    g = payload.graph_payload(repo, idx, open_=["tc/"])
+    g = ui_graphview.graph_payload(repo, idx, open_=["tc/"])
     assert f"{CTX}|{APP}" not in g["edgeKinds"] and [CTX, APP, 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]
     assert f"{CLI}|{APP}" in g["edgeKinds"] and not any(e[:2] == [CLI, APP] for e in g["typeOnlyEdges"])
     assert g["pkgs"][CTX]["alt"] == -1.0 and g["pkgs"][CTX]["out"] == 0, g["pkgs"][CTX]
     assert [SUB, CTX, 1] in g["typeOnlyEdges"], g["typeOnlyEdges"]         # 收起的目录 → 文件
     for a, b, n in ((CTX, APP, "App"), (SUB, CTX, "Ctx")):
-        d = payload.edge_detail(repo, idx, a, b)
+        d = ui_edge.edge_detail(repo, idx, a, b)
         assert not d["static_edge"] and d["type_edge"] and d["items"] == [] and d["n_sites"] == 1, d
         assert [(x["n"], x["why"]) for x in d["import_only"]] == [(n, "type")], d["import_only"]
-    d = payload.edge_detail(repo, idx, CLI, APP)
+    d = ui_edge.edge_detail(repo, idx, CLI, APP)
     assert d["static_edge"] and d["type_edge"], d                     # 两样都有：是依赖
     # runtime：ctx 经 self.app 调到 app 的 hook——两端之间运行时没有 import，是只在 runtime 出现的边
     cs("trace", repo, "--case", "tc", "--", PY, "-m", "tc")
-    hot, meta = payload.load_hot(repo, idx, "tc")
-    g = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["tc/"])
+    hot, meta = ui_load.load_hot(repo, idx, "tc")
+    g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["tc/"])
     assert any(e[:2] == [CTX, APP] for e in g["runtimeOnlyEdges"]), g["runtimeOnlyEdges"]
-    d = payload.edge_detail(repo, idx, CTX, APP, hot)
+    d = ui_edge.edge_detail(repo, idx, CTX, APP, hot)
     assert [(it["name"], it["status"]) for it in d["items"]] == [("App", "dynamic")], d["items"]
     assert [x["why"] for x in d["import_only"]] == ["type"], d["import_only"]
     # 标注里的名字 Ctrl+点击照样跳到定义（xref 自己解析 import，不看边）
@@ -2028,8 +2029,8 @@ def test_duplicate_short_labels():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(f"def f_{rel.replace('/', '_')[:-3]}():\n    return 1\n")
     cs("scan", repo)
-    idx = payload.load_index(repo)
-    g = payload.graph_payload(repo, idx, open_=["lb/", "lb/sansio/", "lb/ops/"])
+    idx = ui_load.load_index(repo)
+    g = ui_graphview.graph_payload(repo, idx, open_=["lb/", "lb/sansio/", "lb/ops/"])
     lab = {n["id"]: n["label"] for n in g["graph"]["nodes"]}
     assert lab["lb/app.py"] == "app" and lab["lb/sansio/app.py"] == "sansio.app", lab
     assert lab["lb/kernels/"] == "kernels/" and lab["lb/ops/kernels/"] == "ops.kernels/", lab
@@ -2039,11 +2040,11 @@ def test_duplicate_short_labels():
     # 面板、搜索栏用的短名（names）：撞了名的补过父目录段，其余是显示名的最后一段；本层文件节点用它目录的
     assert g["names"]["lb/sansio/app.py"] == "sansio.app" and g["names"]["lb/cli.py"] == "cli", g["names"]
     # 文件多（又有子目录）、合成了「本层文件」的 lb.big 和 lb.sansio.big 撞名：框里的本层文件节点照旧写「本层文件」
-    g3 = payload.graph_payload(repo, idx, open_=["lb/", "lb/sansio/", "lb/big/"])
+    g3 = ui_graphview.graph_payload(repo, idx, open_=["lb/", "lb/sansio/", "lb/big/"])
     lab3 = {n["id"]: n["label"] for n in g3["graph"]["nodes"]}
     assert lab3["lb/big/*"] == "本层文件" and lab3["lb/sansio/big.py"] == "sansio.big", lab3
     # 收起 sansio：只剩一个 app，不再补
-    g2 = payload.graph_payload(repo, idx, open_=["lb/", "lb/ops/"])
+    g2 = ui_graphview.graph_payload(repo, idx, open_=["lb/", "lb/ops/"])
     assert {n["id"]: n["label"] for n in g2["graph"]["nodes"]}["lb/app.py"] == "app" and "lb/app.py" not in g2["alias"]
 
 

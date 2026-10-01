@@ -44,7 +44,7 @@
   符号键保留冒号分隔（`<路径>:<限定名>` 和函数键 `<路径>:<行>` 长得一样，容易混）。
 - 在哪：`cut.py`（`unit_dir`、`root_dir`、`residual`、`within`、`label`、`find_dir`、`INDEX_FORMAT`）、`scan.py`（`unit_label`、`Symbol.key`）、
   `xref.py`（`_out_target`）、`trace/analysis.py`（`_module_paths`、`defining`）、
-  `layout.py`（`_segs`、`name_in`）、`payload.py`（`names`、`labels`、`search_index`）、`web/ids.js`。
+  `layout.py`（`_segs`、`name_in`）、`ui/graphview.py`（`names`、`labels`）、`ui/search.py`（`search_index`）、`web/ids.js`。
 
 ### 纵轴按依赖分层，不用 SCC 缩点，也不用架构高度
 - 决定：`layout.layers` 直接对边排序：按权重贪心去环（Eades–Lin–Smyth），再 sifting（最多 20 轮）把逆向边的权重压到最小，
@@ -62,7 +62,7 @@
 - 为什么：基类回调子类、按注册表分派这类和 import 方向相反的调用，按静态边分层会往上指。实测 runtime 边往上指的份额：
   vllm-omni 展开 entrypoints 从 23% 到 0%，nerfstudio 16% 到 6%，pip 47% 到 12%。log 是为了几百条 import 的一对不压过几十对只有一条的。
 - 放弃的方案：静态图和叠不同 run 用同一套坐标只换颜色。代价是换 run 时节点会换泳道。
-- 在哪：`layout.py` 的 `build`、`RUNTIME_WEIGHT`；`payload.py` 的 `graph_payload`（传 `runtime_edges`）；「只看跑到的」hot 图沿用总图的 `lane_of`。
+- 在哪：`layout.py` 的 `build`、`RUNTIME_WEIGHT`；`ui/graphview.py` 的 `graph_payload`（传 `runtime_edges`）；「只看跑到的」hot 图沿用总图的 `lane_of`。
 
 ### 交叉引用宁可不跳，也不跳错
 - 决定：xref 只记能确定的：局部变量遮住的、MRO 上先碰到仓库外基类的、类型拿不准的一律不给链接；通过对象调用的方法
@@ -71,7 +71,7 @@
 - 为什么：跳错一次，用户就不再信这个功能；改过的文件行列号对不上，链接会落在别的字上。`get`、`shape`、`to` 这种名字按名字列出来
   一大半都不是它，还会占掉 xref.json 的三分之一。
 - 放弃的方案：没有类型推断的「按名字全列」。
-- 在哪：`xref.py`（模块说明、`_Repo.class_member` / `unsure`、`ATTRS_MAX_SAME`）；`payload.py` 的 `_stale`、`_changed`、`xref_for`。
+- 在哪：`xref.py`（模块说明、`_Repo.class_member` / `unsure`、`ATTRS_MAX_SAME`）；`ui/source.py` 的 `_stale`、`_changed`、`xref_for`。
   这属于冻结区（见「工程」第一条），只修 bug。
 
 ---
@@ -94,7 +94,7 @@
 - 为什么：「import 了不等于用了，用了不等于这次跑到了」（旧 README）；真调用和静态盲区最值得先看。副作用 import 有 runtime 数据时
   还能标出对方模块的顶层这次执行了没有。
 - 放弃的方案：只画 import 边、或只画 runtime 边。理由未另外记录。
-- 在哪：`payload.py` 的 `_pair_detail`、`_top`、`edge_detail`；`scan.py` 记 `edge_uses` / `edge_dead`（第二遍扫名字的读取）。
+- 在哪：`align.py` 的 `top`、`pair_items`、`merged_status`；`ui/edge.py` 的 `_pair_detail`、`edge_detail`；`scan.py` 记 `edge_uses` / `edge_dead`（第二遍扫名字的读取）。
 
 ### 动态分派按被调符号判，而且按当前切面算
 - 决定：被调符号（方法收到类）不在这条切面边的静态引用里就算动态分派；一条静态边上跑到的调用全是动态分派时，也画成橙虚线（`dynOnlyEdges`）。
@@ -102,7 +102,7 @@
 - 为什么：两端之间碰巧有别的 import（比如只引用了一个常量）时，收起的边按「有静态边」画成实线，展开之后实线变成没跑到的灰边加一条虚线，
   看上去箭头「消失」了（vllm-omni 的 worker → models）。同一个符号可能一对单元里静态引用、另一对里 runtime 调到，合成一条边后算确认。
 - 放弃的方案：按单元对算完再相加；有静态边就画实线。
-- 在哪：`align.py` 的 `hot_on_cut`、`dyn_only`；`payload.py` 的 `graph_payload`；前端 `web/graph.js`。
+- 在哪：`align.py` 的 `hot_on_cut`、`dyn_only`；`ui/graphview.py` 的 `graph_payload`；前端 `web/graph.js`。
 
 ### `if TYPE_CHECKING:` 里的 import 不是依赖
 - 决定：这种 import 记进 `type_edges`，不进 `edges`、不算架构高度和分层；标注里引用到也不算「用到」。切面上两端之间没有运行时 import 的，
@@ -110,7 +110,7 @@
 - 为什么：运行时不执行。早先它和普通 import 一样算边，`from __future__ import annotations` 下标注里的名字又被算成「用到了 1 个符号」，
   图上凭空多一条实线回边、高度也被带偏。
 - 放弃的方案：和普通 import 一样算边。
-- 在哪：`scan.py`（`typed` / `type_edges`）；`payload.py` 的 `graph_payload`（`typeOnlyEdges`）、`_pair_detail`（`type_edge`）；`web/graph.js`。
+- 在哪：`scan.py`（`typed` / `type_edges`）；`ui/graphview.py` 的 `graph_payload`（`typeOnlyEdges`）、`ui/edge.py` 的 `_pair_detail`（`type_edge`）；`web/graph.js`。
 
 ### 调用方是栈上最近的仓库帧；case 自己的代码例外
 - 决定：标准库、site-packages 等仓库外的帧不入栈，A → 框架 → B 记成 A → B。入口脚本同一层目录（执行目录在仓库外时还有
@@ -324,12 +324,12 @@
 
 ## 前端
 
-### 一套零构建的前端，数据只经 ds.js 从 serve 取；组装只在 payload 里做
-- 决定：前端是 `codestrata/web/` 下的普通 HTML/CSS/JS，零构建。UI 只调 `web/ds.js`，它 fetch 相对地址 `api/…`；数据一律由 `payload` 组装，serve 按请求给。
+### 一套零构建的前端，数据只经 ds.js 从 serve 取；取数只在 ui/ 里做
+- 决定：前端是 `codestrata/web/` 下的普通 HTML/CSS/JS，零构建。UI 只调 `web/ds.js`，它 fetch 相对地址 `api/…`；数据一律由 `ui/` 下的模块从 graph（索引和叠上的 run）里取，serve 按请求给。
 - 为什么：地址写成相对的，页面在 `/` 下和主菜单转发的 `/v/<端口>/` 下都对。零构建：理由未记录。
   单文件导出、GitHub 静态站曾经是另外两种数据源，2026-09-30 去掉了（见「不做分享（暂时）」）。
 - 放弃的方案：没有记录。
-- 在哪：`web/ds.js`；`payload.py` 的 `graph_payload`；`serve.py`。
+- 在哪：`web/ds.js`；`ui/`；`serve.py`。
 
 ### 按浏览器里图框的宽度排版
 - 决定：前端把图框实际宽度带给 `/api/graph?w=`，按 40px 取整、夹在 700–4000，放进缓存键；不传时用默认的 1180。画布宽度在图框宽度的几个倍数里挑
@@ -421,10 +421,10 @@
 
 ### 模块边界：录和存分开，seq 和 events 只隔一个文件格式
 - 决定：`trace` 不 import `runs`：`trace.driver.run` 只接收一个 parts 目录和一个 `after` 回调，收尾（打包、写 run.json）在 `run` 的 try/finally 里跑。`seq` 不 import `events`
-  也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块，`payload.py` 不再加东西。
+  也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块。
 - 为什么：driver 的信号处理器要一直装到收尾做完，收尾中途按 Ctrl+C 才不会留下半截的 run——所以用回调而不是返回后再收尾。写 run、删 run 的代码全在 `runs` 里，
   审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.edge_times`；代价是 spans/ 的格式两边各认一份（`test_seq_edge_times` 兜底）。
-  `payload.py` 已经是 god module（见 ARCHITECTURE「已知的结构问题」）；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
+  原来的 `payload.py` 是 god module，2026-09-30 拆成了 `align.py`（两边的比较）和 `ui/` 下几个按页面区域分的模块；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
 - 放弃的方案：`driver.run` 返回后由调用方收尾。
 - 在哪：`trace/driver.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import。
 

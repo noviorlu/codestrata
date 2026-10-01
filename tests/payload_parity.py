@@ -24,17 +24,22 @@ ROOT = HERE.parent
 _DUMP = r'''
 import json, sys
 from pathlib import Path
-from codestrata import cut, payload, runs, seq
+from codestrata import runs, seq
+try:                                    # 界面取数拆成 ui/ 之后
+    from codestrata.ui import edge as E, graphview as G, load as L
+except ImportError:                     # 之前都在 payload.py 里
+    from codestrata import payload as E
+    G = L = E
 repo = Path(sys.argv[1]); refs = sys.argv[2:]
-idx = payload.load_index(repo)
+idx = L.load_index(repo)
 # 展开两层以内的目录：全部展开在大仓库上节点太多（vllm-omni 1463 个），光排版就要很久，也不是真会看的切面
 deep = sorted(d for d in idx.get("dirs") or {} if d.count("/") <= 2)
 cuts = {"default": None, "closed": [], "deep": deep}
 out = {}
 for ref in [None] + refs:
-    hot, meta = payload.load_hot(repo, idx, ref) if ref else (None, None)
+    hot, meta = L.load_hot(repo, idx, ref) if ref else (None, None)
     for name, open_ in cuts.items():
-        g = payload.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=open_)
+        g = G.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=open_)
         pairs = sorted({(e[0], e[1]) for e in g["graph"]["edges"]}
                        | {(e[0], e[1]) for e in g["runtimeOnlyEdges"] + g["typeOnlyEdges"]})
         if name == "deep" and len(pairs) > 400:
@@ -42,7 +47,7 @@ for ref in [None] + refs:
             hot_edges = set((g.get("hot") or {}).get("edges") or {})
             pairs = [(a, b) for a, b in pairs if f"{a}|{b}" in hot_edges]
         out[f"{ref}|{name}|graph"] = g
-        out[f"{ref}|{name}|edges"] = {f"{a}|{b}": payload.edge_detail(repo, idx, a, b, hot) for a, b in pairs}
+        out[f"{ref}|{name}|edges"] = {f"{a}|{b}": E.edge_detail(repo, idx, a, b, hot) for a, b in pairs}
     if ref:
         run, rd, phase = runs.resolve(repo, ref)
         try:
@@ -98,7 +103,7 @@ def main(argv: list[str]) -> int:
     if not diffs:
         print("逐项一致")
         return 0
-    print(f"不一样的地方（最多列 40 处）：")
+    print("不一样的地方（最多列 40 处）：")
     for d in diffs:
         print("  " + d)
     return 1

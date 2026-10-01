@@ -525,7 +525,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
 
             # 字符串里写着的类名：注册表按名字登记类（{"Arch": ("pkg", "mod", "Cls")}）、getattr(mod, "Cls")、
             # 插件表。先收下所有像类名的字符串（大写开头的标识符），扫完再只留仓库里真有这个类名的——
-            # 动态分派调到的类，payload 靠它回答「是在哪儿按名字接上的」。__all__ 里的是再导出清单，不算
+            # 动态分派调到的类，边详情（align.hints）靠它回答「是在哪儿按名字接上的」。__all__ 里的是再导出清单，不算
             in_all: set[int] = set()
             named: list[tuple[str, int]] = []
             for n2 in ast.walk(tree):
@@ -632,7 +632,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                     # sym：这个名字指向什么，和符号键同一种写法——模块是它的文件路径（dst），
                     # 模块里的名字是 <文件路径>#<名字>
                     if how == "mod":
-                        # from . import payload as _payload → _payload 是模块别名
+                        # from .ui import graphview as _graphview → _graphview 是模块别名
                         into[a.asname or a.name] = {"kind": "mod", "sym": dst, "dst": dst,
                                                     "line": node.lineno, "orig": a.name, "why": why}
                     elif how == "name":
@@ -651,7 +651,7 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                                               "line": node.lineno, "orig": a.name,
                                               "why": why or "sideeffect"}
 
-            # 第二遍：本地名字的实际使用点。`_payload.graph_payload(...)` → 用了 graph_payload；
+            # 第二遍：本地名字的实际使用点。`_graphview.graph_payload(...)` → 用了 graph_payload；
             # `Orchestrator(...)` → 用了 Orchestrator。这才回答得了「具体用了对方哪些函数」。
             used: set[str] = set()
             if bound or chains:

@@ -47,10 +47,10 @@ def test_no_unix_bits_scan_serve_work():
             importlib.import_module(m)
         print("IMPORTED", len(mods))
         from codestrata.__main__ import main
-        from codestrata import payload
+        from codestrata.ui import graphview, load
         rc = [main(["scan", {str(repo)!r}]), main(["runs", {str(repo)!r}, "ls"])]
         repo = Path({str(repo)!r})
-        g = payload.graph_payload(repo, payload.load_index(repo))
+        g = graphview.graph_payload(repo, load.load_index(repo))
         print("RC", rc, "NODES", len(g["graph"]["nodes"]))
     """)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-3000:]

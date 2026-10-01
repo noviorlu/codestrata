@@ -10,7 +10,8 @@ import sys
 
 from common import cs, run_tests, tmpdir  # noqa: E402
 
-from codestrata import graph, payload, scan, xref  # noqa: E402
+from codestrata import graph, scan, xref  # noqa: E402
+from codestrata.ui import load as ui_load  # noqa: E402
 
 _SRC = {
     "pkg/__init__.py": "",
@@ -133,11 +134,11 @@ def test_old_index_format_refused():
     d["format"] = 3
     p.write_text(json.dumps(d))
     try:
-        payload.load_index(repo)
+        ui_load.load_index(repo)
         raise AssertionError("旧格式没有被拒绝")
     except SystemExit as e:
         assert "重新跑一次 codestrata scan" in str(e), e
-    assert payload.index_summary(repo)["outdated"] is True
+    assert ui_load.index_summary(repo)["outdated"] is True
 
 
 if __name__ == "__main__":

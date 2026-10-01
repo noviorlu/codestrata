@@ -55,7 +55,7 @@ def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
 
 
 def to_package_graph(trace: dict, index: dict) -> dict:
-    """把函数粒度的 trace 折算到单元（文件）粒度，payload 再按切面汇总叠到图上；同时保留
+    """把函数粒度的 trace 折算到单元（文件）粒度，界面（ui.graphview）再按切面汇总叠到图上；同时保留
     每条单元间边上「谁调了谁」的明细，给点开箭头时用。
 
     返回 {"packages": {pkg: hits}, "edges": {"a|b": 调用次数},

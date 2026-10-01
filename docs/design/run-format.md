@@ -5,7 +5,7 @@
 
 - 以代码为准：`codestrata/runs.py`（目录、run.json、detail.json、counts.json.gz、引用、对上 index）、
   `trace/`（`hook.py` 写的分片、`analysis.py` 的合并、阶段标记、叠加到单元）、`events.py`（事件日志 → span）、
-  `seq.py`（span 的读法、时间段、时间顺序）、`scan.py` / `cut.py` / `payload.py` / `layout.py`（静态索引和它的读法）。
+  `seq.py`（span 的读法、时间段、时间顺序）、`scan.py` / `cut.py` / `ui/` / `layout.py`（静态索引和它的读法）。
   本页和代码对不上时以代码为准，并改本页。
 - 本页每个字段名都对过代码和真实的 run（vllm-omni 上的一次 GPU 录制、测试用的假仓库）。
   拿不准的地方标了「未核实」。
@@ -463,31 +463,31 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 
 ### 9.3 扫描端要产出的静态索引
 
-scan 写 index.json 和 symbols.json，加载时（`payload.load_index`）合成一个 index；另有 xref.json（跳转）和 graph.json（调用）。下表是叠加、图、切面实际读到的字段
-（`payload.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace/` 里查过）；其余的只给冻结区（代码窗口、交叉引用）用。
+scan 写 index.json 和 symbols.json，加载时（`ui.load.load_index`）合成一个 index；另有 xref.json（跳转）和 graph.json（调用）。下表是叠加、图、切面实际读到的字段
+（`ui/`、`align.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace/` 里查过）；其余的只给冻结区（代码窗口、交叉引用）用。
 
 **index.json**
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
-| `format` | int | `payload.load_index`、`payload.index_summary` | 索引的格式版本（`cut.INDEX_FORMAT`，现在是 4：id 按路径、符号键 `<路径>#<限定名>`、有 graph.json）；不一样的旧索引要重新 scan | 是 |
-| `repo` | {root, name, roots, n_files, n_parse_errors, unresolved_imports, n_aux, auto_split} | `payload.graph_payload`（整个传给前端：页头用 `name`，页脚用 `roots`、`n_files`、`n_parse_errors`）、`payload.index_summary`（主菜单卡片、trace 的默认 roots）、`auto_split` 给前端 | 仓库信息 | 是（至少 `name`、`roots`、`n_files`、`n_parse_errors`） |
+| `format` | int | `ui.load.load_index`、`ui.load.index_summary` | 索引的格式版本（`cut.INDEX_FORMAT`，现在是 4：id 按路径、符号键 `<路径>#<限定名>`、有 graph.json）；不一样的旧索引要重新 scan | 是 |
+| `repo` | {root, name, roots, n_files, n_parse_errors, unresolved_imports, n_aux, auto_split} | `ui.graphview.graph_payload`（整个传给前端：页头用 `name`，页脚用 `roots`、`n_files`、`n_parse_errors`）、`payload.index_summary`（主菜单卡片、trace 的默认 roots）、`auto_split` 给前端 | 仓库信息 | 是（至少 `name`、`roots`、`n_files`、`n_parse_errors`） |
 | `packages` | {单元: {files, loc, classes, funcs, out, in, alt, label?, sep?}} | `cut.view`（按切面相加 `files`、`loc`、`classes`、`funcs`）、`cut.default_open`（`loc`）、`layout.build`（过滤掉 `files` < min_files 的、既没符号也没边的空单元）、`cut.members`；`label` / `sep` 给 `cut.label`（显示名） | 单元（节点的最小粒度）。**id 是文件相对仓库根的路径**（`fakesvc/offline.py`）。`label` 是显示名、`sep` 是它的分隔符：Python 是点分的模块名（`fakesvc.offline`，包的 `__init__.py` 是 `<包>.__init__`）和 `.`；不给就按路径切 | 是（`label` / `sep` 否） |
-| `edges` | [[单元a, 单元b, 权重]] | `cut.view`（切面上的边、出入度）、`layout.build`（分层）、`payload`（边的种类） | 静态依赖边（Python 是 import 条数） | 是（可以是空列表） |
-| `type_edges` | [[a, b, w]] | `payload`（「仅类型」边） | 只在类型检查时存在的依赖 | 否 |
+| `edges` | [[单元a, 单元b, 权重]] | `cut.view`（切面上的边、出入度）、`layout.build`（分层）、`ui.graphview`（边的种类） | 静态依赖边（Python 是 import 条数） | 是（可以是空列表） |
+| `type_edges` | [[a, b, w]] | `ui.graphview`（「仅类型」边） | 只在类型检查时存在的依赖 | 否 |
 | `dirs` | {目录: {parent, dirs, units, label?, sep?}} | `cut` 几乎所有函数（节点归属、展开、框） | 目录树。**目录 id 是路径加 `/`**（`fakesvc/`），仓库根目录直接放着的脚本在 `./` 里；「本层文件」节点是 `<目录>*`。可以直接用 `cut.dir_tree(packages, roots)` 生成：单元所在目录 = 去掉文件名；目录的显示名从单元的推（单元显示名去掉最后一段）。每个单元的目录都必须在树里 | 是 |
-| `default_open` | [目录] | `payload.norm_open`、`seq._Map`、`serve` | 默认切面（展开哪些目录和本层文件节点）。可以用 `cut.default_open(index)[0]` 算 | 是 |
-| `n_symbols` | int | `payload.index_summary` | 主菜单显示 | 否 |
+| `default_open` | [目录] | `cut.norm_open`、`seq._Map`、`serve` | 默认切面（展开哪些目录和本层文件节点）。可以用 `cut.default_open(index)[0]` 算 | 是 |
+| `n_symbols` | int | `ui.load.index_summary` | 主菜单显示 | 否 |
 
 **symbols.json**（index 里的大块，按需加载；这个文件要有，否则 `idx["edge_sites"]` 之类的直接下标会 KeyError）
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
-| `files` | {rel: 单元} | `align.to_package_graph` / `remap`、`runs.file_state`、`seq._Map`、`payload`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
-| `symbols` | {符号键: {n, s, k, f, l, lang, m?, p, dl?, e?, b?, d?, a?, x?}} | `align.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`x`）、`align.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`）、`--phase` 的解析（`m`） | **符号键是 `<文件路径>#<限定名>`**（`fakesvc/offline.py#Engine.generate`；不拿冒号分，C++ / Rust 的限定名里有 `::`）。`n` 限定名、`s` 它的最后一段、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`lang` 语言、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名（Python）、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`、`x` 标记（`defexec`：落在它定义行上的帧是定义时的执行，Python 的类体） | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
+| `files` | {rel: 单元} | `align.to_package_graph` / `remap`、`runs.file_state`、`seq._Map`、`ui.graphview`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
+| `symbols` | {符号键: {n, s, k, f, l, lang, m?, p, dl?, e?, b?, d?, a?, x?}} | `align.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`x`）、`align.remap`（`f`、`n`、`l`、`dl`）、`ui.graphview`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`）、`--phase` 的解析（`m`） | **符号键是 `<文件路径>#<限定名>`**（`fakesvc/offline.py#Engine.generate`；不拿冒号分，C++ / Rust 的限定名里有 `::`）。`n` 限定名、`s` 它的最后一段、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`lang` 语言、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名（Python）、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`、`x` 标记（`defexec`：落在它定义行上的帧是定义时的执行，Python 的类体） | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
 | `file_sha` | {rel: sha16} | `runs.file_state` | 录制后哪些文件改过 | 强烈建议（没有时退回和工作区比） |
 | `edge_uses` | {"a\|b": {"<文件路径>#<名字>": [[文件, 行]…]}} | `align.edge_uses_on_cut`（算动态分派）、边的详情（`align.pair_items`） | 每条边实际引用了对方哪些符号（和符号键同一种写法；模块级变量、再导出的名字不在符号表里，由 xref.json 的 `names` 追到定义） | 否（没有时所有 runtime 调用都算动态分派） |
-| `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `payload`（纯 import、不承载调用的边画成虚线） | `sym` 是导入的东西：模块写它的文件路径，模块里的名字写 `<文件路径>#<名字>` | 否 |
+| `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `ui.graphview`、`ui.edge`（纯 import、不承载调用的边画成虚线） | `sym` 是导入的东西：模块写它的文件路径，模块里的名字写 `<文件路径>#<名字>` | 否 |
 | `edge_sites`、`name_refs`、`docs`、`aux`、`file_loc` | | 边的详情、接线点、文档、非 Python 源文件、行数 | 面板和冻结区 | 否 |
 
 **graph.json**（graph 的 scan 记录：函数之间的调用。由 `graph.Builder` 在 `xref.build` 的同一遍里产出；现在还没有界面读它，以后给 scan-trace alignment 用）
@@ -504,7 +504,7 @@ scan 写 index.json 和 symbols.json，加载时（`payload.load_index`）合成
 种类：0 调用、1 构造（被调方是类）、2 装饰器（`@x` 在定义时调 `x`）、3 取 property（调 getter）、4 语法触发的特殊方法（`with`、`for`、`[]`、运算符、`len()` 这类，
 只记仓库里有类定义过的）、5 `getattr(…, "名字")`、6 调的是仓库外的。
 
-`layout.build` 读的 `frames`、`alias` 不是扫描端的：是 `payload.graph_payload` 按切面现算、塞进给 layout 的那个字典里的。
+`layout.build` 读的 `frames`、`alias` 不是扫描端的：是 `ui.graphview.graph_payload` 按切面现算、塞进给 layout 的那个字典里的。
 
 ## 附：本页核对过的真实数据
 

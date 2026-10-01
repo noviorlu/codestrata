@@ -389,3 +389,8 @@ def dir_node(index: dict, open_: set, d: str) -> str | None:
     if init in index["packages"]:
         return init
     return tree[d]["units"][0] if tree[d]["units"] else None
+
+
+def norm_open(idx: dict, open_) -> set:
+    """请求里给的切面：没给（None）就是默认切面；给了的只留认得的目录 / 本层文件节点"""
+    return set(idx.get("default_open") or []) if open_ is None else {o for o in open_ if is_node(idx, o)}
