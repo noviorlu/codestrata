@@ -1309,13 +1309,13 @@ def test_calls_in_and_run_end():
     正好是 rep；没返回的整行算在开始。时间轴的终点取 span 的结束、最后一次切阶段、run 时长里最大的，span 文件
     坏了不算它（加载图不该因此失败）"""
     from codestrata import seq
-    assert seq._calls_in(0, 100, 5, 20, 60) == (2, 25, 50)          # 5 次：0 25 50 75 100
-    assert seq._calls_in(0, 100, 5, 0, 50, open_hi=True) == (2, 0, 25)
-    assert seq._calls_in(0, 100, 5, 50, 100) == (3, 50, 100)
-    assert seq._calls_in(0, 100, 5, 101, 200) is None
-    assert seq._calls_in(10, -1, 7, 0, 10) == (7, 10, 10) and seq._calls_in(10, -1, 7, 11, 99) is None
-    assert seq._calls_in(10, 0, 1, 0, 10, open_hi=True) is None and seq._calls_in(10, 0, 1, 0, 10) == (1, 10, 10)
-    parts = [seq._calls_in(3, 997, 50, a, b, open_hi=b < 1000) for a, b in ((0, 100), (100, 333), (333, 1000))]
+    assert seq.calls_in(0, 100, 5, 20, 60) == (2, 25, 50)          # 5 次：0 25 50 75 100
+    assert seq.calls_in(0, 100, 5, 0, 50, open_hi=True) == (2, 0, 25)
+    assert seq.calls_in(0, 100, 5, 50, 100) == (3, 50, 100)
+    assert seq.calls_in(0, 100, 5, 101, 200) is None
+    assert seq.calls_in(10, -1, 7, 0, 10) == (7, 10, 10) and seq.calls_in(10, -1, 7, 11, 99) is None
+    assert seq.calls_in(10, 0, 1, 0, 10, open_hi=True) is None and seq.calls_in(10, 0, 1, 0, 10) == (1, 10, 10)
+    parts = [seq.calls_in(3, 997, 50, a, b, open_hi=b < 1000) for a, b in ((0, 100), (100, 333), (333, 1000))]
     assert sum(p[0] for p in parts if p) == 50, parts
     rd = tmpdir("cs-end-")
     sp = rd / "events" / "spans"
@@ -2341,6 +2341,40 @@ def test_trace_only_notes():
     top = hot2["calls"]["nt/app.py#<module>|nt/app.py#run"]
     assert [(y["l"], y["status"]) for y in top["lines"]] == [(0, "both")] and top["only"] == 0, top
     assert sorted(ui_source.runtime_lines(idx2, "nt/app.py", hot2)) == [ln("make().run()") + 2, ln("return work(1)") + 2]
+
+
+def test_lanes():
+    """运行时按进程 · 线程分列（lanes.build）：一列一个线程（同名的合成一列），列里是这条线程调到的节点和边；
+    列之间：谁起了谁（Thread.start、fork、subprocess）、谁把数据交给谁（queue、zmq）连到对的列和节点上"""
+    from codestrata import lanes
+    repo = fresh()
+    cs("scan", repo)
+    cs("trace", repo, "--case", "truth", "--", PY, "-m", "fakesvc.truth",
+       env={"PYTHONPATH": str(HERE / "trace_cases" / "fakezmq")})
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "truth")
+    run, rd, phase = runs.resolve(repo, "truth")
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]))
+    T, C = "fakesvc/truth.py", "fakesvc/callee.py"
+    by = {x["id"]: x for x in L["lanes"]}
+    main = next(x for x in L["lanes"] if x["thread"] == "MainThread" and T in x["nodes"])
+    assert L["lanes"][0] is main and main["entry"] == T, (L["lanes"][0], main)
+    assert any(e["a"] == T and e["b"] == C and e["n"] > 0 for e in main["edges"]), main["edges"]
+    workers = [x for x in L["lanes"] if x["pid"] == main["pid"] and x["thread"].startswith(("worker-", "req-"))]
+    assert len(workers) == 6 and all(set(x["nodes"]) == {T, C} for x in workers), workers
+    cons = next(x for x in L["lanes"] if x["thread"] == "consumer")
+    # 谁起了谁：主线程在 truth.py 里 start 了 worker / consumer；fork 出来的进程、subprocess 起的都连回主线程
+    sp = [(x["via"], x["from"]["lane"], x["from"]["node"], x["to"]["lane"]) for x in L["links"] if x["kind"] == "spawn"]
+    for w in workers + [cons]:
+        assert ("thread", main["id"], T, w["id"]) in sp, (w["id"], sp)
+    forks = [x for x in sp if x[0] == "fork" and x[1] == main["id"]]
+    assert len(forks) >= 2 and all(by[x[3]]["pid"] != main["pid"] for x in forks), sp
+    # 谁把数据交给谁：queue（主线程 put_job → consumer 的 take_job，都在 callee.py）、zmq（主线程 → fork 出来的子进程）
+    hs = [(x["via"], x["from"]["lane"], x["from"]["node"], x["to"]["lane"], x["to"]["node"], x["n"])
+          for x in L["links"] if x["kind"] == "handoff"]
+    assert ("queue", main["id"], C, cons["id"], C, 1) in hs, hs
+    z = [h for h in hs if h[0] == "zmq"]
+    assert len(z) == 1 and z[0][1] == main["id"] and by[z[0][3]]["pid"] != main["pid"] and z[0][4] == C, hs
 
 
 _PA = {

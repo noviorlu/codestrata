@@ -12,10 +12,10 @@
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from . import align as _align
+from . import lanes as _lanes
 from . import seq as _seq
 
 MAX_ROWS = 4000          # 一张图（整个 run、不分阶段）上可能有上万行：页面只给前这么多行，命令行全打
@@ -36,7 +36,7 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -
         n_threads.setdefault((pid, tname), set()).add(tid)
         e = by.setdefault((pid, tname), {}).setdefault((f_, g), [first, last, 0])
         e[0], e[1], e[2] = min(e[0], first), max(e[1], last), e[2] + n
-    names = _proc_names(rd)
+    names = _lanes.proc_names(rd)
     span = pc["span_us"] or 1
     procs: dict[int, dict] = {}
     for (pid, tname), edges in by.items():
@@ -177,22 +177,6 @@ def _line(calls: dict, f_: str, g: str) -> dict | None:
         return {"l": y["l"], "n": y["n"], "status": y["status"], "note": y["note"]}
     g0 = (x.get("guessed") or [None])[0]
     return {"l": g0, "n": None, "status": x.get("status"), "note": x.get("note"), "guessed": True} if g0 else None
-
-
-def _proc_names(rd: Path) -> dict[int, str]:
-    """进程的名字：改过的进程标题（vLLM 的 VLLM::StageEngineCoreProc_stage0_…），没有就用命令里的脚本名"""
-    try:
-        procs = json.loads((rd / "detail.json").read_text(encoding="utf-8")).get("procs") or []
-    except (OSError, ValueError):
-        return {}
-    out = {}
-    for p in procs:
-        title = (p.get("title") or "").removeprefix("VLLM::")
-        argv = p.get("argv") or []
-        script = next((Path(a).name for a in argv[1:] if a.endswith(".py")), None)
-        mod = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else None
-        out[p["pid"]] = title or script or (f"-m {mod}" if mod else Path(argv[0]).name if argv else "")
-    return out
 
 
 def format_text(path: dict, max_depth: int | None = None) -> str:
