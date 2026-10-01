@@ -361,7 +361,7 @@ def _build_events(rd: Path, src: Path, run: dict) -> dict | None:
         idx = _events.build(ev, (run.get("clock") or {}).get("mono0_ns"), rd / "events" / "spans")
     except Exception as e:                                     # noqa: BLE001 —— 派生数据，失败了能重来
         return {"error": f"{type(e).__name__}: {e}"[:300], "bytes": size}
-    return {"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"],
+    return {"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"], "scope": idx.get("scope"),
             "truncated": idx["truncated"], "n_procs": len({p["pid"] for p in idx["procs"]}), "bytes": size}
 
 

@@ -762,25 +762,48 @@ if _root and _out:
 
     import weakref
     _zshadow = weakref.WeakSet()  # asyncio 版 socket 背后真正收发的同步 socket：它们的收发由 asyncio 版那一层记
+    _zmore = {}                   # id(socket) → 带 SNDMORE 发出去、这条消息还没发完的帧
+    _ZROUTER, _ZSNDMORE = 6, 2    # libzmq 的 ZMQ_ROUTER、ZMQ_SNDMORE
+
+    def _zdata(sock, parts):
+        # ROUTER 发的时候第一帧是对方的身份（不发出去），收的时候第一帧是对方的身份（对方没发）：去掉，两头算的是同样的数据帧
+        parts = list(parts)
+        try:
+            if parts and sock.type == _ZROUTER:
+                parts = parts[1:]
+        except Exception:
+            pass
+        return parts
+
+    def _zsend(sock, data, flags):
+        # 按帧记：带 SNDMORE 的帧攒着，一条消息的最后一帧发出去时整条算一次（send_multipart 也是逐帧调 send）
+        k = id(sock)
+        frames = _zmore.get(k)
+        if frames is None:
+            frames = _zmore[k] = []
+        frames.append(data)
+        if not (flags or 0) & _ZSNDMORE:
+            del _zmore[k]
+            _ev_msg("O", _ev_here(), _zdata(sock, frames))
 
     def _zmq_sync(mod):
         S = mod.Socket
-        send0, recv0 = S.__dict__.get("send_multipart"), S.__dict__.get("recv_multipart")
+        send0, recv0 = S.__dict__.get("send"), S.__dict__.get("recv_multipart")
         if send0 is not None:
-            def send_multipart(self, msg_parts, *a, **kw):
+            def send(self, data, flags=0, *a, **kw):
                 try:
                     if self not in _zshadow:
-                        _ev_msg("O", _ev_here(), msg_parts)
+                        _zsend(self, data, flags)
                 except Exception:
                     pass
-                return send0(self, msg_parts, *a, **kw)
-            S.send_multipart = send_multipart
+                return send0(self, data, flags, *a, **kw)
+            S.send = send
         if recv0 is not None:
             def recv_multipart(self, *a, **kw):
                 parts = recv0(self, *a, **kw)
                 try:
                     if self not in _zshadow:
-                        _ev_msg("I", _ev_here(), parts)
+                        _ev_msg("I", _ev_here(), _zdata(self, parts))
                 except Exception:
                     pass
                 return parts
@@ -799,24 +822,33 @@ if _root and _out:
                 except Exception:
                     pass
             S.__init__ = __init__
-        send0, recv0 = S.__dict__.get("send_multipart"), S.__dict__.get("recv_multipart")
-        if send0 is not None:
+        sendm0, send0 = S.__dict__.get("send_multipart"), S.__dict__.get("send")
+        recv0 = S.__dict__.get("recv_multipart")
+        if sendm0 is not None:
             def send_multipart(self, msg_parts, *a, **kw):
                 try:
-                    _ev_msg("O", _ev_here(), msg_parts)
+                    _ev_msg("O", _ev_here(), _zdata(self, msg_parts))
                 except Exception:
                     pass
-                return send0(self, msg_parts, *a, **kw)
+                return sendm0(self, msg_parts, *a, **kw)
             S.send_multipart = send_multipart
+        if send0 is not None:
+            def send(self, data, flags=0, *a, **kw):
+                try:
+                    _zsend(self, data, flags)
+                except Exception:
+                    pass
+                return send0(self, data, flags, *a, **kw)
+            S.send = send
         if recv0 is not None:
             def recv_multipart(self, *a, **kw):
                 fut = recv0(self, *a, **kw)
                 try:
                     sp = _ev_here()                   # 等它的协程；收到的时候（回调里）已经不在它的帧上了
-                    def done(f, sp=sp):
+                    def done(f, sp=sp, sock=self):
                         try:
                             if not f.cancelled() and f.exception() is None:
-                                _ev_msg("I", sp, f.result())
+                                _ev_msg("I", sp, _zdata(sock, f.result()))
                         except Exception:
                             pass
                     fut.add_done_callback(done)

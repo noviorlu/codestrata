@@ -86,17 +86,20 @@ def s_queue():                # 进程内的队列交接：主线程 put、consu
     t.join()
 
 
-def s_zmq():                  # 跨进程的 ZMQ 交接（测试给了假的 zmq 才跑）：父进程发、fork 出来的子进程收
-    try:
-        import zmq
+def s_zmq():                  # 跨进程的 ZMQ 交接（测试给了假的 zmq 才跑），照 vLLM 的收发方式：
+    try:                      # 父进程的 ROUTER 发（第一帧是对方的身份）、子进程的 DEALER 收；子进程先 send 一帧带 SNDMORE、
+        import zmq            # 再 send_multipart 其余的回过来，父进程收
     except ImportError:
         return
-    r, w = os.pipe()
+    r1, w1 = os.pipe()
+    r2, w2 = os.pipe()
     pid = os.fork()
     if pid == 0:
-        callee.zmq_recv(zmq.Socket(rfd=r))
+        callee.zmq_recv(zmq.Socket(rfd=r1, type=zmq.DEALER))
+        callee.zmq_reply(zmq.Socket(wfd=w2, type=zmq.PUSH), [b"out", b"y" * 50, b"z"], zmq.SNDMORE)
         os._exit(0)
-    callee.zmq_send(zmq.Socket(wfd=w), [b"req", b"x" * 100])
+    callee.zmq_send(zmq.Socket(wfd=w1, type=zmq.ROUTER), [b"engine-0", b"req", b"x" * 100])
+    callee.zmq_recv(zmq.Socket(rfd=r2, type=zmq.PULL))
     os.waitpid(pid, 0)
 
 

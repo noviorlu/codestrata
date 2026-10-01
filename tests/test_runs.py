@@ -1088,9 +1088,10 @@ def test_events_truth():
     want_q = ("queue", (main_pid, "MainThread", k(C, "put_job")), None)
     got_q = [h for h in hs if h[:2] == want_q[:2]]
     assert len(got_q) == 1 and got_q[0][2][1:] == ("consumer", k(C, "take_job")), (hs, idx["handoffs"])
-    got_z = [h for h in hs if h[0] == "zmq"]
-    assert len(got_z) == 1 and got_z[0][1] == (main_pid, "MainThread", k(C, "zmq_send")) and \
-        got_z[0][2][0] != main_pid and got_z[0][2][2] == k(C, "zmq_recv"), (hs, idx["handoffs"])
+    # ZMQ 照 vLLM 的方式：ROUTER 发（带身份帧）→ DEALER 收；回来的一条是 send(第一帧, SNDMORE) + send_multipart(其余的)
+    got_z = {(h[1][2], h[2][2], h[1][0] == main_pid) for h in hs if h[0] == "zmq"}
+    assert got_z == {(k(C, "zmq_reply"), k(C, "zmq_recv"), False), (k(C, "zmq_send"), k(C, "zmq_recv"), True)}, \
+        (hs, idx["handoffs"])
     # 父 span：同一个进程、同一个线程，调用那一刻在跑；它的被调方就是这次的调用方（或者是同一个文件里转过来的不可能：都记了）
     for s in sp:
         if s["parent"] is not None:
@@ -2374,7 +2375,7 @@ def test_lanes():
           for x in L["links"] if x["kind"] == "handoff"]
     assert ("queue", main["id"], C, cons["id"], C, 1) in hs, hs
     z = [h for h in hs if h[0] == "zmq"]
-    assert len(z) == 1 and z[0][1] == main["id"] and by[z[0][3]]["pid"] != main["pid"] and z[0][4] == C, hs
+    assert len(z) == 2 and {by[h[1]]["pid"] == main["pid"] for h in z} == {True, False} and all(h[4] == C for h in z), hs
 
 
 _PA = {

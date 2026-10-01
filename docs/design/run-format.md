@@ -136,7 +136,7 @@
 | `phases` | [{name, t_us, n_funcs, n_calls}] | 各阶段：顺序按 `phase_log` 里第一次出现的先后，再补上只在 counts 里有的；只列 counts.json.gz 里有的阶段。`t_us` 取这个名字在 `phase_log` 里第一次出现的时刻；`n_funcs` 是这一阶段被调到的函数键数，`n_calls` 是次数之和 | H（阶段名要能解析） | `derive`；迁移 | `resolve`（`@阶段` 必须在这里）、`/api/runs`、页面（阶段按钮：两个以上才显示）、`seq._phase_log`（老 run 没有 `phase_log` 时用它的 `t_us`） |
 | `summary` | object | `n_funcs`（全部阶段里不同的函数键数）、`n_func_edges`、`n_files`（`detail.file_shas` 的文件数）、`n_procs`（进程映像数）、`n_procs_active`（跑到仓库代码的）、`n_mapped`、`n_leftovers`、`n_unclean`（最后一次落盘是定时或切阶段的——被强杀了） | — | `derive` | 列表、`/api/runs`、页面 |
 | `sizes` | {文件名: 字节} | run 目录下各文件的大小。在最后一次写 run.json **之前**取的，所以 `run.json` 自己的数不准 | — | `derive` | 没有代码读（`runs ls` 的大小是现走目录算的） |
-| `events` | object \| null | 时序事件的摘要：`{n_lines, n_spans, n_calls, truncated: [pid], n_procs, bytes}`；整理 span 失败时是 `{error, bytes}`；没录事件是 null。`bytes` 是 `events/raw.tar.gz` 的大小 | 时序要 | `derive`（`runs._build_events` 的结果）、`remove_events` | `/api/runs`（`events` 为真且没有 `error` 时，页面才开放「时间顺序」和在时间条上拖时间段）、`runs ls/show` |
+| `events` | object \| null | 时序事件的摘要：`{n_lines, n_spans, n_calls, scope, truncated: [pid], n_procs, bytes}`（`scope` 同 span 的 index.json，2026-10-01 之前的 run 没有）；整理 span 失败时是 `{error, bytes}`；没录事件是 null。`bytes` 是 `events/raw.tar.gz` 的大小 | 时序要 | `derive`（`runs._build_events` 的结果）、`remove_events` | `/api/runs`（`events` 为真且没有 `error` 时，页面才开放「时间顺序」和在时间条上拖时间段）、`runs ls/show` |
 | `migrated_from` | str | 只有迁移来的 run 有：老文件名 `trace-<case>.json` | — | 迁移 | 页面、`/api/runs` |
 
 `rec` 的字段（`__main__.cmd_trace` 写）：
@@ -298,7 +298,7 @@ P <t_us> <tid> <span> <子进程 pid>           在这个 span 里 exec 出一�
 B <父进程映像的 t0_ns> <tid> <span>          这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的（os.fork、multiprocessing 的 fork）
 Q <t_us> <tid> <span> <种类> <队列 id> <对象 id>  往进程内的队列里放了一个对象（种类 q：queue.Queue 及子类，a：asyncio.Queue 及子类，j：janus）
 G <t_us> <tid> <span> <种类> <队列 id> <对象 id>  从队列里取出一个对象
-O <t_us> <tid> <span> <指纹>                  ZMQ 发出一条消息（send_multipart；指纹是每一段的长度 + 首尾 32 字节的 blake2b）
+O <t_us> <tid> <span> <指纹>                  ZMQ 发出一条消息（按帧记，带 SNDMORE 的攒到最后一帧；指纹是数据帧的长度 + 首尾 32 字节的 blake2b，ROUTER 的身份帧不算）
 I <t_us> <tid> <span> <指纹>                  ZMQ 收到一条消息（recv_multipart；asyncio 版的 span 是等它的那个协程）
 ```
 

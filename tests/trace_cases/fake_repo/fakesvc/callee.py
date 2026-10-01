@@ -93,3 +93,8 @@ def zmq_send(sock, parts):
 
 def zmq_recv(sock):
     return sock.recv_multipart()
+
+
+def zmq_reply(sock, buffers, more):        # vLLM 发输出的样子：第一帧单独 send(…, SNDMORE)，其余的 send_multipart
+    sock.send(buffers[0], more)
+    sock.send_multipart(buffers[1:])

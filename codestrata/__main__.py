@@ -228,7 +228,7 @@ def cmd_trace(a) -> int:
     if ev and ev.get("error"):
         print(f"  ⚠ 时序事件整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
     elif ev:
-        print(f"  时序事件 {ev['n_lines']} 行 → {ev['n_spans']} 段（{ev['n_calls']} 次跨文件调用），"
+        print(f"  时序事件 {ev['n_lines']} 行 → {ev['n_spans']} 段（{ev['n_calls']} 次{_ev_calls(ev)}），"
               f"原始日志 {_size(ev['bytes'] or 0)}"
               + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限，之后的调用没记时序（计数完整）"
                  if ev["truncated"] else ""))
@@ -265,6 +265,11 @@ def cmd_trace(a) -> int:
     if ev and not ev.get("error"):
         print(f"  请求路径：codestrata path {a.repo} {run['id']}" + ("@serving" if serving else ""))
     return 0 if run["status"] != "failed" else 1
+
+
+def _ev_calls(ev: dict) -> str:
+    """run.json 的 events 摘要里 n_calls 数的是什么：2026-10-01 之前录的只有跨文件的调用"""
+    return "调用" if ev.get("scope") == "all" else "跨文件调用"
 
 
 _STATUS = {"ok": "完整录完", "partial": "录到了但不完整", "failed": "失败（一个函数都没录到）",
@@ -387,7 +392,7 @@ def cmd_runs(a) -> int:
             if ev.get("error"):
                 print(f"  时序  整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
             else:
-                print(f"  时序  {ev['n_spans']} 段、{ev['n_calls']} 次跨文件调用（{ev['n_procs']} 个进程），"
+                print(f"  时序  {ev['n_spans']} 段、{ev['n_calls']} 次{_ev_calls(ev)}（{ev['n_procs']} 个进程），"
                       f"原始日志 {_size(ev['bytes'] or 0)}"
                       + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限（pid "
                          + "、".join(map(str, ev["truncated"][:8])) + ("…" if len(ev["truncated"]) > 8 else "")
@@ -540,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
     t.add_argument("--events", action=argparse.BooleanOptionalAction, default=True,
-                   help="同时记时序事件（每次跨文件调用的起止时刻；请求路径、时间顺序要它）。默认开，被录的 Python "
+                   help="同时记时序事件（每次调用的起止时刻、谁调的、线程之间谁交给谁；请求路径、时间顺序要它）。默认开，被录的 Python "
                         "低于 3.12 时自动没有；--no-events 关掉")
     t.add_argument("--attach", action="append", default=[], metavar="FILE",
                    help="把这个文件的内容一起存进 run（比如被 case 脚本 source 的 common.sh）")
