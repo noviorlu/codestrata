@@ -72,7 +72,8 @@ window.CS = window.CS || {};
           ns.length ? '定不下的 ' + (nameList(ns) || '表达式的结果') : ''].filter(function (x) { return x; }).join('；')
           + '——经其中一个转了一道才到这里';
       case 'none': return '这一行 scan 没看到调用（取属性、框架或仓库外的代码触发的）';
-      case 'nomatch': return '调用方里没有同名的调用';
+      case 'nomatch': return '调用方里没有同名的调用：多半是经仓库外的代码（框架、引擎循环、回调）转了一道——'
+                             + '调用方只是栈上最近的仓库内函数';
     }
     return '';
   }

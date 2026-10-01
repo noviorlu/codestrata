@@ -83,6 +83,10 @@ export default async function (t) {
   await clickEdge(page, 'dyn/runner.py', 'dyn/models/net.py');
   ok(await page.wait(`document.getElementById('det').textContent.includes('这个 run 没记调用行')`), '老 run 的卡片写明没记调用行、调用处是猜的');
   await page.key('Escape', 'Escape', 27);
+  await page.ev(`CS.viewer.open('dyn/runner.py', 1)`);
+  ok(await page.wait(`(document.querySelector('.vhead .vhint.rt') || {}).textContent === '这个 run 没记调用行：行尾不标运行时调到了谁'`),
+     '老 run 打开代码窗口：说明为什么行尾不标');
+  await page.key('Escape', 'Escape', 27);
 
   // 不叠 run：边详情是代码里写的调用（from 写在哪一行、to 被调的定义）
   await page.goto(fx.base3);

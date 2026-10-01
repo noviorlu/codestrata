@@ -91,7 +91,7 @@ flowchart LR
 | `trace/hook.py` | 703 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
-| `runs.py` | 1008 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
+| `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 366 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
@@ -107,10 +107,10 @@ flowchart LR
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 57 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 899 | 入口：串起数据源、图、面板、run 选择、时间轴 |
+| `web/app.js` | 919 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 651 | SVG 绘图（纯函数式），边的配色约定 |
-| `web/panel.js` | 592 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
-| `web/viewer.js` | 442 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`） |
+| `web/panel.js` | 593 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
+| `web/viewer.js` | 446 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 339 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |

@@ -2,6 +2,9 @@
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
+  // 读图须知（界面上那一行和「?」里共用）：运行时的图最容易读错的几处
+  var READ_NOTE = '调用方是栈上最近的仓库内函数——穿过框架、库、事件循环的调用，画成两个仓库函数之间的直接调用；'
+    + '次数高的多半是轮询（时间顺序里带 ↻），不等于重要；import 时执行模块顶层不算调用。';
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   // 「2026-09-27T15:34:10-0400」→「09-27 15:34」
@@ -191,6 +194,20 @@ window.CS = window.CS || {};
       document.addEventListener('mousedown', function (ev) {         // 点别处关掉
         if (!p.hidden && !p.contains(ev.target) && ev.target !== b && !ev.target.closest('[data-help]')) self.help(false);
       });
+    },
+
+    /* 读图须知：叠着 run 时在图上面一行（关掉记在浏览器里，「?」的说明里一直有） */
+    readNote: function (on) {
+      var el = document.getElementById('readnote'), self = this;
+      if (!el) return;
+      el.hidden = !on || !!this._load('codestrata.readnote').off;
+      if (el.hidden || el._done) return;
+      el._done = true;
+      el.innerHTML = '<b>读图须知</b><span>' + READ_NOTE + '</span>'
+        + '<button class="chip" data-help>更多</button>'
+        + '<button class="rnx" aria-label="不再显示读图须知" title="不再显示（「?」里一直有）">×</button>';
+      el.querySelector('[data-help]').onclick = function () { self.help(true); };
+      el.querySelector('.rnx').onclick = function () { el.hidden = true; self._save('codestrata.readnote', { off: 1 }); };
     },
 
     help: function (on) {
@@ -587,7 +604,9 @@ window.CS = window.CS || {};
         + '叠了 run 时再按这次实际的调用排，所以换 run 时节点会上下挪）。横轴用重心排序减少交叉。'
         + ' 图上的边只有<b>调用</b>：灰实线是代码里写了的调用。'
         + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的，边上是调用次数；橙虚线是代码里看不出会调到它的。' : '')
-        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。';
+        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。'
+        + (d.hot ? '<br><b>读图须知</b>：' + READ_NOTE + '「未归到命名符号的调用」是进 lambda、生成器表达式'
+                   + '（3.12 之前还有推导式）这类没有名字的代码的次数：算到文件和模块上，不单列函数，边详情里写成「外层函数.&lt;L行&gt;」。' : '');
       var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
                 ['符号', r.n_symbols || 0], ['图上的边', d.graph.edges.length],
                 ['解析失败', r.n_parse_errors]];
@@ -602,6 +621,7 @@ window.CS = window.CS || {};
       var ht = document.querySelector('#stats [data-help]');
       if (ht) ht.onclick = function () { self.help(true); };
       this.runBar();
+      this.readNote(!!(d.hot && d.hotMeta));
       if (!(d.hot && d.hotMeta)) document.getElementById('hotbanner').innerHTML = '';
       if (d.hot && d.hotMeta) {
         var m = d.hotMeta;
@@ -621,9 +641,9 @@ window.CS = window.CS || {};
                  return esc(k) + ' ' + m.phases[k] + ' 个函数'; }).join(' / ')
                + (m.phase ? '' : '；现在显示的是全部') + '）</span>　' : '')
           + (m.n_procs ? '跨 ' + m.n_procs + ' 个进程　' : '')
-          + (m.unmapped ? '<span title="lambda、闭包、生成器表达式没有自己的符号：算到文件上，'
-             + '不计入符号的调用次数（闭包的调用在边详情里会归到外层函数）">未归到命名符号的调用 '
-             + m.unmapped + '</span>　' : '')
+          + (m.unmapped ? '<span title="lambda、生成器表达式没有自己的符号：算到文件上，'
+             + '不计入符号的调用次数（边详情里写成「外层函数.<L行>」）">未归到命名符号的调用 '
+             + m.unmapped + '（见上面的读图须知）</span>　' : '')
           + (m.defs ? '<span title="import 时模块顶层的执行、class 语句跑类体：是定义，不算调用，'
              + '只定义过的类和只被 import 过的模块不算「跑到了」">定义时的执行 ' + m.defs + '（不算调用）</span>　' : '')
           + (m.mapped_from ? '运行的是安装包 <code>' + esc(m.mapped_from) + '</code>，已映射回仓库 ' + m.n_mapped + ' 个文件'

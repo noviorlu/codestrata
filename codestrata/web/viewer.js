@@ -130,6 +130,7 @@ window.CS = window.CS || {};
       // 叠着 run 时：代码里看不出会调到谁、这次运行却调到了的那一行，行尾标出调到了谁，点了跳过去
       // 时间段的每行次数是按整个 run 的调用行比例摊的（seq.window_counts），标成约数
       var RT = fv.runtime || {}, nRT = 0, ap = CS.graph && CS.graph.hot && CS.graph.hot.lines_approx ? '≈' : '';
+      var hm = CS.app && CS.app.data && CS.app.data.hotMeta;
       for (var i = 0; i < hl.length; i++) {
         var rt = RT[i + 1];
         if (rt) nRT++;
@@ -162,7 +163,10 @@ window.CS = window.CS || {};
         + (X && X.stale ? '<span class="vhint stale" title="xref 是 scan 时的快照，文件改过之后行列号对不上，链接会指错地方">文件在 scan 之后改过：重新 scan 才能 Ctrl+点击</span>'
            : X && X.toks.length ? '<span class="vhint" title="Ctrl（Mac 上 ⌘）+ 点击名字跳到定义；点定义列出所有引用">Ctrl+点击：定义 / 引用</span>' : '')
         + (nRT ? '<span class="vhint rt" title="叠着的 run 里，这些行的调用代码里看不出会调到谁（多态、注册表、回调、框架转了一道）；行尾是这次运行实际调到的，点击跳过去">'
-             + nRT + ' 行代码里看不出调到谁：行尾 → 是这次跑到的</span>' : '')
+             + nRT + ' 行代码里看不出调到谁：行尾 → 是这次跑到的</span>'
+           : fv.runtime && hm && hm.has_lines === false
+             ? '<span class="vhint rt" title="2026-09-30 之前录的 run 只记了谁调了谁，没记调用写在哪一行；重新录一次就有">'
+               + '这个 run 没记调用行：行尾不标运行时调到了谁</span>' : '')
         + '<button class="vbtn" data-find title="在这个文件里查找（Ctrl+F）">查找</button>'
         + '<button class="vbtn" data-copy="' + esc(fv.file) + '">复制路径</button>'
         + '<button class="vbtn" data-edit="1">编辑器打开</button>'

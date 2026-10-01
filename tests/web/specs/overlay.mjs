@@ -1,4 +1,4 @@
-// 运行叠加：跑到的边、只看跑到的、点边看调了哪些函数、换阶段、阶段的起点标记、从运行菜单换 run
+// 运行叠加：跑到的边、读图须知、只看跑到的、点边看调了哪些函数、换阶段、阶段的起点标记、从运行菜单换 run
 import { clickEdge, drawnNodes, hash, hotEdges, sleep, waitRun } from '../lib.mjs';
 
 export default async function (t) {
@@ -11,6 +11,20 @@ export default async function (t) {
      '跑到的边正好是三条 ' + JSON.stringify(he));
   ok(await page.ev(`CS.graph.edges.filter(E => E._warm).every(E => E.p.getAttribute('class').includes('warm'))`), '跑到的边画成橙色');
   ok(await page.ev(`CS.graph.edges.filter(E => E.hits === 0 && E._show).every(E => !E.p.getAttribute('class').includes('warm'))`), '没跑到的边不是橙色');
+
+  // 读图须知：叠着 run 时工具栏下面一行；「更多」打开帮助，里面也有；关掉记在浏览器里
+  const note = await page.ev(`(n => !n.hidden && n.textContent)(document.getElementById('readnote'))`);
+  ok(note && note.includes('最近的仓库内函数') && note.includes('轮询'), '图上面有读图须知：' + (note || '').slice(0, 40));
+  await page.click('#readnote [data-help]');
+  const lede = await page.ev(`!document.getElementById('help').hidden && document.getElementById('lede').textContent`);
+  ok(lede && lede.includes('读图须知') && lede.includes('未归到命名符号的调用'), '「更多」打开帮助，说明里有读图须知和「未归到命名符号的调用」');
+  await page.key('Escape', 'Escape', 27);
+  await page.ev(`document.getElementById('helpX').click()`);
+  await page.click('#readnote .rnx');
+  ok(await page.ev(`document.getElementById('readnote').hidden`), '点 × 关掉');
+  await page.goto(base + '#run=' + fx.a);
+  ok(await waitRun(page, fx.a) && await page.ev(`document.getElementById('readnote').hidden`), '刷新之后还是关着');
+  await page.ev(`localStorage.removeItem('codestrata.readnote')`);
 
   // 只看跑到的：没跑到、也不在路径上的节点藏起来
   const all = (await drawnNodes(page)).length;
@@ -52,4 +66,5 @@ export default async function (t) {
   ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run=""]')`), '再打开运行菜单');
   await page.click('#runpop [data-run=""]');
   ok(await page.wait(`!CS.graph.hot`, 15000), '选「静态图」：不叠任何 run');
+  ok(await page.ev(`document.getElementById('readnote').hidden`), '静态图上没有读图须知（说的都是运行时的图）');
 }

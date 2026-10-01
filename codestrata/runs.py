@@ -759,6 +759,8 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             "created": run.get("created"), "migrated_from": run.get("migrated_from"),
             # 改过的文件里按名字对不上的键（lambda、改了名的、老 run 没存名字的）：这些调用的叠加可能偏
             "unmatched": len(unmatched), "events": run.get("events"),
+            # 记了调用行没有（2026-09-30 之前录的没有）：没有的话代码窗口不标运行时调到了谁，页面上说明
+            "has_lines": "func_lines" in counts,
             # 复刻：命令（原样的，或老 run 按参数拼的）、录制时继承的环境、--phase 怎么切的、各阶段的时刻
             # 网页上的：--env 里像密钥的值隐去，完整的在 runs show
             "rerun": rerun_command(run, Path(repo), redact=True),
