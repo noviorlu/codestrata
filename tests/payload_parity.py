@@ -1,8 +1,8 @@
 """新旧代码给前端的数据逐项对比（重构用的对拍工具，不是回归测试）。
 
-    .venv/bin/python tests/payload_parity.py <旧提交> <仓库> [RUN …]
+    .venv/bin/python tests/payload_parity.py <旧提交> <仓库> [RUN …] [--new <新提交>]
 
-把 <旧提交> 的 codestrata 导出到临时目录，和现在工作区里的代码各跑一遍，对同一份索引和 run 算：
+把 <旧提交> 的 codestrata 导出到临时目录，和现在工作区里的代码（或 --new 给的另一个提交）各跑一遍，对同一份索引和 run 算：
   - 几个切面（默认、全部收起、展开两层以内的目录）上的图：不叠 run，和叠每个 RUN；
   - 这些图上每条边（含只在 runtime 出现的、仅类型的）的边详情（展开的切面上边太多时只算跑到的）；
   - 每个 RUN（录了时序事件的）在默认切面上的「时间顺序」。
@@ -54,14 +54,18 @@ for ref in [None] + refs:
             out[f"{ref}|seq"] = seq.edge_times(idx, rd, run, open_=None, phase=phase)
         except Exception as e:
             out[f"{ref}|seq"] = {"error": type(e).__name__ + ": " + str(e)}
+out["__src__"] = __import__("codestrata").__file__          # 确认导入的是哪一份代码
 json.dump(out, sys.stdout, sort_keys=True, ensure_ascii=False, default=list)
 '''
 
 
-def _dump(src: Path, repo: Path, refs: list[str]) -> dict:
+def _dump(src: Path, repo: Path, refs: list[str], cwd: str) -> dict:
+    # 两边各自只能看到自己那一份代码：在一个中立的目录里跑（python -c 会把当前目录排在 PYTHONPATH 前面，
+    # 在仓库根目录跑的话导入的是工作区）；-S 不加载 site-packages（.venv 里可编辑安装的 codestrata 会把
+    # 旧提交里没有的子模块从工作区补上）。codestrata 只用标准库
     env = {**os.environ, "PYTHONPATH": str(src)}
-    r = subprocess.run([sys.executable, "-c", _DUMP, str(repo), *refs], capture_output=True, text=True, env=env,
-                       timeout=3600)
+    r = subprocess.run([sys.executable, "-S", "-c", _DUMP, str(repo), *refs], capture_output=True, text=True,
+                       env=env, timeout=3600, cwd=cwd)
     if r.returncode != 0:
         raise SystemExit(f"{src} 跑不下来：\n{r.stderr[-3000:]}")
     return json.loads(r.stdout)
@@ -89,12 +93,26 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(__doc__)
         return 2
+    new_rev = None
+    if "--new" in argv:
+        i = argv.index("--new")
+        new_rev, argv = argv[i + 1], argv[:i] + argv[i + 2:]
     rev, repo, refs = argv[0], Path(argv[1]).resolve(), argv[2:]
+
+    def export(r: str, into: Path) -> Path:
+        into.mkdir()
+        arch = subprocess.run(["git", "-C", str(ROOT), "archive", r, "codestrata"], capture_output=True, check=True)
+        subprocess.run(["tar", "-x", "-C", str(into)], input=arch.stdout, check=True)
+        return into
     with tempfile.TemporaryDirectory(prefix="cs-parity-") as tmp:
-        arch = subprocess.run(["git", "-C", str(ROOT), "archive", rev, "codestrata"], capture_output=True, check=True)
-        subprocess.run(["tar", "-x", "-C", tmp], input=arch.stdout, check=True)
-        old = _dump(Path(tmp), repo, refs)
-    new = _dump(ROOT, repo, refs)
+        cwd = Path(tmp) / "cwd"
+        cwd.mkdir()
+        old = _dump(export(rev, Path(tmp) / "old"), repo, refs, str(cwd))
+        new = _dump(export(new_rev, Path(tmp) / "new") if new_rev else ROOT, repo, refs, str(cwd))
+    src_old, src_new = old.pop("__src__"), new.pop("__src__")
+    print(f"旧：{src_old}\n新：{src_new}")
+    if src_old == src_new:
+        raise SystemExit("两边导入的是同一份代码，比不出东西")
     diffs: list[str] = []
     _diff(old, new, "", diffs, 40)
     n_edges = sum(len(v) for k, v in new.items() if k.endswith("|edges"))
