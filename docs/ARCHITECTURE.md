@@ -19,7 +19,7 @@ codestrata 围着一个 graph 转：
 | **scan-trace alignment** | 把 trace 的记录放到 graph 现在的节点上（录制之后代码改过也能对上），找出两边的差别：trace 有、scan 没有的（多态、注册表、回调这类代码里看不出的调用），scan 有、trace 没有的（这次没走到） | 散在 `runs.load`、`trace/analysis.py`、`payload.py`、`seq.py` |
 
 界面不是一步：它只读 graph，按当前展开的目录把 graph 收起来画（`cut.py`、`layout.py`）——同一个文件 / 目录里的节点合成一个，边合并、次数相加。
-只有 scan 记录的边画灰色实线，有 trace 记录的画橙色实线、边上标调用次数。
+只有 scan 记录的边画灰色实线；有 trace 记录的画橙色、边上标调用次数，两边都有的是实线，只有 trace 的是虚线（代码里看不出这个调用，常见于多态、注册表、回调、子类覆盖）。
 
 **现在的代码还没做到的**（正在改）：
 
