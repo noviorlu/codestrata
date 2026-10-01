@@ -22,12 +22,13 @@ window.CS = window.CS || {};
       .filter(function (h) { return h.E && h.E.show !== false; });
   }
 
-  /* 鼠标在这一点时该亮哪条：悬停着的那条只要不比最近的远 2 像素以上就留着；和它一样近的几条（含它）一起返回 */
+  /* 鼠标在这一点时该亮哪条：悬停着的那条只要不比最近的远 2 像素以上就留着。ties：和最近的那条一样近的几条，再加上亮着的那条
+     （它是留着的、比最近的远一点时，最近的那条也在里面——单子里两条都能挑） */
   function target(lanes, ev) {
     var h = hitAt(lanes, ev.clientX, ev.clientY);
     if (!h.length) return null;
     var keep = over && h.filter(function (x) { return x.E === over; })[0], T = keep && h[0].d > keep.d - STICK ? keep : h[0];
-    return { E: T.E, ties: h.filter(function (x) { return Math.abs(x.d - T.d) < TIE; }).map(function (x) { return x.E; }) };
+    return { E: T.E, ties: h.filter(function (x) { return x.d - h[0].d < TIE || x === T; }).map(function (x) { return x.E; }) };
   }
 
   function tipEl() {
@@ -45,7 +46,7 @@ window.CS = window.CS || {};
   }
   function hover(E, T) {
     T = T || (E ? [E] : []);
-    var same = over === E && ties.length === T.length;
+    var same = over === E && ties.length === T.length && T.every(function (x, i) { return x === ties[i]; });   // 换了一处交叉：提示重写
     if (same) { place(); return; }
     if (over) over.p.classList.remove('hover');
     over = E; ties = T; clearTimeout(timer); tipEl().hidden = true;
