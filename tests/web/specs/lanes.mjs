@@ -1,20 +1,22 @@
 // 按进程 · 线程分列（lanes.js）：叠着录了时序事件的 run 就是它，没有切回一张图的开关（用户 10-01）；列按进程分组，
-// 列里是这条线程调到的节点；鼠标停在节点上连上它在别的列里的副本；列里的边接点错开、点哪条开哪条；列之间的连线能点，
+// 列里是这条线程调到的节点；鼠标停在节点上连上它在别的列里的副本；每条线各有各的接点和轨道，点哪条按离鼠标最近的算，
+// 悬停的提示和会选中的是同一条，叠着几条时弹单子挑；列之间的连线能点，
 // 详情里是两头的代码，选中时两头的节点下面标出那一行；起线程 / 回收线程的节点描绿 / 红、列头写起 / 收；「这次跑了」管列里的边；
 // 进程能收起；没录时序事件的 run 照旧是一张图
 import { sleep, waitRun } from '../lib.mjs';
 
-/* 一条边 / 连线（CS.lanes 里的 E）上点得到它的一点（屏幕坐标）：先滚到看得见，从 f 处开始沿路径找最上面就是它（命中区或标签）的地方，
-   都被盖住了就点它的标签 */
+/* 一条边 / 连线（CS.lanes 里的 E）上点下去会选中它的一点（屏幕坐标）：先滚到看得见，从 f 处开始沿路径找离鼠标最近的就是它
+   （CS.lanes.hitAt，点击用的同一个判断）、没被节点 / 牌子盖住的地方；都不行就点它的标签 */
 const at = (page, expr, f) => page.ev(`(E => {
-  CS.graph.showEl(E.x);
-  const L = E.x.getTotalLength(), m = E.x.getScreenCTM();
-  for (const g of [${f}, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.15, 0.85]) {
-    const p = E.x.getPointAtLength(L * g), x = p.x * m.a + p.y * m.c + m.e, y = p.x * m.b + p.y * m.d + m.f;
-    const top = document.elementFromPoint(x, y);
-    if (top === E.x || top === E.lab) return { x, y, key: E.key };
+  CS.graph.showEl(E.p);
+  const L = E.p.getTotalLength(), m = E.p.getScreenCTM();
+  for (const g of [${f}, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.15, 0.85, 0.1, 0.9]) {
+    const p = E.p.getPointAtLength(L * g), x = p.x * m.a + p.y * m.c + m.e, y = p.x * m.b + p.y * m.d + m.f;
+    const top = document.elementFromPoint(x, y), h = CS.lanes.hitAt(x, y);
+    if (top && top.closest('.ln-nd, .tn, .ln-code, .ln-mark, .ln-proc')) continue;
+    if (top === E.lab || (h.length && h[0].E === E && !(h[1] && h[1].d - h[0].d < 1.5))) return { x, y, key: E.key };
   }
-  if (E.lab) {                             // 线叠在别的线下面：点它的标签（标签在节点上面、放在不挡东西的地方）
+  if (E.lab) {
     const b = E.lab.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
     if (document.elementFromPoint(x, y) === E.lab) return { x, y, key: E.key };
   }
@@ -85,20 +87,44 @@ export default async function (t) {
      '选中节点：只有点的这一份选中，这一列里碰到它的 ' + nb.hi + ' 条边 / 连线高亮、另一头的节点照常，别的（包括别的列里的副本）淡下去（'
      + nb.dim + ' 条线、' + nb.nd + ' 个节点）' + JSON.stringify(nb.bad));
 
-  // 列里的边：同一列里接点错开，每一条在自己路径的中点点下去，最上面的就是它（不会点到叠在一起的另一条）
-  const stolen = await page.ev(`(() => {
-    const out = [];
-    for (const E of CS.lanes.edges) {
-      if (!E.show) continue;
-      CS.graph.showEl(E.x);
-      const L = E.x.getTotalLength(), p = E.x.getPointAtLength(L * 0.5), m = E.x.getScreenCTM();
-      const top = document.elementFromPoint(p.x * m.a + p.y * m.c + m.e, p.x * m.b + p.y * m.d + m.f);
-      const T = CS.lanes.edges.concat(CS.lanes.links).find(G => G.x === top || G.lab === top);
-      if (T && T !== E) out.push(E.key + ' → ' + T.key);
+  // 排线：每条线的路径都不一样；每一条线沿路径取点，离鼠标最近的就是它（点下去选中它）的地方占大多数，没有一条点不到
+  const sp0 = JSON.parse(await page.ev(`JSON.stringify((() => {
+    const all = CS.lanes.edges.concat(CS.lanes.links).filter(E => E.show !== false), zero = [];
+    let tot = 0, own = 0, wrong = 0;
+    for (const E of all) {
+      const L = E.p.getTotalLength(), m = () => E.p.getScreenCTM();
+      let o = 0;
+      for (let i = 1; i < 12; i++) {
+        const p = E.p.getPointAtLength(L * i / 12);
+        CS.graph.showEl(E.p);
+        const M = m(), x = p.x * M.a + p.y * M.c + M.e, y = p.x * M.b + p.y * M.d + M.f, h = CS.lanes.hitAt(x, y);
+        if (!h.length) continue;
+        tot++;
+        if (h[0].E === E || (h[1] && h[1].d - h[0].d < 1.5 && h.some(z => z.E === E))) { own++; o++; } else wrong++;
+      }
+      if (!o) zero.push(E.key);
     }
-    return out;
-  })()`);
-  ok(stolen.length === 0, '列里的边各点各的：' + JSON.stringify(stolen.slice(0, 4)));
+    return { n: all.length, uniq: new Set(all.map(E => E.p.getAttribute('d'))).size, tot, own, wrong, zero };
+  })())`));
+  ok(sp0.uniq === sp0.n, '每条线的路径都不一样（' + sp0.n + ' 条）');
+  ok(sp0.zero.length === 0 && sp0.wrong === 0 && sp0.own === sp0.tot,
+     '沿每条线取点，离鼠标最近的都是它自己（或一样近、会弹单子）：' + sp0.own + ' / ' + sp0.tot + ' ' + JSON.stringify(sp0.zero.slice(0, 4)));
+  // 悬停：最近的那条加粗，停一会儿出的提示就是它的
+  const hp = await at(page, `CS.lanes.links.find(E => E.k.kind === 'handoff')`, 0.5);
+  await page.mouse('mouseMoved', hp.x, hp.y);
+  ok(await page.wait(`CS.lanes.byKey[${JSON.stringify(hp.key)}].p.classList.contains('hover') && !document.querySelector('.ln-tip').hidden
+                      && document.querySelector('.ln-tip').textContent === CS.lanes.byKey[${JSON.stringify(hp.key)}].tip.textContent
+                      && document.getElementById('g').classList.contains('ln-over')`, 3000), '悬停：那条线加粗、手形、提示是它的');
+  await page.mouse('mouseMoved', 5, 5);
+  ok(await page.wait(`document.querySelector('.ln-tip').hidden && !document.querySelector('#g .hover')`, 3000), '移开：提示收起');
+  // 叠着几条一样近：弹单子挑一条
+  await page.ev(`(() => { const r = CS.graph.svg.getBoundingClientRect(); CS.lanePick.chooser([CS.lanes.edges[0], CS.lanes.links[0]], { clientX: r.left + 200, clientY: r.top + 200 }); })()`);
+  ok(await page.ev(`document.querySelectorAll('.ln-pick button').length === 2`), '单子里列出两条');
+  const pb = await page.rect('.ln-pick button:nth-of-type(2)');
+  await page.mouse('mouseMoved', pb.x, pb.y); await page.mouse('mousePressed', pb.x, pb.y, 1); await page.mouse('mouseReleased', pb.x, pb.y);
+  ok(await page.wait(`CS.lanes.sel === CS.lanes.links[0].key && !document.querySelector('.ln-pick')`, 3000), '点单子里的第二条：选中它、单子关掉');
+  await page.key('Escape', 'Escape', 27);
+  await page.wait(`!CS.lanes.sel`, 3000);
   const ep = await at(page, `CS.lanes.edges.find(E => E.show && E.e.a === 'fakesvc/truth.py' && E.e.b === 'fakesvc/callee.py')`, 0.5);
   await click(page, ep);
   ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(ep.key)} && /callee/.test(document.getElementById('dtitle').textContent)
@@ -193,8 +219,10 @@ export default async function (t) {
 
   // 收起一个进程：它的几列合成一条；再点展开
   const n0 = await page.ev(`document.querySelectorAll('#g .ln-col:not(.fold)').length`);
+  await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
   ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 1 && document.querySelectorAll('#g .ln-col:not(.fold)').length < ${n0}`, 3000), '收起一个进程');
+  await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
   ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0`, 3000), '再展开');
 

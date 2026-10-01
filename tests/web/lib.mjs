@@ -4,17 +4,23 @@ export { sleep };
 
 export const hash = page => page.ev('decodeURIComponent(location.hash)');
 
-/* 图上一条边的中点（屏幕坐标）：先把它滚到看得见的地方。分列视图（叠着录了时序事件的 run）里取第一条 a → b 的列里的边 */
+/* 图上一条边上点得到它的一点（屏幕坐标）：先把它滚到看得见的地方。模块图取中点；分列视图（叠着录了时序事件的 run）里取第一条
+   a → b 的列里的边，沿路径找离鼠标最近的就是它（CS.lanes.hitAt）、没被节点盖住的一点 */
 export async function edgePoint(page, a, b) {
   return page.ev(`(() => {
-    const A = ${JSON.stringify(a)}, B = ${JSON.stringify(b)};
-    const E = document.body.classList.contains('lanesmode')
-      ? CS.lanes.edges.find(E => E.e.a === A && E.e.b === B && E.show)
-      : CS.graph.edges.find(E => E.a === A && E.b === B);
+    const A = ${JSON.stringify(a)}, B = ${JSON.stringify(b)}, lanes = document.body.classList.contains('lanesmode');
+    const E = lanes ? CS.lanes.edges.find(E => E.e.a === A && E.e.b === B && E.show) : CS.graph.edges.find(E => E.a === A && E.b === B);
     if (!E) return null;
-    CS.graph.showEl(E.x);
-    const L = E.x.getTotalLength(), p = E.x.getPointAtLength(L / 2), m = E.x.getScreenCTM();
-    return {x: p.x * m.a + p.y * m.c + m.e, y: p.x * m.b + p.y * m.d + m.f};
+    const el = lanes ? E.p : E.x;
+    CS.graph.showEl(el);
+    const L = el.getTotalLength(), m = el.getScreenCTM();
+    for (const f of lanes ? [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8] : [0.5]) {
+      const p = el.getPointAtLength(L * f), x = p.x * m.a + p.y * m.c + m.e, y = p.x * m.b + p.y * m.d + m.f;
+      if (!lanes) return { x, y };
+      const h = CS.lanes.hitAt(x, y), top = document.elementFromPoint(x, y);
+      if (h.length && h[0].E === E && !(top && top.closest('.ln-nd, .tn, .ln-code, .ln-mark'))) return { x, y };
+    }
+    return null;
   })()`);
 }
 

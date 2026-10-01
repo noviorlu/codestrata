@@ -871,6 +871,8 @@ window.CS = window.CS || {};
       document.body.classList.toggle('lanesmode', lanes);
       // 分列也把当前 run 的叠加交给 CS.graph.hot：详情面板、搜索、代码窗口、开关都按它取运行时的次数
       if (lanes) { CS.graph.hot = d.hot; CS.graph.clear(); CS.lanes.show(); return; }
+      CS.lanePick.leave();                            // 离开分列：撤掉 #g 上点线的监听、提示、单子
+      CS.lanes.picker = null;
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { rtOnly: d.runtimeOnlyEdges });
     },

@@ -87,6 +87,68 @@ def test_find_cap():
     assert r == [20000, [200000, True]], r
 
 
+def test_lane_route():
+    """分列的排线（laneroute.js）：每条线路径不同；除了两头，线不从任何节点框里穿过；往右的连线走节点上面、往左的走下面
+    （一来一回成一个圈）；隔层的边走列的侧边；一层的通道挤了就把下面的层往下推；接点不重合；沿每条线取点，离它最近的就是它"""
+    spec = {
+        "NW": 132, "GAP": 10, "PAD": 12, "MINW": 104, "EXTW": 92, "FOLDW": 112, "headY": 140, "top": 168,
+        "layers": [0, 110, 220, 330], "layerOf": {"A": 0, "B": 1, "C": 2, "D": 3, "E": 1}, "nodeH": {},
+        "cols": [{"lanes": ["p:main"], "rows": {"0": ["A"], "1": ["B", "E"], "2": ["C"], "3": ["D"]}, "gap": 0},
+                 {"lanes": ["p:w"], "rows": {"0": ["A"], "2": ["C"]}, "gap": 8},
+                 {"lanes": ["p:x"], "external": True, "rows": {}, "gap": 8}],
+        "edges": [{"key": "e1", "lane": "p:main", "a": "A", "b": "B"}, {"key": "e2", "lane": "p:main", "a": "A", "b": "D"},
+                  {"key": "e3", "lane": "p:main", "a": "A", "b": "C"}, {"key": "e4", "lane": "p:main", "a": "D", "b": "B"},
+                  {"key": "e5", "lane": "p:main", "a": "B", "b": "E"}, {"key": "e6", "lane": "p:w", "a": "A", "b": "C"}],
+        "links": [{"key": "l1", "from": {"lane": "p:main", "node": "A"}, "to": {"lane": "p:w", "node": "A"}},
+                  {"key": "l2", "from": {"lane": "p:w", "node": "A"}, "to": {"lane": "p:main", "node": "A"}},
+                  {"key": "l3", "from": {"lane": "p:main", "node": "C"}, "to": {"lane": "p:w", "node": "A"}},
+                  {"key": "l4", "from": {"lane": "p:x", "node": None}, "to": {"lane": "p:main", "node": "D"}},
+                  {"key": "l5", "from": {"lane": "p:w", "node": "C"}, "to": {"lane": "p:x", "node": None}}],
+        "reserve": {"p:main|A": 24}}
+    crowd = json.loads(json.dumps(spec))
+    crowd["links"] += [{"key": f"x{i}", "from": {"lane": "p:main", "node": "B"}, "to": {"lane": "p:w", "node": "C"}} for i in range(12)]
+    expr = """(() => {
+      const R = CS.laneRoute, o = R.route(S), oc = R.route(SC), pk = R.picker(o.paths), bad = [], pick = {};
+      const box = k => { const p = o.pos[k]; return [p.cx - p.w / 2 + 1, p.cy - p.h / 2 + 1, p.cx + p.w / 2 - 1, p.cy + p.h / 2 - 1]; };
+      const ends = { e1: ['p:main|A', 'p:main|B'], e2: ['p:main|A', 'p:main|D'], e3: ['p:main|A', 'p:main|C'], e4: ['p:main|D', 'p:main|B'],
+                     e5: ['p:main|B', 'p:main|E'], e6: ['p:w|A', 'p:w|C'], l1: ['p:main|A', 'p:w|A'], l2: ['p:w|A', 'p:main|A'],
+                     l3: ['p:main|C', 'p:w|A'], l4: ['p:main|D'], l5: ['p:w|C'] };
+      for (const [k, P] of Object.entries(o.paths)) {
+        for (const n of Object.keys(o.pos)) {
+          if (ends[k].includes(n)) continue;
+          const b = box(n);
+          for (let i = 1; i < P.pts.length; i++) for (let f = 0; f <= 1; f += 0.05) {
+            const x = P.pts[i-1][0] + (P.pts[i][0] - P.pts[i-1][0]) * f, y = P.pts[i-1][1] + (P.pts[i][1] - P.pts[i-1][1]) * f;
+            if (x > b[0] && x < b[2] && y > b[1] && y < b[3]) { bad.push(k + ' through ' + n); i = 1e9; break; }
+          }
+        }
+        let own = 0, n = 0;
+        for (let i = 1; i < P.pts.length; i++) for (let f = 0.1; f < 1; f += 0.2) {
+          const x = P.pts[i-1][0] + (P.pts[i][0] - P.pts[i-1][0]) * f, y = P.pts[i-1][1] + (P.pts[i][1] - P.pts[i-1][1]) * f;
+          const h = pk.near(x, y, 7); n++;
+          if (h.length && (h[0].key === k || (h[1] && h[1].d - h[0].d < 1.5 && h.some(z => z.key === k)))) own++;
+        }
+        pick[k] = own / n;
+      }
+      const A = o.pos['p:main|A'], WA = o.pos['p:w|A'], first = k => o.paths[k].pts[0], last = k => o.paths[k].pts[o.paths[k].pts.length - 1];
+      const sx = Object.keys(o.paths).map(k => first(k)[0] + ',' + first(k)[1]);
+      return { n: Object.keys(o.paths).length, uniq: new Set(Object.values(o.paths).map(p => p.d)).size, bad, pick,
+        l1: [first('l1')[1] < A.cy, last('l1')[1] < WA.cy], l2: [first('l2')[1] > WA.cy, last('l2')[1] > A.cy],
+        e2side: o.paths.e2.pts.some(p => p[0] > A.cx + A.w / 2), starts: sx.length === new Set(sx).size,
+        shift: oc.layerY[2] - o.layerY[2], tracks: oc.tracks.ch };
+    })()"""
+    r = js(["laneroute.js"], f"(() => {{ const S = {json.dumps(spec)}, SC = {json.dumps(crowd)}; return {expr}; }})()")
+    if r is None:
+        print("    （没有 node，跳过）")
+        return
+    assert r["n"] == r["uniq"] == 11, r
+    assert r["bad"] == [], r["bad"]                                   # 线不从别的节点框里穿过
+    assert all(v == 1 for v in r["pick"].values()), r["pick"]         # 沿线取点，最近的都是它（或一样近）
+    assert r["l1"] == [True, True] and r["l2"] == [True, True], r     # 往右的走上面、往左的走下面
+    assert r["e2side"] and r["starts"], r                             # 隔层的边走列的侧边；接点不重合
+    assert r["shift"] > 12 * 9 and max(r["tracks"]) >= 12, r          # 12 条挤在一层：下面的层往下推
+
+
 def test_timebar_math():
     """时间轴：拖到离阶段 / 整个 run 不到 tol 就吸过去（有几段的阶段、不能选的阶段不吸）；放大到一段时前后留 25%、
     至少 1 ms 宽、不出 run；放大后还占六成以上就看整个 run；时间段的标签"""

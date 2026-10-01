@@ -56,7 +56,6 @@ window.CS = window.CS || {};
   }
 
   CS.graph = {
-    ports: ports,              // 接点沿节点宽度摊开（分列视图 lanes.js 也用）
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
     zoom: 1, panMode: false,   // 缩放倍数（相对「适应宽度」）；移动模式：按住任意位置拖动
     // timeOrder：跑到的边按「第一次被调用」的先后上色、标序号（setTimes 给数据，app.applyTimes 取）
