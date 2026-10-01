@@ -23,7 +23,7 @@ codestrata 围着一个 graph 转：
 
 **现在的代码还没做到的**（正在改）：
 
-- scan 的边还是文件对文件的 import 边（`index.json` 的 `edges`），不是函数对函数的调用边；函数这一级的名字解析在 `xref.py`，只给跳转用。
+- scan 已经产出函数对函数的调用（`graph.json`，`graph.py`），但图和边详情还没用它：图上的边仍是文件对文件的 import 边（`index.json` 的 `edges`）。
 - 两边的比较在切面上做（被调的方法归到它的类，再看这条切面边底下的静态引用里有没有它），散在 `payload.py` 的好几处；边详情里的调用行在请求时重新解析源码去找。
 - 图上还有「只 import」「仅类型」这类不是调用的边；trace 的边分「确认调用」「动态分派」两种画法。
 - 算首末时刻（`seq.py`）时没有把改过的文件里的键挪到现在的行号。
@@ -42,6 +42,7 @@ codestrata 是一个纯标准库的 Python 包（源码高亮用可选的 Pygmen
 flowchart LR
   SRC["仓库源码"] -->|"cmd_scan: scan.scan → scan.write_index"| IDX[".codestrata/index.json + symbols.json"]
   IDX -->|"xref.build → xref.write"| XR[".codestrata/xref.json"]
+  IDX -->|"同一遍：xref.build(on_file=graph.Builder.add_file) → graph.write"| GR[".codestrata/graph.json"]
   CMD["case 命令"] -->|"cmd_trace: driver.run（hook 注入）"| PARTS["runs/ID/parts/"]
   PARTS -->|"analysis.merge → runs.finalize"| RUN["runs/ID/ run.json · detail.json · counts.json.gz · events/"]
   RUN -->|"runs.load: remap + analysis.to_package_graph"| HOT["hot（单元粒度，对当前 index）"]
@@ -55,7 +56,8 @@ flowchart LR
 
 1. **scan**：`__main__.cmd_scan` 调 `scan.scan(repo, roots=…)`（`ast` 遍历选定目录的 .py），`scan.write_index` 写出
    `index.json`（单元 `packages`、import 边 `edges` / `type_edges`、目录树 `dirs`、`cut.default_open` 算的默认切面）和
-   `symbols.json`（`symbols`、`files`、`edge_uses`、`file_sha` 等），紧接着 `xref.build` + `xref.write` 写同一时刻的 `xref.json`。
+   `symbols.json`（`symbols`、`files`、`edge_uses`、`file_sha` 等），紧接着 `xref.build` + `xref.write` 写同一时刻的 `xref.json`；
+   同一遍里 xref 每走完一个文件就把里面的调用交给 `graph.Builder`，`graph.write` 写出 `graph.json`（函数之间的调用、定不下被调方的调用处）。
 2. **layout（分层）**：不落盘，每次请求现算。`cut.view(idx, open_)` 把文件级单元汇总到当前切面的节点上，
    `layout.layers` 按依赖分层（去环后最长路，边尽量往下指），`layout.build` 排出节点和框的坐标。
 3. **trace**（`codestrata/trace/` 包）：`cmd_trace` 先用 `analysis.resolve_phase_at` 解析 `--phase`，`runs.new_run` 建 run 目录和 `run.json`，再交给
@@ -82,9 +84,10 @@ flowchart LR
 |---|---:|---|
 | `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 587 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
+| `__main__.py` | 593 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
 | `scan.py` | 820 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
-| `xref.py` | 1425 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击 |
+| `xref.py` | 1494 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file` |
+| `graph.py` | 217 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
 | `cut.py` | 391 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 657 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
@@ -93,7 +96,7 @@ flowchart LR
 | `runs.py` | 1061 | run 目录的建、收尾、迁移、解析、加载（`remap`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
-| `payload.py` | 980 | 组装前端数据：图、叠加、边详情、源码、引用、搜索 |
+| `payload.py` | 867 | 组装前端数据：图、叠加、边详情、源码、引用、搜索 |
 | `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
 | `serve.py` | 403 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
@@ -138,7 +141,7 @@ flowchart LR
 - `payload` 里边详情的「调用处」：`_code_facts` / `_call_form` / `_add_call_sites` 按 Python 语法认调用写法。
 
 加一门语言要提供：一个扫描器，产出同样结构的 index.json / symbols.json（单元、边、目录树、键是 `<路径>#<限定名>`、带 `f/l/dl/e/k/n/s` 和 `x` 标记的符号、`file_sha`），
-xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写同格式的分片（和可选的事件日志），并有一种注入方式替代
+xref.json、graph.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写同格式的分片（和可选的事件日志），并有一种注入方式替代
 `PYTHONPATH` + `sitecustomize`；最好再给出等价于 qualname 的名字供 remap。字段级契约见 [`docs/design/run-format.md`](design/run-format.md)。
 
 ## 前端结构
@@ -160,6 +163,7 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 
 ```bash
 .venv/bin/python tests/test_runs.py      # 约 1.5–2 分钟
+.venv/bin/python tests/test_graph.py
 .venv/bin/python tests/test_app.py
 .venv/bin/python tests/test_package.py   # 要 uv
 .venv/bin/python tests/test_web.py       # 要 node
@@ -171,6 +175,7 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 - `test_runs.py`（67 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 动态分派 / 调用处、
   分层方向。
+- `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property、语法触发的特殊方法、调用方是哪个节点）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。

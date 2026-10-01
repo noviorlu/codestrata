@@ -30,6 +30,7 @@
   README.txt
   index.json  symbols.json   静态索引（scan 覆盖写，见 §9.3）
   xref.json                  交叉引用（冻结区，和 run 无关）
+  graph.json                 函数之间的调用：graph 的 scan 记录（和 run 无关，见 §9.3）
   runs/                      可以是软链（比如指到 /mnt/data）；scan 不碰它
     .migrate.lock            迁移老格式时的文件锁
     <id>/                    一个 run，id = YYYYMMDD-HHMMSS-<case>[-k]（同一秒撞名加 -2、-3…）
@@ -462,14 +463,14 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
 
 ### 9.3 扫描端要产出的静态索引
 
-scan 写两个文件，加载时（`payload.load_index`）合成一个 index。下表是叠加、图、切面实际读到的字段
+scan 写 index.json 和 symbols.json，加载时（`payload.load_index`）合成一个 index；另有 xref.json（跳转）和 graph.json（调用）。下表是叠加、图、切面实际读到的字段
 （`payload.py`、`layout.py`、`cut.py`、`seq.py`、`runs.py`、`trace/` 里查过）；其余的只给冻结区（代码窗口、交叉引用）用。
 
 **index.json**
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
-| `format` | int | `payload.load_index`、`payload.index_summary` | id 的写法：2 是下面说的按路径（`cut.INDEX_FORMAT`）；不是 2 的旧索引要重新 scan | 是 |
+| `format` | int | `payload.load_index`、`payload.index_summary` | 索引的格式版本（`cut.INDEX_FORMAT`，现在是 4：id 按路径、符号键 `<路径>#<限定名>`、有 graph.json）；不一样的旧索引要重新 scan | 是 |
 | `repo` | {root, name, roots, n_files, n_parse_errors, unresolved_imports, n_aux, auto_split} | `payload.graph_payload`（整个传给前端：页头用 `name`，页脚用 `roots`、`n_files`、`n_parse_errors`）、`payload.index_summary`（主菜单卡片、trace 的默认 roots）、`auto_split` 给前端 | 仓库信息 | 是（至少 `name`、`roots`、`n_files`、`n_parse_errors`） |
 | `packages` | {单元: {files, loc, classes, funcs, out, in, alt, label?, sep?}} | `cut.view`（按切面相加 `files`、`loc`、`classes`、`funcs`）、`cut.default_open`（`loc`）、`layout.build`（过滤掉 `files` < min_files 的、既没符号也没边的空单元）、`cut.members`；`label` / `sep` 给 `cut.label`（显示名） | 单元（节点的最小粒度）。**id 是文件相对仓库根的路径**（`fakesvc/offline.py`）。`label` 是显示名、`sep` 是它的分隔符：Python 是点分的模块名（`fakesvc.offline`，包的 `__init__.py` 是 `<包>.__init__`）和 `.`；不给就按路径切 | 是（`label` / `sep` 否） |
 | `edges` | [[单元a, 单元b, 权重]] | `cut.view`（切面上的边、出入度）、`layout.build`（分层）、`payload`（边的种类） | 静态依赖边（Python 是 import 条数） | 是（可以是空列表） |
@@ -488,6 +489,20 @@ scan 写两个文件，加载时（`payload.load_index`）合成一个 index。�
 | `edge_uses` | {"a\|b": {"<文件路径>#<名字>": [[文件, 行]…]}} | `payload._edge_uses_on_cut`（算动态分派）、边的详情 | 每条边实际引用了对方哪些符号（和符号键同一种写法；模块级变量、再导出的名字不在符号表里，由 xref.json 的 `names` 追到定义） | 否（没有时所有 runtime 调用都算动态分派） |
 | `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `payload`（纯 import、不承载调用的边画成虚线） | `sym` 是导入的东西：模块写它的文件路径，模块里的名字写 `<文件路径>#<名字>` | 否 |
 | `edge_sites`、`name_refs`、`docs`、`aux`、`file_loc` | | 边的详情、接线点、文档、非 Python 源文件、行数 | 面板和冻结区 | 否 |
+
+**graph.json**（graph 的 scan 记录：函数之间的调用。由 `graph.Builder` 在 `xref.build` 的同一遍里产出；现在还没有界面读它，以后给 scan-trace alignment 用）
+
+| 字段 | 形状 | 用途 |
+|---|---|---|
+| `format` | int | 同 index.json |
+| `callees` | [符号键] | 被调方，`calls` 里按下标引用 |
+| `calls` | {调用方: [[被调方下标, 行, 末行, 种类]]} | 定下了被调方的调用 |
+| `sites` | {调用方: [[名字, 行, 末行, 种类]]} | 定不下被调方的调用处：名字是写的那个（`x.m(…)` 的 `m`；语法触发的是特殊方法名；`f()()` 这种没有名字的是 null） |
+
+调用方是符号键，另有三种符号表里没有的：`<文件路径>#<module>`（模块顶层的代码）、`<外层>.<L行>`（lambda、生成器表达式：运行时是单独的帧）；
+类体里的代码记在类自己身上，列表 / 集合 / 字典推导式算外层（3.12 起它们不是单独的帧）。行、末行是调用那个表达式占的行。
+种类：0 调用、1 构造（被调方是类）、2 装饰器（`@x` 在定义时调 `x`）、3 取 property（调 getter）、4 语法触发的特殊方法（`with`、`for`、`[]`、运算符、`len()` 这类，
+只记仓库里有类定义过的）、5 `getattr(…, "名字")`、6 调的是仓库外的。
 
 `layout.build` 读的 `frames`、`alias` 不是扫描端的：是 `payload.graph_payload` 按切面现算、塞进给 layout 的那个字典里的。
 

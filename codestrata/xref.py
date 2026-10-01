@@ -43,6 +43,17 @@
            __init__ 等处再导出的类 / 函数 / 变量——按 `from 模块 import 名字` 追到的类 / 函数 / 变量（s: / v:）。
            边详情的「to」据此和 Ctrl+点击落在同一个地方
 种类：0 引用、1 调用、2 import、3 定义本身。
+
+build 的 on_file：给了的话，第二遍每走完一个文件就把这个文件里的调用交给它（graph.py 用它产出 graph 的
+scan 记录，见那里），xref.json 本身不变。一条调用是 (调用方, 行, 末行, 目标, 名字, 怎么调的)：
+  调用方   这段代码属于哪个节点：<文件路径>#<限定名>；模块顶层是 <文件路径>#<module>，类体是类自己，
+           lambda / 生成器表达式是 <外层>.<L行>（它们运行时是单独的帧）；列表 / 集合 / 字典推导式算外层
+           （3.12 起它们不再是单独的帧）
+  目标     解析出来的目标（和 xref.json 的 targets 同一种写法），解析不了是 None
+  名字     写的名字：f(…) 的 f、x.m(…) 的 m、getattr(x, "m") 的 m；没有名字（f()()、fs[i]()）是 None
+  怎么调的 HOW_CALL 调用；HOW_DECO 装饰器（@x 在定义时调 x）；HOW_PROP 取 property（调 getter）；
+           HOW_STR getattr(…, "名字")（按字符串取，多半接着就调）
+还有这个文件里每个节点占的行 [(起, 止, 节点)]，按名字找不到的东西（语法触发的特殊方法）靠它归到节点上。
 """
 from __future__ import annotations
 
@@ -53,6 +64,7 @@ import os
 from pathlib import Path
 
 REF, CALL, IMPORT, DEF = 0, 1, 2, 3
+HOW_CALL, HOW_DECO, HOW_PROP, HOW_STR = "call", "deco", "prop", "str"
 
 _MISSING = object()
 _GLOBAL = object()               # 函数里 `global x`：x 直接去模块顶层找，跳过外层函数
@@ -153,6 +165,11 @@ def _strs(node):
             type(e) is ast.Constant and type(e.value) is str for e in node.elts):
         return [e.value for e in node.elts]
     return None
+
+
+def _is_property(sym: dict | None) -> bool:
+    """符号表条目是 property 这类（取属性就是调 getter）：装饰器名以 property 结尾（property、cached_property）"""
+    return bool(sym) and any(x.endswith("property") for x in sym.get("d") or ())
 
 
 def _is_static(fn) -> bool:
@@ -834,7 +851,7 @@ class _ClsScope(dict):
 class _Walk:
     """第二遍，一个文件：带作用域走一遍 AST，把能确定指向的名字记成 token。"""
 
-    def __init__(self, repo: _Repo, m: str, rel: str, text: str):
+    def __init__(self, repo: _Repo, m: str, rel: str, text: str, collect: bool = False):
         self.repo, self.m, self.rel = repo, m, rel
         self.lines = text.split("\n")
         self.walrus = ":=" in text
@@ -850,6 +867,11 @@ class _Walk:
         self.hist = repo.hist.get(m) or {}
         self.tops = repo.tops.get(m) or {}
         self.symbols = repo.symbols
+        # 收调用（build 给了 on_file 时）：调用记成 (调用方, 行, 末行, 目标, 名字, 怎么调的)，节点的范围 (起, 止, 节点)；
+        # 这里的调用方、目标都还是内部的「模块:限定名」写法，build 交出去之前换成路径
+        self.calls: list | None = [] if collect else None
+        self.spans: list = []
+        self.cur = f"{m}:<module>"                    # 现在这段代码属于哪个节点
 
     def run(self, tree) -> list[tuple]:
         for st in tree.body:
@@ -890,6 +912,21 @@ class _Walk:
             return None
         j = text.find(name.encode(), i + len(kw))
         return j if j >= 0 else None
+
+    # ---- 调用 ----
+    def note(self, n, target, name, how: str) -> None:
+        """记一条调用：n 是调用那个表达式（Call / 装饰器 / 属性），按它占的行记"""
+        if self.calls is not None:
+            ints = self.repo.int
+            self.calls.append((self.cur, ints(n.lineno), ints(n.end_lineno or n.lineno), target, name, how))
+
+    def enter(self, key: str, first: int, last: int) -> str:
+        """进一个节点（函数体、类体、lambda、生成器表达式）：记下它占的行，返回原来的节点（出来时还原）"""
+        was = self.cur
+        if self.calls is not None:
+            self.cur = key
+            self.spans.append((first, last, key))
+        return was
 
     # ---- 名字 ----
     def lookup(self, name: str):
@@ -1050,7 +1087,7 @@ class _Walk:
     def funcdef(self, st, q: str, cls: str | None) -> None:
         ex = self.ex
         for d in st.decorator_list:
-            ex(d)
+            self.decorator(d)
         a = st.args
         for d in a.defaults:
             ex(d)
@@ -1078,7 +1115,9 @@ class _Walk:
         self.cscope = None
         self.fn = True
         self.meth = cls if _first_param(st, cls) else None
+        was = self.enter(key, st.lineno, st.end_lineno or st.lineno)
         self.block(st.body, qn + ".", None)
+        self.cur = was
         self.scopes, self.cscope, self.fn, self.late, self.meth = saved
         if self.cscope is not None:
             self.cscope[st.name] = f"s:{key}" if key in self.symbols else None
@@ -1086,7 +1125,7 @@ class _Walk:
     def classdef(self, st, q: str, cls: str | None) -> None:
         ex = self.ex
         for d in st.decorator_list:
-            ex(d)
+            self.decorator(d)
         saved = self.scopes, self.cscope, self.meth
         tps = getattr(st, "type_params", None)
         if tps:
@@ -1105,10 +1144,18 @@ class _Walk:
         self.scopes = self.outer_chain() + [cs]
         self.cscope = cs
         self.meth = None
+        was = self.enter(key, st.lineno, st.end_lineno or st.lineno)
         self.block(st.body, qn + ".", key)
+        self.cur = was
         self.scopes, self.cscope, self.meth = saved
         if self.cscope is not None:
             self.cscope[st.name] = f"s:{key}" if key in self.symbols else None
+
+    def decorator(self, d) -> None:
+        """装饰器：定义时在外层调一次。@x(…) 的 x(…) 是普通调用（ex 里记）；@x 本身调 x"""
+        r = self.ex(d)
+        if type(d) is not ast.Call:
+            self.note(d, r, d.id if type(d) is ast.Name else d.attr if type(d) is ast.Attribute else None, HOW_DECO)
 
     def import_binding(self, module: str | None, name: str | None, level: int):
         return self.repo.binding(self.repo.from_binding(self.m, module, name, level))
@@ -1215,6 +1262,9 @@ class _Walk:
                         self.seen.add(r)              # 这个类里第一次 self.x = …：实例属性的定义
                         k = DEF
                     self.emit(n.end_lineno, n.end_col_offset, attr, r, k, True)
+                    if (self.calls is not None and kind != CALL and type(n.ctx) is ast.Load and r[0] == "s"
+                            and _is_property(self.symbols.get(r[2:]))):
+                        self.note(n, r, attr, HOW_PROP)
             elif (attr in self.repo.member_names and type(n.value) not in _LITERALS
                     and self.repo.unsure(base, attr)):
                 sp = self.span(n.end_lineno, n.end_col_offset, attr, True)
@@ -1229,7 +1279,13 @@ class _Walk:
             if (type(f) is ast.Name and f.id == "super" and self.meth and "super" not in self.tops
                     and not any("super" in s for s in self.scopes)):
                 return self.super_call(n)
-            self.ex(f, CALL)
+            r = self.ex(f, CALL)
+            if self.calls is not None:
+                tf = type(f)
+                self.note(n, r, f.id if tf is ast.Name else f.attr if tf is ast.Attribute else None, HOW_CALL)
+                if (tf is ast.Name and f.id == "getattr" and r is None and len(n.args) >= 2
+                        and type(n.args[1]) is ast.Constant and type(n.args[1].value) is str):
+                    self.note(n, None, n.args[1].value, HOW_STR)
             for x in n.args:
                 self.ex(x)
             for k in n.keywords:
@@ -1294,6 +1350,9 @@ class _Walk:
                 sh[x.id] = None
         saved = self.scopes
         self.scopes = self.outer_chain() + [sh]
+        # 生成器表达式运行时是单独的帧；列表 / 集合 / 字典推导式 3.12 起内联在外层里
+        was = self.enter(f"{self.cur}.<L{n.lineno}>", n.lineno, n.end_lineno or n.lineno) \
+            if type(n) is ast.GeneratorExp else self.cur
         for i, g in enumerate(gens):
             if i:
                 self.ex(g.iter)
@@ -1306,6 +1365,7 @@ class _Walk:
             self.ex(n.value)
         else:
             self.ex(n.elt)
+        self.cur = was
         self.scopes = saved
 
     def lam(self, n) -> None:
@@ -1319,24 +1379,27 @@ class _Walk:
         self.scopes = self.outer_chain() + [{x.arg: None for x in _all_args(a)}]
         self.late = True
         self.meth = None                              # lambda 里 super() 没有参数可用
+        was = self.enter(f"{self.cur}.<L{n.lineno}>", n.lineno, n.end_lineno or n.lineno)
         self.ex(n.body)
+        self.cur = was
         self.scopes, self.late, self.meth = saved
 
 
 ATTRS_MAX_SAME = 3       # 同名成员超过这么多个的名字，不记「同名的 .xxx」（见 _build 末尾）
 
-def build(root: Path, index: dict) -> dict:
+def build(root: Path, index: dict, on_file=None) -> dict:
+    """on_file(文件, AST, 调用, 节点的范围)：第二遍每走完一个文件调一次（见开头的说明）；AST 只在调用期间有效"""
     # 建 AST 时一路触发的分代 GC 白白扫描几百万个节点；这里不产生循环引用，先关掉
     was = gc.isenabled()
     gc.disable()
     try:
-        return _build(root, index)
+        return _build(root, index, on_file)
     finally:
         if was:
             gc.enable()
 
 
-def _build(root: Path, index: dict) -> dict:
+def _build(root: Path, index: dict, on_file=None) -> dict:
     repo = _Repo(index)
     for m, rel in repo.file_of.items():              # 第一遍：先把所有模块顶层的绑定、类的成员收齐
         text, tree = _read(root / rel)
@@ -1358,8 +1421,14 @@ def _build(root: Path, index: dict) -> dict:
         fp[rel] = [st.st_size, st.st_mtime_ns]
         if tree is None:
             continue
-        toks = _Walk(repo, m, rel, text).run(tree)
-        del text, tree
+        w = _Walk(repo, m, rel, text, collect=on_file is not None)
+        toks = w.run(tree)
+        if on_file is not None:
+            node = lambda k: f"{rel}#{k.partition(':')[2]}"      # 调用方都在这个文件里
+            out = lambda t: _out_target(repo.file_of, t) if t and t[1:2] == ":" and t[0] in "svmx" else None
+            on_file(rel, tree, [(node(c), l, e, out(t), nm, how) for c, l, e, t, nm, how in w.calls],
+                    [(a, b, node(k)) for a, b, k in w.spans])
+        del text, tree, w
         if toks:
             toks.sort()
             files[rel] = toks

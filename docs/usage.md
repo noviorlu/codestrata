@@ -79,7 +79,7 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 
 ## 扫描
 
-`codestrata scan [repo]` 用 `ast` 逐个解析 `.py` 文件，写出 `.codestrata/index.json`（模块、import 边、切面）、`symbols.json`（类和函数的位置）和 `xref.json`（交叉引用，Ctrl+点击用），并打印扫了哪些目录。
+`codestrata scan [repo]` 用 `ast` 逐个解析 `.py` 文件，写出 `.codestrata/index.json`（模块、import 边、切面）、`symbols.json`（类和函数的位置）、`xref.json`（交叉引用，Ctrl+点击用）和 `graph.json`（函数之间的调用，格式见 [run-format §9.3](design/run-format.md#93-扫描端要产出的静态索引)），并打印扫了哪些目录。
 
 ### 扫哪些目录
 
@@ -387,7 +387,7 @@ RUN 的写法见[管理 run](#管理-run)。
 
 | 位置 | 内容 | 谁写 | 能否重建 |
 |---|---|---|---|
-| `<repo>/.codestrata/index.json`、`symbols.json`、`xref.json` | 静态分析结果 | `scan` | 随时 |
+| `<repo>/.codestrata/index.json`、`symbols.json`、`xref.json`、`graph.json` | 静态分析结果 | `scan` | 随时 |
 | `<repo>/.codestrata/runs/<YYYYmmdd-HHMMSS>-<case>/` | 一次录制 | `trace` | **不能** |
 | `<repo>/.codestrata/.gitignore`、`README.txt` | 自动生成：`.gitignore` 里是 `*`，让被分析仓库的 `git status` 保持干净；README.txt 提醒 `runs/` 不能重建 | 自动 | – |
 | `~/.config/codestrata/`（跟 `$XDG_CONFIG_HOME` 走） | 主菜单的项目清单、口令 | `app` | – |
@@ -432,6 +432,7 @@ scan、serve、trace 不往 `~/.config` 写东西。
 - 吞吐：vllm-omni 每秒 4.6 万行，nerfstudio 4.8 万，gsplat 6.4 万，flask 5.6 万，codestrata 自己 2.7 万；用时大致随代码量线性增长。`codestrata --help` 本身 0.03–0.04 s。
 - 时间花在哪（vllm-omni）：解析 8.24 s，交叉引用 4.06 s，写 JSON 0.20 s。
 - vllm-omni 的输出：`index.json` 0.97 MB，`symbols.json` 13.4 MB，`xref.json` 16.1 MB（31 万处能 Ctrl+点击的名字）。
+- 加上 `graph.json` 之后（2026-09-30，vllm-omni 的 `examples tools vllm_omni`，1,799 个文件，同一份拷贝前后各跑两次）：用时 13.9 s → 16.9 s，峰值内存 189 MB → 288 MB；`graph.json` 12.5 MB（2.9 万处定下了被调方的调用、34 万处定不下的，其中 18.7 万处是语法触发的特殊方法），读进来 0.1–0.2 s。
 - vllm-omni 仓库共有 3,260 个 `.py`，tests、examples、benchmarks 这些被有意跳过。
 - nerfstudio 扫描时 stderr 上会出现 3 次 `SyntaxWarning: invalid escape sequence '\,'`，来自它自己的源码，不影响结果（解析失败仍是 0）。
 

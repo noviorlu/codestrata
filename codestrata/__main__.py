@@ -20,6 +20,7 @@ from pathlib import Path
 from . import self_command
 from . import compat as _compat
 from . import cut as _cut
+from . import graph as _graph
 from . import payload as _payload
 from . import runs as _runs
 from . import scan as _scan
@@ -75,10 +76,15 @@ def cmd_scan(a) -> int:
               + "；".join(r["unresolved_imports"][:5]) + ("…" if len(r["unresolved_imports"]) > 5 else ""))
     print(f"→ {p}")
     print(f"→ {p.parent / 'symbols.json'}")
-    # 交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用）。和符号表同一时刻的快照，行号才对得上
-    x = _xref.build(repo, idx)
+    # 交叉引用（全文窗口里 Ctrl+点击跳定义 / 列引用）和 graph 的调用（同一遍走出来）。和符号表同一时刻的快照，行号才对得上
+    gb = _graph.Builder(idx)
+    x = _xref.build(repo, idx, on_file=gb.add_file)
     xp = _xref.write(p.parent, x)
     print(f"→ {xp}  （{sum(len(v) for v in x['files'].values())} 处能解析的名字）")
+    g = gb.result()
+    gp = _graph.write(p.parent, g)
+    print(f"→ {gp}  （{sum(len(v) for v in g['calls'].values())} 处定下了被调方的调用、"
+          f"{sum(len(v) for v in g['sites'].values())} 处定不下的）")
     print("\n架构高度（+1 入口 … −1 叶子），默认切面上的节点：")
     for name in sorted(shown, key=lambda n: -v["nodes"][n]["alt"]):
         x = v["nodes"][name]
