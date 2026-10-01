@@ -16,7 +16,7 @@ codestrata 围着一个 graph 转：
 |---|---|---|
 | **scan** | 读代码，产出节点和边的 scan 记录 | `scan.py`、`xref.py` |
 | **trace** | 录一次真实运行，得到边的 trace 记录 | `trace/`、`runs.py`、`events.py` |
-| **scan-trace alignment** | 把 trace 的记录放到 graph 现在的节点上（录制之后代码改过也能对上），找出两边的差别：trace 有、scan 没有的（多态、注册表、回调这类代码里看不出的调用），scan 有、trace 没有的（这次没走到） | 散在 `runs.load`、`trace/analysis.py`、`payload.py`、`seq.py` |
+| **scan-trace alignment** | 把 trace 的记录放到 graph 现在的节点上（录制之后代码改过也能对上），找出两边的差别：trace 有、scan 没有的（多态、注册表、回调这类代码里看不出的调用），scan 有、trace 没有的（这次没走到） | `align.py`（「时间顺序」的 `seq.py` 还自己把键对到节点上） |
 
 界面不是一步：它只读 graph，按当前展开的目录把 graph 收起来画（`cut.py`、`layout.py`）——同一个文件 / 目录里的节点合成一个，边合并、次数相加。
 只有 scan 记录的边画灰色实线；有 trace 记录的画橙色、边上标调用次数，两边都有的是实线，只有 trace 的是虚线（代码里看不出这个调用，常见于多态、注册表、回调、子类覆盖）。
@@ -24,7 +24,7 @@ codestrata 围着一个 graph 转：
 **现在的代码还没做到的**（正在改）：
 
 - scan 已经产出函数对函数的调用（`graph.json`，`graph.py`），但图和边详情还没用它：图上的边仍是文件对文件的 import 边（`index.json` 的 `edges`）。
-- 两边的比较在切面上做（被调的方法归到它的类，再看这条切面边底下的静态引用里有没有它），散在 `payload.py` 的好几处；边详情里的调用行在请求时重新解析源码去找。
+- 两边的比较还在切面上做（被调的方法归到它的类，再看这条切面边底下的静态引用里有没有它）；边详情里的调用行在请求时重新解析源码去找。
 - 图上还有「只 import」「仅类型」这类不是调用的边；trace 的边分「确认调用」「动态分派」两种画法。
 - 算首末时刻（`seq.py`）时没有把改过的文件里的键挪到现在的行号。
 
@@ -45,7 +45,7 @@ flowchart LR
   IDX -->|"同一遍：xref.build(on_file=graph.Builder.add_file) → graph.write"| GR[".codestrata/graph.json"]
   CMD["case 命令"] -->|"cmd_trace: driver.run（hook 注入）"| PARTS["runs/ID/parts/"]
   PARTS -->|"analysis.merge → runs.finalize"| RUN["runs/ID/ run.json · detail.json · counts.json.gz · events/"]
-  RUN -->|"runs.load: remap + analysis.to_package_graph"| HOT["hot（单元粒度，对当前 index）"]
+  RUN -->|"runs.load: align.remap + align.to_package_graph"| HOT["hot（单元粒度，对当前 index）"]
   IDX --> HOT
   IDX & HOT -->|"payload.graph_payload: cut.view + layout.build"| PL["payload"]
   XR --> PL
@@ -70,10 +70,10 @@ flowchart LR
    `events/raw.tar.gz`）→ `_build_events`（`events.build` → `events/spans/`）→ `derive`（`counts.json.gz`：各阶段的
    `funcs` / `func_edges` 和 `names`；定状态）。派生数据可由 `runs merge`（`runs.merge_run`）从原始数据重算。
 5. **映射回当前 index**：`runs.resolve(repo, ref)` 解析 run id / case 名 / `@阶段` / `@t=起-止`；`runs.load` 读计数（`load_counts`，
-   时间段则 `seq.window_counts`），`file_state` 拿录制时的文件哈希和 index 的 `file_sha` 比，`remap` 把改过的文件里的键按 qualname
-   挪到函数现在的行号，`analysis.to_package_graph(counts, idx)` 折算到单元粒度，返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
+   时间段则 `seq.window_counts`），`file_state` 拿录制时的文件哈希和 index 的 `file_sha` 比，`align.remap` 把改过的文件里的键按 qualname
+   挪到函数现在的行号，`align.to_package_graph(counts, idx)` 折算到单元粒度，返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
 6. **payload**：`payload.load_index` 合并 index.json 和 symbols.json；`graph_payload` 做切面（`cut.view`）、
-   叠加（`_hot_on_cut`）、排版（`layout.build`）。边详情 `edge_detail`，源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
+   叠加（`align.hot_on_cut`）、排版（`layout.build`）。边详情 `edge_detail`（两边怎么对上由 `align.pair_items` / `merged_status` 定，只有 trace 的调用的线索 `align.hints`），源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
 7. **交付**：`serve.main` 启动时读一次 index；`serve.Handler` 按请求调 payload（`_hot` 按 run id、阶段、文件 mtime 缓存 8 个），
    `/api/seq/edges` 交给 `seq.edge_times`（读 `events/spans/`）。
 8. **前端**：数据都经 `web/ds.js` 从 serve 取（见「前端结构」）。
@@ -88,15 +88,16 @@ flowchart LR
 | `scan.py` | 820 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1494 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file` |
 | `graph.py` | 217 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
+| `align.py` | 492 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`to_package_graph`、`defining`），和 scan 记录比（现在还按切面：`top`、`hot_on_cut`、`dyn_only`、`pair_items`、`merged_status`），给只有 trace 的调用找线索（`hints`：调用处、按名字接线的字符串） |
 | `cut.py` | 391 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 657 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
-| `trace/analysis.py` | 525 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、折算到当前 index（`to_package_graph`、`sym_locs`、`defining`）、找 case 脚本；纯数据处理 |
-| `runs.py` | 1061 | run 目录的建、收尾、迁移、解析、加载（`remap`、`file_state`）、管理、复刻命令 |
+| `trace/analysis.py` | 396 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
+| `runs.py` | 1005 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
-| `payload.py` | 867 | 组装前端数据：图、叠加、边详情、源码、引用、搜索 |
+| `payload.py` | 595 | 组装前端数据：图、叠加、边详情、源码、引用、搜索 |
 | `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
 | `serve.py` | 403 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
@@ -116,8 +117,8 @@ flowchart LR
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 
 已知的结构问题：
-- **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`）、坐标（`layout`）、源码（`highlight`）、
-  交叉引用（`xref`），还有自己的一段 `ast` 分析（`_code_facts`、`_call_form`）。
+- **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`、`align`）、坐标（`layout`）、源码（`highlight`）、
+  交叉引用（`xref`）。
 - 模块之间不用下划线开头的名字（`tests/test_package.py` 的 `test_no_cross_module_private_names` 盯着）。
 
 ## 语言无关 vs Python 专用
@@ -126,7 +127,7 @@ flowchart LR
 - run 的存储：`run.json` / `detail.json` / `counts.json.gz`（各阶段 `funcs`、`func_edges`）、阶段日志 `phase_log`、
   `runs` 的建 / 收尾 / 解析 / 管理 / 复刻命令；`events.py` 的日志格式和 span；`seq.py` 的时间窗和边时刻。
 - 切面和排版：`cut.py`（单元 id 是文件路径、目录 id 是路径加 `/`，显示名来自扫描端给的 `label` / `sep`；`dir_node` 把展开的目录挂到它的 `__init__.py` 上是 Python 的约定）、`layout.py`（只吃 id、显示名和带权边）。
-- 叠加：`payload._hot_on_cut`、`graph_payload`；`trace/analysis.py` 的 `to_package_graph` / `sym_locs` / `defining`
+- 叠加：`align.py` 的 `to_package_graph` / `sym_locs` / `defining` / `hot_on_cut`、`payload.graph_payload`
   只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`x`），「第 0 行 = 文件顶层的执行」是约定，「落在标了 `defexec` 的符号的定义行 = 定义时的执行」由扫描端标出来（Python 给类标）。
 - `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
 - 前端全部；`highlight.py` / `hl.js` 本来就认多种语言。
@@ -137,8 +138,8 @@ flowchart LR
   `sys.setprofile` / `threading.setprofile`；记 `co_qualname`；拦 `os._exit` / `os.exec*`、`os.register_at_fork`；
   `CODESTRATA_PKGS` 把 site-packages 里的路径映射回仓库。时序事件只有 `sys.monitoring` 路径才录。
 - `--phase` 的解析（`trace/analysis.py` 的 `resolve_phase_at`、`_qualnames`、`_inherited` 按 MRO 找方法）和 `case_script`。
-- `runs.remap` 的细节：qualname 去掉 `.<locals>` 再对 symbols 表的 `(文件, 名字)`；`runs._dists` 读 `*.dist-info`。
-- `payload` 里边详情的「调用处」：`_code_facts` / `_call_form` / `_add_call_sites` 按 Python 语法认调用写法。
+- `align.remap` 的细节：qualname 去掉 `.<locals>` 再对 symbols 表的 `(文件, 名字)`；`runs._dists` 读 `*.dist-info`。
+- `align.hints` 找「调用处」：`_call_form` / `_add_call_sites` 按 Python 语法认调用写法（语法触发的特殊方法用 `graph.syntax_facts`）。
 
 加一门语言要提供：一个扫描器，产出同样结构的 index.json / symbols.json（单元、边、目录树、键是 `<路径>#<限定名>`、带 `f/l/dl/e/k/n/s` 和 `x` 标记的符号、`file_sha`），
 xref.json、graph.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写同格式的分片（和可选的事件日志），并有一种注入方式替代
@@ -170,6 +171,7 @@ xref.json、graph.json 可选；一个录制端，在被测进程里往 `CODESTR
 .venv/bin/python tests/test_platform.py
 .venv/bin/python tests/test_browser.py   # 要 node 22+ 和 Chrome / Chromium，约 15 秒
 .venv/bin/python tests/hl_parity.py      # 只在动了高亮时跑；要 node
+.venv/bin/python tests/payload_parity.py <旧提交> <仓库> [RUN …]   # 只在「行为不变」的重构时跑
 ```
 
 - `test_runs.py`（67 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
@@ -181,6 +183,7 @@ xref.json、graph.json 可选；一个录制端，在被测进程里往 `CODESTR
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
+- `payload_parity.py`：重构用的对拍工具，不是回归测试：拿某个旧提交和工作区的代码，对同一份索引和 run 各算一遍几个切面上的图、边详情、时间顺序，逐项比。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
   （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run），

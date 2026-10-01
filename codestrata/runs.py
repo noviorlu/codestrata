@@ -12,7 +12,7 @@ run 不能重建——一次录制往往要几分钟 GPU（起服务、加载模
   - 除了 `runs rm`，没有代码会删 run。scan 不碰 runs/；runs/ 可以是软链（比如指到 /mnt/data），
     `rm -rf .codestrata` 只删掉链接本身。
   - run 只存原始键（文件:首行号）和录制时实际执行的文件的哈希，加载时现映射到当前的
-    index 上（trace.to_package_graph），所以代码改了之后老 run 照样能用；哪些文件在录制
+    index 上（align.py），所以代码改了之后老 run 照样能用；哪些文件在录制
     之后改过，逐个标出来（file_state），而不是让整个 run 作废。
   - 录了时序事件的（trace --events）：原始日志在 events/raw.tar.gz（原始数据），整理好的 span
     在 events/spans/（派生，见 events.py）。`runs rm --events-only` 只删这一块。
@@ -34,6 +34,7 @@ import tarfile
 import time
 from pathlib import Path
 
+from . import align as _align
 from . import compat as _compat
 from . import events as _events
 from . import seq as _seq
@@ -653,63 +654,6 @@ def load_counts(rd: Path, phase: str | None, with_names: bool = False):
     return (out, c.get("names") or {}) if with_names else out
 
 
-def remap(counts: dict, names: dict, fs: dict, idx: dict) -> tuple[dict, list[str]]:
-    """录制之后改过的文件（changed / mismatch）里，按录制时记下的 qualname 把键改到函数现在的行号上。
-
-    计数的键是「文件:首行号」，代码一改行号就变，叠加会落到别的函数上、或者落空。录制时 hook 给
-    每个键记了 co_qualname（counts.json.gz 的 names）；这里用当前 index 的符号表（文件, 名字）→
-    现在的行号（装饰过的函数，trace 记的是第一个装饰器那一行，所以有 dl 用 dl）把键改过来：
-      - 嵌套函数的 qualname 是「outer.<locals>.inner」，符号表里记的是「outer.inner」：去掉 .<locals> 就对上；
-      - lambda、生成器表达式这类没有名字的、老 run 没存 qualname 的、名字在现在的代码里找不到的
-        （改名了、删了），计入 unmatched，键改成「文件:-1」：次数还算在这个文件（和它的模块）上，
-        但不算到任何函数上——原来那一行现在可能是别的函数的定义，留着会把次数记到它头上；
-      - 改写后撞到同一个键的，次数相加。
-    只动这些文件；没改过的文件原样返回，模块顶层（第 0 行）也不动。返回 (新的计数, unmatched 的键)。"""
-    # 只管 index 里有的文件：scan 排除了的（examples 之类）本来就不叠加，不该算进 unmatched
-    files = idx.get("files") or {}
-    todo = {rel for rel, st in fs.items() if st in ("changed", "mismatch") and rel in files}
-    if not todo:
-        return counts, []
-    by: dict[tuple, int] = {}
-    for s in (idx.get("symbols") or {}).values():
-        if s["f"] in todo:
-            by.setdefault((s["f"], s["n"]), s.get("dl", s["l"]))
-    memo: dict[str, str] = {}
-    unmatched: set[str] = set()
-
-    def new(key: str) -> str:
-        hit = memo.get(key)
-        if hit is not None:
-            return hit
-        rel, _, ln = key.rpartition(":")
-        nk = key
-        q = names.get(key)
-        # 模块顶层（第 0 行；老 trace 记成第 1 行、没有名字）不动
-        if rel in todo and ln != "0" and not (ln == "1" and not q):
-            if q and "<" not in q.replace(".<locals>", ""):
-                line = by.get((rel, q.replace(".<locals>", "")))
-                if line is not None:
-                    nk = f"{rel}:{line}"
-                else:
-                    nk = f"{rel}:-1"
-                    unmatched.add(key)
-            else:
-                nk = f"{rel}:-1"
-                unmatched.add(key)
-        memo[key] = nk
-        return nk
-    funcs: dict[str, int] = {}
-    for k, v in counts["funcs"].items():
-        nk = new(k)
-        funcs[nk] = funcs.get(nk, 0) + v
-    edges: dict[str, int] = {}
-    for k, v in counts["func_edges"].items():
-        a, _, b = k.partition("|")
-        nk = new(a) + "|" + new(b)
-        edges[nk] = edges.get(nk, 0) + v
-    return {"funcs": funcs, "func_edges": edges}, sorted(unmatched)
-
-
 def file_state(repo: Path, idx: dict, detail: dict) -> dict[str, str]:
     """run 里每个文件相对当前 index 的状态，只返回不是 same 的：
       mismatch  录制时跑的安装包就和仓库不一致（计数对应的代码和 index 不是同一份）
@@ -757,7 +701,7 @@ def procs_grouped(procs: list[dict]) -> list[dict]:
 
 def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | None]:
     """把一个 run（的某个阶段）映射到当前的 index 上：(hot, meta)。hot 和老的 trace 一样由
-    trace.to_package_graph 现算；meta 保留老的全部键（前端认它们），再加上 run 的信息。"""
+    align.to_package_graph 现算；meta 保留老的全部键（前端认它们），再加上 run 的信息。"""
     if not ref:
         return None, None
     run, rd, phase = resolve(repo, ref)
@@ -780,8 +724,8 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
         detail = {}
     fs = file_state(repo, idx, detail)
     # 录制之后改过的文件：按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上
-    counts, unmatched = remap(counts, names, fs, idx)
-    hot = _tana.to_package_graph(counts, idx)
+    counts, unmatched = _align.remap(counts, names, fs, idx)
+    hot = _align.to_package_graph(counts, idx)
     hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 写明这份次数来自哪个 run（和阶段 / 时间段）
     script = None
     sc = detail.get("script")

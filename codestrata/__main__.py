@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from . import self_command
+from . import align as _align
 from . import compat as _compat
 from . import cut as _cut
 from . import graph as _graph
@@ -235,7 +236,7 @@ def cmd_trace(a) -> int:
     except SystemExit:
         print("  （还没 scan，跑 codestrata scan 之后再 serve --hot 就能叠图）")
         return 0 if run["status"] != "failed" else 1
-    hp = _tana.to_package_graph(tr, idx)
+    hp = _align.to_package_graph(tr, idx)
     # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人；
     # 定义时的执行（模块顶层、类体）不是调用，哪儿都不算
     defs = "，".join(x for x in (f"{hp['module_frames']} 次 import 时的模块顶层执行" if hp.get("module_frames") else "",

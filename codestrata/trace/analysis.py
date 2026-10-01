@@ -1,4 +1,4 @@
-"""录制之外的分析：录之前解析 `--phase` 的函数，录完之后合并各进程的分片、折算到当前的 index。
+"""录制之外的分析：录之前解析 `--phase` 的函数，录完之后合并各进程的分片。
 都是纯数据处理，在任何系统上都能跑（查看在 Linux 上录好的 run 也要用）。
 
 每次录制写进 runs.new_run 建的 run 目录（见 runs.py）。各进程的分片：
@@ -8,8 +8,8 @@
                                func_edges: {"<调用方>|<被调方>": 次数},          # 函数粒度，真正的 caller→callee
                                names:      {"<relfile>:<firstlineno>": qualname}, mapped: {...}}
     part-<pid>-<t0ns>@<n>-<阶段>.json    切阶段时的累计快照
-merge() 把它们合成各阶段的计数；叠图用的单元（文件）粒度数据由 to_package_graph() 在
-加载时现算，因为它依赖当前的 index。
+merge() 把它们合成各阶段的计数；放到当前 index 的节点上是加载 run 时的事（align.py），
+因为它依赖当前的 index。
 """
 from __future__ import annotations
 
@@ -394,132 +394,3 @@ def stale_files(root: Path, trace: dict) -> list[str]:
     was = trace.get("file_shas") or {}
     now = file_shas(root, was.keys())
     return sorted(r for r in was if was[r] != now.get(r))
-
-
-def sym_locs(symbols: dict) -> tuple[dict, dict]:
-    """trace 的键「文件:首行」怎么对回符号：((文件, 行) → 符号键, 文件 → [(起, 止, 符号键)])。
-    装饰过的函数 co_firstlineno 指向第一个装饰器，所以 def 行和装饰器行都建索引；同名的另几个 def
-    （property 的 setter，scan 记在 "a" 里）也算这个符号。范围给没有名字的帧（闭包、lambda）找外层符号用。"""
-    loc2sym: dict[tuple[str, int], str] = {}
-    spans: dict[str, list] = {}
-    for key, s in symbols.items():
-        for l, dl, e in [(s["l"], s.get("dl", s["l"]), s.get("e"))] + (s.get("a") or []):
-            loc2sym.setdefault((s["f"], l), key)
-            loc2sym.setdefault((s["f"], dl), key)
-            if e:
-                spans.setdefault(s["f"], []).append((dl, e, key))
-    return loc2sym, spans
-
-
-def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
-    """键 rel:ln 的这一帧是定义时的执行、不是调用："module" / "class"，是调用返回 None。模块图（to_package_graph）
-    和「时间顺序」（seq）用同一个判断。loc2sym 是 sym_locs(symbols) 的第一项。
-      module —— <module> 帧（第 0 行；老 trace 记成第 1 行，那一行又没有符号），import 触发的模块顶层执行
-      class  —— 类体：class 语句执行时跑一次的帧，co_firstlineno 是 class 行（有装饰器是第一个装饰器那一行），
-                正好落在类符号的 l / dl 上（扫描端给这种符号标 x: ["defexec"]，这里只认标记，不认语言）。类不会被「调用」——实例化跑的是 __init__ / __new__，它们有自己的
-                def 行——所以落在类符号上的帧只能是定义（3.12 泛型类的 <generic parameters of X> 帧也在这一行）。
-                按行号认，已经录好的老 run 加载时一样分得出来"""
-    if ln == 0:
-        return "module"
-    sk = loc2sym.get((rel, ln))
-    if sk:                                      # 扫描端标了 defexec 的符号（Python 的类）：落在定义行上的是定义时的执行
-        return "class" if "defexec" in (symbols[sk].get("x") or ()) else None
-    return "module" if ln == 1 else None
-
-
-def to_package_graph(trace: dict, index: dict) -> dict:
-    """把函数粒度的 trace 折算到单元（文件）粒度，payload 再按切面汇总叠到图上；同时保留
-    每条单元间边上「谁调了谁」的明细，给点开箭头时用。
-
-    返回 {"packages": {pkg: hits}, "edges": {"a|b": 调用次数},
-          "symbols": {symbol_key: hits},
-          "edge_calls": {"a|b": {被调符号: {n, f, l, callers: {调用方: {n, f, l}}}}},
-          "edge_import_exec": {"a|b": import 触发的模块执行次数},
-          "module_exec": [顶层代码执行过的文件], "module_frames": n, "class_frames": n,
-          "anon": n, "unmapped": n}
-    """
-    files = index.get("files") or {}
-    symbols = index.get("symbols") or {}
-    loc2sym, spans = sym_locs(symbols)
-
-    pkg_hits: dict[str, int] = {}
-    sym_hits: dict[str, int] = {}
-    file_hits: dict[str, int] = {}
-    module_exec: set[str] = set()       # 哪些模块的顶层代码真的执行过——用来判断「副作用 import」是否在 runtime 生效了
-    # 不算调用的帧（定义时的执行）和映射不到命名符号的调用，都是正常现象、不是丢数据：
-    #   module / class —— 见 defining：只被 import 过的包、只定义过的类不算「跑到了」
-    #   anon           —— 闭包、lambda、生成器表达式，本来就没有自己的符号
-    module_frames = class_frames = anon = 0
-    for k, n in trace["funcs"].items():
-        rel, _, ln = k.rpartition(":")
-        try:
-            lineno = int(ln)
-        except ValueError:
-            continue
-        d = defining(symbols, loc2sym, rel, lineno)
-        if d == "module":
-            module_frames += n
-            module_exec.add(rel)
-            continue
-        if d == "class":
-            class_frames += n
-            continue
-        sk = loc2sym.get((rel, lineno))
-        if sk:
-            sym_hits[sk] = sym_hits.get(sk, 0) + n
-        else:
-            anon += n
-        pkg = files.get(rel)
-        if pkg:
-            pkg_hits[pkg] = pkg_hits.get(pkg, 0) + n
-            file_hits[rel] = file_hits.get(rel, 0) + n
-
-    # 没有名字的帧（闭包、lambda、生成器表达式）归到包住它的最内层命名符号，
-    # 标成 外层符号.<L行号>，这样面板上能说「scan() 里的某个闭包调了它」。
-    def label(rel: str, ln: int) -> tuple[str, int]:
-        if ln < 0:                      # runs.remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
-            return f"{rel}:<改过、对不上>", 1
-        sk = None if ln == 0 else loc2sym.get((rel, ln))
-        if sk:
-            return sk, symbols[sk]["l"]
-        if ln <= 1:
-            return f"{rel}:<module>", 1
-        inner = max((sp for sp in spans.get(rel, ()) if sp[0] <= ln <= sp[1]),
-                    key=lambda sp: sp[0], default=None)
-        return (f"{inner[2]}.<L{ln}>" if inner else f"{rel}:{ln}"), ln
-
-    # 包间的 runtime 边和函数粒度的明细从同一份 func_edges 算，两边的数字才对得上。
-    # 被调方是定义时的执行（defining：<module> 帧、类体）的不算调用——那是 import 语句触发的模块顶层执行，
-    # 单独记在 edge_import_exec 里；否则每条 import 边都会因为「导入过」而被染成橙色。
-    edge_hits: dict[str, int] = {}
-    edge_calls: dict[str, dict] = {}
-    import_exec: dict[str, int] = {}
-    for k, n in (trace.get("func_edges") or {}).items():
-        a, _, b = k.partition("|")
-        fa, _, la = a.rpartition(":")
-        fb, _, lb = b.rpartition(":")
-        try:
-            la_i, lb_i = int(la), int(lb)
-        except ValueError:
-            continue
-        pa, pb = files.get(fa), files.get(fb)
-        if not pa or not pb or pa == pb:
-            continue
-        ek = f"{pa}|{pb}"
-        if defining(symbols, loc2sym, fb, lb_i):
-            import_exec[ek] = import_exec.get(ek, 0) + n
-            continue
-        edge_hits[ek] = edge_hits.get(ek, 0) + n
-        (callee, cl), (caller, rl) = label(fb, lb_i), label(fa, la_i)
-        slot = edge_calls.setdefault(ek, {}).setdefault(
-            callee, {"n": 0, "f": fb, "l": cl, "callers": {}})
-        slot["n"] += n
-        c = slot["callers"].setdefault(caller, {"n": 0, "f": fa, "l": rl})
-        c["n"] += n
-
-    return {"packages": pkg_hits, "edges": edge_hits, "symbols": sym_hits, "files": file_hits,
-            "edge_calls": edge_calls, "edge_import_exec": import_exec,
-            "module_exec": sorted(module_exec),
-            "module_frames": module_frames, "class_frames": class_frames, "anon": anon,
-            "unmapped": module_frames + class_frames + anon}
-

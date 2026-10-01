@@ -5,7 +5,7 @@ span 记的是「文件:首行号 → 文件:首行号」的跨文件调用，�
   1. 把整个 run 的 span 解压、读一遍（_pairs），按阶段聚合成 (调用方键, 被调方键) → 第一次 / 最后一次 /
      次数 / 每个进程里的首末——大 run 上解压读一遍要两秒多，所以换切面、换阶段都不再读。
   2. 两端经 rel → 单元 → 切面节点（cut.view 的 node_of）映射（edge_times）；两端落在同一个节点的
-     （节点内部的调用）、import / 类体这种定义时的执行（模块图也不把它算作调用，trace.defining）、
+     （节点内部的调用）、import / 类体这种定义时的执行（模块图也不把它算作调用，align.defining）、
      落不到 index 里的都不算。
 
 时间一律是相对 run 起点（run.json 的 clock.mono0_ns）的微秒，和阶段的 t_us 同一根轴。
@@ -22,8 +22,8 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+from . import align as _align
 from . import cut as _cut
-from .trace import analysis as _tana
 
 _LOCK = threading.Lock()
 _INDEX: "OrderedDict[tuple, dict]" = OrderedDict()     # (spans 目录, index mtime) → index + keys（最近 16 个）
@@ -87,11 +87,11 @@ class _Map:
         self.files = idx.get("files") or {}
         self.node_of = self.v["node_of"]
         self.syms = idx.get("symbols") or {}
-        self.loc = _tana.sym_locs(self.syms)[0]
+        self.loc = _align.sym_locs(self.syms)[0]
         self._memo: dict[str, tuple] = {}
 
     def of(self, key: str) -> tuple:
-        """(节点 或 None, 是不是定义时的执行（模块顶层、类体；和模块图同一个判断 trace.defining）)"""
+        """(节点 或 None, 是不是定义时的执行（模块顶层、类体；和模块图同一个判断 align.defining）)"""
         hit = self._memo.get(key)
         if hit is None:
             rel, _, ln = key.rpartition(":")
@@ -101,7 +101,7 @@ class _Map:
                 line = 0
             unit = self.files.get(rel)
             hit = self._memo[key] = (self.node_of.get(unit) if unit else None,
-                                     bool(_tana.defining(self.syms, self.loc, rel, line)))
+                                     bool(_align.defining(self.syms, self.loc, rel, line)))
         return hit
 
 
@@ -187,7 +187,7 @@ def _calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = Fals
 
 def window_counts(rd: Path, t0: int, t1: int) -> dict:
     """时间段里的调用（折叠行按 _calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges}
-    （键都是 文件:首行），交给 trace.to_package_graph，模块图照常叠加。时序事件只记跨文件的调用：同一个文件里的
+    （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。时序事件只记跨文件的调用：同一个文件里的
     调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():

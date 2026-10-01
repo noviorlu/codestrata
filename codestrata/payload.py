@@ -1,16 +1,14 @@
 """组装 serve 的前端要的数据。"""
 from __future__ import annotations
 
-import ast
 import json
-import re
 import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
 
+from . import align as _align
 from . import cut as _cut
-from . import graph as _graph
 from . import highlight as _hl
 from . import layout as _layout
 from . import runs as _runs
@@ -84,53 +82,6 @@ def norm_open(idx: dict, open_) -> set:
     return set(idx.get("default_open") or []) if open_ is None else {o for o in open_ if _cut.is_node(idx, o)}
 
 
-def _hot_on_cut(hot: dict, node_of: dict, used: dict | None = None) -> tuple[dict, dict, dict]:
-    """一个 run 的 hot（单元粒度）按切面汇总：(节点 → 次数, "a|b" 节点间的边 → 次数,
-    "a|b" → 其中动态分派的次数)。
-
-    动态分派和边详情（edge_detail）同一个口径：被调的符号（方法归到类）不在这条切面边的静态引用
-    （used，边 → 引用到的符号）里。这个数要按切面算、不能按单元对算完再加：同一个符号可能一对单元里
-    静态引用、另一对里 runtime 调到，合成一条边之后算「确认」。"""
-    hp: dict[str, int] = {}
-    for u, n in hot["packages"].items():
-        if u in node_of:
-            hp[node_of[u]] = hp.get(node_of[u], 0) + n
-    he: dict[str, int] = {}
-    for k, n in hot["edges"].items():
-        a, _, b = k.partition("|")
-        if a in node_of and b in node_of and node_of[a] != node_of[b]:
-            kk = f"{node_of[a]}|{node_of[b]}"
-            he[kk] = he.get(kk, 0) + n
-    hd: dict[str, int] = {}
-    for k, calls in (hot.get("edge_calls") or {}).items():
-        a, _, b = k.partition("|")
-        if a in node_of and b in node_of and node_of[a] != node_of[b]:
-            kk = f"{node_of[a]}|{node_of[b]}"
-            refs = (used or {}).get(kk, ())
-            n = sum(x["n"] for c, x in calls.items() if _top(c) not in refs)
-            if n:
-                hd[kk] = hd.get(kk, 0) + n
-    return hp, he, hd
-
-
-def _edge_uses_on_cut(idx: dict, node_of: dict) -> dict[str, set]:
-    """切面边 "a|b" → 两端底下各对单元之间静态引用到的符号（合起来）"""
-    uses = idx.get("edge_uses") or {}
-    out: dict[str, set] = {}
-    for a, b, _ in idx.get("edges") or []:
-        na, nb = node_of[a], node_of[b]
-        if na != nb:
-            out.setdefault(f"{na}|{nb}", set()).update(uses.get(f"{a}|{b}", {}))
-    return out
-
-
-def _dyn_only(kinds: dict, he: dict, hd: dict) -> list[str]:
-    """有静态边、但这次跑到的调用全是动态分派的切面边。
-    这种边不能画成「引用 + runtime」的实线：import 的是一回事（比如一个常量），跑到的是另一回事
-    （经由 self.model、注册表调到的类），展开之后实线就变成了没跑到的灰边加一条动态分派的虚线"""
-    return sorted(k for k in kinds if he.get(k) and hd.get(k, 0) >= he[k])
-
-
 def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
                   hot_meta: dict | None = None, open_=None, min_files: int = 1,
                   width: float = 1180.0) -> dict:
@@ -165,7 +116,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
            "root_label": _cut.root_label(idx)}
     # 分层（纵轴）：叠了 run 就按这次实际发生的调用排，调用方在上；
     # 静态 import 只作次要依据——基类回调子类、注册表、回调这些调用和 import 的方向是反的
-    rt_calls = _hot_on_cut(hot, v["node_of"])[1] if hot else {}
+    rt_calls = _align.hot_on_cut(hot, v["node_of"])[1] if hot else {}
     g = _layout.build(syn, min_files=min_files, width=width,
                       runtime_edges=[(*k.split("|"), n) for k, n in sorted(rt_calls.items())])
     mem, node_of = v["members"], v["node_of"]
@@ -197,7 +148,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     # 一个符号都没用到的边（纯 import）在图上画成虚线——它不承载任何调用。
     dead = idx.get("edge_dead") or {}
     kinds: dict[str, dict] = {}
-    syms_used = _edge_uses_on_cut(idx, node_of)
+    syms_used = _align.edge_uses_on_cut(idx, node_of)
     for a, b, w in idx.get("edges") or []:
         na, nb = node_of[a], node_of[b]
         if na == nb:
@@ -221,9 +172,9 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     shown = {n["id"] for n in g["nodes"]}
     type_only = [[*k.split("|"), w] for k, w in sorted(type_w.items()) if set(k.split("|")) <= shown]
     if hot:
-        hp, he, hd = _hot_on_cut(hot, node_of, syms_used)
+        hp, he, hd = _align.hot_on_cut(hot, node_of, syms_used)
         hot_view = {**hot, "packages": hp, "edges": he, "dyn": hd}
-        dyn_only = _dyn_only(kinds, he, hd)
+        dyn_only = _align.dyn_only(kinds, he, hd)
         for k in sorted(he):
             a, _, b = k.partition("|")
             if k not in kinds and a in shown and b in shown:
@@ -265,221 +216,6 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
             "autoSplit": idx["repo"].get("auto_split") or []}
 
 
-def _top(symkey: str) -> str:
-    """<路径>#Cls.method → <路径>#Cls。runtime 调到的是方法，静态引用的往往是类。"""
-    f, sep, q = symkey.partition("#")
-    return f"{f}#{q.split('.')[0]}" if sep and q else symkey
-
-
-@lru_cache(maxsize=256)
-def _file_lines(path: str, mtime_ns: int) -> tuple[str, ...]:
-    return tuple(Path(path).read_text(encoding="utf-8", errors="replace").splitlines())
-
-
-@lru_cache(maxsize=64)
-def _code_facts(path: str, mtime_ns: int) -> tuple[frozenset, frozenset, dict]:
-    """一个文件的语法事实（docstring 行、签名行、每行由语法触发的特殊方法），找调用处用；见 graph.syntax_facts。
-    解析不了的文件三样都是空的"""
-    try:
-        tree = ast.parse(Path(path).read_bytes())
-    except (SyntaxError, ValueError, OSError):
-        tree = None
-    return _graph.syntax_facts(tree)
-
-
-_DEF_LINE = re.compile(r"\s*(?:async\s+)?(?:def|class)\s")
-
-# 被调的是特殊方法时，调用方那一行上多半不写它的名字，写的是触发它的语法：页面上怎么说这种写法。
-# 按语法找（_code_facts）的：下面这些；写法里没有能认的记号的（对象(…) 调 __call__、取个不存在的
-# 属性调 __getattr__）在 _IMPLICIT 里，只找显式写了名字的。没列的特殊方法照普通方法按名字找
-_ARITH = {"add": "+", "sub": "-", "mul": "*", "matmul": "@", "truediv": "/", "floordiv": "//", "mod": "%",
-          "pow": "**", "lshift": "<<", "rshift": ">>", "and": "&", "or": "|", "xor": "^"}
-_BY_SYNTAX: dict[str, str] = {
-    **{f"__{p}{op}__": f"… {s}{'=' if p == 'i' else ''} …" for op, s in _ARITH.items() for p in ("", "r", "i")},
-    "__eq__": "… == …", "__ne__": "… != …", "__le__": "… <= …", "__ge__": "… >= …", "__lt__": "… < …",
-    "__gt__": "… > …", "__enter__": "with …", "__exit__": "with …", "__aenter__": "async with …",
-    "__aexit__": "async with …", "__iter__": "for … in …", "__next__": "for … in …", "__aiter__": "async for …",
-    "__anext__": "async for …", "__await__": "await …", "__getitem__": "…[…]", "__class_getitem__": "…[…]",
-    "__setitem__": "…[…] = …", "__delitem__": "del …[…]", "__contains__": "… in …", "__len__": "len(…) / if 对象",
-    "__bool__": "if 对象", "__hash__": "hash(…) / 字典的键", "__str__": "str(…)", "__repr__": "repr(…)",
-    "__format__": "f\"{…}\"", "__neg__": "-…", "__pos__": "+…", "__invert__": "~…", "__abs__": "abs(…)",
-    "__reversed__": "reversed(…)", "__int__": "int(…)", "__index__": "int(…)", "__float__": "float(…)",
-    "__round__": "round(…)",
-}
-_IMPLICIT = {"__call__": "对象(…)", "__getattr__": "对象.属性（它没有这个属性时）", "__getattribute__": "对象.属性",
-             "__setattr__": "对象.属性 = …", "__delattr__": "del 对象.属性", "__get__": "对象.属性（描述符）",
-             "__set__": "对象.属性 = …（描述符）", "__delete__": "del 对象.属性（描述符）"}
-_ACCESSORS = ("setter", "getter", "deleter")
-
-
-def _call_form(q: str, d: dict | None):
-    """被调函数（限定名 q，符号表条目 d）在调用方那一行上长什么样：(按名字找的 re, 按语法找的特殊方法名或 None,
-    {callee, how, form})。how 是怎么找的——call：按名字（`名字(`、getattr 的 `'名字'`、装饰器 `@名字`）；
-    attr：property（scan 记下的装饰器），取属性就是调用（`.名字`）；syntax：由语法触发的特殊方法（with、for、[]、
-    运算符……，按 _code_facts）；implicit：写法里认不出的特殊方法（对象(…) 调 __call__），只找显式写了名字的。
-    form 是页面上说的写法。闭包、模块顶层没有名字可找：None"""
-    parts = q.split(".")
-    name = parts[-1]
-    if not name or name.startswith("<"):
-        return None
-    # 构造：调用方写的是 类名(…)（__post_init__ 由 dataclass 生成的 __init__ 调，那个 __init__ 不在仓库里）
-    names = [parts[-2], name] if name in ("__init__", "__new__", "__post_init__") and len(parts) > 1 else [name]
-    alt = "|".join(map(re.escape, names))
-    quoted = rf"['\"](?:{alt})['\"]"
-    info = {"callee": names[0], "how": "call", "form": f"{names[0]}(…)"}
-    if any(x.endswith("property") or x in _ACCESSORS for x in (d or {}).get("d") or ()):
-        return re.compile(rf"\.(?:{alt})\b|{quoted}"), None, {**info, "how": "attr", "form": f".{name}"}
-    by_name = re.compile(rf"(?<![\w])(?:{alt})\s*\(|{quoted}|^\s*@(?:[\w.]*\.)?(?:{alt})\b")
-    if name in _BY_SYNTAX:
-        return by_name, name, {**info, "how": "syntax", "form": _BY_SYNTAX[name]}
-    if name in _IMPLICIT:
-        return by_name, None, {**info, "how": "implicit", "form": _IMPLICIT[name]}
-    return by_name, None, info
-
-
-def _add_call_sites(repo: Path, idx: dict, items: list) -> None:
-    """点开一条边时要给看的代码：每个调到的函数 from（调用方里调它的那一行）和 to（它自己的签名）。
-
-    - caller["sites"]：在调用方的函数体里找调用那一行，最多 3 处。按被调函数的写法找（_call_form）：
-      普通函数按名字（`名字(`、`'名字'`、`@名字`），property 按 `.名字`，特殊方法按触发它的语法（with、
-      for、[]、运算符）；caller["how"]、caller["form"] 记着是怎么找的、页面上怎么说那种写法。
-      找过但没找到是 []——中间隔了 __call__、回调或仓库外的代码，这时 caller["sig"] 是调用方自己的签名，
-      页面上拿它当 from。动态分派多半就写在这一行上：self.model.compute_logits(…)。
-    - runtime 条目的 r["sig"]：被调函数的签名（def 那一行到冒号为止，最多 6 行）
-    - 没跑到的静态引用：item["sig"] 是被引用符号的签名，item["use_s"] 是第一处引用那一行
-    只在仓库里扫描过的文件里找；只看写法，不做类型推断。"""
-    syms, files = idx.get("symbols") or {}, idx.get("files") or {}
-
-    def body(sym: str) -> list[int]:
-        """调用方函数体的行下标（从 def 行起：它自己的装饰器是外层执行的）；同名的另几个 def
-        （property 的 setter）也算"""
-        while sym not in syms and ".<L" in sym:          # 闭包：用包住它的那个函数的范围
-            sym = sym.rsplit(".<L", 1)[0]
-        d = syms.get(sym)
-        if not d or not d.get("e"):
-            return []
-        return sorted({i for a, e in [(d["l"], d["e"])] + [(x[0], x[2]) for x in d.get("a") or ()]
-                       for i in range(a - 1, e)})
-
-    def cached(f: str, reader):
-        """扫描过的文件 f 经 reader（按 mtime 缓存的 _file_lines / _code_facts）读出来的东西；不是扫描过的、
-        读不了的是 None"""
-        if f not in files:
-            return None
-        try:
-            st = (repo / f).stat()
-            return reader(str(repo / f), st.st_mtime_ns)
-        except OSError:
-            return None
-
-    def lines(f: str):
-        return cached(f, _file_lines)
-
-    def sites(c: dict, pat, dunder: str | None) -> list | None:
-        """调用方 c 的函数体里调被调函数的那几行（最多 3 处）：按名字 pat 找到的，或者（特殊方法）这一行上的语法
-        会触发 dunder（_code_facts）。跳过签名、docstring、注释"""
-        f = (c.get("def") or {}).get("f")
-        rows, ls = body(c["sym"]), lines(f) if f else None
-        if not rows or ls is None:
-            return None
-        prose, sig, syn = cached(f, _code_facts) or (frozenset(), frozenset(), {})
-
-        def hit(i: int) -> bool:
-            if i + 1 in prose or i + 1 in sig or _DEF_LINE.match(ls[i]) or ls[i].lstrip().startswith("#"):
-                return False
-            return bool(pat.search(ls[i])) or (dunder is not None and dunder in syn.get(i + 1, ()))
-        return [{"f": f, "l": i + 1, "s": ls[i].strip()[:200]} for i in rows if i < len(ls) and hit(i)][:3]
-
-    def sig(d: dict | None) -> list[str] | None:
-        ls = lines(d["f"]) if d else None
-        if not ls or not 0 < d["l"] <= len(ls):
-            return None
-        if d.get("k") == "var":                          # 模块级变量：赋值那一行
-            return [ls[d["l"] - 1].strip()[:200]]
-        out = []
-        for t in ls[d["l"] - 1:d["l"] + 5]:
-            out.append(t.rstrip())
-            if t.split("#", 1)[0].rstrip().endswith(":"):
-                break
-        if len(out) == 1:
-            return [out[0].strip()[:200]]
-        # 多行签名压成一行（面板窄）：def forward(self, input_ids: …, positions: …) -> …:
-        one = re.sub(r"\(\s+", "(", re.sub(r",?\s*\)", ")", " ".join(t.strip() for t in out)))
-        closed = out[-1].split("#", 1)[0].rstrip().endswith(":")
-        return [one[:200] + ("" if closed else " …")]
-
-    for it in items:
-        if not it["runtime"]:
-            if it.get("def"):
-                it["sig"] = sig(it["def"])
-            if it.get("uses"):
-                ls = lines(it["uses"][0]["f"])
-                l = it["uses"][0]["l"]
-                it["use_s"] = ls[l - 1].strip()[:200] if ls and 0 < l <= len(ls) else None
-            continue
-        for r in it["runtime"]:
-            r["sig"] = sig(r.get("def"))
-            form = _call_form(r["sym"].partition("#")[2], syms.get(r["sym"]))
-            if not form:
-                continue                                 # 闭包、模块顶层：没有名字可找
-            pat, dunder, info = form
-            for c in r["callers"]:
-                found = sites(c, pat, dunder)
-                if found is None:
-                    continue
-                c["sites"] = found
-                c.update(info)
-                if not c["sites"]:
-                    c["sig"] = sig(c["def"])
-
-
-def _add_wiring(repo: Path, idx: dict, items: list) -> None:
-    """动态分派调到的类：仓库里哪些字符串按名字提到了它（scan 的 name_refs）——注册表
-    {"Arch": ("pkg", "mod", "Cls")}、getattr(mod, "Cls")、插件表里的 "pkg.mod.Cls"。调用方和它之间
-    没有 import，接线多半就在这几行。记在 item["wiring"] = {refs: [{f, l, s, exact}], n, same_name}：
-    带模块的类路径只认模块对得上的（exact）；只有类名的，同一个文件里挨着的几行（注册表的键和元组里的
-    类名）只留第一行，same_name > 1 时仓库里有同名类、这些字符串不一定指它。老的 index 没有 name_refs：不加。"""
-    refs_by = idx.get("name_refs")
-    if refs_by is None:
-        return
-    syms = idx.get("symbols") or {}
-    n_same: dict[str, int] = {}
-    for it in items:
-        d = it.get("def")
-        if it["status"] != "dynamic" or not d or d.get("k") != "class":
-            continue
-        # 字符串里带的是点分的模块名（"pkg.mod.Cls"），和类所在文件的模块名比
-        name, mod = it["name"].rsplit(".", 1)[-1], (syms.get(it["sym"]) or {}).get("m")
-        if name not in n_same:
-            n_same[name] = sum(1 for x in syms.values() if x["k"] == "class" and x["n"].rsplit(".", 1)[-1] == name)
-        kept: list[dict] = []
-        for ref in sorted(refs_by.get(name) or [], key=lambda r: (r[0], r[1])):   # scan 按 ast.walk 的顺序收的
-            f, l, exact = ref[0], ref[1], len(ref) > 2
-            if exact and ref[2] != mod:
-                continue                                 # 别的模块里的同名类
-            if kept and kept[-1]["f"] == f and 0 <= l - kept[-1]["l"] <= 3:
-                if exact and not kept[-1]["exact"]:     # 同一处登记：留带模块的那一行
-                    kept[-1] = {"f": f, "l": l, "s": "", "exact": True}
-                continue
-            kept.append({"f": f, "l": l, "s": "", "exact": exact})
-        if not kept:
-            continue
-        kept.sort(key=lambda r: not r["exact"])          # 带模块的（没有歧义）排前面
-        for r in kept[:6]:
-            try:
-                ls = _file_lines(str(repo / r["f"]), (repo / r["f"]).stat().st_mtime_ns)
-                r["s"] = ls[r["l"] - 1].strip()[:200] if 0 < r["l"] <= len(ls) else ""
-            except OSError:
-                pass
-        it["wiring"] = {"refs": kept[:6], "n": len(kept), "same_name": n_same[name]}
-
-
-def _dyn_hints(repo: Path, idx: dict, items: list) -> None:
-    """动态分派的两条线索：调用方那一行（_add_call_sites）、按名字接线的地方（_add_wiring）"""
-    _add_call_sites(repo, idx, items)
-    _add_wiring(repo, idx, items)
-
-
 def _name_def(repo: Path, syms: dict, symkey: str) -> dict | None:
     """符号表里没有的「<路径>#<名字>」——模块级变量（`LIMIT: int = 30`）、__init__ 再导出的类 / 函数——的定义：
     scan 时 xref 按 `from 模块 import 名字` 追到的（xref.json 的 names，和 Ctrl+点击同一套解析）。
@@ -512,25 +248,18 @@ def _pair_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None)
         d = syms.get(symkey)
         return {"f": d["f"], "l": d["l"], "k": d["k"]} if d else _name_def(repo, syms, symkey)
 
-    rt_by_top: dict[str, list] = {}
-    for callee, info in calls.items():
-        rt_by_top.setdefault(_top(callee), []).append({
-            "sym": callee, "def": {"f": info["f"], "l": info["l"]}, "n": info["n"],
-            "callers": sorted(({"sym": c, "def": {"f": v["f"], "l": v["l"]}, "n": v["n"]}
-                               for c, v in info["callers"].items()), key=lambda x: -x["n"])[:8]})
+    def runtime(callee: str, info: dict) -> dict:
+        return {"sym": callee, "def": {"f": info["f"], "l": info["l"]}, "n": info["n"],
+                "callers": sorted(({"sym": c, "def": {"f": v["f"], "l": v["l"]}, "n": v["n"]}
+                                   for c, v in info["callers"].items()), key=lambda x: -x["n"])[:8]}
 
     items = []
-    for sym, locs in uses.items():
-        rt = rt_by_top.pop(sym, [])
-        items.append({"sym": sym, "name": sym.partition("#")[2], "def": where(sym),
-                      "status": "confirmed" if rt else "static",
+    for sym, locs, rts, status in _align.pair_items(uses, calls):
+        rt = [runtime(c, info) for c, info in rts]
+        items.append({"sym": sym, "name": sym.partition("#")[2], "def": where(sym), "status": status,
                       "uses": [{"f": f, "l": l} for f, l in locs[:20]], "n_uses": len(locs),
                       "runtime": sorted(rt, key=lambda x: -x["n"]),
                       "calls": sum(x["n"] for x in rt)})
-    for t, rts in rt_by_top.items():
-        items.append({"sym": t, "name": t.partition("#")[2], "def": where(t), "status": "dynamic",
-                      "uses": [], "n_uses": 0, "runtime": sorted(rts, key=lambda x: -x["n"]),
-                      "calls": sum(x["n"] for x in rts)})
     order = {"confirmed": 0, "dynamic": 1, "static": 2}
     items.sort(key=lambda x: (order[x["status"]], -x["calls"], -x["n_uses"], x["name"]))
 
@@ -561,7 +290,7 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
     A, B = _cut.units_of(idx, a), _cut.units_of(idx, b)
     if A == [a] and B == [b]:
         d = _pair_detail(repo, idx, a, b, hot)
-        _dyn_hints(repo, idx, d["items"])
+        _align.hints(repo, idx, d["items"])
         return d
     Bs = set(B)
     hot_edges = (hot or {}).get("edges") or {}
@@ -591,8 +320,7 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
             cur["runtime"] += it["runtime"]
             cur["calls"] += it["calls"]
     for it in items.values():               # 合并完再定状态：同一个符号可能一对里静态引用、另一对里 runtime 调到
-        it["status"] = ("confirmed" if it["runtime"] and it["uses"] else
-                        "dynamic" if it["runtime"] else "static")
+        it["status"] = _align.merged_status(it["uses"], it["runtime"])
     order = {"confirmed": 0, "dynamic": 1, "static": 2}
     out["items"] = sorted(items.values(), key=lambda x: (order[x["status"]], -x["calls"], -x["n_uses"], x["name"]))
     for it in out["items"]:
@@ -601,7 +329,7 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
         out["counts"]["calls"] += it["calls"]
     out["counts"]["import_only"] = len(out["import_only"])
     out["sites"] = out["sites"][:80]
-    _dyn_hints(repo, idx, out["items"])
+    _align.hints(repo, idx, out["items"])
     return out
 
 

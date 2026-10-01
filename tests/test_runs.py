@@ -20,7 +20,7 @@ from pathlib import Path
 
 from common import FAKE, HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
-from codestrata import payload, runs  # noqa: E402
+from codestrata import align, payload, runs  # noqa: E402
 from codestrata.trace import analysis as trace_analysis, driver as trace_driver, hook as trace_hook  # noqa: E402
 
 
@@ -1232,7 +1232,7 @@ def test_seq_edge_times():
         assert (t0 > 0) == bool(phase), r["window"]
         inside = lambda c: any(a <= c < b or c == b == end for a, b in r["intervals"])      # noqa: E731
         v = payload._cut.view(idx, set(opened if opened is not None else idx["default_open"]))
-        loc, _ = trace_analysis.sym_locs(idx["symbols"])
+        loc, _ = align.sym_locs(idx["symbols"])
         want: dict = {}
         for x in spans:    # 另算一遍：键 → 单元 → 切面节点；同一个节点、定义时的执行、index 外的不算
             cs_ = [c for c in _calls(x) if inside(c)]
@@ -1240,7 +1240,7 @@ def test_seq_edge_times():
                 continue
             (ra, _, la), (rb, _, lb) = x["a"].rpartition(":"), x["b"].rpartition(":")
             na, nb = (v["node_of"].get(idx["files"].get(ra)), v["node_of"].get(idx["files"].get(rb)))
-            if na is None or nb is None or na == nb or trace_analysis.defining(idx["symbols"], loc, rb, int(lb)):
+            if na is None or nb is None or na == nb or align.defining(idx["symbols"], loc, rb, int(lb)):
                 continue
             f, l = x["t0"] + round(min(cs_) - x["t0"]), x["t0"] + round(max(cs_) - x["t0"])
             w = want.setdefault(f"{na}|{nb}", {"first": f, "last": l, "n": 0})
@@ -1483,7 +1483,7 @@ def test_class_body_is_definition_not_call():
         (repo / rel).write_text(src)
     cs("scan", repo)
     cs("trace", repo, "--case", "cls", "--phase", "late=cb.main:late", "--", PY, "-m", "cb.main")
-    # 「时间顺序」（seq）和模块图用同一个「定义时的执行」判断（trace_analysis.defining）
+    # 「时间顺序」（seq）和模块图用同一个「定义时的执行」判断（align.defining）
     from codestrata import seq
     idx0 = payload.load_index(repo)
     sm = seq._Map(idx0, ["cb/"])

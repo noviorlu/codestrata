@@ -239,7 +239,7 @@
   触发的那个线程当场切、再停 0.1 秒等别的进程跟上。计数的阶段边界和 `phase_log` 的时刻因此可能差几十毫秒。
 - 不带阶段加载（`<id>` 不带 `@`）= 各阶段逐键相加（`runs._sum`）。
 - 加载时从这里算出的东西（`module_frames`、`class_frames`、`anon`、单元间的边、`edge_calls`…）**不存盘**，
-  每次按当前的 index 现算（`analysis.to_package_graph`），见 §8。
+  每次按当前的 index 现算（`align.to_package_graph`），见 §8。
 
 ## 5 原始分片（parts/，打包后在 parts.tar.gz）
 
@@ -412,12 +412,12 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
    | `changed` | `detail.file_shas[rel]` ≠ index 的 `file_sha[rel]`（index 没有 `file_sha` 时退回和工作区比） | 按 qualname 挪键 |
 
    没有 detail.json 时所有文件都当「没变」。页面的「⚠ 录制后有文件改过」= `changed` + `gone`（`hotMeta.stale_files`）。
-3. **按 qualname 挪键**（`runs.remap`）：只对 `changed` / `mismatch` 且在 index 里的文件。用 index 的符号表建
+3. **按 qualname 挪键**（`align.remap`）：只对 `changed` / `mismatch` 且在 index 里的文件。用 index 的符号表建
    `(文件, 限定名) → 现在的行号`（有 `dl` 用 `dl`，否则 `l`）；录制时的 qualname 去掉 `.<locals>` 再查。
    查到的把键改成 `rel:现在的行号`；查不到的、名字里有 `<` 的（lambda、生成器表达式）、没存 qualname 的，键改成 `rel:-1`
    ——次数还算在这个文件和它的单元上，但不算到任何函数上。模块顶层（`:0`）不动。改写后撞到同一个键的相加。
    对不上的键数给页面（`unmatched`）。
-4. **折到单元**（`analysis.to_package_graph(counts, idx)`）：
+4. **折到单元**（`align.to_package_graph(counts, idx)`）：
    - `rel` → 单元：`idx.files[rel]`；不在里面的键整个不叠。
    - `(rel, 行)` → 符号：index 符号的 `(f, l)`、`(f, dl)` 和同名的另几个 def（`a`）都能对上；对不上的是 `anon`
      （闭包、lambda：算到文件和单元上，明细里归到包住它的最内层符号，写成 `外层符号.<L行号>`）。
@@ -425,7 +425,7 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
      `l` / `dl` → 类体（`class_frames`）；行号 1 又对不上任何符号 → 当模块顶层（老格式）。被调方是定义的边记进
      `edge_import_exec`，不画成调用。
    - 单元间的边：两端单元不同的 `func_edges` 相加；同单元的丢掉。
-5. **折到切面**（`payload._hot_on_cut`）：单元 → 当前切面上的节点（`cut.view` 的 `node_of`），节点、节点间的边分别相加；
+5. **折到切面**（`align.hot_on_cut`）：单元 → 当前切面上的节点（`cut.view` 的 `node_of`），节点、节点间的边分别相加；
    被调符号不在这条边的静态引用（`edge_uses`）里的，算作动态分派。
 
 ## 9 给其他语言的录制端
@@ -483,10 +483,10 @@ scan 写 index.json 和 symbols.json，加载时（`payload.load_index`）合成
 
 | 字段 | 形状 | 谁读 | 用途 | 必 |
 |---|---|---|---|---|
-| `files` | {rel: 单元} | `analysis.to_package_graph`、`runs.file_state` / `remap`、`seq._Map`、`payload`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
-| `symbols` | {符号键: {n, s, k, f, l, lang, m?, p, dl?, e?, b?, d?, a?, x?}} | `analysis.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`x`）、`runs.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`）、`--phase` 的解析（`m`） | **符号键是 `<文件路径>#<限定名>`**（`fakesvc/offline.py#Engine.generate`；不拿冒号分，C++ / Rust 的限定名里有 `::`）。`n` 限定名、`s` 它的最后一段、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`lang` 语言、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名（Python）、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`、`x` 标记（`defexec`：落在它定义行上的帧是定义时的执行，Python 的类体） | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
+| `files` | {rel: 单元} | `align.to_package_graph` / `remap`、`runs.file_state`、`seq._Map`、`payload`（每个节点的文件列表） | **叠加的枢纽**：录制端的 `rel` 靠它落到单元上 | 是 |
+| `symbols` | {符号键: {n, s, k, f, l, lang, m?, p, dl?, e?, b?, d?, a?, x?}} | `align.sym_locs` / `defining`（`f`、`l`、`dl`、`e`、`a`、`x`）、`align.remap`（`f`、`n`、`l`、`dl`）、`payload._unit_syms`（`n` 不含点的顶层符号：`n`、`k`、`f`、`l`、`b`、`p`）、`--phase` 的解析（`m`） | **符号键是 `<文件路径>#<限定名>`**（`fakesvc/offline.py#Engine.generate`；不拿冒号分，C++ / Rust 的限定名里有 `::`）。`n` 限定名、`s` 它的最后一段、`k` 是 `class` / `func`、`f` 文件、`l` 定义行、`lang` 语言、`dl` 第一个装饰器行（和 `l` 不同时才有）、`e` 末行（闭包归到外层符号用）、`m` 点分模块名（Python）、`p` 所属单元、`b` 基类、`d` 装饰器名、`a` 同名的另几个 def `[[行, 装饰器行, 末行]]`、`x` 标记（`defexec`：落在它定义行上的帧是定义时的执行，Python 的类体） | 是（没有它只能叠到单元，函数级明细和类体判断都没了） |
 | `file_sha` | {rel: sha16} | `runs.file_state` | 录制后哪些文件改过 | 强烈建议（没有时退回和工作区比） |
-| `edge_uses` | {"a\|b": {"<文件路径>#<名字>": [[文件, 行]…]}} | `payload._edge_uses_on_cut`（算动态分派）、边的详情 | 每条边实际引用了对方哪些符号（和符号键同一种写法；模块级变量、再导出的名字不在符号表里，由 xref.json 的 `names` 追到定义） | 否（没有时所有 runtime 调用都算动态分派） |
+| `edge_uses` | {"a\|b": {"<文件路径>#<名字>": [[文件, 行]…]}} | `align.edge_uses_on_cut`（算动态分派）、边的详情（`align.pair_items`） | 每条边实际引用了对方哪些符号（和符号键同一种写法；模块级变量、再导出的名字不在符号表里，由 xref.json 的 `names` 追到定义） | 否（没有时所有 runtime 调用都算动态分派） |
 | `edge_dead` | {"a\|b": [{f, l, n, sym, why}]} | `payload`（纯 import、不承载调用的边画成虚线） | `sym` 是导入的东西：模块写它的文件路径，模块里的名字写 `<文件路径>#<名字>` | 否 |
 | `edge_sites`、`name_refs`、`docs`、`aux`、`file_loc` | | 边的详情、接线点、文档、非 Python 源文件、行数 | 面板和冻结区 | 否 |
 

@@ -85,7 +85,7 @@
 - 为什么：否则每条 import 边都会因为「导入过」被染成橙色，只被 import、一个函数都没调过的包也显示成「跑到了」。
   类体那一半起因是 httpx 的试用：sync 阶段惰性 import 了 httpcore，一堆 Async 类的类体被算成 sync 调了 async 的类。按行号认，已经录好的老 run 加载时一样分得出来。
 - 放弃的方案：把 `<module>` 帧当普通调用。
-- 在哪：`trace/analysis.py` 的 `defining`、`to_package_graph`（`module_exec`、`class_frames`）；`seq.py` 的 `_Map.of`。测试 `test_class_body_is_definition_not_call`。
+- 在哪：`align.py` 的 `defining`、`to_package_graph`（`module_exec`、`class_frames`）；`seq.py` 的 `_Map.of`。测试 `test_class_body_is_definition_not_call`。
 
 ### 每条边都是「静态引用 × runtime 调用」的交叉
 - 决定：边详情分成 confirmed（引用了也调到了）、static（引用了、这次没走到）、dynamic（调到了、代码里没有静态引用）、
@@ -102,7 +102,7 @@
 - 为什么：两端之间碰巧有别的 import（比如只引用了一个常量）时，收起的边按「有静态边」画成实线，展开之后实线变成没跑到的灰边加一条虚线，
   看上去箭头「消失」了（vllm-omni 的 worker → models）。同一个符号可能一对单元里静态引用、另一对里 runtime 调到，合成一条边后算确认。
 - 放弃的方案：按单元对算完再相加；有静态边就画实线。
-- 在哪：`payload.py` 的 `_hot_on_cut`、`_dyn_only`、`graph_payload`；前端 `web/graph.js`。
+- 在哪：`align.py` 的 `hot_on_cut`、`dyn_only`；`payload.py` 的 `graph_payload`；前端 `web/graph.js`。
 
 ### `if TYPE_CHECKING:` 里的 import 不是依赖
 - 决定：这种 import 记进 `type_edges`，不进 `edges`、不算架构高度和分层；标注里引用到也不算「用到」。切面上两端之间没有运行时 import 的，
@@ -219,13 +219,13 @@
 
 ### 计数按「文件:首行号」存，加载时映射到当前 index；改过的文件按 qualname 挪
 - 决定：run 只存原始键 `rel:firstlineno` 和录制时的 qualname（`names`），加载时现映射到当前 index 上。录制之后改过（或安装包和仓库不一致）的文件，
-  `runs.remap` 按 (文件, qualname) 把键挪到函数现在的行号（去掉 `.<locals>` 再查），对不上的改成 `文件:-1`、计入 `unmatched`。
+  `align.remap` 按 (文件, qualname) 把键挪到函数现在的行号（去掉 `.<locals>` 再查），对不上的改成 `文件:-1`、计入 `unmatched`。
   Python 3.10 没有 `co_qualname` 就不记名字。
 - 为什么：代码改了之后老 run 照样能用，不让整个 run 作废。行号是会随编辑变的位置，名字是只有录制时拿得到的身份，两样都存，读的一侧才有退路。
   对不上的不留原键：老行号可能正好是另一个函数现在的定义行，数字看着正常其实是别人的；也不改成 0：第 0 行是模块顶层，这些调用就等于丢了。
   3.10 的 `co_name` 只是短名字，方法 `Model.forward` 会被挪到同文件里同名的顶层函数上——错挪比不挪更糟。
 - 放弃的方案：存 index 快照；对不上的保留原行号（设计稿最初的写法）；3.10 退回 `co_name`。
-- 在哪：`runs.py` 的 `load`、`load_counts`、`remap`；`trace/`（analysis / hook） 的 `_key`、`_names`、`sym_locs`、`to_package_graph`（-1 落进 `anon`）；测试 `test_remap_moved_functions`。
+- 在哪：`runs.py` 的 `load`、`load_counts`；`align.py` 的 `remap`、`sym_locs`、`to_package_graph`（-1 落进 `anon`）；`trace/hook.py` 的 `_key`、`_names`；测试 `test_remap_moved_functions`。
 
 ### 「录制之后改过没有」拿执行时的哈希和 index 比，不和工作区比
 - 决定：hook 在每个进程第一次跑到一个文件时取它内容的 sha256 前 16 位；scan 对同一份原始字节取同一种哈希写进 `file_sha`。`runs.file_state` 逐个文件定
