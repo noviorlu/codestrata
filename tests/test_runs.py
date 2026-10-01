@@ -2345,7 +2345,7 @@ def test_trace_only_notes():
 
 
 def test_lanes():
-    """运行时按进程 · 线程分列（lanes.build）：一列一个线程（同名的合成一列），列里是这条线程调到的节点和边；
+    """运行时按进程 · 线程分列（lanes.build）：一列一类线程（名字归一之后同名的合成一列），列里是这条线程调到的节点和边；
     列之间：谁起了谁（Thread.start、fork、subprocess）、谁把数据交给谁（queue、zmq）连到对的列和节点上"""
     from codestrata import lanes
     repo = fresh()
@@ -2361,8 +2361,13 @@ def test_lanes():
     main = next(x for x in L["lanes"] if x["thread"] == "MainThread" and T in x["nodes"])
     assert L["lanes"][0] is main and main["entry"] == T, (L["lanes"][0], main)
     assert any(e["a"] == T and e["b"] == C and e["n"] > 0 for e in main["edges"]), main["edges"]
-    workers = [x for x in L["lanes"] if x["pid"] == main["pid"] and x["thread"].startswith(("worker-", "req-"))]
-    assert len(workers) == 6 and all(set(x["nodes"]) == {T, C} for x in workers), workers
+    # 线程名归一之后合成一列：worker-0 / worker-1 → worker ×2，req-0…3 → req ×4
+    workers = [x for x in L["lanes"] if x["pid"] == main["pid"] and x["thread"] in ("worker", "req")]
+    assert sorted((x["thread"], x["n_threads"]) for x in workers) == [("req", 4), ("worker", 2)], workers
+    assert all(set(x["nodes"]) == {T, C} for x in workers), workers
+    assert [lanes.thread_group(n) for n in ("Thread-3 (save_loop)", "ThreadPoolExecutor-3_0", "worker-12", "MainThread",
+                                            "omni-async-output-builder", "Thread-7")] == \
+        ["save_loop", "ThreadPoolExecutor-3", "worker", "MainThread", "omni-async-output-builder", "Thread"]
     cons = next(x for x in L["lanes"] if x["thread"] == "consumer")
     # 谁起了谁：主线程在 truth.py 里 start 了 worker / consumer；fork 出来的进程、subprocess 起的都连回主线程
     sp = [(x["via"], x["from"]["lane"], x["from"]["node"], x["to"]["lane"]) for x in L["links"] if x["kind"] == "spawn"]

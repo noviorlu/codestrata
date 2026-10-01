@@ -1,6 +1,7 @@
 """运行时按进程 · 线程分列（P0，用户 2026-10-01 定的展示）：叠了 run 之后，模块图按线程分成并排的几列。
 
-一列（lane）是一个进程里的一个线程；同一个进程里同名的线程（每步新开的 output-builder）合成一列，记下合了几个。
+一列（lane）是一个进程里的一类线程：名字归一之后（thread_group：`Thread-3 (save_loop)` → save_loop，线程池的
+`ThreadPoolExecutor-3_0…_3` → `ThreadPoolExecutor-3`，`worker-0` → worker）同名的合成一列，记下合了几个（每步新开的 output-builder ×249）。
 每列只有这条线程调到的节点（当前切面上的文件 / 目录）和它们之间的边；同一个节点在几列里各有一份。列之间的连线：
   - 共用同一个节点：几列里都有它（前端按节点 id 找，这里不单列）；
   - 谁起了谁（spawn）：线程是在哪一列的哪个节点里 Thread.start 的，子进程是在哪里 exec / fork 出来的（events 的 thread_from、spawns），
@@ -13,15 +14,31 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from . import align as _align
 from . import seq as _seq
 
 
+_TARGET = re.compile(r"^Thread-\d+ \((.+)\)$")
+_NUMBERED = re.compile(r"^(.+?)[-_]\d+$")
+
+
+def thread_group(name: str) -> str:
+    """线程名归一（同一类的合成一列）：`Thread-3 (save_loop)` → save_loop；末尾的 -N / _N 去掉一段
+    （worker-0 → worker，ThreadPoolExecutor-3_0 → ThreadPoolExecutor-3，Thread-12 → Thread）"""
+    m = _TARGET.match(name)
+    if m:
+        return m.group(1)
+    m = _NUMBERED.match(name)
+    return m.group(1) if m else name
+
+
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -> dict:
     """{"phase", "window": [起, 止], "scope", "lanes": [列], "links": [连线]}。列按进程启动的先后排，进程里主线程在前。
-    列：{"id": "pid:线程名", "pid", "proc": 进程名, "thread": 线程名, "n_threads", "first", "last", "entry": 入口节点,
+    列：{"id": "pid:线程名", "pid", "proc": 进程名, "thread": 归一之后的线程名, "names": 合进来的原名（最多 6 个）,
+         "n_threads", "first", "last", "entry": 入口节点,
          "nodes": {节点: {"n": 被调次数, "first"}}, "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first"}],
          "external": 只跑仓库外的代码、因为是交接的一头才有这一列（没有节点）}
     连线：{"kind": "spawn" | "handoff", "via": thread / exec / fork / queue / asyncio / janus / zmq,
@@ -66,7 +83,8 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -
                 got = _seq.calls_in(r[0], r[1], r[6], a, b, open_hi=not win and (i + 1 < len(segs) or b < end))
                 if got:
                     break
-            tname = tnames.get(str(r[2])) or f"线程 {r[2]}"
+            raw = tnames.get(str(r[2])) or f"线程 {r[2]}"
+            tname = thread_group(raw)
             lid = f"{pid}:{tname}"
             tid_lane[(pid, r[2])] = lid
             if not got:
@@ -78,9 +96,10 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -
             L = lanes.get(lid)
             if L is None:
                 L = lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": tname,
-                                  "tids": set(), "first": first, "last": last, "entry": None, "entry_t": None,
-                                  "nodes": {}, "edges": {}}
+                                  "names": set(), "tids": set(), "first": first, "last": last, "entry": None,
+                                  "entry_t": None, "nodes": {}, "edges": {}}
             L["tids"].add(r[2])
+            L["names"].add(raw)
             L["first"], L["last"] = min(L["first"], first), max(L["last"], last)
             if r[3] == 0 and (L["entry_t"] is None or first < L["entry_t"]):
                 L["entry"], L["entry_t"] = na, first
@@ -104,18 +123,19 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -
         """一条连线的一头：哪一列、哪个节点（span 的被调方；不在任何 span 里就是这一列的入口）。只跑仓库外代码的线程
         （vLLM 收发 ZMQ 的线程）没有列：create（交接的两头）时给它一列空的（external），交接链才不断"""
         lid = tid_lane.get((pid, tid))
+        raw = (threads.get(str(pid)) or {}).get(str(tid)) or f"线程 {tid}"
         if lid is None:
-            tname = (threads.get(str(pid)) or {}).get(str(tid)) or f"线程 {tid}"
-            lid = tid_lane[(pid, tid)] = f"{pid}:{tname}"
+            lid = tid_lane[(pid, tid)] = f"{pid}:{thread_group(raw)}"
         if lid not in lanes:
             if not create or t is None:
                 return None
             lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": lid.partition(":")[2],
-                          "tids": {tid}, "first": t, "last": t, "entry": None, "entry_t": None, "nodes": {}, "edges": {},
-                          "external": True}
+                          "names": set(), "tids": {tid}, "first": t, "last": t, "entry": None, "entry_t": None,
+                          "nodes": {}, "edges": {}, "external": True}
         L = lanes[lid]
         if L.get("external") and t is not None:
             L["tids"].add(tid)
+            L["names"].add(raw)
             L["first"], L["last"] = min(L["first"], t), max(L["last"], t)
         rows = rows_of.get(pid) or []
         r = rows[row] if 0 <= row < len(rows) else None
@@ -159,18 +179,49 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_) -
     out = []
     for L in lanes.values():
         L["n_threads"] = len(L.pop("tids"))
+        L["names"] = sorted(L["names"])[:6]
         L.pop("entry_t")
         L["edges"] = sorted(L["edges"].values(), key=lambda e: e["first"])
         for e in L["edges"]:
             e["only"] = round(e["only"])
         out.append(L)
-    # 进程按启动的先后（父进程在前；按第一次调用排的话，一开机就在轮询的进程会排到最前面），进程里主线程在前、其余按先后
+    # 进程按启动的先后（父进程在前；按第一次调用排的话，一开机就在轮询的进程会排到最前面），进程里按交接的顺序（_order）
     pstart: dict[int, int] = {}
     for p in ix.get("procs") or []:
         pstart[p["pid"]] = min(pstart.get(p["pid"], p["t0_us"]), p["t0_us"])
-    out.sort(key=lambda L: (pstart.get(L["pid"], L["first"]), L["pid"], L["thread"] != "MainThread", L["first"]))
+    rank = _order(out, links, pstart)
+    out.sort(key=lambda L: (pstart.get(L["pid"], L["first"]), L["pid"], rank[L["id"]]))
     links.sort(key=lambda x: (x["from"]["t"] if x["from"]["t"] is not None else 0))
     return {"phase": phase, "window": [lo, hi], "scope": ix.get("scope") or "cross", "lanes": out, "links": links}
+
+
+def _order(lanes: list, links: list, pstart: dict) -> dict:
+    """进程里各列的先后（用户 2026-10-01 定：按交接的顺序）：从入口那一列顺着进程里的交接走——vLLM 的 stage 是
+    收请求 → 主循环 → 输出线程；入口是第一个从别的进程收到交接的那一列，最早启动的进程（没有谁交给它）是主线程。
+    没走到的放后面：主线程在前，其余按第一次活动。返回 {列: 名次}"""
+    by_pid: dict[int, list] = {}
+    for L in lanes:
+        by_pid.setdefault(L["pid"], []).append(L)
+    root = min(by_pid, key=lambda p: pstart.get(p, 0)) if by_pid else None
+    hand = sorted((x for x in links if x["kind"] == "handoff"), key=lambda x: x["to"]["t"] or 0)
+    pid_of = {L["id"]: L["pid"] for L in lanes}
+    rank: dict[str, int] = {}
+    for pid, ls in by_pid.items():
+        main = next((L["id"] for L in ls if L["thread"] == "MainThread"), None)
+        entry = main if pid == root else next(
+            (x["to"]["lane"] for x in hand if pid_of.get(x["to"]["lane"]) == pid and pid_of.get(x["from"]["lane"]) != pid), main)
+        seq: list[str] = []
+        todo = [entry] if entry else []
+        while todo:
+            cur = todo.pop(0)
+            if cur in seq:
+                continue
+            seq.append(cur)
+            todo.extend(x["to"]["lane"] for x in hand if x["from"]["lane"] == cur and pid_of.get(x["to"]["lane"]) == pid)
+        rest = sorted((L for L in ls if L["id"] not in seq), key=lambda L: (L["thread"] != "MainThread", L["first"]))
+        for i, lid in enumerate(seq + [L["id"] for L in rest]):
+            rank[lid] = i
+    return rank
 
 
 def _lane_start(lanes: dict, lid: str | None) -> dict | None:
