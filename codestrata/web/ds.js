@@ -36,6 +36,8 @@ window.CS = window.CS || {};
     seqEdges: function (open) {
       return j('api/seq/edges?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
     },
+    // 请求路径：当前 run（选的阶段）里每个进程、每个线程按第一次调用排的函数级调用树
+    path: function () { return j('api/path?run=' + encodeURIComponent(this.run)); },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
     // 叠着 run 时带上它：代码窗口里标出「代码里看不出、这次运行调到了谁」的那几行
     file: function (f) { return j('api/file?f=' + encodeURIComponent(f) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },

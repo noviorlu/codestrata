@@ -2309,5 +2309,59 @@ def test_trace_only_notes():
     assert sorted(ui_source.runtime_lines(idx2, "nt/app.py", hot2)) == [ln("Sub().run()") + 2, ln("return work(1)") + 2]
 
 
+_PA = {
+    "pa/__init__.py": "",
+    "pa/engine.py": ("import time\n\n\n"
+                     "class Engine:\n"
+                     "    def add(self, x):\n        return x\n\n"
+                     "    def step(self):\n        time.sleep(0.05)\n        return 1\n\n"
+                     "    def work(self):\n        return 2\n"),
+    "pa/app.py": ("import threading\n\nfrom pa.engine import Engine\n\n\n"
+                  "def loop(e):\n"
+                  "    for _ in range(20):\n"
+                  "        e.step()\n\n\n"
+                  "def worker(e):\n    return e.work()\n\n\n"
+                  "def serve(e):\n"
+                  "    e.add(1)\n"
+                  "    loop(e)\n"
+                  "    t = threading.Thread(target=worker, args=(e,), name='worker')\n"
+                  "    t.start()\n    t.join()\n\n\n"
+                  "def main():\n    e = Engine()\n    serve(e)\n\n\n"
+                  "if __name__ == '__main__':\n    main()\n"),
+}
+
+
+def test_request_path():
+    """请求路径：一个阶段里每个进程、每个线程按第一次调用的先后排的函数级调用树。跨文件的调用有时刻；
+    同一个文件里调过来的（serve → loop）没有时刻，挂到同文件的调用方下面、标 untimed；反复调用标 rep；
+    线程分开（主线程在前）；每一行带调用写在哪一行、代码里看不看得出。命令行 codestrata path 打出同样的树"""
+    from codestrata import path as cs_path
+    repo = tmpdir("cs-pa-") / "repo"
+    for rel, src in _PA.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "pa", "--events", "--phase", "serve=pa.app:serve", "--", PY, "-m", "pa.app")
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "pa@serve")
+    run, rd, phase = runs.resolve(repo, "pa@serve")
+    P = cs_path.request_path(idx, rd, run, phase, hot)
+    assert [p["name"] for p in P["procs"]] == ["-m pa.app"], P["procs"]
+    ths = P["procs"][0]["threads"]
+    assert [th["name"] for th in ths] == ["MainThread", "worker"], [th["name"] for th in ths]
+    E, A = "pa/engine.py#Engine.", "pa/app.py#"
+    rows = [(r["d"], r["fn"], r["untimed"], r["rep"], r["n"]) for r in ths[0]["rows"]]
+    assert rows == [(0, f"{A}serve", False, False, None), (1, f"{E}add", False, False, 1),
+                    (1, f"{A}loop", True, False, None), (2, f"{E}step", False, True, 20)], rows
+    app = _PA["pa/app.py"].splitlines()
+    step = ths[0]["rows"][3]["line"]
+    assert step["f"] == "pa/app.py" and app[step["l"] - 1].strip() == "e.step()" and step["status"] == "trace", step
+    assert [(r["d"], r["fn"]) for r in ths[1]["rows"]] == [(0, f"{A}worker"), (1, f"{E}work")], ths[1]["rows"]
+    assert all(r["t"] >= P["window"][0] for th in ths for r in th["rows"])
+    out = cs("path", repo, "pa@serve").stdout
+    assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" in out and "← app.py:" in out, out
+    assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

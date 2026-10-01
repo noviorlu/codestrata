@@ -31,7 +31,7 @@ def _sig(repo: Path, d: dict | None) -> list[str] | None:
     return [one[:200] + ("" if closed else " …")]
 
 
-def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) -> dict:
+def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None, first: dict | None = None) -> dict:
     """点开一条边：a、b 可以是目录、本层文件或单个文件节点。两端底下函数之间的调用：
       calls      这次 trace 到的函数对 [{caller, callee, caller_def, def, sig, n, only, status, lines, guessed, note, wiring}]：
                  n 次数、only 其中代码里看不出的次数；status：both（两边都有）/ trace（只有 trace）/ mixed（有的行对得上、有的对不上）；
@@ -40,7 +40,9 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
       scan_only  代码里写了、这次没录到的 [{caller, callee, caller_def, def, sig, lines: [{f, l, s, k}], n_lines, unseen}]
                  （k 是 graph.py 的种类）；unseen：只是构造一个构造时不跑仓库里代码的类，跑没跑 trace 都看不到
     两种都按次数 / 调用处多的在前，各最多 MAX_ITEMS 条（counts 里是全部的）。
-    lines_approx：时间段的次数没有调用行，每行的次数是按整个 run 的调用行摊的（seq.window_counts）"""
+    lines_approx：时间段的次数没有调用行，每行的次数是按整个 run 的调用行摊的（seq.window_counts）。
+    first：{"F|G": 第一次调用的时刻}（path.first_calls，录了时序事件的 run 才有）：给了的话每个函数对带上 first（没有是 null），
+    页面上可以按先后排"""
     A, B = set(_cut.units_of(idx, a)), set(_cut.units_of(idx, b))
     unit = {}
 
@@ -61,7 +63,8 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
         it = {"caller": caller, "callee": callee, "caller_def": cd, "def": d, "sig": _sig(repo, d),
               "n": x["n"], "only": x["only"],
               "status": "trace" if x["only"] >= x["n"] else "both" if not x["only"] else "mixed",
-              "lines": None, "guessed": None, "note": x.get("note")}
+              "lines": None, "guessed": None, "note": x.get("note"),
+              "first": first.get(pk) if first is not None else None}
         if x["lines"] is not None:
             it["lines"] = [{**ln, "f": cd["f"], "s": text(cd["f"], ln["l"]) if ln["l"] else ""} for ln in x["lines"]]
         else:
@@ -98,6 +101,7 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None) 
     calls.sort(key=lambda x: (order[x["status"]], -x["n"], x["callee"]))
     scan_only.sort(key=lambda x: (x["unseen"], -x["n_lines"], x["callee"]))
     return {"a": a, "b": b, "has_runtime": bool(hot), "lines_approx": bool((hot or {}).get("lines_approx")),
+            "has_first": first is not None,
             "calls": calls[:MAX_ITEMS], "scan_only": scan_only[:MAX_ITEMS],
             "counts": {"calls": sum(x["n"] for x in calls), "only": sum(x["only"] for x in calls),
                        "pairs": len(calls), "scan_only": len(scan_only)}}

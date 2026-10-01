@@ -166,6 +166,10 @@ def test_cut():
     _spec("cut")
 
 
+def test_path():
+    _spec("path")
+
+
 def test_calls():
     _spec("calls")
 

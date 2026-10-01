@@ -48,6 +48,7 @@
       <span id="edgechips" style="display:contents"></span>
       <span class="lbl">视图</span>
       <button class="chip" data-t="onlyhot" aria-pressed="false">只看跑到的</button>
+      <button class="chip" id="pathbtn" hidden title="这一段里每个进程、每个线程按第一次调用的先后排的函数级调用（要录了时序事件的 run）">请求路径</button>
       <span class="sp"></span>
       <span class="prog" id="prog"></span>
       <button class="chip" id="resetcut" style="display:none" title="回到 scan 算出来的默认层级">恢复默认层级</button>
@@ -105,4 +106,5 @@
 <script src="panel.js"></script>
 <script src="search.js"></script>
 <script src="timebar.js"></script>
+<script src="path.js"></script>
 <script src="app.js"></script>

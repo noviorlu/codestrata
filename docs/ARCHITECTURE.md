@@ -44,7 +44,7 @@ flowchart LR
   GR --> HOT
   IDX & HOT -->|"ui.graphview.graph_payload: cut.view + layout.build"| PL["ui/（界面取数）"]
   XR --> PL
-  RUN -->|"seq.edge_times（events/spans/）"| API
+  RUN -->|"seq.edge_times、path.request_path（events/spans/）"| API
   PL --> API["serve.Handler /api/*"]
   API --> WEB["web/*.js（经 ds.js）"]
 ```
@@ -81,11 +81,11 @@ flowchart LR
 |---|---:|---|
 | `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 594 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
+| `__main__.py` | 624 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
 | `scan.py` | 696 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1547 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file`，走完把构造时跑到的方法（`ctor_methods`）交给 `on_end` |
 | `graph.py` | 226 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处、构造过的类跑到的方法，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
-| `align.py` | 473 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
+| `align.py` | 478 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 703 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
@@ -93,27 +93,29 @@ flowchart LR
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
-| `seq.py` | 366 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊） |
+| `seq.py` | 414 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用） |
+| `path.py` | 223 | 请求路径：一个阶段里每个进程、每个线程按第一次调用的先后排的函数级调用树（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
 | `ui/graphview.py` | 136 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`） |
-| `ui/edge.py` | 103 | 边详情（`/api/edge`）：两端底下函数之间的调用——trace 的函数对（调用行、和 scan 比的说明、按名字接线的地方）和代码里写了、这次没录到的 |
+| `ui/edge.py` | 107 | 边详情（`/api/edge`）：两端底下函数之间的调用——trace 的函数对（调用行、和 scan 比的说明、按名字接线的地方）和代码里写了、这次没录到的 |
 | `ui/source.py` | 276 | 代码窗口：整个文件、符号片段、大纲、Ctrl+点击的跳转和引用、index 落后几个文件；叠着 run 时只有 trace 的调用行（`runtime_lines`）；graph 节点的定义在哪（`node_def`） |
 | `ui/search.py` | 33 | 搜索栏的名字表、让一个模块在图上露出来 |
 | `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
-| `serve.py` | 412 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
+| `serve.py` | 442 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
 | `projects.py` | 203 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
-| `web/ds.js` | 57 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 927 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/ds.js` | 59 | 数据源层：fetch serve 的 `api/*` |
+| `web/app.js` | 932 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 686 | SVG 绘图（纯函数式），边的配色约定 |
-| `web/panel.js` | 593 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
+| `web/panel.js` | 612 | 详情面板：节点的事实和源码，边上实际调了哪些函数（可按先后排） |
 | `web/viewer.js` | 446 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 339 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
+| `web/path.js` | 86 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 
@@ -153,7 +155,7 @@ flowchart LR
 节点 id 是路径，页面上显示的名字都来自数据（`names` 短名、`labels` 完整名、布局给的 `label`），不从 id 拆；判断 id 之间的关系只用 `CS.ids`。
 
 - **加载顺序**：`index.html` 末尾依次是 `hl.js`、`ids.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
-  `timebar.js`、`app.js`（`app.js` 最后启动）。`hl.js` 单独一个 `<script>`：它用了正则后行断言，老浏览器解析失败时只丢高亮。
+  `timebar.js`、`path.js`、`app.js`（`app.js` 最后启动）。`hl.js` 单独一个 `<script>`：它用了正则后行断言，老浏览器解析失败时只丢高亮。
   `tests/test_package.py` 核对 web/ 下每个 .js 都有页面加载。
 - **数据源层 `ds.js`**：UI 只调 `CS.ds.*`，它 `fetch('api/…')`；地址都是相对的，经主菜单转发时页面在 `/v/<端口>/` 下。样式在 `app.css`。
 - 主菜单是另一套页面 `home.html` + `home.js` + `home.css`，不走 ds.js，直接 fetch 主菜单的 `/api/*`。
@@ -175,9 +177,9 @@ flowchart LR
 .venv/bin/python tests/payload_parity.py <旧提交> <仓库> [RUN …]   # 只在「行为不变」的重构时跑
 ```
 
-- `test_runs.py`（70 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
+- `test_runs.py`（71 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 只有 trace 的调用和它的说明 / 调用行、
-  构造只算一次、老 run 和时间段的调用行、分层方向。
+  构造只算一次、老 run 和时间段的调用行、请求路径（`test_request_path`）、分层方向。
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
@@ -188,7 +190,7 @@ flowchart LR
 - `payload_parity.py`：重构用的对拍工具，不是回归测试：拿某个旧提交和工作区的代码，对同一份索引和 run 各算一遍几个切面上的图、边详情、时间顺序，逐项比。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
-  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面、边上的调用各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run），
+  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面、边上的调用、请求路径各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run），
   切面那份另用一个只 scan 的嵌套小仓库（展开 / 收起、本层文件、搜索定位），边上的调用另用一个录过两次的小仓库
   （代码里看不出的虚线、构造、去掉调用行当老 run）。
   要 node 22+ 和 Chrome / Chromium，没有就跳过；约 15 秒。

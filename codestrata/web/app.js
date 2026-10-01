@@ -894,6 +894,11 @@ window.CS = window.CS || {};
       });
       var rc = document.getElementById('resetcut');
       if (rc) rc.onclick = function () { self.resetCut(); };
+      var pb = document.getElementById('pathbtn');
+      if (pb) {                                  // 请求路径要时序事件：叠着录了 --events 的 run 才有
+        pb.hidden = !(CS.graph.hot && this._runHasEvents());
+        pb.onclick = function () { CS.path.show(); };
+      }
       document.getElementById('reset').onclick = function () {
         if (CS.search) CS.search.clear();
         CS.graph.highlight(null); CS.graph.clear();

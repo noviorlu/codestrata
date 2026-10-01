@@ -58,7 +58,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
 
     返回 {"packages": {单元: 次数}, "symbols": {符号键: 次数}, "files": {文件: 次数},
           "calls": {"调用方|被调方": {a, b, n, only, lines, guessed, …}},   见 classify；a、b 是两端的单元（没有是 null）
-          "redirect": {"trace 的键对": 文件},   整个归到构造 F→C 上的调用（见 classify），「时间顺序」也算到 C 的文件上
+          "redirect": {"trace 的键对": 类},   整个归到构造 F→C 上的调用（见 classify），「时间顺序」、请求路径也算到 C 上
           "module_exec": [顶层代码执行过的文件], "module_frames": n, "class_frames": n, "anon": n, "unmapped": n}
     calls 里同一个文件里的调用也有（代码窗口要）；图上只画不同节点之间的。
     """
@@ -98,27 +98,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
             pkg_hits[pkg] = pkg_hits.get(pkg, 0) + n
             file_hits[rel] = file_hits.get(rel, 0) + n
 
-    # trace 的键落到 graph 的节点上（和 graph.json 同一种写法）：符号键；模块顶层是 <文件>#<module>；
-    # 没有名字的帧（lambda、生成器表达式）归到包住它的最内层命名符号，标成 <外层>.<L行>
-    memo: dict[str, str] = {}
-
-    def label(key: str) -> str:
-        hit = memo.get(key)
-        if hit is None:
-            rel, _, ln = key.rpartition(":")
-            ln_i = int(ln)
-            if ln_i < 0:                # remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
-                hit = f"{rel}#{UNMATCHED}"
-            elif (sk := None if ln_i == 0 else loc2sym.get((rel, ln_i))):
-                hit = sk
-            elif ln_i <= 1:
-                hit = f"{rel}#<module>"
-            else:
-                inner = max((sp for sp in spans.get(rel, ()) if sp[0] <= ln_i <= sp[1]),
-                            key=lambda sp: sp[0], default=None)
-                hit = f"{inner[2] if inner else rel + '#<module>'}.<L{ln_i}>"
-            memo[key] = hit
-        return hit
+    label = node_labeler(index, loc2sym, spans)
 
     # 函数对和它们的调用行。被调方是定义时的执行（<module> 帧、类体）的不算调用：import 语句触发的模块顶层执行、
     # class 语句执行类体
@@ -153,14 +133,42 @@ def to_package_graph(trace: dict, index: dict) -> dict:
             if x is not None:
                 x["lines"][int(ln)] = x["lines"].get(int(ln), 0) + n
     calls, moved = classify(pairs, index)
-    # 整个挪到构造 F→C 上的函数对：「时间顺序」读 span 时这些键对也算在 C 所在的文件上
-    redirect = {k: symbols[c]["f"] for pk, c in moved.items() if c in symbols for k in raw[pk]}
+    # 整个挪到构造 F→C 上的函数对：「时间顺序」、请求路径读 span 时这些键对也算到 C 上
+    redirect = {k: c for pk, c in moved.items() if c in symbols for k in raw[pk]}
 
     return {"packages": pkg_hits, "symbols": sym_hits, "files": file_hits,
             "calls": calls, "redirect": redirect,
             "module_exec": sorted(module_exec),
             "module_frames": module_frames, "class_frames": class_frames, "anon": anon,
             "unmapped": module_frames + class_frames + anon}
+
+
+def node_labeler(index: dict, loc2sym: dict | None = None, spans: dict | None = None):
+    """trace 的键「文件:首行」→ graph 的节点（和 graph.json 同一种写法）：符号键；模块顶层是 <文件>#<module>；
+    没有名字的帧（lambda、生成器表达式）归到包住它的最内层命名符号，标成 <外层>.<L行>；remap 对不上的（行号 -1）
+    是 <文件>#<改过、对不上>。返回带缓存的函数。loc2sym、spans 是 sym_locs 的结果（给了就不再算）"""
+    if loc2sym is None or spans is None:
+        loc2sym, spans = sym_locs(index.get("symbols") or {})
+    memo: dict[str, str] = {}
+
+    def label(key: str) -> str:
+        hit = memo.get(key)
+        if hit is None:
+            rel, _, ln = key.rpartition(":")
+            ln_i = int(ln)
+            if ln_i < 0:                # remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
+                hit = f"{rel}#{UNMATCHED}"
+            elif (sk := None if ln_i == 0 else loc2sym.get((rel, ln_i))):
+                hit = sk
+            elif ln_i <= 1:
+                hit = f"{rel}#<module>"
+            else:
+                inner = max((sp for sp in spans.get(rel, ()) if sp[0] <= ln_i <= sp[1]),
+                            key=lambda sp: sp[0], default=None)
+                hit = f"{inner[2] if inner else rel + '#<module>'}.<L{ln_i}>"
+            memo[key] = hit
+        return hit
+    return label
 
 
 def remap(counts: dict, names: dict, fs: dict, idx: dict) -> tuple[dict, list[str]]:

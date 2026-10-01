@@ -47,7 +47,7 @@ def _index(spans: Path) -> dict:
     if hit is None:
         idx = json.loads(p.read_text(encoding="utf-8"))
         keys = json.loads((spans / "keys.json").read_text(encoding="utf-8"))
-        hit = {**idx, "keys": keys["keys"]}
+        hit = {**idx, "keys": keys["keys"], "threads": keys.get("threads") or {}}
         _put(_INDEX, key, hit)
     return hit
 
@@ -111,6 +111,7 @@ class _Map:
 
 _PAIRS: "OrderedDict[tuple, dict]" = OrderedDict()    # (spans 目录, index mtime, 阶段划分) → _pairs 的结果（最近 8 个；拖出来的每个时间段各占一个）
 _EDGES: "OrderedDict[tuple, tuple]" = OrderedDict()   # (_PAIRS 的键, id(idx), 切面, 阶段) → (idx, edge_times 的结果)
+_CALLS: "OrderedDict[tuple, dict]" = OrderedDict()   # (spans 目录, index mtime, 时间段) → phase_calls 的结果（最近 8 个）
 _BUSY: dict[tuple, threading.Lock] = {}               # 正在算的 _PAIRS 键：同时来的同一个请求等着用一份结果
 REPEAT_MIN = 5                                        # 「反复调用」至少要调这么多次（2 次、每个进程一次的不算）
 
@@ -306,6 +307,53 @@ def _pairs_scan(spans: Path, ix: dict, iv: dict, lo: int, hi: int) -> dict:
     return {"iv": iv, "agg": agg, "keys": ix["keys"], "truncated": ix.get("truncated") or []}
 
 
+def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
+    """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的跨文件调用（请求路径用，见 path.py）：
+    {"window": [起, 止], "span_us": 各段加起来多长, "keys": [键], "threads": {pid: {tid: 名字}}, "truncated": [pid],
+     "calls": {(pid, tid, a, b): [first, last, n]}}——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。
+    折叠行按 _calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点（同 _pairs）。时序事件只记跨文件的调用。
+    没有 span、没有这个阶段的时刻抛 LookupError，span 读不出来抛 OSError / ValueError"""
+    spans = rd / "events" / "spans"
+    if not (spans / "index.json").is_file():
+        raise LookupError("这个 run 没有录时序事件（codestrata trace --events）：没有请求路径")
+    ix = _index(spans)
+    end = run_end(run, rd) or 0
+    win = parse_window(phase)
+    if win:
+        segs = [win]
+    else:
+        iv = phase_intervals(run, end)
+        if phase not in iv:
+            raise LookupError(f"这个 run 里没有阶段 {phase} 的时刻：不知道它从什么时候开始")
+        segs = sorted(iv[phase])
+    key = (str(spans), (spans / "index.json").stat().st_mtime_ns, tuple(segs))
+    with _LOCK:
+        hit = _CALLS.get(key)
+    if hit is not None:
+        return hit
+    calls: dict = {}
+    for c in ix["chunks"]:
+        if all(c["t0_us"] > hi or c["t1_us"] < lo for lo, hi in segs):
+            continue
+        pid = c["pid"]
+        for r in _chunk(spans, c["chunk"]):
+            for lo, hi in segs:
+                got = _calls_in(r[0], r[1], r[6], lo, hi, open_hi=not win and hi < end)
+                if got is None:
+                    continue
+                n, f, last = got
+                k = (pid, r[2], r[4], r[5])
+                e = calls.get(k)
+                if e is None:
+                    calls[k] = [f, last, n]
+                else:
+                    e[0], e[1], e[2] = min(e[0], f), max(e[1], last), e[2] + n
+    out = {"window": [segs[0][0], segs[-1][1]], "span_us": sum(b - a for a, b in segs), "keys": ix["keys"],
+           "threads": ix["threads"], "truncated": ix.get("truncated") or [], "calls": calls}
+    _put(_CALLS, key, out, cap=8)
+    return out
+
+
 def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = None, keymap=None,
                redirect: dict | None = None) -> dict:
     """切面上每条节点间的边在一个阶段（None 是整个 run）里什么时候被调用：
@@ -316,8 +364,8 @@ def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = Non
     而且 spread 超过这段时间的一半——每个进程各调一次的、只调两次的都不算。
     两端落在同一个节点的（节点内部的调用）、import / 类体这种定义时的执行、落不到 index 里的都不算。
     keymap：录制时的键 → 现在的（align.key_mapper；录制之后改过的文件里函数挪了位置），没给就原样用。
-    redirect：同一个 run（阶段、时间段）的 hot["redirect"]——构造 C(…) 跑到的 __init__ 这类，模块图上算在 F→C 上
-    （align.classify），这里也算到 C 的文件上，时刻才落在图上画着的那条边上"""
+    redirect：同一个 run（阶段、时间段）的 hot["redirect"]（trace 的键对 → 类）——构造 C(…) 跑到的 __init__ 这类，
+    模块图上算在 F→C 上（align.classify），这里也算到 C 的文件上，时刻才落在图上画着的那条边上"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（codestrata trace --events）")
@@ -342,7 +390,7 @@ def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = Non
             ka, kb = keymap(ka), keymap(kb)
         na = m.of(ka)[0]
         to = redirect.get(f"{ka}|{kb}") if redirect else None
-        nb, defining = (m.file_node(to), False) if to else m.of(kb)
+        nb, defining = (m.file_node(m.syms[to]["f"]), False) if to else m.of(kb)
         if na is None or nb is None or na == nb or defining:
             continue
         k = f"{na}|{nb}"

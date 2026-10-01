@@ -6,6 +6,7 @@
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/seq/edges?run=&open=   切面上每条边在 run 选的阶段里第一次 / 最后一次被调用的时刻和次数
                                   （模块图的「时间顺序」上色）
+    GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程按第一次调用排的函数级调用树（path.py）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
@@ -37,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import cut as _cut
+from . import path as _path
 from . import runs as _runs
 from . import seq as _seq
 from .ui import edge as _edge
@@ -195,6 +197,31 @@ class Handler(BaseHandler):
                     Handler._hots.pop(next(iter(Handler._hots)))
         return hit[0], hit[1], key
 
+    def _first(self, q: dict, hot: dict | None) -> dict | None:
+        """边详情按先后排要的：这个 run（阶段）里每个函数对第一次调用的时刻；没录时序事件的是 None"""
+        ref = (q.get("run") or [""])[0].strip()
+        if not hot or not ref:
+            return None
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+            return _path.first_calls(self.idx, rd, run, phase, hot)
+        except (SystemExit, LookupError, OSError, ValueError):
+            return None
+
+    def _path(self, q: dict):
+        """/api/path：请求路径（path.request_path）。run 必填，@阶段（或 @t=）决定时间段"""
+        ref = (q.get("run") or [""])[0].strip()
+        if not ref:
+            return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+            hot = self._hot(q)[0]
+            return self._json(_path.request_path(self.idx, rd, run, phase, hot))
+        except (SystemExit, LookupError) as e:
+            return self._json({"error": str(e)}, 404)
+        except (OSError, ValueError) as e:
+            return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
+
     def _seq(self, path: str, q: dict):
         """/api/seq/edges：模块图「时间顺序」上色要的数据。run 必填（run id 或 case 名，@阶段决定时间窗）。"""
         ref = (q.get("run") or [""])[0].strip()
@@ -273,6 +300,9 @@ class Handler(BaseHandler):
         if path == "/api/seq/edges":
             return self._seq(path, q)
 
+        if path == "/api/path":
+            return self._path(q)
+
         hot = hot_meta = hot_key = None
         if path in ("/api/graph", "/api/edge", "/api/refs", "/api/file"):
             try:
@@ -311,7 +341,7 @@ class Handler(BaseHandler):
             a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
             if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
                 return self._json({"error": "unknown node"}, 404)
-            return self._json(_edge.edge_detail(self.repo, self.idx, a, b, hot))
+            return self._json(_edge.edge_detail(self.repo, self.idx, a, b, hot, first=self._first(q, hot)))
 
         if path == "/api/search-index":
             if Handler._search is None:

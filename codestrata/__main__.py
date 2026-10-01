@@ -12,6 +12,7 @@ RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -468,6 +469,20 @@ _FS = {"changed": "录制后改过", "mismatch": "录制时就和仓库不一致
        "outside": "不在 index 里", "unknown": "没存哈希"}
 
 
+def cmd_path(a) -> int:
+    from . import path as _path
+    repo = Path(a.repo).resolve()
+    idx = _load_index(repo)
+    run, rd, phase = _runs.resolve(repo, a.run)
+    hot, _ = _runs.load(repo, idx, a.run)
+    try:
+        p = _path.request_path(idx, rd, run, phase, hot)
+    except LookupError as e:
+        raise SystemExit(str(e)) from None
+    print(json.dumps(p, ensure_ascii=False) if a.json else _path.format_text(p, a.depth))
+    return 0
+
+
 def cmd_serve(a) -> int:
     from . import serve as _serve
     return _serve.main(Path(a.repo).resolve(), port=a.port, hot=a.hot, home=a.home)
@@ -551,6 +566,13 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--hot", default=None, metavar="RUN")
     v.add_argument("--home", default=None, help=argparse.SUPPRESS)   # 主菜单（codestrata app）起的：回主菜单的链接
     v.set_defaults(fn=cmd_serve)
+
+    pa = sub.add_parser("path", help="请求路径：一个 run（阶段）里每个进程、每个线程按第一次调用排的函数级调用树")
+    pa.add_argument("repo", nargs="?", default=".")
+    pa.add_argument("run", metavar="RUN", help="run id 或 case 名，可加 @阶段 / @t=起-止（要录了 --events 的 run）")
+    pa.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
+    pa.add_argument("--json", action="store_true", help="打印 JSON（和 /api/path 一样）")
+    pa.set_defaults(fn=cmd_path)
 
     m = sub.add_parser("app", help="主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图（浏览器里）")
     m.add_argument("--port", type=int, default=8930)

@@ -137,6 +137,15 @@ window.CS = window.CS || {};
     short: short,      // 节点的短名（撞名的用补过父目录段的别名，和图上一致）：抽屉标题也用它
     full: full,        // 节点的完整显示名
     _detTok: 0,                   // 面板每换一次内容加一：异步请求回来时据此判断还要不要画
+    noteText: noteText,           // 和 scan 怎么对上的说明（请求路径的行上也用）
+    /* 别的模块（请求路径）要用下面的详情区：换一个令牌、放进 html，返回令牌；异步回来时用 mine 判断还要不要画 */
+    claim: function (html) {
+      var tok = ++this._detTok;
+      delete det.dataset.pkg;
+      det.innerHTML = html;
+      return tok;
+    },
+    mine: function (tok) { return tok === this._detTok; },
     init: function (detEl, data) { det = detEl; D = data; this.reset(); },
 
     /* 展开 / 收起之后换一份切面数据 */
@@ -568,26 +577,36 @@ window.CS = window.CS || {};
     },
 
     _renderEdge: function (E) {
-      var c = E.counts, rt = E.has_runtime;
+      var c = E.counts, rt = E.has_runtime, self = this;
+      // 录了时序事件的 run：函数对可以按第一次调用的先后排（默认按次数）
+      var byTime = E.has_first && this._edgeSort === 't';
+      var shown = !byTime ? E : Object.assign({}, E, { calls: E.calls.slice().sort(function (p, q) {
+        return (p.first == null) - (q.first == null) || (p.first || 0) - (q.first || 0) || q.n - p.n; }) });
       var sub = rt ? 'trace <b>' + c.calls + '</b> 次 · ' + c.pairs + ' 对调用'
                      + (c.only ? ' · 其中 <b>' + c.only + '</b> 次代码里看不出' : '')
                    : c.scan_only + ' 对调用 · 没有叠 run（只看代码里写的）';
       var h = '<h2>' + esc(short(E.a)) + '<span class="arr">→</span>' + esc(short(E.b)) + '</h2>'
         + '<div class="sub">' + sub
         + '<span class="dep" style="margin-left:10px"><button class="chip" data-go="' + esc(E.a) + '">' + esc(short(E.a))
-        + '</button><button class="chip" data-go="' + esc(E.b) + '" style="border-radius:0 999px 999px 0">' + esc(short(E.b)) + '</button></span></div>';
+        + '</button><button class="chip" data-go="' + esc(E.b) + '" style="border-radius:0 999px 999px 0">' + esc(short(E.b)) + '</button></span>'
+        + (rt && E.has_first && E.calls.length > 1 ? '<span class="esort">排序 <button class="chip" data-sort="n" aria-pressed="' + !byTime + '">按次数</button>'
+           + '<button class="chip" data-sort="t" aria-pressed="' + byTime + '" title="按这一段里第一次调用的先后">按先后</button></span>' : '')
+        + '</div>';
       function more(shown, all) {
         return all > shown ? '<p class="hint more">只列了前 ' + shown + ' 对，还有 ' + (all - shown) + ' 对（次数 / 调用处更少）</p>' : '';
       }
       if (E.lines_approx)
         h += '<p class="hint">时间段的次数来自时序事件，不带调用行：每一行的次数是按整个 run 记的调用行比例摊的</p>';
-      h += rt ? (callCards(E) || '<p class="hint">这次运行没有跨这条边的调用</p>') + more(E.calls.length, c.pairs)
+      h += rt ? (callCards(shown) || '<p class="hint">这次运行没有跨这条边的调用</p>') + more(E.calls.length, c.pairs)
               : scanCards(E.scan_only) + more(E.scan_only.length, c.scan_only);
       if (rt && E.scan_only.length)
         h += '<details class="efold"><summary>代码里写了，这次没录到<span class="n">' + c.scan_only + '</span></summary>'
           + scanCards(E.scan_only) + more(E.scan_only.length, c.scan_only) + '</details>';
       det.innerHTML = h;
       this._wireDet(E.a);
+      [].forEach.call(det.querySelectorAll('[data-sort]'), function (b) {
+        b.onclick = function () { self._edgeSort = b.dataset.sort; self._renderEdge(E); };
+      });
     }
   };
 })(window.CS);

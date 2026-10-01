@@ -378,6 +378,8 @@ R 3784145 1 2
   （被调方算一次进入）。只有跨文件的调用，比按阶段看的次数少（页面上注明）。span 不记调用行：每一对的次数按它在整个 run 的
   `func_lines` 里各行的比例摊到行上（`seq.spread_lines`，最大余数法，每对加起来正好是它的次数；整个 run 里没有这一对的记在第 0 行），
   和 scan 比的结果和按阶段看的一样；每行的次数是约数（`hot.lines_approx`，页面上注明）。老 run 没有 `func_lines` 就不给。
+- **请求路径**（`seq.phase_calls` → `path.request_path`，`/api/path`、`codestrata path`）：一个阶段（或时间段）里每个（进程, 线程, 调用方键, 被调方键）
+  的首末时刻和次数，落到 graph 的节点上排成调用树（见 decisions「请求路径」）。线程名来自 keys.json 的 `threads`，进程名来自 detail.json 的 `procs`（`title`、`argv`）。
 - **时间顺序**（`seq.edge_times`，`/api/seq/edges`）：一个阶段（或时间段）里，切面上每条节点间的边
   `{first, last, n, spread, repeat}`。阶段的时间段来自 `phase_log`：各段左闭右开，最后一段闭到 run 的终点；
   终点 = max(`duration_s`、最后一次切阶段、所有块的 `t1_us`)（`seq.run_end`）。`repeat` = 至少 5 次，且同一进程里第一次到最后一次
