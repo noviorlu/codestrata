@@ -674,6 +674,9 @@ body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{dis
 .ln-link.spawn.hover,.ln-link.join.hover{stroke-width:2.2}
 .ln-link.sel{stroke-width:3.4;opacity:1}
 .ln-e.bg,.ln-link.bg{opacity:.25}
+/* 选中节点 / 边 / 连线时，和它不相干的淡下去（同模块图的 .e.dim）；碰到选中节点的边和连线加粗 */
+.ln-e.dim,.ln-link.dim{opacity:.08}.ln-ltxt.dim,.ecnt.dim{opacity:.1}
+.ln-e.hi{stroke-width:2.6}.ln-link.hi{stroke-width:3;opacity:1}
 .ln-e.tm{stroke-width:2}
 .ln-link.tm{opacity:1}
 .tord .tn.on rect{stroke:var(--sel);stroke-width:2}

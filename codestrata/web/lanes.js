@@ -501,16 +501,42 @@ window.CS = window.CS || {};
 
     unselect: function () { this.sel = this.selMany = null; this.applySel(); if (this.tw) this.twins(null, false); },
 
+    /* 选中之后和模块图一样：选中的那一条（几条）和它两头的节点照常，其余的淡下去。选中节点：它在各列里的每一份、
+       列里碰到它的边、列之间碰到它的连线都高亮，这些边和连线另一头的节点照常 */
     applySel: function () {
-      var s = this.sel, many = this.selMany;
+      var s = this.sel, many = this.selMany, id = s && s.indexOf('n:') === 0 ? s.slice(2) : null;
+      var keep = null, hi = {};                      // 照常的节点（"列|节点"）、高亮的边 / 连线
+      function ends(E) {
+        return E.kind === 'edge' ? [E.lane.id + '|' + E.e.a, E.lane.id + '|' + E.e.b]
+          : [E.k.from.lane + '|' + E.k.from.node, E.k.to.lane + '|' + E.k.to.node];
+      }
+      if (s) {
+        keep = {};
+        this.edges.concat(this.links).forEach(function (E) {
+          var on = id ? (E.kind === 'edge' ? E.e.a === id || E.e.b === id : E.k.from.node === id || E.k.to.node === id)
+            : s === E.key || (!!many && many.indexOf(E.key) >= 0);
+          if (!on) return;
+          hi[E.key] = 1;
+          ends(E).forEach(function (k) { keep[k] = 1; });
+        });
+        if (id) this.nodes.forEach(function (x) { if (x.id === id) keep[x.lane + '|' + x.id] = 1; });
+      }
       this.edges.concat(this.links).forEach(function (E) {
-        var on = s === E.key || (!!many && many.indexOf(E.key) >= 0);
-        E.p.classList.toggle('sel', on);
+        var on = !!hi[E.key], dim = !!keep && !on;
+        E.p.classList.toggle('sel', on && !id);
+        E.p.classList.toggle('hi', on && !!id);
+        E.p.classList.toggle('dim', dim);
+        if (E.lab) E.lab.classList.toggle('dim', dim);
         if (on) [E.p, E.lab].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
-      var id = s && s.indexOf('n:') === 0 ? s.slice(2) : null;
-      this.nodes.forEach(function (x) { x.g.classList.toggle('sel', !!id && x.id === id); });
-      if (this.tg) [].forEach.call(this.tg.childNodes, function (g) { g.classList.toggle('on', g.dataset.key === s); });
+      this.nodes.forEach(function (x) {
+        x.g.classList.toggle('sel', !!id && x.id === id);
+        x.g.classList.toggle('dim', !!keep && !keep[x.lane + '|' + x.id]);
+      });
+      if (this.tg) [].forEach.call(this.tg.childNodes, function (g) {
+        g.classList.toggle('on', g.dataset.key === s);
+        g.classList.toggle('dim', !!keep && !hi[g.dataset.key]);
+      });
       this.codeTags(this.links.filter(function (E) { return E.key === s; })[0]);
     },
 
