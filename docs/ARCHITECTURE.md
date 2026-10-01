@@ -107,8 +107,8 @@ flowchart LR
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 57 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 919 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
-| `web/graph.js` | 651 | SVG 绘图（纯函数式），边的配色约定 |
+| `web/app.js` | 927 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/graph.js` | 686 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 593 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
 | `web/viewer.js` | 446 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |

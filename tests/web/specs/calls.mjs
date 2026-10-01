@@ -19,6 +19,43 @@ export default async function (t) {
   ok(only > 0 && only < n && (await page.ev(`${TC}.tip.textContent`)).includes('其中 ' + only + ' 次代码里看不出'),
      `部分代码里看不出：画实线，悬停写明其中 ${only} 次`);
 
+  // 点得中：跑到的边沿线上，最上面的命中区是跑到的边；点次数标签开的是它自己那条边；看得见的标签互不重叠
+  const along = await page.ev(`(() => {
+    const bad = [];
+    CS.graph.edges.filter(E => E.hits > 0 && E._show).forEach(E => {
+      const L = E.x.getTotalLength(), m = E.x.getScreenCTM();
+      [0.3, 0.5, 0.7].forEach(f => {
+        const p = E.x.getPointAtLength(L * f), x = p.x * m.a + p.y * m.c + m.e, y = p.x * m.b + p.y * m.d + m.f;
+        const top = document.elementsFromPoint(x, y).find(el => el.classList && el.classList.contains('ehit'));
+        const T = top && CS.graph.edges.find(G => G.x === top);
+        if (T && !T.hits) bad.push(E.a + '|' + E.b + '@' + f);
+      });
+    });
+    return bad;
+  })()`);
+  ok(along.length === 0, '跑到的边沿线上点到的不会是没跑到的灰边 ' + JSON.stringify(along));
+  const labs = await page.ev(`CS.graph.edges.filter(E => E.lab && E._show && E.lab.style.display !== 'none').map(E => E.a + '|' + E.b)`);
+  let wrong = [];
+  for (const k of labs) {
+    const r = await page.ev(`(E => { CS.graph.showEl(E.lab); const b = E.lab.getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2}; })(CS.graph.edges.find(E => E.a + '|' + E.b === ${JSON.stringify(k)}))`);
+    await sleep(100);
+    await page.mouse('mouseMoved', r.x, r.y); await page.mouse('mousePressed', r.x, r.y, 1); await page.mouse('mouseReleased', r.x, r.y);
+    await sleep(200);
+    if (await page.ev('CS.graph.state.selEdge') !== k) wrong.push(k);
+    await page.key('Escape', 'Escape', 27);
+  }
+  ok(labs.length > 0 && wrong.length === 0, `点 ${labs.length} 个次数标签，开的都是自己那条边 ` + JSON.stringify(wrong));
+  const overlap = await page.ev(`(() => {
+    const bs = CS.graph.edges.filter(E => E.lab && E._show && E.lab.style.display !== 'none').map(E => E.lab.getBBox());
+    let n = 0;
+    for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
+      const a = bs[i], b = bs[j];
+      if (a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y) n++;
+    }
+    return n;
+  })()`);
+  ok(overlap === 0, '次数标签互不重叠（' + overlap + ' 对重叠）');
+
   // 边详情：卡片按「谁调了谁」；代码里看不出的带标记、from 是调用写在哪一行
   await clickEdge(page, 'fakesvc/truth.py', 'fakesvc/callee.py');
   ok(await page.wait(`document.querySelectorAll('#det .call').length > 0`), '详情里有调用卡片');
@@ -64,12 +101,15 @@ export default async function (t) {
   await page.click('#edgechips [data-t="dyn"]');
   await sleep(300);
   ok(await page.ev(`CS.graph.edges.filter(E => E.dashed).every(E => E._show)`), '再打开：回来了');
+  const hotN = await page.ev(`+document.querySelector('#edgechips [data-t="hot"] .n').textContent`);
+  ok(hotN === await page.ev(`CS.graph.edges.filter(E => E.hits > 0).length`), '「这次跑了」数的是全部跑到的边（虚线也算）：' + hotN);
   await page.click('#edgechips [data-t="hot"]');
   await sleep(300);
-  ok(await page.ev(`CS.graph.edges.filter(E => E.dashed).every(E => E._show && E._dyn) && !CS.graph.edges.some(E => E._warm)`),
-     '关掉「这次跑了」：橙实线退回去，虚线还在');
+  ok(await page.ev(`!CS.graph.edges.some(E => E._warm || E._dyn) && document.querySelector('#edgechips [data-t="dyn"]').disabled`),
+     '关掉「这次跑了」：跑到的边都不画了，「其中代码里看不出」点不了');
   await page.click('#edgechips [data-t="hot"]');
   await sleep(300);
+  ok(await page.ev(`CS.graph.edges.filter(E => E.dashed).every(E => E._dyn) && !document.querySelector('#edgechips [data-t="dyn"]').disabled`), '再打开：都回来');
 
   // 构造：代码里写的 Runner(…)，跑的是 Runner.__init__，卡片上说明
   await clickEdge(page, 'dyn/main.py', 'dyn/runner.py');

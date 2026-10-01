@@ -66,7 +66,7 @@ window.CS = window.CS || {};
         self.wireDrawer();
         CS.graph.onExpand = function (id) { self.expand(id); };
         CS.graph.phaseMarks = self.phaseMarks();
-        CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
+        CS.graph.draw(document.getElementById('g'), CS.graph.state.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                       { rtOnly: d.runtimeOnlyEdges });
         self.applyTimes();
         self.edgeChips();
@@ -382,10 +382,14 @@ window.CS = window.CS || {};
       var self = this, b = document.getElementById('runbtn'), pc = document.getElementById('phasechips');
       if (!b) return;
       var d = this.data, m = d && d.hot && d.hotMeta;
+      var oh = document.querySelector('[data-t="onlyhot"]');
       if (!m && CS.graph.state.onlyHot) {       // 换成了静态图：「只看跑到的」没有意义了（不关掉会把节点全藏起来）
         CS.graph.state.onlyHot = false;
-        var oh = document.querySelector('[data-t="onlyhot"]');
         if (oh) oh.setAttribute('aria-pressed', 'false');
+      } else if (m && !CS.graph.state.onlyHot && !this._onlyHotChosen && d.graphHot) {
+        // 叠了 run 默认只看跑到的（用户 09-30 定的）：首屏就是这次走过的路；用户自己关过就不再替他打开
+        CS.graph.state.onlyHot = true;
+        if (oh) oh.setAttribute('aria-pressed', 'true');
       }
       b.classList.toggle('on', !!m);
       b.textContent = m ? m.case + ' · ' + shortTime(m.created) : '静态图';
@@ -667,8 +671,9 @@ window.CS = window.CS || {};
       var c = CS.graph.counts, hot = !!CS.graph.hot, s = CS.graph.state;
       var defs = [['scan', 'e', '代码里的调用', c.scan, '代码里写了、scan 定下了被调方的调用（灰实线；跑到了的画成橙色）', false]];
       if (hot) {
-        defs.push(['hot', 'e warm', '这次跑了', c.warm, '这次 case 真的调用过、代码里也看得出的（橙实线）；粗细不变，边上标调用次数', true]);
-        if (c.dyn) defs.push(['dyn', 'e dyn warm', '代码里看不出', c.dyn, DYN_TIP, true]);
+        defs.push(['hot', 'e warm', '这次跑了', c.warm + c.dyn, '这次 case 真的调用过的边（橙色）；粗细不变，边上标调用次数。'
+                   + (c.dyn ? '其中 ' + c.dyn + ' 条跑到的全是代码里看不出的，画虚线，后一个开关单独管它们' : ''), true]);
+        if (c.dyn) defs.push(['dyn', 'e dyn warm', '其中代码里看不出', c.dyn, DYN_TIP + (s.hot === false ? '。要先开「这次跑了」' : ''), true]);
         if (this.canTimeOrder())
           defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : CS.graph.timed || 0) : '',
                      '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
@@ -679,7 +684,7 @@ window.CS = window.CS || {};
       document.getElementById('edgechips').innerHTML = defs.map(function (x) {
         var tm = x[0] === 'timeorder';            // 时间顺序：开关上画一段起点色 → 终点色的渐变线
         return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="'
-          + (tm ? !!s.timeOrder : s[x[0]] !== false) + '" title="'
+          + (tm ? !!s.timeOrder : s[x[0]] !== false) + '"' + (x[0] === 'dyn' && s.hot === false ? ' disabled' : '') + ' title="'
           + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true">'
           + (tm ? '<defs><linearGradient id="tmchip"><stop offset="0" style="stop-color:var(--tm0)"/>'
                   + '<stop offset=".5" style="stop-color:var(--tm1)"/><stop offset="1" style="stop-color:var(--tm2)"/></linearGradient></defs>'
@@ -805,6 +810,7 @@ window.CS = window.CS || {};
       }
       function exitHot() {                        // 「只看跑到的」里没有它：退出 hot 视图再找
         st.onlyHot = false;
+        self._onlyHotChosen = true;               // 之后换阶段、展开收起不再替用户切回去
         var b = document.querySelector('[data-t="onlyhot"]'); if (b) b.setAttribute('aria-pressed', 'false');
         self.redraw();
         CS.viewer.toast('它这次没跑到，已退出「只看跑到的」');
@@ -878,9 +884,11 @@ window.CS = window.CS || {};
         b.onclick = function () {
           s[key] = b.getAttribute('aria-pressed') !== 'true';
           b.setAttribute('aria-pressed', s[key]);
+          if (key === 'onlyHot') self._onlyHotChosen = true;     // 用户自己点过：之后换 run 不再替他打开
           // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
           if (key === 'onlyHot' && self.data.graphHot) self.redraw();
           else if (key === 'timeOrder') self.applyTimes();
+          else if (key === 'hot') { CS.graph.paint(); self.edgeChips(); self.controls(); }   // 「其中代码里看不出」跟着它能不能点
           else CS.graph.paint();
         };
       });

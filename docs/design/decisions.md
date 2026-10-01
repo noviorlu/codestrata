@@ -88,6 +88,14 @@
 - 放弃的方案：把 `<module>` 帧当普通调用。
 - 在哪：`align.py` 的 `defining`、`to_package_graph`（`module_exec`、`class_frames`）；`seq.py` 的 `_Map.of`。测试 `test_class_body_is_definition_not_call`。
 
+### 叠了 run 默认只看跑到的
+- 决定：选了一个 run 打开，默认是「只看跑到的」（单独排版的运行时图）；开关还在，用户自己关过之后换 run 不再替他打开。
+  「这次跑了」数的是全部跑到的边（实线虚线都算），也管全部；「其中代码里看不出」只管虚线，前一个关着时点不了。
+  点边：跑到的边的命中区在灰边上面，边上的次数、序号牌也能点。
+- 为什么：vllm-omni 上叠了 run 首屏还是 72 个节点、286 条灰边，这次跑到的橙边在屏幕下面；「这次跑了 19」只数实线，实际跑了 39 条；
+  hub 节点旁边在主路径的边上点下去，开的常常是一条 0 次的灰边。
+- 在哪：`web/app.js` 的 `runBar`、`edgeChips`；`web/graph.js` 的 `draw`（命中区的叠放顺序）、`_placeLabels`、`paint`。测试 `tests/web/specs/overlay.mjs`、`calls.mjs`。
+
 ### 图上只有调用边，scan 和 trace 按调用行对上
 - 决定：图上的边只有调用（函数 → 函数，含构造 `C(…)`、装饰器 `@x`、用 property、语法触发的特殊方法），每条边记 scan 看到的和
   trace 看到的。只 import、只读常量、类当参数、类型标注、`isinstance` 不成边；import 关系只当排版的权重。trace 说 F 在第 L 行调了 G，

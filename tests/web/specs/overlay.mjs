@@ -26,16 +26,18 @@ export default async function (t) {
   ok(await waitRun(page, fx.a) && await page.ev(`document.getElementById('readnote').hidden`), '刷新之后还是关着');
   await page.ev(`localStorage.removeItem('codestrata.readnote')`);
 
-  // 只看跑到的：没跑到、也不在路径上的节点藏起来
-  const all = (await drawnNodes(page)).length;
+  // 叠了 run 默认只看跑到的：没跑到、也不在路径上的节点藏起来；点一下回全图，再点回来
+  ok(await page.ev(`document.querySelector('[data-t="onlyhot"]').getAttribute('aria-pressed')`) === 'true', '叠了 run 默认「只看跑到的」');
+  const only = await drawnNodes(page);
+  ok(only.includes('fakesvc/truth.py') && only.includes('fakesvc/work.py') && !only.includes('fakesvc/race.py'),
+     `只看跑到的：${only.length} 个节点（race 这类没跑到的藏起来）`);
   await page.click('[data-t="onlyhot"]');
   await sleep(500);
-  const only = await drawnNodes(page);
-  ok(only.length < all && only.includes('fakesvc/truth.py') && only.includes('fakesvc/work.py') && !only.includes('fakesvc/race.py'),
-     `只看跑到的：${all} → ${only.length} 个节点（race 这类没跑到的藏起来）`);
+  const all = (await drawnNodes(page)).length;
+  ok(all > only.length && (await drawnNodes(page)).includes('fakesvc/race.py'), `关掉：回到全图 ${all} 个节点`);
   await page.click('[data-t="onlyhot"]');
   await sleep(400);
-  ok((await drawnNodes(page)).length === all, '再点一次：节点都回来');
+  ok((await drawnNodes(page)).length === only.length, '再点一次：又只看跑到的');
 
   // 点一条跑到的边：详情里是调用的函数和次数
   await clickEdge(page, 'fakesvc/truth.py', 'fakesvc/callee.py');

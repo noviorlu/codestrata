@@ -120,7 +120,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .e.warm{stroke:var(--hot);opacity:.85}
 .e.dyn{stroke-dasharray:6 3}
 /* 边上的调用次数：描一圈底色，压在线上也看得清 */
-.ecnt{font:600 9.5px/1 ui-monospace,monospace;fill:var(--hot);stroke:var(--card);stroke-width:3px;paint-order:stroke;pointer-events:none}
+.ecnt{font:600 9.5px/1 ui-monospace,monospace;fill:var(--hot);stroke:var(--card);stroke-width:3px;paint-order:stroke;cursor:pointer}
 .ecnt.dim{opacity:.1}.ecnt.tm{fill:var(--ink)}
 /* dim / hi 必须写在 warm 后面：同优先级后者覆盖。早先顺序反了，
    runtime 边在选中别的节点时永远不淡化，看起来像和选中节点相关。
@@ -131,6 +131,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .halo.hover{opacity:.13}.halo.on{opacity:.45}
 .gap{fill:none;stroke:var(--card);stroke-width:6;opacity:0;pointer-events:none}.gap.on{opacity:1}
 .ehit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer;pointer-events:stroke}
+.ehit.cold{stroke-width:7}             /* 没跑到的灰边命中区窄一点：挨着跑到的边时不抢点击 */
 .nd{cursor:pointer}
 .nd rect{fill:var(--card);stroke:var(--line);stroke-width:1.2;rx:6}
 .nd .nl{font-size:11.5px;font-weight:600;fill:var(--ink);dominant-baseline:middle}
@@ -171,6 +172,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .tlab{font:11.5px/1 ui-monospace,monospace;color:var(--muted);white-space:nowrap}
 /* 时间顺序：上了色的边（颜色写在 style 上）、中点的序号牌、图例的渐变条 */
 .tord{pointer-events:none}
+.tord .tn{pointer-events:auto;cursor:pointer}
 .tord .tn text{font-size:9.5px;font-weight:700;fill:var(--tmtext)}
 .tord .tn text.rep{font-size:12px}
 .tord .tn.dim{opacity:.12}

@@ -149,10 +149,11 @@ window.CS = window.CS || {};
       // import 时执行的模块顶层），少了它边就没有起点。和 payload 里 graphHot 的节点同一个口径
       this.onPath = {};
       for (var ek in hotEd) if (hotEd[ek]) ek.split('|').forEach(function (x) { self.onPath[x] = 1; });
-      // 四层：光晕在最下，可见的边、边上的次数在中间，透明的宽命中区在最上（但仍在节点下面，节点照样能点）
+      // 四层：光晕在最下，可见的边在中间，透明的宽命中区在上面，边上的次数在命中区上面（点次数开的是它自己那条边）；
+      // 都在节点下面，节点照样能点
       var hg = el('g', {}), eg = el('g', {}), lg = el('g', { class: 'ecnts' }), xg = el('g', {});
-      this.tg = el('g', { class: 'tord' });     // 时间顺序的序号牌：画在节点上面（见下面），不挡点击
-      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(lg); svg.appendChild(xg); svg.appendChild(fh);
+      this.tg = el('g', { class: 'tord' });     // 时间顺序的序号牌：画在节点上面（见下面），点了开它那条边
+      svg.appendChild(hg); svg.appendChild(eg); svg.appendChild(xg); svg.appendChild(lg); svg.appendChild(fh);
       // 框头上的数紧跟在名字后面：名字的实际宽度要画出来才量得准（估算对长名字会偏）
       Object.keys(this.heads).forEach(function (f) {
         var h = self.heads[f], w = h._label.getComputedTextLength ? h._label.getComputedTextLength() : 0;
@@ -170,7 +171,7 @@ window.CS = window.CS || {};
         E.halo = el('path', { d: d, class: 'halo' });
         E.gap = el('path', { d: d, class: 'gap' });   // 光晕中间垫一道底色，虚线在蓝底上才看得清
         E.p = el('path', { d: d });
-        E.x = el('path', { d: d, class: 'ehit' });
+        E.x = el('path', { d: d, class: 'ehit' + (hits ? '' : ' cold') });
         var tip = el('title', {});
         tip.textContent = src + ' → ' + dst + '\n'
           + (scan ? '代码里写了 ' + scan + ' 处调用' : '代码里没写这两者之间的调用')
@@ -178,10 +179,11 @@ window.CS = window.CS || {};
                                                  : only ? '，其中 ' + only + ' 次代码里看不出' : '') : '')
           + '\n点击看具体是哪些函数';
         E.x.appendChild(tip); E.tip = tip; E.tipBase = tip.textContent;
-        E.x.onclick = function (ev) {
+        E.click = function (ev) {
           ev.stopPropagation();
           if (self.state.selEdge === key) self.clear(); else self.pickEdge(src, dst);   // 再点一次取消选中
         };
+        E.x.onclick = E.click;
         E.x.onmouseenter = function () { E.p.classList.add('hover'); E.halo.classList.add('hover'); };
         E.x.onmouseleave = function () { E.p.classList.remove('hover'); E.halo.classList.remove('hover'); };
         hg.appendChild(E.halo); hg.appendChild(E.gap); eg.appendChild(E.p); xg.appendChild(E.x);
@@ -190,6 +192,7 @@ window.CS = window.CS || {};
           if (pt) {
             E.lab = el('text', { x: pt.x, y: pt.y + 3, class: 'ecnt', 'text-anchor': 'middle' });
             E.lab.textContent = fmtN(hits);
+            E.lab.onclick = E.click;
             lg.appendChild(E.lab);
           }
         }
@@ -198,7 +201,10 @@ window.CS = window.CS || {};
       }
       G.edges.forEach(function (e) { add(e[0], e[1], e[2], hotEd[e[0] + '|' + e[1]] || 0); });
       rtOnly.forEach(function (e) { add(e[0], e[1], 0, e[2]); });
+      // 几条边的命中区叠在一起时，点到的是最上面那条：跑到的边放在上面（次数多的更上面），没跑到的灰边垫底
+      this.edges.slice().sort(function (p, q) { return p.hits - q.hits; }).forEach(function (E) { xg.appendChild(E.x); });
       this.counts = cnt;
+      this._labKey = null;
 
       var ng = el('g', {}); svg.appendChild(ng); this.nodes = {};
       G.nodes.forEach(function (n) {
@@ -402,6 +408,33 @@ window.CS = window.CS || {};
       });
     },
 
+    /* 边上的次数：先试路径的中点，被节点框或已经放下的标签挡住就沿着路径往两边挪；次数多的先占位置。
+       看得见的标签没变就不重排（选中、悬停也会 paint） */
+    _placeLabels: function () {
+      var self = this, labs = this.edges.filter(function (E) { return E.lab && E.lab.style.display !== 'none'; });
+      var key = labs.map(function (E) { return E.a + '|' + E.b; }).join(',') + '#' + Object.keys(this.nodes).filter(function (id) { return self.vis(id); }).length;
+      if (key === this._labKey) return;
+      this._labKey = key;
+      var placed = Object.keys(this.N || {}).filter(function (id) { return self.vis(id); }).map(function (id) {
+        var n = self.N[id]; return [n.cx - n.w / 2 - 2, n.cy - n.h / 2 - 2, n.cx + n.w / 2 + 2, n.cy + n.h / 2 + 2];
+      });
+      function box(p, w) { return [p.x - w / 2, p.y - 6, p.x + w / 2, p.y + 6]; }
+      function free(r) { return !placed.some(function (b) { return r[0] < b[2] && r[2] > b[0] && r[1] < b[3] && r[3] > b[1]; }); }
+      labs.sort(function (p, q) { return q.hits - p.hits; }).forEach(function (E) {
+        var w = 6.2 * E.lab.textContent.length + 4;
+        if (!E._len) E._len = E.p.getTotalLength();
+        var at = null;
+        [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82].some(function (f) {
+          var p = E.p.getPointAtLength(E._len * f);
+          if (free(box(p, w))) { at = p; return true; }
+          return false;
+        });
+        at = at || E.p.getPointAtLength(E._len / 2);
+        placed.push(box(at, w));
+        E.lab.setAttribute('x', at.x); E.lab.setAttribute('y', at.y + 3);
+      });
+    },
+
     /* 时间顺序的序号牌：上了色的边上画一个同色的小牌子「序号」，反复调用的在序号后面加一个 ↻。
        位置先试路径的中点，被节点框、次数标签或已经放下的牌子挡住就沿着路径往两边挪（0.4、0.6、0.3 …） */
     _paintOrder: function (keep) {
@@ -434,6 +467,7 @@ window.CS = window.CS || {};
           at = at || E.p.getPointAtLength(E._len / 2);
           placed.push([at.x - w / 2, at.y - 8, at.x + w / 2, at.y + 8]);
           var g = el('g', { class: 'tn' + (keep && !E._mine ? ' dim' : '') });
+          g.onclick = E.click;
           g.appendChild(el('rect', { x: at.x - w / 2, y: at.y - 7.5, width: w, height: 15, rx: 7.5, fill: E._tc }));
           var t = el('text', { x: at.x - (E._t.repeat ? 5 : 0), y: at.y + 3.5, 'text-anchor': 'middle' });
           t.textContent = num; g.appendChild(t);
@@ -530,9 +564,9 @@ window.CS = window.CS || {};
     paint: function () {
       var s = this.state, self = this, keep = null;
       this.edges.forEach(function (E) {
-        // 跑了的边：全是代码里看不出的画虚线（「代码里看不出」开关），其余画橙实线（「这次跑了」开关）；
-        // 关掉对应的开关，代码里写了的退回灰实线，没写的整条不画
-        E._dyn = E.hits > 0 && E.dashed && s.dyn;
+        // 跑了的边（「这次跑了」开关管全部）：全是代码里看不出的画虚线（「代码里看不出」再单独管它们），其余画橙实线；
+        // 关掉开关，代码里写了的退回灰实线，没写的整条不画
+        E._dyn = E.hits > 0 && E.dashed && s.hot && s.dyn;
         E._warm = E.hits > 0 && s.hot && !E.dashed;
         E._show = (E._warm || E._dyn || (E.scan > 0 && s.scan)) && self.vis(E.a) && self.vis(E.b);
       });
@@ -576,6 +610,7 @@ window.CS = window.CS || {};
         // 选中的边挪到各自那一层的最上面：线可以叠在一起，但选中时要看得出哪根指到哪
         if (mine) [E.halo, E.gap, E.p, E.lab, E.x].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
+      this._placeLabels();
       this._paintOrder(keep);
       Object.keys(this.nodes).forEach(function (id) {
         var g = self.nodes[id];
