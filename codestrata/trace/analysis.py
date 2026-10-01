@@ -6,6 +6,7 @@
     part-<pid>-<t0ns>.json    {pid, ppid, argv, t0, t, why, py, phase,
                                funcs:      {"<relfile>:<firstlineno>": 次数},  # 模块顶层记为 <relfile>:0
                                func_edges: {"<调用方>|<被调方>": 次数},          # 函数粒度，真正的 caller→callee
+                               func_lines: {"<调用方>|<被调方>|<行>": 次数},     # 同上按调用方当时的行分开（拿不到是 0）
                                names:      {"<relfile>:<firstlineno>": qualname}, mapped: {...}}
     part-<pid>-<t0ns>@<n>-<阶段>.json    切阶段时的累计快照
 merge() 把它们合成各阶段的计数；放到当前 index 的节点上是加载 run 时的事（align.py），
@@ -301,13 +302,16 @@ def merge(parts: Path) -> dict:
       part-<pid>.json、part-<pid>@<n>-<阶段>.json                 （老的）
     阶段总是保留，只有一个阶段时也保留（它的名字也是信息）。
 
-    返回 {phases: {阶段: {funcs, func_edges}}, funcs, func_edges, file_edges, names, mapped,
+    返回 {phases: {阶段: {funcs, func_edges, func_lines?}}, funcs, func_edges, func_lines?, file_edges, names, mapped,
           shas: {rel: 进程第一次跑到它时的内容哈希}, sha_conflicts: [不同进程看到的内容不一样的文件],
           bad_parts: [读不出来的分片],
           procs: [{pid, ppid, argv, argv_cut, title, n_funcs, t0, t, why, py}]}；
-    funcs / func_edges 是各阶段之和。"""
+    funcs / func_edges / func_lines 是各阶段之和。func_lines（调用写在调用方的哪一行）只有分片里带着它时才有：
+    之前录的 run 没有。"""
     funcs: dict[str, int] = {}
     fedges: dict[str, int] = {}
+    flines: dict[str, int] = {}
+    lines = False                              # 有没有分片带着调用行（之前录的都没有）
     names: dict[str, str] = {}
     mapped: dict[str, str] = {}
     procs: list[dict] = []
@@ -333,18 +337,23 @@ def merge(parts: Path) -> dict:
             except Exception:
                 bad.append(sp.name)
                 continue
-            seq.append((sp.name.split("@", 1)[1][:-5].split("-", 1)[1], sd["funcs"], sd["func_edges"]))
-        seq.append((d.get("phase") or "start", d.get("funcs") or {}, d.get("func_edges") or {}))
+            lines = lines or "func_lines" in sd
+            seq.append((sp.name.split("@", 1)[1][:-5].split("-", 1)[1], sd["funcs"], sd["func_edges"],
+                        sd.get("func_lines") or {}))
+        lines = lines or "func_lines" in d
+        seq.append((d.get("phase") or "start", d.get("funcs") or {}, d.get("func_edges") or {},
+                    d.get("func_lines") or {}))
         pf: dict = {}
         pe: dict = {}
-        for name, fu, fe in seq:
-            ph = phases.setdefault(name, {"funcs": {}, "func_edges": {}})
-            for src, prev, dst in ((fu, pf, ph["funcs"]), (fe, pe, ph["func_edges"])):
+        pl: dict = {}
+        for name, fu, fe, fl in seq:
+            ph = phases.setdefault(name, {"funcs": {}, "func_edges": {}, "func_lines": {}})
+            for src, prev, dst in ((fu, pf, ph["funcs"]), (fe, pe, ph["func_edges"]), (fl, pl, ph["func_lines"])):
                 for k, v in src.items():
                     dv = v - prev.get(k, 0)
                     if dv > 0:
                         dst[k] = dst.get(k, 0) + dv
-            pf, pe = fu, fe
+            pf, pe, pl = fu, fe, fl
         procs.append({"pid": d.get("pid"), "ppid": d.get("ppid"), "argv": d.get("argv"),
                       "argv_cut": bool(d.get("argv_cut")), "title": d.get("title"),
                       "n_funcs": len(d.get("funcs") or {}), "t0": d.get("t0"), "t": d.get("t"),
@@ -358,10 +367,15 @@ def merge(parts: Path) -> dict:
             funcs[k] = funcs.get(k, 0) + v
         for k, v in (d.get("func_edges") or {}).items():
             fedges[k] = fedges.get(k, 0) + v
+        for k, v in (d.get("func_lines") or {}).items():
+            flines[k] = flines.get(k, 0) + v
         for k, v in (d.get("names") or {}).items():
             names.setdefault(k, v)
         mapped.update(d.get("mapped") or {})
-    phases = phases or {"start": {"funcs": {}, "func_edges": {}}}
+    phases = phases or {"start": {"funcs": {}, "func_edges": {}, "func_lines": {}}}
+    if not lines:                              # 之前录的：没有调用行这一项（不是「一次调用都没有」）
+        for ph in phases.values():
+            ph.pop("func_lines", None)
     # 文件粒度的边由函数粒度派生（跨文件的才算），只用来打印摘要；调用方是 case 的代码（<外部代码>/…）
     # 的不算——图上没有它，摘要里的条数要和图对得上
     edges: dict[str, int] = {}
@@ -372,7 +386,8 @@ def merge(parts: Path) -> dict:
             ek = f"{fa}|{fb}"
             edges[ek] = edges.get(ek, 0) + v
     procs.sort(key=lambda p: (p["t0"] or 0, p["pid"] or 0))
-    return {"phases": phases, "funcs": funcs, "func_edges": fedges, "file_edges": edges,
+    return {"phases": phases, "funcs": funcs, "func_edges": fedges, **({"func_lines": flines} if lines else {}),
+            "file_edges": edges,
             "names": names, "mapped": mapped, "shas": shas, "sha_conflicts": sorted(conflicts),
             "bad_parts": sorted(bad), "procs": procs, "n_procs": len(procs)}
 

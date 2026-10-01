@@ -1392,6 +1392,44 @@ def test_time_window():
         assert "--events" in str(e), e
 
 
+def test_call_lines():
+    """trace 记调用写在调用方的哪一行（func_lines）：3.12 的 sys.monitoring 和 3.10 的 setprofile 两条路一样；
+    同一条边各行相加等于 func_edges；录制之后函数整个下移了几行，调用行跟着挪（align.remap）"""
+    repo = fresh()
+    off = repo / "fakesvc" / "offline.py"
+    lines = off.read_text().splitlines()
+    main_l = next(i for i, x in enumerate(lines, 1) if x.startswith("def main"))
+    want = {next(i for i, x in enumerate(lines, 1) if s in x and i > main_l)
+            for s in ("e = Engine()", "e.generate(", "e.close()", "make_hook()()")}
+    py310 = next((p for p in [os.path.expanduser("~/miniconda3/envs/ttt/bin/python"), shutil.which("python3.10")]
+                  if p and os.path.exists(p)), None)
+    for case, py in (("cl", PY), ("cl310", py310)):
+        if not py:
+            print("  （没有 python3.10：跳过 setprofile 那条路）")
+            continue
+        cs("trace", repo, "--case", case, "--", py, "-m", "fakesvc.offline")
+        run, rd, _ = runs.resolve(repo, case)
+        assert run["schema"] == 3, run["schema"]
+        for ph in runs.read_json(rd / "counts.json.gz", gz=True)["phases"].values():
+            per: dict = {}
+            for k, n in ph["func_lines"].items():
+                e = k.rpartition("|")[0]
+                per[e] = per.get(e, 0) + n
+            assert per == ph["func_edges"], (case, per, ph["func_edges"])
+        c = runs.load_counts(rd, None)
+        got = {int(k.rpartition("|")[2]) for k in c["func_lines"] if k.startswith(f"fakesvc/offline.py:{main_l}|")}
+        assert got == want, (case, got, want)
+    # 录制之后 main 整个下移 3 行、重新 scan：调用行跟着挪
+    off.write_text("# a\n# b\n# c\n" + off.read_text())
+    cs("scan", repo)
+    idx = ui_load.load_index(repo)
+    run, rd, _ = runs.resolve(repo, "cl")
+    counts, names = runs.load_counts(rd, None, with_names=True)
+    moved, _ = align.remap(counts, names, runs.file_state(repo, idx, runs.read_json(rd / "detail.json")), idx)
+    got = {int(k.rpartition("|")[2]) for k in moved["func_lines"] if k.startswith(f"fakesvc/offline.py:{main_l + 3}|")}
+    assert got == {l + 3 for l in want}, (got, want)
+
+
 def test_remap_moved_functions():
     """M6：录制之后把函数下移几行、重新 scan：按 qualname 挪回来，hot.symbols 的次数不变；
     包的 __init__.py 里的函数、嵌套函数、装饰过的函数也对得上；lambda 算 unmatched。"""

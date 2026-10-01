@@ -42,7 +42,13 @@ _out = os.environ.get("CODESTRATA_OUT")
 if _root and _out:
     _root = os.path.realpath(_root)
     _funcs = {}          # "rel:firstlineno" -> 被调次数（模块顶层是 "rel:0"）
-    _fedges = {}         # "调用者key|被调者key" -> 次数（函数粒度，真正的 caller→callee）
+    # (调用者key, 被调者key, 调用者当时执行到的指令偏移) -> 次数（函数粒度，真正的 caller→callee）。
+    # 热路径上只用元组做键、不拼字符串，记指令偏移（f_lasti）不记行号：3.12 上 f_lineno 要从函数头一路
+    # 解码行号表，函数越长越慢（200 行的函数尾部近 1 μs），f_lasti 是现成的。写文件时（_write）才按调用者的
+    # code（_fcode，每个调用处第一次见到时记下）换成行号，拆成 func_edges「a|b」和 func_lines「a|b|行」
+    _fcalls = {}
+    _fcode = {}
+    _ltab = {}               # id(code) -> [(起, 止, 行)]：指令偏移 -> 行号
     _mapped = {}         # 从安装包映射回仓库的文件：rel -> 实际执行的路径
     _names = {}          # "rel:firstlineno" -> co_qualname（代码改了行号之后按名字找回符号用）
     _shas = {}           # rel -> 实际执行的那个文件的内容哈希（第一次跑到它时取；录制中途改了文件也认得出）
@@ -214,7 +220,8 @@ if _root and _out:
             del _xf[fr]
         _ev.append("%s %d %d %d" % (tag, (time.monotonic_ns() - _t0[0]) // 1000, _ev_tid(), x[0]))
 
-    def _enter(code, count):
+    def _enter(code, count, fr=None):
+        # fr：被调方的帧（setprofile 给的）；sys.monitoring 的回调只给 code，要时再取（_enter ← 回调 ← 被调方的帧）
         rel = _rel(code)
         if rel is None:
             return False
@@ -235,8 +242,24 @@ if _root and _out:
                 _funcs[k] = n + 1
             if st and st[-1] != k and rel[0] != "<":   # 递归自调用不算边；被调的是 case 的代码也不记
                                                        # （不上图，只在栈上当调用方；它自己调来调去不能耗掉事件额度）
-                ek = st[-1] + "|" + k
-                _fedges[ek] = _fedges.get(ek, 0) + 1
+                # 调用写在哪一行：从被调方的帧往外找最近的仓库帧（中间隔着仓库外的帧——框架的 __call__、
+                # map 这类——就跳过），就是栈顶的调用方，它这时停在哪一行，调用就写在哪一行
+                f = (fr if fr is not None else sys._getframe(2)).f_back
+                while f is not None:
+                    c = f.f_code
+                    r = _relc.get(c.co_filename, 0)       # _rel 的缓存，热路径上省一次函数调用
+                    if r == 0:
+                        r = _rel(c)
+                    if r is not None:
+                        break
+                    f = f.f_back
+                ck = (st[-1], k, f.f_lasti if f is not None else -1)
+                n = _fcalls.get(ck)
+                if n is None:
+                    _fcalls[ck] = 1
+                    _fcode[ck] = f.f_code if f is not None else None
+                else:
+                    _fcalls[ck] = n + 1
                 if _EV and st[-1].rpartition(":")[0] != rel:
                     _ev_call(st[-1], k, code)
                 elif _EV and id(code) in _xc:
@@ -351,11 +374,33 @@ if _root and _out:
     def _base():
         return os.path.join(_out, "part-%d-%d" % (os.getpid(), _t0[0]))
 
+    def _line_at(code, off):
+        # 指令偏移 -> 行号（和 f_lineno 一样的结果）；拿不到是 0
+        if code is None or off < 0:
+            return 0
+        t = _ltab.get(id(code))                      # code 被 _fcode 留着，id 不会被别的对象复用
+        if t is None:
+            t = _ltab[id(code)] = [x for x in code.co_lines() if x[2] is not None]
+        for a, b, l in t:
+            if a <= off < b:
+                return l
+        return 0
+
     def _write(p, data):
         # 目录不在就不写（不 makedirs）：录制已经收尾、parts/ 已经打包删掉之后，
         # 还活着的残留进程不能把它重新建出来
         tmp = "%s.%d.tmp" % (p, threading.get_ident())
         try:
+            fc = data.get("func_calls")
+            if fc is not None:                        # 元组键这时才拆成字符串键、指令偏移换成行号（见 _fcalls）
+                fe, fl = {}, {}
+                for ck, n in fc.items():
+                    e = ck[0] + "|" + ck[1]
+                    fe[e] = fe.get(e, 0) + n
+                    lk = "%s|%d" % (e, _line_at(_fcode.get(ck), ck[2]))
+                    fl[lk] = fl.get(lk, 0) + n
+                data = {**data, "func_edges": fe, "func_lines": fl}
+                del data["func_calls"]
             with open(tmp, "w") as f:
                 json.dump(data, f)
             os.replace(tmp, p)
@@ -378,7 +423,7 @@ if _root and _out:
             del _pending[0]
 
     def _snapshot(name, defer=False):
-        d = ("%s@%d-%s.json" % (_base(), len(_snaps), name), {"funcs": dict(_funcs), "func_edges": dict(_fedges)})
+        d = ("%s@%d-%s.json" % (_base(), len(_snaps), name), {"funcs": dict(_funcs), "func_calls": dict(_fcalls)})
         _snaps.append(name)
         if defer:
             _pending.append(d)
@@ -449,7 +494,7 @@ if _root and _out:
     def _payload(why):
         d = {"pid": os.getpid(), "ppid": os.getppid(), "st": _st[0], "argv": _argv, "argv_cut": _argv_cut,
              "t0": _t0[0], "t": time.monotonic_ns(), "why": why, "py": _pyinfo(), "phase": _phase[0],
-             "funcs": dict(_funcs), "func_edges": dict(_fedges), "names": dict(_names),
+             "funcs": dict(_funcs), "func_calls": dict(_fcalls), "names": dict(_names),
              "mapped": dict(_mapped), "shas": dict(_shas)}
         now = _cmdline()
         if now and now[0] != _argv0[0]:
@@ -583,7 +628,8 @@ if _root and _out:
     # 调用栈保留——子进程还会从这些帧里返回。
     def _after_fork():
         _funcs.clear()
-        _fedges.clear()
+        _fcalls.clear()
+        _fcode.clear()
         _names.clear()
         del _snaps[:]             # fork 之前的阶段属于父进程
         del _pending[:]
@@ -643,7 +689,7 @@ if _root and _out:
     else:
         def _prof(frame, event, arg):
             if event == "call":
-                _enter(frame.f_code, True)
+                _enter(frame.f_code, True, frame)
             elif event == "return":
                 _leave(frame.f_code)
         sys.setprofile(_prof)

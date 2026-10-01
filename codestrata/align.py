@@ -162,7 +162,8 @@ def remap(counts: dict, names: dict, fs: dict, idx: dict) -> tuple[dict, list[st
         （改名了、删了），计入 unmatched，键改成「文件:-1」：次数还算在这个文件（和它的模块）上，
         但不算到任何函数上——原来那一行现在可能是别的函数的定义，留着会把次数记到它头上；
       - 改写后撞到同一个键的，次数相加。
-    只动这些文件；没改过的文件原样返回，模块顶层（第 0 行）也不动。返回 (新的计数, unmatched 的键)。"""
+    只动这些文件；没改过的文件原样返回，模块顶层（第 0 行）也不动。有调用行（func_lines）的话调用行跟着调用方挪。
+    返回 (新的计数, unmatched 的键)。"""
     # 只管 index 里有的文件：scan 排除了的（examples 之类）本来就不叠加，不该算进 unmatched
     files = idx.get("files") or {}
     todo = {rel for rel, st in fs.items() if st in ("changed", "mismatch") and rel in files}
@@ -205,7 +206,22 @@ def remap(counts: dict, names: dict, fs: dict, idx: dict) -> tuple[dict, list[st
         a, _, b = k.partition("|")
         nk = new(a) + "|" + new(b)
         edges[nk] = edges.get(nk, 0) + v
-    return {"funcs": funcs, "func_edges": edges}, sorted(unmatched)
+    out = {"funcs": funcs, "func_edges": edges}
+    if "func_lines" in counts:
+        # 调用行跟着调用方挪：函数整个挪了几行，里面的调用也挪几行（函数体里面改过的，行就可能偏）；
+        # 调用方对不上的（文件:-1）不知道挪到哪了，行记成 0
+        lines: dict[str, int] = {}
+        for k, v in counts["func_lines"].items():
+            ab, _, ln = k.rpartition("|")
+            a, _, b = ab.partition("|")
+            na, line = new(a), int(ln)
+            if line and na != a:
+                old, now = int(a.rpartition(":")[2]), int(na.rpartition(":")[2])
+                line = 0 if now < 0 else line + now - old
+            nk = f"{na}|{new(b)}|{line}"
+            lines[nk] = lines.get(nk, 0) + v
+        out["func_lines"] = lines
+    return out, sorted(unmatched)
 
 # ---------------------------------------------------------------- 2 和 scan 记录比（按切面）
 

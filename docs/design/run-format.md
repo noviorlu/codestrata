@@ -112,7 +112,7 @@
 
 | 字段 | 类型 | 含义 | 必 | 谁写 | 谁读 |
 |---|---|---|---|---|---|
-| `schema` | int | 现在是 `2` | — | `new_run`、迁移 | 没有代码读 |
+| `schema` | int | 现在是 `3`（3 起 counts.json.gz 带调用行 `func_lines`，§4；迁移来的老 run 没有） | — | `new_run`、迁移 | 没有代码读 |
 | `id` | str | 等于目录名 | L | `new_run` | `catalog`、`resolve`、`load`、`/api/runs` |
 | `case` | str | case 名；同一 case 可以录很多次 | L | `new_run` | `resolve`（按 case 找）、`runs ls`（分组，缺了会 KeyError）、复刻命令（老 run 没存 `invocation` 时拼命令，缺了会 KeyError） |
 | `status` | str | `recording` / `ok` / `partial` / `failed`，规则见下 | L | `new_run`、`derive` | `resolve`（case 名优先取最新的 ok，其次 partial）、`live`、列表 |
@@ -229,9 +229,10 @@
 
 | 字段 | 类型 | 含义 | 必 |
 |---|---|---|---|
-| `phases` | {阶段名: {funcs, func_edges}} | 至少一个阶段；只有一个时也保留名字（通常是 `start`）。每个阶段**两个键都要有**（可以是空对象） | H |
+| `phases` | {阶段名: {funcs, func_edges, func_lines?}} | 至少一个阶段；只有一个时也保留名字（通常是 `start`）。每个阶段**`funcs`、`func_edges` 都要有**（可以是空对象） | H |
 | `phases.<名>.funcs` | {函数键: int} | 这一阶段里这个函数被**进入**的次数（生成器 / 协程恢复不算）。只有仓库代码，case 脚本的代码不计数。模块顶层（`:0`）和类体（键的行号落在类的定义行上）也在里面——它们是定义时的执行，加载时被分出来，不算调用 | H |
 | `phases.<名>.func_edges` | {调用边键: int} | 调用方是**栈上最近的仓库帧**（穿过标准库、第三方库的调用记到最近的仓库函数头上），被调方是这个函数。递归自调用不记；同文件内的调用也记 | H（没有它就只有节点、没有边） |
+| `phases.<名>.func_lines` | {"<调用边键>\|<行>": int} | 同 `func_edges`，按**调用写在调用方的哪一行**分开：调用方那一帧当时执行到的行（hook 记指令偏移，写分片时换成行号）。跨行的调用是 CPython 给那条调用指令的行（在调用表达式占的行里）；拿不到是 0。同一条边各行相加等于 `func_edges`。2026-09-30 之后录的才有（`schema` 3），之前的 run 没有这一项（不是「没有调用」） | — |
 | `names` | {函数键: qualname} | 录制时的限定名（Python 的 `co_qualname`：嵌套函数是 `outer.<locals>.inner`，模块顶层是 `<module>`）。只用于录制后改过的文件把键挪到函数现在的行号上（§8）；没有它这些文件的次数只算到文件上 | — |
 
 - 阶段的次数是**每个进程**里「切阶段时的累计快照」相邻相减、负数丢掉，再把所有进程加起来（`analysis.merge`）。
@@ -248,7 +249,7 @@
 | 文件 | 谁写 | 内容 |
 |---|---|---|
 | `part-<pid>-<t0ns>.json` | 每个进程映像的 hook | 这个进程映像的**累计**计数和元数据，见下表。每次落盘整份覆盖。`t0ns` 是进程映像开始时的 monotonic 纳秒：exec 之后同一个 pid 写新文件 |
-| `part-<pid>-<t0ns>@<n>-<阶段>.json` | hook，切阶段时 | 切换那一刻的累计快照 `{funcs, func_edges}`；`<n>` 从 0 递增，`<阶段>` 是**刚结束**的那个阶段 |
+| `part-<pid>-<t0ns>@<n>-<阶段>.json` | hook，切阶段时 | 切换那一刻的累计快照 `{funcs, func_edges, func_lines}`；`<n>` 从 0 递增，`<阶段>` 是**刚结束**的那个阶段 |
 | `PHASE` | case 脚本或 hook | 当前阶段。第一行是阶段名；hook 切的有第二行（切换那一刻的 monotonic 纳秒）。case 脚本 `echo serving > $CODESTRATA_OUT/PHASE` 就切过去 |
 | `PHASE-<阶段>.fired` | hook（`--phase`）或 driver（替 case 脚本建） | 这个阶段被切过的标记，内容一行 `hook <pid> <monotonic_ns>` 或 `sh <pid> <monotonic_ns>`。`O_EXCL` 建：每个阶段整个 run 只切一次。收尾和 merge 从它取阶段的精确时刻（`analysis.fired_phases`） |
 | `ev-<pid>-<t0ns>.log` | hook（`--events`） | 时序事件日志，收尾时打包进 `events/raw.tar.gz`（不进 parts.tar.gz），见 §6.1 |
@@ -267,7 +268,7 @@
 | `why` | str | 这次落盘的原因（同 detail.procs） | null；不算强杀 |
 | `py` | {version, executable, site} | 解释器信息；`site` 是 site-packages 目录（用来列包版本） | `pythons` 为空 |
 | `phase` | str | 落盘时所处的阶段（最后一段的名字） | 当成 `start` |
-| `funcs` / `func_edges` | 同 §4 | **累计**值 | 当成空 |
+| `funcs` / `func_edges` / `func_lines` | 同 §4 | **累计**值 | 当成空（`func_lines` 缺了：这个 run 没有调用行） |
 | `names` | 同 §4 | | remap 不了 |
 | `mapped` | {rel: 实际路径} | 从安装包映射回仓库的文件 | 当成没映射 |
 | `shas` | {rel: sha16} | 进程第一次跑到这个文件时算的内容哈希 | 退回收尾时磁盘上的哈希（记进 `sha_late`） |
@@ -416,7 +417,8 @@ run 只存原始键（`文件:首行号`）和录制时的文件哈希，加载�
    `(文件, 限定名) → 现在的行号`（有 `dl` 用 `dl`，否则 `l`）；录制时的 qualname 去掉 `.<locals>` 再查。
    查到的把键改成 `rel:现在的行号`；查不到的、名字里有 `<` 的（lambda、生成器表达式）、没存 qualname 的，键改成 `rel:-1`
    ——次数还算在这个文件和它的单元上，但不算到任何函数上。模块顶层（`:0`）不动。改写后撞到同一个键的相加。
-   对不上的键数给页面（`unmatched`）。
+   对不上的键数给页面（`unmatched`）。`func_lines` 的调用行跟着调用方挪：函数整个挪了几行，行也挪几行（函数体里面改过的，行就可能偏）；
+   调用方改成了 `rel:-1` 的，行记成 0。
 4. **折到单元**（`align.to_package_graph(counts, idx)`）：
    - `rel` → 单元：`idx.files[rel]`；不在里面的键整个不叠。
    - `(rel, 行)` → 符号：index 符号的 `(f, l)`、`(f, dl)` 和同名的另几个 def（`a`）都能对上；对不上的是 `anon`

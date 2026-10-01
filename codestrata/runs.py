@@ -41,7 +41,7 @@ from . import seq as _seq
 from .trace import analysis as _tana
 from .trace import driver as _tdrv
 
-SCHEMA = 2
+SCHEMA = 3
 CASE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _TEXT_EXTS = (".sh", ".bash", ".py", ".yaml", ".yml", ".json", ".toml")
 _FILE_MAX = 200_000          # 自动存下的文本文件（case 脚本、命令里提到的配置）的大小上限
@@ -635,18 +635,19 @@ def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
 
 
 def _sum(phases: dict) -> dict:
-    funcs: dict[str, int] = {}
-    edges: dict[str, int] = {}
+    out: dict[str, dict] = {"funcs": {}, "func_edges": {}}
+    if any("func_lines" in ph for ph in phases.values()):
+        out["func_lines"] = {}
     for ph in phases.values():
-        for k, v in ph["funcs"].items():
-            funcs[k] = funcs.get(k, 0) + v
-        for k, v in ph["func_edges"].items():
-            edges[k] = edges.get(k, 0) + v
-    return {"funcs": funcs, "func_edges": edges}
+        for name, dst in out.items():
+            for k, v in (ph.get(name) or {}).items():
+                dst[k] = dst.get(k, 0) + v
+    return out
 
 
 def load_counts(rd: Path, phase: str | None, with_names: bool = False):
-    """{funcs, func_edges}：某个阶段的，或全部阶段相加（和老 trace 的 funcs 同义）。
+    """{funcs, func_edges, func_lines?}：某个阶段的，或全部阶段相加（和老 trace 的 funcs 同义）。func_lines 只有
+    09-30 之后录的 run 才有（run.json 的 schema 3）。
     with_names=True 时返回 (计数, names)：names 是录制时记下的 键 → qualname（remap 用）。"""
     c = read_json(rd / "counts.json.gz", gz=True)
     phases = c["phases"]
