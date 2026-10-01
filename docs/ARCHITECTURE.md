@@ -14,7 +14,7 @@ codestrata 围着一个 graph 转：
 
 | 步 | 做什么 | 现在的代码 |
 |---|---|---|
-| **scan** | 读代码，产出节点和边的 scan 记录（`graph.json`），外加跳转用的名字引用 | `scan.py`、`xref.py`、`graph.py` |
+| **scan** | 读代码，产出节点和边的 scan 记录（`graph.json`），外加跳转用的名字引用 | `scan.py`、`xref.py`、`xtypes.py`、`graph.py` |
 | **trace** | 录一次真实运行，得到边的 trace 记录 | `trace/`、`runs.py`、`events.py` |
 | **scan-trace alignment** | 把 trace 的记录放到 graph 现在的节点上（录制之后代码改过也能对上），按调用行和 scan 记录比，找出两边的差别：trace 有、scan 没有的（多态、注册表、回调这类代码里看不出的调用），scan 有、trace 没有的（这次没录到：没走到，或者是 trace 看不到的构造） | `align.py` |
 
@@ -83,7 +83,8 @@ flowchart LR
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
 | `__main__.py` | 624 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
 | `scan.py` | 696 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
-| `xref.py` | 1547 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file`，走完把构造时跑到的方法（`ctor_methods`）交给 `on_end` |
+| `xref.py` | 1698 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file`，走完把构造时跑到的方法（`ctor_methods`）交给 `on_end` |
+| `xtypes.py` | 167 | xref 的类型推断：只推构造和类型标注写明的（标注的形状、容器取出来的元素、`TypeResolver` 按第一遍记的线索推属性和返回值的类型）；名字指向哪仍由 xref 解析 |
 | `graph.py` | 226 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处、构造过的类跑到的方法，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
 | `align.py` | 478 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |

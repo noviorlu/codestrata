@@ -1949,7 +1949,8 @@ _RX = {
 
 def test_edge_detail_calls_through_reexports():
     """边详情只列调用（没叠 run 时就是代码里写的）：构造 __init__ 再导出的类，这条调用落在真正定义它的文件上，
-    和 Ctrl+点击（xref）同一处；只是读模块级变量（LIMIT、改了名再导出的 DEFAULT_LIMIT）不是调用，不成边。"""
+    和 Ctrl+点击（xref）同一处；Executor().run() 按构造出来的类定下 run；只是读模块级变量（LIMIT、改了名再导出的
+    DEFAULT_LIMIT）不是调用，不成边。"""
     repo = tmpdir("cs-defs-") / "repo"
     for rel, src in _RX.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -1964,7 +1965,8 @@ def test_edge_detail_calls_through_reexports():
                 for it in d["scan_only"]}
     assert scan_items("rx/sessions.py", "rx/models.py") == {"Request": ("rx/models.py", 9, "class", ["class Request:"])}
     ex = scan_items("rx/sessions.py", "rx/executor/abstract.py")
-    assert ex == {"Executor": ("rx/executor/abstract.py", 1, "class", ["class Executor:"])}, ex
+    assert ex == {"Executor": ("rx/executor/abstract.py", 1, "class", ["class Executor:"]),
+                  "Executor.run": ("rx/executor/abstract.py", 2, "func", ["def run(self):"])}, ex
     assert scan_items("rx/sessions.py", "rx/executor/__init__.py") == {}     # 再导出的地方不是被调的
     assert scan_items("rx/sessions.py", "rx/__init__.py") == {}              # DEFAULT_LIMIT 是变量
     # 和 Ctrl+点击同一处
@@ -2003,8 +2005,8 @@ _TC = {
 
 def test_type_checking_imports_are_not_dependencies():
     """if TYPE_CHECKING: 里的 import 运行时不执行：不算 import 依赖、不进架构高度和排版——不管名字在标注里
-    有没有被引用；函数里再运行时 import 同一个名字的，照旧是依赖。图上只有调用边，类型标注不是调用。
-    Ctrl+点击标注里的名字照样能跳。"""
+    有没有被引用；函数里再运行时 import 同一个名字的，照旧是依赖。图上只有调用边，类型标注不是调用；
+    但标注定下了 self.app 的类型，self.app.hook() 是代码里写明的调用。Ctrl+点击标注里的名字照样能跳。"""
     t = tmpdir("cs-tc-")
     repo = t / "repo"
     for rel, src in _TC.items():
@@ -2021,17 +2023,15 @@ def test_type_checking_imports_are_not_dependencies():
     assert "type_edges" not in idx and "edge_dead" not in idx, sorted(idx)
     g = ui_graphview.graph_payload(repo, idx, open_=["tc/"])
     ge = {f"{a}|{b}" for a, b, _ in g["graph"]["edges"]}
-    assert f"{CTX}|{APP}" not in ge and f"{CLI}|{APP}" in ge, ge        # App().run() 是调用
-    assert g["pkgs"][CTX]["alt"] == -1.0 and g["pkgs"][CTX]["out"] == 0, g["pkgs"][CTX]
-    # runtime：ctx 经 self.app 调到 app 的 hook——代码里没写这两者之间的调用（self.app 的类型 scan 不推），只有 trace
+    assert f"{CLI}|{APP}" in ge and f"{UTIL}|{CTX}" not in ge, ge       # App().run() 是调用，只写在标注里的不是
+    assert f"{CTX}|{APP}" in ge, ge                                     # self.app: App 之后的 self.app.hook()
+    assert g["pkgs"][CTX]["alt"] == -1.0, g["pkgs"][CTX]
+    # runtime：ctx 经 self.app 调到 app 的 hook，和代码里写的那一处对上
     cs("trace", repo, "--case", "tc", "--", PY, "-m", "tc")
     hot, meta = ui_load.load_hot(repo, idx, "tc")
-    g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=["tc/"])
-    assert any(e[:2] == [CTX, APP] for e in g["runtimeOnlyEdges"]), g["runtimeOnlyEdges"]
     d = ui_edge.edge_detail(repo, idx, CTX, APP, hot)
     assert [(c["caller"], c["callee"], c["status"]) for c in d["calls"]] == [
-        ("tc/ctx.py#Ctx.push", "tc/app.py#App.hook", "trace")], d["calls"]
-    assert d["calls"][0]["lines"][0]["note"] == {"k": "name", "names": ["hook"]}, d["calls"][0]
+        ("tc/ctx.py#Ctx.push", "tc/app.py#App.hook", "both")], d["calls"]
     # 标注里的名字 Ctrl+点击照样跳到定义（xref 自己解析 import，不看边）
     x = json.loads((repo / ".codestrata" / "xref.json").read_text())
     lines = _TC["tc/ctx.py"].splitlines()
@@ -2243,10 +2243,11 @@ _NT = {
     "nt/deco.py": "def deco(fn):\n    def wrapper(*a):\n        return fn(*a)\n    return wrapper\n",
     "nt/app.py": ("import os\n\nfrom nt import lib\nfrom nt.base import Sub\nfrom nt.deco import deco\n\n\n"
                   "@deco\ndef work(x):\n    return x\n\n\n"
+                  "def make():\n    return Sub()\n\n\n"
                   "def run(xs):\n"
                   "    sq = sum(lib.plain(i) for i in xs)\n"
                   "    f = lambda v: lib.plain(v)\n"
-                  "    s = Sub().run()\n"
+                  "    s = make().run()\n"
                   "    return work(1) + f(2) + sq + s + len(os.getcwd())\n\n\n"
                   "run([1, 2])\n"),
 }
@@ -2276,11 +2277,11 @@ def test_trace_only_notes():
     assert wr[0]["note"]["k"] == "line" and wr[0]["note"]["c"] == ["nt/app.py#work"] and "f" in wr[0]["note"]["names"], wr
     local = [x for k, x in C.items() if k.startswith("nt/app.py#run|nt/app.py#run.<L")]
     assert len(local) == 2 and all(x["only"] == 0 for x in local), local      # 生成器表达式、lambda
-    # Sub().run()：scan 不推调用结果的类型，只知道名字 run
+    # make().run()：make 没标返回值类型，scan 只知道名字 run
     sr = C["nt/app.py#run|nt/base.py#Base.run"]["lines"]
-    assert [(y["l"], y["note"]) for y in sr] == [(ln("Sub().run()"), {"k": "name", "names": ["run"]})], sr
+    assert [(y["l"], y["note"]) for y in sr] == [(ln("make().run()"), {"k": "name", "names": ["run"]})], sr
     rt = ui_source.runtime_lines(idx, "nt/app.py", hot)
-    assert sorted(rt) == [ln("Sub().run()"), ln("return work(1)")], rt
+    assert sorted(rt) == [ln("make().run()"), ln("return work(1)")], rt
     assert rt[ln("return work(1)")][0]["def"] == {"f": "nt/deco.py", "l": 2}, rt
     rb = ui_source.runtime_lines(idx, "nt/base.py", hot)
     assert [(l, [r["callee"] for r in v]) for l, v in rb.items()] == [(3, ["nt/base.py#Sub.step"])], rb
@@ -2306,7 +2307,7 @@ def test_trace_only_notes():
     hot2, _ = ui_load.load_hot(repo, idx2, "nt")
     top = hot2["calls"]["nt/app.py#<module>|nt/app.py#run"]
     assert [(y["l"], y["status"]) for y in top["lines"]] == [(0, "both")] and top["only"] == 0, top
-    assert sorted(ui_source.runtime_lines(idx2, "nt/app.py", hot2)) == [ln("Sub().run()") + 2, ln("return work(1)") + 2]
+    assert sorted(ui_source.runtime_lines(idx2, "nt/app.py", hot2)) == [ln("make().run()") + 2, ln("return work(1)") + 2]
 
 
 _PA = {

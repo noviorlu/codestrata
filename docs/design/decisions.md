@@ -72,8 +72,22 @@
   一大半都不是它，还会占掉 xref.json 的三分之一。
 - 放弃的方案：没有类型推断的「按名字全列」。
 - 在哪：`xref.py`（模块说明、`_Repo.class_member` / `unsure`、`ATTRS_MAX_SAME`）；`ui/source.py` 的 `_stale`、`_changed`、`xref_for`。
-  这属于冻结区（见「工程」第一条），只修 bug。graph 的 scan 记录和 xref 同一遍、同一套名字解析，但定不下被调方的调用处另存在
+  名字解析本身算核心，跳转和引用列表的界面冻结（见「工程」第一条）。graph 的 scan 记录和 xref 同一遍、同一套名字解析，但定不下被调方的调用处另存在
   graph.json 里（给 scan-trace alignment 对行用），跳转不用它，这一条不变。
+
+### scan 推一点类型：只推构造和类型标注写明的
+- 决定：xref 推方法调用的接收者是什么类，只认代码里写明的：`x = C(…)`、`self.x = C(…)`（含 `C(…) if … else None`、`[C(…) for …]`）、
+  参数 / 属性 / 类体字段的类型标注、函数 / 方法 / property 的返回值标注（`async def` 不算）、`list[C]` / `dict[K, C]` 取出来的元素、
+  `getattr(obj, "x")`。一个属性几处赋的推不一样、有一处推不出，就当不知道；有标注的只按标注。推出来的同时用于跳转和 graph 的调用记录。
+  MRO 上排在仓库外基类后面的 mixin 方法：graph 的调用记录按 mixin 的算（近似，仓库外的基类多半没有它），跳转不给。
+- 为什么：「代码里看不出」的一大半是 scan 不推类型造成的假阳性。vllm-omni 上 MiniCPM 一次请求（serving 阶段），只有 trace 的跨文件调用
+  从 52.4% 降到 21.1%（按函数对 52.2% → 25.8%，请求路径上那一跳看不出的行 186 → 103，共 479 行）；剩下的主要是经仓库外的代码转一道、
+  按配置或工厂造出来的对象（`self.model`、`self.connector`）。scan 新定下了 4105 处调用：这次跑到的 161 处里 157 处对上，另外 4 处
+  标注写的是 Protocol、跑的是实现；没跑到的随机抽 40 处逐条读代码核对，全对。scan 用时 13.7 s → 14.2 s。
+- 放弃的方案：接 pyright / jedi 这类类型检查器（多一个重依赖，大仓库上慢，还要配好被分析的环境）；按名字猜接收者（同名方法很多，猜错比不猜糟）；
+  局部变量按控制流分支分别推（现在按语句顺序走，后赋的盖掉先赋的）。
+- 在哪：`xtypes.py`；`xref.py` 的 `_Collect.self_spec` / `value_spec` / `type_spec`、`_Walk.type_local` / `bind_types` / `ann_type` / `call_type`、
+  `_Repo.class_member_past_unknown`。测试 `test_type_inference`；前后对比用 `tests/bench/quality.py`。
 
 ---
 
@@ -413,13 +427,13 @@
 ## 工程
 
 ### 读代码的功能冻结，只修 bug
-- 决定：代码窗口、Ctrl+点击跳转、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。
-  核心（graph：scan × trace、录制、叠加、时间轴）继续做深。
+- 决定：代码窗口、Ctrl+点击跳转和引用列表的界面、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。
+  核心（graph：scan × trace、名字和调用的解析（2026-09-30 起，含类型推断）、录制、叠加、时间轴）继续做深。
   例外（2026-09-30）：xref 的名字解析和 graph 的 scan 记录同一遍产出；代码窗口在「代码里看不出调到谁」的那一行行尾标出这次运行调到了谁、
   点了跳过去——这是 scan-trace alignment 的结果，属于核心。
 - 为什么：定位是「仓库的运行路径工具」，真正别人没有的是运行时叠加；跳转定义这类事 pyright / jedi 和用户手边的编辑器做得更好，自己再造一个是往「浏览器里的 IDE」横向扩张。
 - 放弃的方案：继续把 codestrata 做成通用的读代码工具。
-- 在哪：`web/viewer.js`、`web/findbar.js`、`web/search.js`、`web/hl.js`、`xref.py`、`app.py`；例外在 `ui/source.py` 的 `runtime_lines`、`web/viewer.js` 的 `.rtj`。
+- 在哪：`web/viewer.js`、`web/findbar.js`、`web/search.js`、`web/hl.js`、`app.py`；例外在 `ui/source.py` 的 `runtime_lines`、`web/viewer.js` 的 `.rtj`。
 
 ### 不做模块讲解层，重心是运行路径怎么走
 - 决定：不提供「给每个模块写讲解」的功能（原来的解读层：tasks / pack / note / check、`notes/` 目录、页面右栏的解读和节点上的徽标都去掉）。

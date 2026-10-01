@@ -5,7 +5,9 @@
 默认是 vllm-omni 的 MiniCPM 那次请求（20260930-233507-run_single_prompt@serving，有调用行和时序事件）。打印：
   1. 跨文件的调用：一共几次、只有 trace（代码里看不出）几次、占多少；只有 trace 的按说明分（name / line / none / override /
      nomatch），name 再按写法分（self.属性.方法、局部变量或参数.方法、self.方法、getattr / 字符串、别的）——类型推断该压低的是前两种。
-  2. 请求路径上到几个目标函数（默认 compute_logits、_model_forward）的那条链：从根到它几跳、其中几跳代码里看不出。
+     次数让轮询的几对占了大头，所以也按「对」数一遍：跨文件的函数对几对、其中至少一处调用代码里看不出的几对。
+  2. 请求路径上到几个目标函数（默认 compute_logits、_model_forward）的那条链：从根到它几跳、其中几跳代码里看不出；
+     整个请求路径几行、其中几行的那一跳代码里看不出。
   3. /api/graph 的大小（默认切面，叠这个 run）。
 只读：读索引和 run，不 scan、不 trace。
 """
@@ -46,7 +48,7 @@ def measure(repo: Path, ref: str, targets: list[str]) -> dict:
     idx = load.load_index(repo)
     hot, meta = load.load_hot(repo, idx, ref)
     calls = hot["calls"]
-    total = only = 0
+    total = only = pairs = only_pairs = 0
     by_note: Counter = Counter()
     by_form: Counter = Counter()
     for pk, x in calls.items():
@@ -54,6 +56,8 @@ def measure(repo: Path, ref: str, targets: list[str]) -> dict:
             continue
         total += x["n"]
         only += x["only"]
+        pairs += 1
+        only_pairs += x["only"] > 0
         caller = pk.partition("|")[0]
         f = source.node_def(idx, caller)["f"]
         for y in x["lines"] or [{"l": (x.get("guessed") or [0])[0], "n": x["only"], "status": x.get("status"), "note": x.get("note")}]:
@@ -64,7 +68,8 @@ def measure(repo: Path, ref: str, targets: list[str]) -> dict:
             if k == "name":
                 by_form[receiver_form(source.line_text(repo, f, y["l"]) if y["l"] else "")] += y["n"]
     out = {"run": ref, "has_lines": meta.get("has_lines"), "cross_file_calls": total, "trace_only": only,
-           "trace_only_share": round(only / total, 4) if total else 0, "by_note": dict(by_note.most_common()),
+           "trace_only_share": round(only / total, 4) if total else 0,
+           "cross_file_pairs": pairs, "trace_only_pairs": only_pairs, "by_note": dict(by_note.most_common()),
            "name_by_receiver": dict(by_form.most_common())}
     run, rd, phase = runs.resolve(repo, ref)
     try:
@@ -95,7 +100,9 @@ def measure(repo: Path, ref: str, targets: list[str]) -> dict:
                     break
                 if t in chains:
                     break
-        out["path_rows"] = sum(len(th["rows"]) for p in P["procs"] for th in p["threads"])
+        rows = [r for p in P["procs"] for th in p["threads"] for r in th["rows"]]
+        out["path_rows"] = len(rows)
+        out["path_rows_hidden"] = sum(1 for r in rows if r["line"] and r["line"]["status"] == "trace")
         out["chains"] = chains
     g = graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta)
     out["api_graph_bytes"] = len(json.dumps(g, ensure_ascii=False).encode())
@@ -117,13 +124,15 @@ def main(argv: list[str]) -> int:
         return 0
     print(f"{m['run']}（{'有' if m['has_lines'] else '没有'}调用行）")
     print(f"  跨文件的调用 {m['cross_file_calls']} 次，只有 trace {m['trace_only']} 次（{m['trace_only_share']:.1%}）")
+    print(f"  按对数：跨文件的函数对 {m['cross_file_pairs']} 对，至少一处调用代码里看不出的 {m['trace_only_pairs']} 对"
+          f"（{m['trace_only_pairs'] / max(m['cross_file_pairs'], 1):.1%}）")
     print("  只有 trace 按说明：" + "，".join(f"{k} {v}" for k, v in m["by_note"].items()))
     print("  其中 name 按接收者的写法：" + "，".join(f"{k} {v}" for k, v in m["name_by_receiver"].items()))
     for t, c in (m.get("chains") or {}).items():
         print(f"  请求路径上到 {t}：{c['hops']} 跳，其中 {c['hidden_hops']} 跳代码里看不出（{c['proc']} · {c['thread']}）")
         print("    " + " → ".join(c["chain"]))
     if "path_rows" in m:
-        print(f"  请求路径一共 {m['path_rows']} 行")
+        print(f"  请求路径一共 {m['path_rows']} 行，其中 {m['path_rows_hidden']} 行那一跳代码里看不出")
     print(f"  /api/graph {m['api_graph_bytes'] / 1e6:.2f} MB")
     return 0
 

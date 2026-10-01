@@ -20,7 +20,8 @@
     遮住外面的同名名字；推导式、lambda 的变量只在它们里面遮；类体里的语句看得见类体里前面已经绑定
     的名字（`@x.setter` 的 x 是上面的 getter），方法体看不见（Python 的规则）。遮住了就不解析。
 
-确定不了的（局部变量的属性、仓库外的类的方法、getattr 之类）一律不记。仓库外的名字
+接收者的类型只推代码里写明的（构造、类型标注、返回值标注，见 xtypes）；推不出类型的对象的属性、仓库外的类的方法、
+getattr 之类确定不了的一律不记。仓库外的名字
 （torch、vllm……）只记下它的点分路径，前端据此说「定义不在仓库里」。
 
 分两遍，每遍都是逐个文件 parse、用完就丢：第一遍收模块顶层绑定、类属性、实例属性、基类；第二遍
@@ -61,6 +62,8 @@ import gc
 import json
 import os
 from pathlib import Path
+
+from .xtypes import TypeResolver, ann_class, builtin_call, if_value, is_none, iter_types, method_call, subscript, typed
 
 REF, CALL, IMPORT, DEF = 0, 1, 2, 3
 HOW_CALL, HOW_DECO, HOW_PROP, HOW_STR = "call", "deco", "prop", "str"
@@ -348,6 +351,7 @@ class _Repo:
         self.stars: dict[str, list] = {}             # 模块 → [from X import * 的 X, ...]
         self.alls: dict[str, frozenset] = {}         # 模块 → 字面量的 __all__
         self.vars: dict[str, list] = {}              # "v:模块:限定名" → [文件, 行]
+        self.types = TypeResolver(self)              # 类型推断（xtypes）：第一遍记线索，用到时解析
         self.first: dict[str, int] = {}              # "模块:限定名" → 第一次 def / class 的行（和符号表不同时才记）
         self.cbases: dict[str, list] = {}            # 类 → 基类的解析线索（见 _Collect.base_spec）
         self.member_names: set[str] = set()          # 仓库里各个类的成员名（attrs 只收这些）
@@ -531,7 +535,7 @@ class _Repo:
             return self.from_import(rest, attr)
         if kind == "x":
             return f"{target}.{attr}"
-        if kind == "s" or kind == "self":
+        if kind == "s" or kind == "self" or kind == "i":
             return self.class_member(rest, attr, False)
         if kind == "super":
             return self.class_member(rest, attr, True)
@@ -652,7 +656,7 @@ class _Repo:
         kind, _, rest = target.partition(":")
         if kind == "v":
             return True
-        if kind not in ("s", "self", "super"):
+        if kind not in ("s", "self", "super", "i"):
             return False
         s = self.symbols.get(rest)
         if not s or s["k"] != "class":
@@ -662,6 +666,19 @@ class _Repo:
             return True
         dunder = attr.startswith("__") and attr.endswith("__")
         return any(c[0] == "?" or (c[0] == "~" and dunder) for c in (mro[1:] if kind == "super" else mro))
+
+    # ---- 类型：哪些值是某个仓库里的类的实例 ----
+    def class_member_past_unknown(self, key: str, attr: str, skip_self: bool) -> str | None:
+        """沿 MRO 找方法，碰到仓库外 / 不知道的基类不停、接着往后找（class_member 会停）：mixin 排在仓库外的基类
+        后面时（GPUGenerationModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin)，前者的基类在 vllm 里），
+        仓库外的基类多半没有这个方法。只给 graph 的调用记录用（近似）；跳转仍按 class_member（宁可不跳也不跳错）"""
+        mro = self.mro(key) if (self.symbols.get(key) or {}).get("k") == "class" else None
+        for c in (mro or [])[1 if skip_self else 0:]:
+            if c[0] in "?~":
+                continue
+            if f"{c}.{attr}" in self.symbols:
+                return f"s:{c}.{attr}"
+        return None
 
     def finish_first_pass(self) -> None:
         """仓库里各个类的成员名：方法 / 嵌套类（父级是类的符号）、类属性和实例属性（带点的 v:）。"""
@@ -781,6 +798,10 @@ class _Collect:
         if type(st) is ast.ClassDef:
             self.klass(st, q, key, env)
         else:
+            if type(st) is ast.FunctionDef and st.returns is not None:     # async def 调了是协程，不算
+                sp = self.type_spec(st.returns, env, st.lineno)
+                if sp:
+                    self.repo.types.ret_specs[key] = (self.m, *sp)
             fenv = [e for e in env if e[0] != "c"] + [("f", st, key, cls)]
             self.func_body(st.body, q + ".", fenv, _first_param(st, cls), cls)
 
@@ -815,6 +836,10 @@ class _Collect:
                 for tg in (s.targets if t is ast.Assign else [s.target]):
                     for n in _names(tg, []):
                         cenv[n.id] = f"v:{key}.{n.id}"
+                if t is ast.AnnAssign and type(s.target) is ast.Name:    # 类体里 x: C（dataclass 字段之类）
+                    sp = self.type_spec(s.annotation, benv, s.lineno)
+                    repo.types.var_specs.setdefault(f"v:{key}.{s.target.id}", []).append(
+                        (self.m, *(sp or (None, None)), True))
             elif t is ast.Import:
                 for a in s.names:
                     local = a.asname or a.name.split(".")[0]
@@ -840,6 +865,8 @@ class _Collect:
                 if selfname and (t is ast.Assign or t is ast.AnnAssign):
                     for tg in (s.targets if t is ast.Assign else [s.target]):
                         self.inst(tg, selfname, cls)
+                        if type(tg) is ast.Attribute and type(tg.value) is ast.Name and tg.value.id == selfname:
+                            self.self_spec(f"v:{cls}.{tg.attr}", s, env)
                 if t in _CONTAINERS:
                     for b in _bodies(s):
                         self.func_body(b, prefix, env, selfname, cls)
@@ -854,6 +881,44 @@ class _Collect:
                 self.inst(e, selfname, cls)
         elif t is ast.Starred:
             self.inst(tg.value, selfname, cls)
+
+    def self_spec(self, var: str, s, env: list) -> None:
+        """方法里的 self.x = v / self.x: C = v：记下推 self.x 类型的线索（见 _Repo.var_type）。赋 None 不算"""
+        specs = self.repo.types.var_specs.setdefault(var, [])
+        if type(s) is ast.AnnAssign:
+            sp = self.type_spec(s.annotation, env, s.lineno)
+            specs.append((self.m, *(sp or (None, None)), True))
+        elif not is_none(s.value):
+            sp = self.value_spec(s.value, env, s.lineno)
+            specs.append((self.m, *(sp or (None, None)), False))
+
+    def value_spec(self, v, env: list, line: int):
+        """self.x = v 的 v 推得出类型时（解析线索, 种类）：C(…) / f(…) / self.make(…) 是 c（类的实例、函数的返回值标注）；
+        C(…) if … else None、None if … else C(…) 同 C(…)；[C(…) for …] 是 e；{k: C(…) for …} 是 d；
+        外层函数的参数标了类型（def __init__(self, e: Engine)）按标注。别的是 None"""
+        t = type(v)
+        if t is ast.Call:
+            return (self.base_spec(v.func, env, line), "c") if type(v.func) in (ast.Name, ast.Attribute) else None
+        if t is ast.IfExp:
+            a, b = v.body, v.orelse
+            if is_none(b):
+                return self.value_spec(a, env, line)
+            if is_none(a):
+                return self.value_spec(b, env, line)
+        elif t is ast.ListComp or t is ast.DictComp:
+            sp = self.value_spec(v.elt if t is ast.ListComp else v.value, env, line)
+            return (sp[0], "e" if t is ast.ListComp else "d") if sp and sp[1] == "c" else None
+        elif t is ast.Name:
+            i = next((i for i in range(len(env) - 1, -1, -1) if env[i][0] == "f"), None)
+            a = next((x for x in _all_args(env[i][1].args) if x.arg == v.id), None) if i is not None else None
+            if a is not None and a.annotation is not None:
+                return self.type_spec(a.annotation, env[:i], line)     # 标注在 def 外面求值
+        return None
+
+    def type_spec(self, ann, env: list, line: int):
+        """标注推得出类型时（类的解析线索, 种类），见 xtypes.ann_class"""
+        c = ann_class(ann) if ann is not None else None
+        return (self.base_spec(c[0], env, line), c[1]) if c else None
 
     def base_spec(self, b, env: list, line: int):
         """一个基类表达式的解析线索：("L", 外层局部 / 类体里的绑定, 其余段, None) 或
@@ -918,6 +983,8 @@ class _Walk:
         self.spans: list = []
         self.cur = f"{m}:<module>"                    # 现在这段代码属于哪个节点
         self.lazy_ann = False                         # 有 from __future__ import annotations（run 里定）
+        self.loose = None                             # 刚解析的方法调用：按「隔着仓库外基类」找到的（见 class_member_past_unknown）
+        self.recv = None                              # 刚走过的 a.b 里 a 的值（a.get(…) 这类按 a 的类型推结果）
 
     def run(self, tree) -> list[tuple]:
         # from __future__ import annotations：标注不求值，是字符串。类里有个同名的方法 Config 时，方法签名里的
@@ -1015,8 +1082,9 @@ class _Walk:
         if t is ast.Expr:
             ex(st.value)
         elif t is ast.Assign:
-            ex(st.value)
+            v = ex(st.value)
             self.assign(st.targets, cls, True)
+            self.type_local(st.targets, v)
         elif t is ast.Return:
             if st.value is not None:
                 ex(st.value)
@@ -1032,14 +1100,15 @@ class _Walk:
             late, self.late = self.late, True         # 注解按推迟求值算（PEP 563 / 649）
             ex(st.annotation)
             self.late = late
-            if st.value is not None:
-                ex(st.value)
+            v = ex(st.value) if st.value is not None else None
             self.assign([st.target], cls, st.value is not None)
+            self.type_local([st.target], self.ann_type(st.annotation) or v)
         elif t is ast.AugAssign:
             ex(st.value)
             self.assign([st.target], cls, True)
         elif t in _FOR:
-            ex(st.iter)
+            it = ex(st.iter)
+            self.bind_types(iter_types(st.target, it, _names(st.target, [])))
             self.loop_target(st.target, st.body, q, cls)
             self.block(st.orelse, q, cls)
         elif t in _WITH:
@@ -1049,6 +1118,7 @@ class _Walk:
                 if it.optional_vars is not None:
                     ex(it.optional_vars)
                     _names(it.optional_vars, names)
+                    self.type_local([it.optional_vars], None)
             self.shadowed([n.id for n in names] if not self.fn else [], st.body, q, cls)
         elif t is ast.Import or t is ast.ImportFrom:
             self.imports(st)
@@ -1116,6 +1186,42 @@ class _Walk:
         # 函数里的循环变量已经是局部名字；模块顶层 / 类体里的，循环体里把同名的全局遮住
         self.shadowed([n.id for n in _names(tg, [])] if not self.fn else [], body, q, cls)
 
+    def type_local(self, targets, v) -> None:
+        """函数里 x = C(…)（或别的推出了类型的值）：之后的 x.m() 按 C 解析。按语句的先后走，后面再赋别的就换掉；
+        推不出的值（调用的结果、拆包）就记成不知道"""
+        v = v if typed(v) else None
+        self.bind_types({x.id: v if type(tg) is ast.Name else None for tg in targets for x in _names(tg, [])})
+
+    def bind_types(self, types: dict) -> None:
+        """函数里的局部名字 → 推出来的类型（None 是不知道）。模块顶层 / 类体里的名字不推"""
+        if not self.fn:
+            return
+        for name, v in types.items():
+            for sc in reversed(self.scopes):
+                if name in sc:
+                    if sc[name] is not _GLOBAL and type(sc) is not _ClsScope and (sc[name] is None or typed(sc[name])):
+                        sc[name] = v
+                    break
+
+    def ann_type(self, ann) -> str | None:
+        """标注指的是仓库里的类时推出来的值（见 xtypes）；别的是 None。不记 token（标注已经走过一遍）"""
+        c = ann_class(ann) if ann is not None else None
+        if not c:
+            return None
+        ann, kind = c
+        t = type(ann)
+        parts = []
+        while t is ast.Attribute:
+            parts.append(ann.attr)
+            ann = ann.value
+            t = type(ann)
+        if t is not ast.Name:
+            return None
+        r = self.lookup(ann.id)
+        for part in reversed(parts):
+            r = self.repo.member(r, part)
+        return self.repo.types.instance(r, kind)
+
     def assign(self, targets, cls: str | None, binds: bool) -> None:
         """赋值目标。模块顶层 / 类体里的第一次赋值就是这个变量的定义；类体里赋过的名字，类体后面看得见。"""
         at_class = self.cscope is not None
@@ -1156,9 +1262,11 @@ class _Walk:
             self.scopes = self.outer_chain() + [_ClsScope(
                 (k, v) for k, v in self.cscope.items()
                 if not (v and v[:2] == "s:" and (syms.get(v[2:]) or {}).get("k") == "func"))]
+        ann_types = {}
         for x in _all_args(a):
             if x.annotation is not None:
                 ex(x.annotation)
+                ann_types[x.arg] = self.ann_type(x.annotation)
         if st.returns is not None:
             ex(st.returns)
         qn = q + st.name
@@ -1168,6 +1276,11 @@ class _Walk:
             if col is not None:
                 self.emit(st.lineno, col, st.name, f"s:{key}", DEF)
         loc = _fn_locals(st, key, cls, self.symbols, self.walrus, self.import_binding)
+        for x in _all_args(a):                        # 参数的类型标注写明了是仓库里的类：x.m() 按它解析
+            if x.annotation is not None and loc.get(x.arg) is None:
+                it = ann_types.get(x.arg)
+                if it:
+                    loc[x.arg] = it
         self.scopes = self.outer_chain() + [loc]
         self.cscope = None
         self.fn = True
@@ -1310,6 +1423,7 @@ class _Walk:
             return r
         if t is ast.Attribute:
             base = self.ex(n.value)
+            self.recv = base
             attr = n.attr
             r = self.repo.member(base, attr) if base is not None else None
             if r is not None:
@@ -1330,6 +1444,15 @@ class _Walk:
                 if sp:
                     self.repo.attrs.setdefault(attr, []).append(
                         (self.rel, self.repo.int(n.end_lineno), sp[0], sp[1], CALL if kind == CALL else REF))
+            if r is None and kind == CALL and base:
+                # 调方法：MRO 上隔着仓库外的基类、后面仓库里的 mixin 定义了它——graph 的调用记录按它算（近似），跳转不变
+                bk, _, brest = base.partition(":")
+                if bk in ("self", "i", "s", "super"):
+                    self.loose = self.repo.class_member_past_unknown(brest, attr, bk == "super")
+            if r is not None and r[:2] == "v:":
+                return self.repo.types.var_type(r) or r  # self.x = C(…) 赋过的：值是 C 的实例（self.x.m() 能解析）
+            if r is not None and r[:2] == "s:" and kind != CALL and _is_property(self.symbols.get(r[2:]), type(n.ctx)):
+                return self.repo.types.ret_type(r[2:]) or r  # property 标了返回值类型：self.p.m() 按它解析
             return r
         if t is ast.Constant:
             return None
@@ -1338,22 +1461,30 @@ class _Walk:
             if (type(f) is ast.Name and f.id == "super" and self.meth and "super" not in self.tops
                     and not any("super" in s for s in self.scopes)):
                 return self.super_call(n)
+            self.loose = None
             r = self.ex(f, CALL)
+            recv = self.recv
+            tf = type(f)
             if self.calls is not None:
-                tf = type(f)
                 name = f.id if tf is ast.Name else f.attr if tf is ast.Attribute else None
                 if (tf is ast.Attribute and type(f.value) is ast.Call and type(f.value.func) is ast.Name
                         and f.value.func.id == "super"):
                     name = "super()." + f.attr        # 调的是 MRO 上下一个类的（多半在仓库外）：别和别的类里的同名方法对上
-                self.note(n, r, name, HOW_CALL)
+                self.note(n, r if r is not None else self.loose, name, HOW_CALL)
                 if (tf is ast.Name and f.id == "getattr" and r is None and len(n.args) >= 2
                         and type(n.args[1]) is ast.Constant and type(n.args[1].value) is str):
                     self.note(n, None, n.args[1].value, HOW_STR)
-            for x in n.args:
-                self.ex(x)
+            vals = [self.ex(x) for x in n.args]
             for k in n.keywords:
                 self.ex(k.value)
-            return None
+            return self.repo.types.call_value(r) or self.call_type(n, r, recv, vals)
+        if t is ast.Subscript:                        # 序列 / 映射里取出来的是元素的实例；切片还是序列
+            v = self.ex(n.value)
+            self.ex(n.slice)
+            return subscript(v, type(n.slice) is ast.Slice)
+        if t is ast.IfExp:                            # C(…) if … else None：值是 C 的实例或 None
+            self.ex(n.test)
+            return if_value(n, self.ex(n.body), self.ex(n.orelse))
         if t is ast.BinOp:                            # a + b + c + ...：左边嵌套的长链，别递归下去
             rights = []
             while type(n) is ast.BinOp:
@@ -1403,10 +1534,25 @@ class _Walk:
             return f"super:{self.meth}"
         return None
 
+    def call_type(self, n, r, recv, vals) -> str | None:
+        """调用的结果推得出类型的几种（C(…) 之外）：d.get(k) / d.values() / d.items() / e.pop() 按容器的类型；
+        enumerate(e) / list(e) / sorted(e) 这类内置函数；getattr(obj, "x"[, 默认]) 同 obj.x"""
+        f = n.func
+        if type(f) is ast.Attribute:
+            return method_call(recv, f.attr)
+        if type(f) is not ast.Name or r is not None or any(f.id in s for s in self.scopes):
+            return None
+        if (f.id == "getattr" and len(n.args) >= 2 and vals[0] is not None and type(n.args[1]) is ast.Constant
+                and type(n.args[1].value) is str):
+            a = self.repo.member(vals[0], n.args[1].value)
+            a = self.repo.types.var_type(a) if a and a[:2] == "v:" else a
+            return a if typed(a) else None
+        return builtin_call(f.id, vals[0]) if vals else None
+
     def comp(self, n) -> None:
         """推导式：第一个 for 的可迭代对象在外面求值；其余在自己的作用域里，循环变量只在里面遮。"""
         gens = n.generators
-        self.ex(gens[0].iter)
+        it = self.ex(gens[0].iter)
         sh = {}
         for g in gens:
             for x in _names(g.target, []):
@@ -1418,7 +1564,8 @@ class _Walk:
             if type(n) is ast.GeneratorExp else self.cur
         for i, g in enumerate(gens):
             if i:
-                self.ex(g.iter)
+                it = self.ex(g.iter)
+            sh.update(iter_types(g.target, it, _names(g.target, [])))     # [p.m() for p in pools]：pools 是 C 的序列时 p 是 C 的实例
             if type(g.target) is not ast.Name:
                 self.ex(g.target)
             for c in g.ifs:

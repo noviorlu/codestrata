@@ -271,5 +271,92 @@ def test_name_refs_and_constant_keys():
     assert not any(l == lit for _, l in syn) and ("__hash__", var) in syn, syn
 
 
+_TI_SRC = {
+    "ti/__init__.py": "",
+    "ti/m.py": (
+        "from __future__ import annotations\n\nfrom typing import Optional\n\n\n"
+        "class Engine:\n    def step(self):\n        return 1\n\n\n"
+        "class Mixin:\n    def helper(self):\n        return 2\n\n\n"
+        "class Runner(dict, Mixin):\n"
+        "    spare: Engine | None = None\n\n"
+        "    def __init__(self, fast, given: Engine, pools: list[Engine]):\n"
+        "        self.engine = Engine()\n"
+        "        self.alt = Engine() if fast else None\n"
+        "        self.other = make()\n"
+        "        self.mixed = Engine() if fast else make()\n"
+        "        self.given = given\n"
+        "        self.pools = pools\n"
+        "        self.byname: dict[str, Engine] = {}\n"
+        "        self.built = [Engine() for _ in range(2)]\n"
+        "        self.made = self.create()\n\n"
+        "    def create(self) -> Engine:\n        return Engine()\n\n"
+        "    @property\n    def current(self) -> Engine:\n        return self.engine\n\n"
+        "    async def later(self) -> Engine:\n        return Engine()\n\n"
+        "    def run(self, e: Engine, o: Optional[Engine] = None, p: 'Engine | None' = None):\n"
+        "        x = Engine()\n"
+        "        x.step()  # local\n"
+        "        Engine().step()  # direct\n"
+        "        self.engine.step()  # attr\n"
+        "        self.alt.step()  # cond\n"
+        "        self.other.step()  # unknown\n"
+        "        self.mixed.step()  # mixed\n"
+        "        e.step()  # param\n"
+        "        o.step()  # optional\n"
+        "        p.step()  # union\n"
+        "        self.helper()  # mixin\n"
+        "        self.spare.step()  # field\n"
+        "        self.given.step()  # injected\n"
+        "        self.pools[0].step()  # index\n"
+        "        for q in self.pools:\n"
+        "            q.step()  # loop\n"
+        "        for i, q2 in enumerate(self.built):\n"
+        "            q2.step()  # enumerate\n"
+        "        for k, v in self.byname.items():\n"
+        "            v.step()  # items\n"
+        "        self.byname.get('a').step()  # get\n"
+        "        [w.step() for w in self.pools]  # comp\n"
+        "        a = getattr(self, 'engine', None)\n"
+        "        a.step()  # getattr\n"
+        "        self.made.step()  # factory\n"
+        "        self.current.step()  # property\n"
+        "        build().step()  # returns\n"
+        "        self.later().step()  # async\n"
+        "        x, y = make(), 1\n"
+        "        x.step()  # rebound\n"
+        "        return x\n\n\n"
+        "def make():\n    return Engine()\n\n\n"
+        "def build() -> 'Engine':\n    return Engine()\n"),
+}
+
+
+def test_type_inference():
+    """scan 推一点类型：x = C(…) 之后的 x.m()、C().m()、self.x = C(…)（含 C(…) if … else None）之后的 self.x.m()、
+    参数标注 C / Optional[C] / "C | None" 的 x.m()、类体里的 x: C、self.x = 标了类型的参数、list[C] / dict[K, C] 的
+    下标 / 循环 / enumerate / .items() / .get() / 推导式、getattr(self, "x")、函数 / 方法 / property 的返回值标注都定下被调方；
+    self.x 赋的是别的调用的结果、几处赋的推不一样、局部变量后来拆包赋了别的，就不猜。
+    MRO 上隔着仓库外基类的 mixin 方法：graph 的调用记录按它算（近似），跳转不给（宁可不跳也不跳错）"""
+    d = tmpdir("cs-graph-") / "repo"
+    for rel, text in _TI_SRC.items():
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text(text)
+    cs("scan", d)
+    g = json.loads((d / ".codestrata" / "graph.json").read_text())
+    src = _TI_SRC["ti/m.py"].splitlines()
+    ln = lambda tag: next(i for i, s in enumerate(src, 1) if s.endswith("# " + tag))
+    M = "ti/m.py#"
+    got = {(l, g["callees"][i]) for i, l, _, _ in g["calls"][f"{M}Runner.run"]}
+    for tag in ("local", "direct", "attr", "cond", "param", "optional", "union", "field", "injected", "index", "loop",
+                "enumerate", "items", "get", "comp", "getattr", "factory", "property", "returns"):
+        assert (ln(tag), f"{M}Engine.step") in got, (tag, sorted(got))
+    assert (ln("mixin"), f"{M}Mixin.helper") in got, sorted(got)
+    for tag in ("unknown", "mixed", "rebound", "async"):         # 推不出 / 赋了别的 / 协程：不猜
+        assert (ln(tag), f"{M}Engine.step") not in got, (tag, sorted(got))
+    x = json.loads((d / ".codestrata" / "xref.json").read_text())
+    T = x["targets"]
+    toks = {(l, T[ti]) for l, a, b, ti, k in x["files"]["ti/m.py"]}
+    assert (ln("local"), f"s:{M}Engine.step") in toks and (ln("attr"), f"s:{M}Engine.step") in toks, sorted(toks)
+    assert not any(l == ln("mixin") and tg.endswith("helper") for l, tg in toks), sorted(toks)   # 跳转不给
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))
