@@ -7,7 +7,7 @@ const st = page => page.ev(`JSON.stringify({pressed: [...document.querySelectorA
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#run=' + fx.a + '@loop');
+  await page.goto(base + '#view=graph&run=' + fx.a + '@loop');
   ok(await waitRun(page, fx.a + '@loop'), '打开 A@loop');
   ok(JSON.stringify(await page.ev(`[...document.querySelectorAll('.tph')].map(b => b.dataset.ph)`)) === JSON.stringify(['', 'start', 'loop', 'forks']),
      '阶段按钮：全部 + start / loop / forks');
@@ -18,7 +18,7 @@ export default async function (t) {
 
   // 拖左把手往右：变成 loop 的后半段（前半段刚切阶段、还没有调用：切阶段时触发的进程会停 0.1 s）
   await page.drag(sel.l + 2, sel.y, sel.l + sel.w * 0.5);
-  ok(await page.wait(`/@t=\\d+-\\d+$/.test(decodeURIComponent(location.hash)) && !!CS.app.data.hotMeta.window`, 15000), '拖左把手：地址变成 @t=起-止 ' + await hash(page));
+  ok(await page.wait(`/@t=\\d+-\\d+(&|$)/.test(decodeURIComponent(location.hash)) && !!CS.app.data.hotMeta.window`, 15000), '拖左把手：地址变成 @t=起-止 ' + await hash(page));
   s = await st(page);
   const tl = await page.ev(`CS.app.data.hotMeta.timeline.find(x => x[0] === 'loop')`);
   ok(s.win[1] === tl[2] && s.win[0] > tl[1], '终点不变、起点往后 ' + JSON.stringify([s.win, tl]));
@@ -62,7 +62,7 @@ export default async function (t) {
 
   // 地址里的时间段超出终点：条放长，选中框照样画出来
   const end = await page.ev('CS.app.data.hotMeta.end_us');
-  await page.goto(base + '#run=' + fx.a + '@t=' + (end + 1000) + '-' + (end + 5000));
+  await page.goto(base + '#view=graph&run=' + fx.a + '@t=' + (end + 1000) + '-' + (end + 5000));
   ok(await page.ev(`!!CS.app.data.hotMeta.window && !document.querySelector('.tsel').hidden && document.querySelector('.tsel').getBoundingClientRect().width > 0`),
      '超出终点的时间段：选中框照样画出来');
 }

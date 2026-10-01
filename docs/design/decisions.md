@@ -118,6 +118,19 @@
 - 放弃的方案：按时刻平铺所有调用（几千行，轮询淹掉主线）；只在时间顺序上加函数级的提示框；第一次调用树（新 run 上不再用）。
 - 在哪：`path.py`；`seq.phase_calls`；`serve.py` 的 `/api/path`；`__main__.py` 的 `cmd_path`；`web/path.js`。测试 `test_request_path`、`tests/web/specs/path.mjs`。
 
+### 运行时按进程 · 线程分列
+- 决定（用户 2026-10-01 定的展示）：叠了录了时序事件的 run，模块图按进程 · 线程分成并排的几列，按进程分组；每列只放这条线程调到的节点，
+  同一个节点在几列里各复制一份。列之间三种关系：共用同一个节点（各份放在同一高度，悬停 / 选中才连线）、谁起了谁（spawn）、谁把数据交给谁（handoff，
+  标通道和次数）。线程名归一之后再合并（`Thread-N (target)` → target，线程池 `X_k` → `X ×N`），列按内容宽，进程能整个收起；
+  列的先后：进程按启动先后，进程里顺着交接走。只跑仓库外代码、但是交接一头的线程给一列空的。开关在「视图」里，链接里 `view=graph` 是一张图。
+- 为什么：多进程、多线程的服务（vLLM：主线程、orchestrator、每个 stage 的收请求 / 主循环 / 输出 / 收发 chunk 的线程）合在一张图上
+  看不出谁交给谁；请求路径按线程分节、只展开主线程，交接散在几节里。用户的原话是「有几个 thread 就把那个 thread call 到的 module duplicate
+  对应的 thread 数量然后平行和主 thread 放置，这样我们就能够很清晰的看到 thread 和 thread 之间的 collaboration」。
+  共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条（外部评审量的），按同一高度对齐就看得出。
+- 放弃的方案（设计说明里比过）：泳道时间线（Perfetto 那种，自己做工作量最大）、按时间合并的一张表（看不出重叠）、顺序图（箭头没有录的话只能按时刻猜）。
+- 在哪：`lanes.py`（`build`、`thread_group`、`_order`）、`serve.py` 的 `/api/lanes`、`web/lanes.js`、`web/app.js` 的 `drawMain`、`runBar`。
+  测试 `test_lanes`、`tests/web/specs/lanes.mjs`。
+
 ### 叠了 run 默认只看跑到的
 - 决定：选了一个 run 打开，默认是「只看跑到的」（单独排版的运行时图）；开关还在，用户自己关过之后换 run 不再替他打开。
   「这次跑了」数的是全部跑到的边（实线虚线都算），也管全部；「其中代码里看不出」只管虚线，前一个关着时点不了。

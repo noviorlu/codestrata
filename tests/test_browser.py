@@ -150,6 +150,10 @@ def test_timebar():
     _spec("timebar")
 
 
+def test_lanes():
+    _spec("lanes")
+
+
 def test_timeorder():
     _spec("timeorder")
 

@@ -66,8 +66,7 @@ window.CS = window.CS || {};
         self.wireDrawer();
         CS.graph.onExpand = function (id) { self.expand(id); };
         CS.graph.phaseMarks = self.phaseMarks();
-        CS.graph.draw(document.getElementById('g'), CS.graph.state.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
-                      { rtOnly: d.runtimeOnlyEdges });
+        self.drawMain();
         self.applyTimes();
         self.edgeChips();
         self.controls();
@@ -319,7 +318,7 @@ window.CS = window.CS || {};
     },
 
     _writeHash: function () {
-      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view|cmp)=/.test(x); });
+      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|cmp)=/.test(x); });
       if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
       history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
     },
@@ -391,6 +390,13 @@ window.CS = window.CS || {};
         CS.graph.state.onlyHot = true;
         if (oh) oh.setAttribute('aria-pressed', 'true');
       }
+      // 叠了录了时序事件的 run 默认按线程分列（用户 10-01 定的）；用户自己关过就不再替他打开
+      var lc = document.querySelector('[data-t="lanes"]'), ev = !!m && this.runHasEvents();
+      if (/(?:^#|&)view=graph(?:&|$)/.test(location.hash || '')) this._lanesChosen = true;   // 链接里要的是模块图
+      if (lc) lc.hidden = !ev;
+      if (!ev && CS.graph.state.lanes) CS.graph.state.lanes = false;
+      else if (ev && !CS.graph.state.lanes && !this._lanesChosen) CS.graph.state.lanes = true;
+      if (lc) lc.setAttribute('aria-pressed', CS.graph.state.lanes ? 'true' : 'false');
       b.classList.toggle('on', !!m);
       b.textContent = m ? m.case + ' · ' + shortTime(m.created) : '静态图';
       var rb = document.getElementById('rerunbtn');
@@ -859,11 +865,19 @@ window.CS = window.CS || {};
       b.style.display = same ? 'none' : '';
     },
 
-    redraw: function () {
+    /* 画中间那张图：「按线程分列」开着（叠着录了时序事件的 run）时画分列（lanes.js），否则画模块图 */
+    drawMain: function () {
       var d = this.data, s = CS.graph.state;
-      CS.graph.phaseMarks = this.phaseMarks();
+      var lanes = !!(s.lanes && d.hot && this.runHasEvents());
+      document.body.classList.toggle('lanesmode', lanes);
+      if (lanes) { CS.graph.clear(); CS.lanes.show(); return; }
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { rtOnly: d.runtimeOnlyEdges });
+    },
+
+    redraw: function () {
+      CS.graph.phaseMarks = this.phaseMarks();
+      this.drawMain();
       this.applyTimes();
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();
@@ -874,7 +888,7 @@ window.CS = window.CS || {};
     controls: function () {
       var s = CS.graph.state, self = this;
       var KEY = { scan: 'scan', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot',
-                  timeorder: 'timeOrder' };
+                  timeorder: 'timeOrder', lanes: 'lanes' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
         if (key === 'onlyHot') {                 // 换 run 时会来回切：没叠 runtime 就藏起来
@@ -885,6 +899,7 @@ window.CS = window.CS || {};
           s[key] = b.getAttribute('aria-pressed') !== 'true';
           b.setAttribute('aria-pressed', s[key]);
           if (key === 'onlyHot') self._onlyHotChosen = true;     // 用户自己点过：之后换 run 不再替他打开
+          if (key === 'lanes') { self._lanesChosen = true; self.redraw(); return; }
           // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
           if (key === 'onlyHot' && self.data.graphHot) self.redraw();
           else if (key === 'timeOrder') self.applyTimes();

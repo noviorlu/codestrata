@@ -4,7 +4,7 @@ import { sleep, waitRun } from '../lib.mjs';
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#run=' + fx.a);
+  await page.goto(base + '#view=graph&run=' + fx.a);
   ok(await waitRun(page, fx.a), '叠上 run A（录了时序事件）');
   ok(await page.ev(`!document.getElementById('pathbtn').hidden`), '有「请求路径」按钮');
   await page.click('#pathbtn');
@@ -38,7 +38,7 @@ export default async function (t) {
   await page.key('Escape', 'Escape', 27);
 
   // 边详情可以按第一次调用的先后排
-  await page.goto(base + '#run=' + fx.a);
+  await page.goto(base + '#view=graph&run=' + fx.a);
   ok(await waitRun(page, fx.a), '回到 run A');
   const ds = await page.ev(`CS.ds.edge('fakesvc/truth.py', 'fakesvc/callee.py').then(E => [E.has_first, E.calls.filter(c => c.first != null).length, E.calls.length])`);
   ok(ds[0] === true && ds[1] > 1, '边详情带每个函数对第一次调用的时刻 ' + JSON.stringify(ds));
@@ -54,7 +54,7 @@ export default async function (t) {
   ok(order, '卡片按第一次调用的先后');
 
   // 没录时序事件的 run：按钮照样在，点开说明为什么看不了
-  await page.goto(fx.base3 + '#run=' + fx.dynold);
+  await page.goto(fx.base3 + '#view=graph&run=' + fx.dynold);
   ok(await waitRun(page, fx.dynold), '叠上没录时序事件的 run');
   await sleep(300);
   ok(await page.ev(`!document.getElementById('pathbtn').hidden`), '照样有「请求路径」按钮');

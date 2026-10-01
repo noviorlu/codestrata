@@ -3,7 +3,7 @@ import { clickEdge, drawnNodes, hash, hotEdges, sleep, waitRun } from '../lib.mj
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#run=' + fx.a);
+  await page.goto(base + '#view=graph&run=' + fx.a);
   ok(await waitRun(page, fx.a), '按地址叠上 run A');
   ok((await page.ev(`document.getElementById('runbtn').textContent`)).startsWith('truth'), '运行按钮写 case 名');
   const he = await hotEdges(page);
@@ -22,7 +22,7 @@ export default async function (t) {
   await page.ev(`document.getElementById('helpX').click()`);
   await page.click('#readnote .rnx');
   ok(await page.ev(`document.getElementById('readnote').hidden`), '点 × 关掉');
-  await page.goto(base + '#run=' + fx.a);
+  await page.goto(base + '#view=graph&run=' + fx.a);
   ok(await waitRun(page, fx.a) && await page.ev(`document.getElementById('readnote').hidden`), '刷新之后还是关着');
   await page.ev(`localStorage.removeItem('codestrata.readnote')`);
 
@@ -49,7 +49,7 @@ export default async function (t) {
   // 换阶段：点时间轴上的 loop
   await page.click('.tph[data-ph="loop"]');
   ok(await waitRun(page, fx.a + '@loop'), '点 loop：换成这个阶段');
-  ok((await hash(page)).endsWith('@loop'), '地址里记下阶段');
+  ok(/@loop(&|$)/.test(await hash(page)), '地址里记下阶段');
   const hl = await hotEdges(page);
   ok(!hl['fakesvc/execd.py|fakesvc/work.py'] && hl['fakesvc/truth.py|fakesvc/callee.py'] > 0, 'loop 阶段：exec 那条边不在（它在 forks 阶段）');
   const marks = await page.ev(`[...document.querySelectorAll('#g .pmark')].map(x => x.textContent)`);

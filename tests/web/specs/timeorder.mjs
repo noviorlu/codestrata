@@ -5,7 +5,7 @@ const ranked = page => page.ev(`CS.graph.edges.filter(E => E._t).sort((x, y) => 
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#run=' + fx.a);
+  await page.goto(base + '#view=graph&run=' + fx.a);
   ok(await waitRun(page, fx.a), '打开 A（整个 run）');
   const chip = '#edgechips [data-t="timeorder"]';
   ok(await page.ev(`document.querySelector('${chip}').getAttribute('aria-pressed')`) === 'false', '默认关着');
