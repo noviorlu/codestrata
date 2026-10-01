@@ -38,15 +38,10 @@ def test_wheel_ships_web():
     assert not missing, f"wheel 里没有这些前端文件：{missing}"
 
 
-def test_export_scripts_match_index():
-    """前端脚本清单有两份：index.html 末尾的 script 标签（serve 用）和 render.SCRIPTS（导出时拼进单文件）。
-    两份要一致、web/ 下每个 .js 都在里面——漏了导出版会在调到它的地方报错（时间轴的 timebar.js 就漏过）"""
+def test_web_scripts_all_loaded():
+    """web/ 下每个 .js 都有页面用 <script> 加载：漏了的话，调到它的地方会报错（时间轴的 timebar.js 就漏过）"""
     import re
-    sys.path.insert(0, str(HERE.parent))
-    from codestrata import render
     web = HERE.parent / "codestrata" / "web"
-    tags = re.findall(r'<script src="([^"]+)"></script>', (web / "index.html").read_text(encoding="utf-8"))
-    assert tags == ["hl.js", *render.SCRIPTS], (tags, render.SCRIPTS)      # hl.js 导出时单独一个 <script>
     used = {t for h in web.glob("*.html") for t in re.findall(r'<script src="([^"]+)"></script>', h.read_text(encoding="utf-8"))}
     assert sorted(f.name for f in web.glob("*.js")) == sorted(used), (sorted(f.name for f in web.glob("*.js")), sorted(used))
 

@@ -1,6 +1,6 @@
 # 架构
 
-代码怎么组织、数据怎么流。开头一节讲核心模型，现在的代码和它对不上的地方在那一节里标出来；其余各节只写现状。行数是 2026-09-29 的 `wc -l`。
+代码怎么组织、数据怎么流。开头一节讲核心模型，现在的代码和它对不上的地方在那一节里标出来；其余各节只写现状。行数是 2026-09-30 的 `wc -l`。
 
 ## 核心模型：graph
 
@@ -32,8 +32,8 @@ codestrata 围着一个 graph 转：
 
 codestrata 是一个纯标准库的 Python 包（源码高亮用可选的 Pygments）加一套不需要构建的前端，分四部分：
 **静态扫描**（`scan`、`xref`：把仓库变成 `.codestrata/` 下可重建的索引）；**录制**（`trace`、`runs`、`events`：跑一条真实命令，
-存成 `.codestrata/runs/<id>/` 下不可重建的 run）；**组装与交付**（`payload` 把索引和 run 拼成前端数据，`serve` 按请求给，
-`render` / `site` 导出成文件；`cut`、`layout`、`seq`、`highlight` 是零件）；**前端**（`codestrata/web/`）。
+存成 `.codestrata/runs/<id>/` 下不可重建的 run）；**组装与交付**（`payload` 把索引和 run 拼成前端数据，`serve` 按请求给；
+`cut`、`layout`、`seq`、`highlight` 是零件）；**前端**（`codestrata/web/`）。
 主菜单 `codestrata app`（`app`、`projects`、`jobs`、`viewers`）站在外面，替人敲 `scan` / `trace` / `serve` 命令，不直接调它们的函数。
 
 ## 数据流
@@ -50,9 +50,7 @@ flowchart LR
   XR --> PL
   RUN -->|"seq.edge_times（events/spans/）"| API
   PL --> API["serve.Handler /api/*"]
-  PL -->|"export_payload → render.export / site.export_site"| FILE["单文件 HTML / 静态站"]
   API --> WEB["web/*.js（经 ds.js）"]
-  FILE --> WEB
 ```
 
 1. **scan**：`__main__.cmd_scan` 调 `scan.scan(repo, roots=…)`（`ast` 遍历选定目录的 .py），`scan.write_index` 写出
@@ -75,9 +73,8 @@ flowchart LR
 6. **payload**：`payload.load_index` 合并 index.json 和 symbols.json；`graph_payload` 做切面（`cut.view`）、
    叠加（`_hot_on_cut`）、排版（`layout.build`）。边详情 `edge_detail`，源码 `file_view` / `symbol_source`（经 `highlight`），跳转 `xref_for` / `refs`，`search_index`、`reveal`。
 7. **交付**：`serve.main` 启动时读一次 index；`serve.Handler` 按请求调 payload（`_hot` 按 run id、阶段、文件 mtime 缓存 8 个），
-   `/api/seq/edges` 交给 `seq.edge_times`（读 `events/spans/`，只有 serve 有）。`cmd_graph` 调 `payload.export_payload`，由
-   `render.export` 内联成单文件（`window.CS_EMBEDDED`），`--link github` 时由 `site.export_site` 写静态站（源码从 GitHub 取）。
-8. **前端**：`web/ds.js` 决定数据从哪来，其余脚本不感知（见「前端结构」）。
+   `/api/seq/edges` 交给 `seq.edge_times`（读 `events/spans/`）。
+8. **前端**：数据都经 `web/ds.js` 从 serve 取（见「前端结构」）。
 
 ## 模块地图
 
@@ -85,37 +82,35 @@ flowchart LR
 |---|---:|---|
 | `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 784 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
-| `scan.py` | 806 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
-| `xref.py` | 1401 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击 |
+| `__main__.py` | 587 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来 |
+| `scan.py` | 820 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
+| `xref.py` | 1425 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击 |
 | `cut.py` | 391 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
-| `layout.py` | 629 | 依赖分层 + 横向排序 + 框，出坐标 |
+| `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 657 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
-| `trace/analysis.py` | 515 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、折算到当前 index（`to_package_graph`、`sym_locs`、`defining`）、找 case 脚本；纯数据处理 |
-| `runs.py` | 1062 | run 目录的建、收尾、迁移、解析、加载（`remap`、`file_state`）、管理、复刻命令 |
+| `trace/analysis.py` | 525 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、折算到当前 index（`to_package_graph`、`sym_locs`、`defining`）、找 case 脚本；纯数据处理 |
+| `runs.py` | 1061 | run 目录的建、收尾、迁移、解析、加载（`remap`、`file_state`）、管理、复刻命令 |
 | `events.py` | 240 | 时序事件日志 → span（`events/spans/`） |
 | `seq.py` | 327 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数 |
-| `payload.py` | 1270 | 组装前端数据：图、叠加、边详情、源码、引用、搜索、导出数据、公开化 |
-| `highlight.py` | 186 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
-| `serve.py` | 477 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
-| `render.py` | 45 | 把 web/ 和 payload 内联成单文件 HTML |
-| `site.py` | 351 | 静态站导出（源码从 GitHub 取，数据按需加载） |
-| `app.py` | 385 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
-| `projects.py` | 201 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
+| `payload.py` | 980 | 组装前端数据：图、叠加、边详情、源码、引用、搜索 |
+| `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
+| `serve.py` | 403 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
+| `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
+| `projects.py` | 202 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
-| `web/ids.js` | 29 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
-| `web/ds.js` | 388 | 数据源层：live（fetch `api/*`）/ embedded / linked |
-| `web/app.js` | 1055 | 入口：串起数据源、图、面板、run 选择、时间轴 |
-| `web/graph.js` | 683 | SVG 绘图（纯函数式），边的配色约定 |
-| `web/panel.js` | 633 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
-| `web/viewer.js` | 463 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`） |
+| `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
+| `web/ds.js` | 56 | 数据源层：fetch serve 的 `api/*` |
+| `web/app.js` | 905 | 入口：串起数据源、图、面板、run 选择、时间轴 |
+| `web/graph.js` | 655 | SVG 绘图（纯函数式），边的配色约定 |
+| `web/panel.js` | 619 | 详情面板：节点的事实和源码，边上实际调了哪些函数 |
+| `web/viewer.js` | 425 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`） |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
-| `web/search.js` | 337 | 搜索栏：模块、文件、类 / 函数 |
+| `web/search.js` | 339 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版） |
-| `web/home.js` | 389 | 主菜单页面（`home.html`，不走 ds.js） |
+| `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
+| `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 
 已知的结构问题：
 - **`payload.py` 是 god module**：同时认识事实（index）、runtime（经 `runs`）、坐标（`layout`）、源码（`highlight`）、
@@ -153,11 +148,9 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 节点 id 是路径，页面上显示的名字都来自数据（`names` 短名、`labels` 完整名、布局给的 `label`），不从 id 拆；判断 id 之间的关系只用 `CS.ids`。
 
 - **加载顺序**：`index.html` 末尾依次是 `hl.js`、`ids.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
-  `timebar.js`、`app.js`（`app.js` 最后启动）。导出时 `render.SCRIPTS` 是同一顺序去掉 `hl.js`：`render.export` 把
-  `hl.js` 单独放一个 `<script>`（它用了正则后行断言，老浏览器解析失败时只丢高亮）。`tests/test_package.py` 核对两份清单一致。
-- **数据源层 `ds.js`**：UI 只调 `CS.ds.*`。有 `window.CS_EMBEDDED` 时是 embedded（只读、固定切面、没有时序数据），
-  否则是 live（`fetch('api/…')`，地址都是相对的，经主菜单转发时页面在 `/v/<端口>/` 下）；embedded 且带 `EMB.link`
-  时（`site` 导出）再用 `linkedDs` 换掉取源码、大纲、边、搜索、引用这几样。样式在 `app.css`。
+  `timebar.js`、`app.js`（`app.js` 最后启动）。`hl.js` 单独一个 `<script>`：它用了正则后行断言，老浏览器解析失败时只丢高亮。
+  `tests/test_package.py` 核对 web/ 下每个 .js 都有页面加载。
+- **数据源层 `ds.js`**：UI 只调 `CS.ds.*`，它 `fetch('api/…')`；地址都是相对的，经主菜单转发时页面在 `/v/<端口>/` 下。样式在 `app.css`。
 - 主菜单是另一套页面 `home.html` + `home.js` + `home.css`，不走 ds.js，直接 fetch 主菜单的 `/api/*`。
 
 ## 测试
@@ -175,13 +168,13 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 .venv/bin/python tests/hl_parity.py      # 只在动了高亮时跑；要 node
 ```
 
-- `test_runs.py`（70 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
+- `test_runs.py`（67 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 动态分派 / 调用处、
-  多 run 导出、公开导出和静态站、分层方向。
+  分层方向。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
-- `test_package.py`：wheel 里带着 web/ 每个文件；`index.html` 的脚本清单和 `render.SCRIPTS` 一致；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
+- `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。
-- `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan / graph 能用、trace 拒绝且不建 run。
+- `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
@@ -193,6 +186,6 @@ xref.json 可选；一个录制端，在被测进程里往 `CODESTRATA_OUT` 写�
 
 录制只支持 Linux：`cmd_trace` 一开始就调 `compat.require_trace()`，别的系统上说明并退出，不建 run 目录。平台差异都在 `compat.py`
 （能不能录、跨平台的文件锁）；只有 Unix 才有的东西（`fcntl`、`signal.SIGKILL`）不在模块顶层取，所以别的系统上所有模块都能 import，
-scan / serve / graph / runs 照常可用（`tests/test_platform.py` 模拟过）。录制为什么非 Linux 不可：hook 读 `/proc/self/stat|cmdline`（失败有退路）；
+scan / serve / runs 照常可用（`tests/test_platform.py` 模拟过）。录制为什么非 Linux 不可：hook 读 `/proc/self/stat|cmdline`（失败有退路）；
 driver 用 `/proc/<pid>/stat|status|environ|cmdline` 认进程、找残留（`proc_start`、`_alive`、`_ignores`、`leftovers`），没有 `/proc`
 时只停命令自己的进程组，setsid 出去的服务找不到；`os.killpg`、`start_new_session`、`os.register_at_fork`、`signal.SIGKILL` 在 Windows 上都没有。

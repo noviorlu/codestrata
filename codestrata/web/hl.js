@@ -1,4 +1,4 @@
-/* 浏览器端源码高亮：highlight.py（Pygments）的 JS 版，导出版现拉源码时用。
+/* 浏览器端源码高亮：highlight.py（Pygments）的 JS 版，边详情里的代码片段（调用那一行、签名）用它。
  * 照抄 Pygments 的 Python / C / C++ / CUDA 词法状态表，每个状态拼成一条粘连大正则。
  * 保真第一：token 文本原样取自源码，按 \n 切行；Pygments 去掉的 BOM、\r 最后原样补回。 */
 window.CS = window.CS || {};

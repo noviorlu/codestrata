@@ -63,7 +63,6 @@ window.CS = window.CS || {};
     if (!T) return;
     x.title = +x.dataset.k === 3 ? 'Ctrl+点击：列出所有引用它的地方'
       : !T[1] ? '定义不在仓库里：' + T[0].slice(2)
-      : !CS.ds.hasFile(T[1][0]) ? '定义在 ' + T[1][0] + ':' + T[1][1] + '（导出版没带这个文件）'
       : 'Ctrl+点击：跳到定义 ' + T[1][0] + ':' + T[1][1];
   });
 
@@ -118,29 +117,6 @@ window.CS = window.CS || {};
       var self = this, seq = this._seq = (this._seq || 0) + 1;
       CS.ds.file(rel).then(function (fv) {
         if (seq !== self._seq || root.hidden) return;     // 读取期间又开了别的文件，或者窗口已经关了
-        if (!fv) {
-          root.innerHTML = '<div class="vbox"><div class="vhead"><b>' + esc(rel) + '</b>'
-            + '<span class="sp"></span>'
-            + (hist.length ? '<button class="vbtn" data-back>← 返回</button>' : '')
-            + '<button class="vclose" aria-label="关闭">×</button></div>'
-            + '<p class="hint" style="padding:18px">' + (CS.ds.linked ? '这个文件不在扫描范围里。'
-              : '这个文件没有内嵌进导出版（体积上限）。用 <code>codestrata serve</code> 本地打开就能看全文。') + '</p></div>';
-          var bk = root.querySelector('[data-back]');
-          if (bk) bk.onclick = function () { self.back(); };
-          curFile = null; codeEl = null;
-          self._wireClose(); return;
-        }
-        if (fv.unpublished) {
-          root.innerHTML = '<div class="vbox"><div class="vhead"><b>' + esc(rel) + '</b><span class="sp"></span>'
-            + (hist.length ? '<button class="vbtn" data-back>← 返回</button>' : '')
-            + '<button class="vclose" aria-label="关闭">×</button></div>'
-            + '<p class="hint" style="padding:18px">公开页没带这个文件的源码：它被 .gitignore 忽略（可能是本地配置），'
-            + '扫描时在本地、GitHub 上没有。</p></div>';
-          var bk2 = root.querySelector('[data-back]');
-          if (bk2) bk2.onclick = function () { self.back(); };
-          curFile = null; codeEl = null;
-          self._wireClose(); return;
-        }
         self._render(fv, line, at);
       }).catch(function (e) {
         if (seq !== self._seq) return;
@@ -171,16 +147,11 @@ window.CS = window.CS || {};
         + (fv.outline_kind === 'lexer' ? '（大纲为启发式）' : '') + '　包 ' + esc(fv.pkg) + '</span>'
         + '<span class="sp"></span>'
         + (hist.length ? '<button class="vbtn" data-back title="回到跳过来之前的位置">← 返回</button>' : '')
-        + (fv.mismatch ? '<span class="vhint stale" title="页面按扫描时的提交号从 GitHub 取源码；取回来的行数（'
-             + fv.mismatch.fetched + '）和扫描时（' + fv.mismatch.scanned + '）对不上，跳转的行列号会指错地方">GitHub 上的这个文件和扫描时不一样：没给 Ctrl+点击</span>'
-           : X && X.stale ? '<span class="vhint stale" title="xref 是 scan 时的快照，文件改过之后行列号对不上，链接会指错地方">文件在 scan 之后改过：重新 scan 才能 Ctrl+点击</span>'
+        + (X && X.stale ? '<span class="vhint stale" title="xref 是 scan 时的快照，文件改过之后行列号对不上，链接会指错地方">文件在 scan 之后改过：重新 scan 才能 Ctrl+点击</span>'
            : X && X.toks.length ? '<span class="vhint" title="Ctrl（Mac 上 ⌘）+ 点击名字跳到定义；点定义列出所有引用">Ctrl+点击：定义 / 引用</span>' : '')
-        + (fv.local ? '<span class="vhint" title="扫描时这个文件本地改过、或者没进 git：GitHub 上没有这个版本，随页面带上的">本地版本</span>' : '')
-        + (CS.ds.blobUrl && !fv.local ? '<a class="vbtn" data-gh href="' + esc(CS.ds.blobUrl(fv.file, line)) + '" target="_blank" rel="noopener"'
-             + ' title="在 GitHub 上看扫描时那个提交的这个文件">GitHub ↗</a>' : '')
         + '<button class="vbtn" data-find title="在这个文件里查找（Ctrl+F）">查找</button>'
         + '<button class="vbtn" data-copy="' + esc(fv.file) + '">复制路径</button>'
-        + (CS.ds.canOpenEditor ? '<button class="vbtn" data-edit="1">编辑器打开</button>' : '')
+        + '<button class="vbtn" data-edit="1">编辑器打开</button>'
         + '<button class="vclose" aria-label="关闭">×</button></div>'
         + '<div class="vbody"><nav class="voutline" aria-label="符号大纲">'
         + (outline || '<p class="hint" style="padding:10px">这个文件里没有类或函数。</p>')
@@ -196,8 +167,6 @@ window.CS = window.CS || {};
       [].forEach.call(root.querySelectorAll('.osym'), function (b) {
         b.onclick = function () { var k = +b.dataset.k; curLine = syms[k].l; self.focus(syms[k].l, rangeOf(syms, k, fv.n_lines)); };
       });
-      var gh = root.querySelector('[data-gh]');           // GitHub 链接跟着当前看到的行走
-      if (gh) gh.onmousedown = gh.onfocus = function () { gh.href = CS.ds.blobUrl(curFile, curLine); };
       var cp = root.querySelector('[data-copy]');
       if (cp) cp.onclick = function () {
         var t = fv.file + ':' + cur;
@@ -233,10 +202,9 @@ window.CS = window.CS || {};
       if (ln && codeEl.contains(ln)) curLine = +ln.id.slice(2);
     },
 
-    /* 转到定义。仓库外的名字没有定义可跳；导出版没带定义所在的文件也跳不过去——都说一声、留在原地 */
+    /* 转到定义。仓库外的名字没有定义可跳：说一声、留在原地 */
     goto: function (target, where) {
       if (!where) { this.toast('定义不在仓库里：' + target.slice(2)); return; }
-      if (!CS.ds.hasFile(where[0])) { this.toast('定义在 ' + where[0] + ':' + where[1] + '（导出版没带这个文件）'); return; }
       this.jump(where[0], where[1]);
     },
 
@@ -298,9 +266,7 @@ window.CS = window.CS || {};
        窗口没开就先打开定义所在的文件 */
     refs: function (target, where, name, go) {
       var self = this, shown = root && !root.hidden;
-      if (where && !CS.ds.hasFile(where[0])) {
-        if (go) { this.toast('定义在 ' + where[0] + ':' + where[1] + '（导出版没带这个文件）'); return; }
-      } else if (where && shown && (go || where[0] !== curFile)) {
+      if (where && shown && (go || where[0] !== curFile)) {
         this.jump(where[0], where[1]);
       } else if (where && !shown) {
         this.open(where[0], where[1]);
@@ -312,8 +278,6 @@ window.CS = window.CS || {};
         if (!refsOpen || refsOpen.target !== target) return;
         refsOpen.data = r || { refs: [], total: 0, counts: {} };
         self._renderRefs();
-        // 链接模式：列表先出来，每行原文从 GitHub 陆续取回，取齐了再画一次
-        if (r && r.more) r.more.then(function () { if (refsOpen && refsOpen.target === target) self._renderRefs(); });
       }).catch(function (e) { if (refsOpen && refsOpen.target === target) { refsOpen.data = { error: e.message }; self._renderRefs(); } });
     },
 
@@ -351,7 +315,6 @@ window.CS = window.CS || {};
         h += '<p class="rs">共 ' + r.total + ' 处'
           + (c.call ? '　调用 ' + c.call : '') + (c.ref ? '　引用 ' + c.ref : '') + (c['import'] ? '　import ' + c['import'] : '')
           + (r.calls ? '　<span class="rt">这次 runtime 调用 ' + r.calls + ' 次</span>' : '')
-          + (r.partial ? '<br>导出版只搜了内嵌了全文的文件' : '')
           + (r.refs.length < (r.lines || r.refs.length) ? '<br>只列前 ' + r.refs.length + ' 行' : '') + '</p>';
         if (r.def) {
           var don = refsOpen.sel && refsOpen.sel.f === r.def.f && refsOpen.sel.l === r.def.l;
@@ -385,7 +348,6 @@ window.CS = window.CS || {};
           b.classList.add('on');
           refsOpen.sel = { f: b.dataset.f, l: +b.dataset.l };
           refsOpen.scroll = box.scrollTop;
-          if (!CS.ds.hasFile(b.dataset.f)) { self.toast('导出版没带 ' + b.dataset.f); return; }
           self.jump(b.dataset.f, +b.dataset.l, b.dataset.c != null ? +b.dataset.c : null);
         };
       });

@@ -1,7 +1,6 @@
 """源码高亮：Python、Triton、C++（含 CUDA）。
 
-用 Pygments 在服务端做，前端只管塞 HTML。这样 serve 和单文件导出拿到的是同一份
-结果，导出版离线也能看高亮，不用把 JS 高亮库塞进去。
+用 Pygments 在服务端做，前端只管塞 HTML（边详情里的代码片段由前端的 web/hl.js 高亮）。
 
 - **Triton 不是一种文件类型。** kernel 就写在 .py 里（@triton.jit 装饰的函数），
   所以是 Python 词法器打底，再把 `tl.*` 原语和 `@triton.*` 装饰器重新标成 Triton 色。

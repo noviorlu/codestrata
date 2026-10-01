@@ -813,7 +813,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             # 改过的文件里按名字对不上的键（lambda、改了名的、老 run 没存名字的）：这些调用的叠加可能偏
             "unmatched": len(unmatched), "events": run.get("events"),
             # 复刻：命令（原样的，或老 run 按参数拼的）、录制时继承的环境、--phase 怎么切的、各阶段的时刻
-            # 网页和导出（会发给别人）里的：--env 里像密钥的值隐去，完整的在 runs show
+            # 网页上的：--env 里像密钥的值隐去，完整的在 runs show
             "rerun": rerun_command(run, Path(repo), redact=True),
             "rerun_exact": bool((run.get("invocation") or {}).get("argv")),
             "rerun_redacted": rerun_command(run, Path(repo), redact=True) != rerun_command(run, Path(repo)),
@@ -984,7 +984,7 @@ def _secret_flag(a: str) -> bool:
 
 
 def _redact_argv(argv: list[str]) -> list[str]:
-    """给网页 / 导出看的命令行：--env K=V / --env=K=V 里 K 像密钥的，值换成 <已隐去>；--api-key X、
+    """给网页看的命令行：--env K=V / --env=K=V 里 K 像密钥的，值换成 <已隐去>；--api-key X、
     --token=X 这种选项的值也是（后面紧跟着 - 开头的就当它是开关，不吃掉下一个选项）；所有参数里 URL
     带的账号密码隐去。"""
     out, env_next, secret_next = [], False, False
@@ -1010,7 +1010,7 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
     执行，相对路径、codestrata 装在哪都和当时一样。老 run 没存的，从 run 里存的命令、--env、tag、
     备注、录制参数拼出来（值一律写成 --x=值，以 - 开头的值也不会被当成选项）。
     with_env：前面用 env 带上录制时 shell 里的相关环境变量（env_inherited），同一台机器上照抄就一样。
-    redact：给网页、导出用——--env 里像密钥的值、URL 里的账号密码换成 <已隐去>（runs show 给完整的）。
+    redact：给网页用——--env 里像密钥的值、URL 里的账号密码换成 <已隐去>（runs show 给完整的）。
     codestrata 自己加进 run 的环境变量（从 shell 继承来的 CODESTRATA_EV_MAX）命令行上没有，补成 --env。"""
     pre = ""
     if with_env and run.get("env_inherited"):

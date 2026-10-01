@@ -7,7 +7,7 @@ README 讲 codestrata 是什么、怎么几分钟内跑起来；这份手册讲�
 ## 目录
 
 - **上手**：[安装](#安装) · [第一次用](#第一次用)
-- **用功能**：[扫描](#扫描) · [看图](#看图) · [边的种类](#边的种类) · [录一次运行](#录一次运行) · [分阶段](#分阶段) · [管理 run](#管理-run) · [时间轴和时间顺序](#时间轴和时间顺序) · [读代码](#读代码) · [分享给别人](#分享给别人) · [主菜单 codestrata app](#主菜单-codestrata-app)
+- **用功能**：[扫描](#扫描) · [看图](#看图) · [边的种类](#边的种类) · [录一次运行](#录一次运行) · [分阶段](#分阶段) · [管理 run](#管理-run) · [时间轴和时间顺序](#时间轴和时间顺序) · [读代码](#读代码) · [主菜单 codestrata app](#主菜单-codestrata-app)
 - **参考**：[命令参考](#命令参考) · [输出文件](#输出文件) · [常见问题](#常见问题) · [实测数字](#实测数字) · [已知限制](#已知限制)
 - **给开发者**：[前端和 API](#前端和-api) · [给开发者](#给开发者)（测试、设计决策、状态各在哪）
 
@@ -20,7 +20,7 @@ README 讲 codestrata 是什么、怎么几分钟内跑起来；这份手册讲�
 - **Python ≥ 3.10**（`pyproject.toml` 的 `requires-python`）。在 3.10 和 3.13 上装过、扫过、录过。
 - **没有必需的第三方依赖**，只用标准库。可选的 `[highlight]` 装上 Pygments ≥ 2.17，用来给源码上色；不装的话，本地网页里的代码是纯文本。
 - **`trace --events` 要求被录的那个 Python 是 3.12+**（它要用 `sys.monitoring`），和 codestrata 自己装在哪个 Python 里无关：codestrata 装在 3.10 的 venv 里、去录一个 3.13 的程序，照样录得到事件。被录的 Python 低于 3.12 时，run 照样录完，但会打印 `⚠ 要了 --events 但没有录到事件：…`。
-- **操作系统**：录制（`trace`）只支持 Linux，别的系统上会直接说明并退出——它靠 `/proc` 认进程、找出 setsid 出去的服务，靠进程组和 SIGKILL 停干净。scan / serve / graph / runs 在其他系统上也能 import、能用（测试里模拟过没有 `fcntl`、没有 SIGKILL 的环境），但只在 Linux 上实际跑过。
+- **操作系统**：录制（`trace`）只支持 Linux，别的系统上会直接说明并退出——它靠 `/proc` 认进程、找出 setsid 出去的服务，靠进程组和 SIGKILL 停干净。scan / serve / runs 在其他系统上也能 import、能用（测试里模拟过没有 `fcntl`、没有 SIGKILL 的环境），但只在 Linux 上实际跑过。
 - **编辑器跳转**要 PATH 上有 `code`、`cursor`、`codium`、`code-insiders` 或 `subl` 之一（按这个顺序找）；都没有时 serve 会打印「没找到」，跳转按钮返回 501。
 
 ### 从 GitHub 装
@@ -98,8 +98,8 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 
 - 改了代码之后。scan 之后改过的文件，Ctrl+点击的行列号就对不上了：那个文件不给 Ctrl+点击，重新 scan 即可。
 - **重新 scan 之后要重启 serve**，图和搜索才会更新（Ctrl+点击会自动换新；从主菜单扫描的，主菜单会替你重启）。
-- **升级 codestrata 之后**：索引的格式变了的话，serve / graph 会提示「旧版本的格式，重新 scan」，主菜单的项目卡片上也会标出来。run 不受影响，重新 scan 之后照样叠。
-- `graph`、`serve` 也接受 `--roots`，但目前**不起作用**，扫哪些目录只由 scan 决定。
+- **升级 codestrata 之后**：索引的格式变了的话，serve 会提示「旧版本的格式，重新 scan」，主菜单的项目卡片上也会标出来。run 不受影响，重新 scan 之后照样叠。
+- `serve` 也接受 `--roots`，但目前**不起作用**，扫哪些目录只由 scan 决定。
 
 ### 自动挂上的作者文档
 
@@ -253,7 +253,7 @@ codestrata serve <repo> --hot demo@serving       # 再勾「只看跑到的」�
 - 或 case 名：取它最新一次完整录完的；没有的话取最新一次录了一部分的，并打印提示；
 - 后面可以加 `@阶段`（`demo@serving`），或 `@t=起-止`（单位微秒，要求这个 run 录了事件）。
 
-`serve --hot`、`graph --hot`、`runs show` 都认这个写法。页面上选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、分享链接都还是它。
+`serve --hot`、`runs show` 都认这个写法。页面上选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、复制地址再打开都还是它。
 
 ### runs 命令
 
@@ -279,7 +279,7 @@ codestrata runs <repo> merge RUN              # 从原始数据重算计数和�
 - 前缀是 `CUDA_`、`VLLM_`、`PYTORCH_`、`TORCH_`、`NCCL_`、`HF_`、`TRANSFORMERS_`、`TOKENIZERS_`、`OMP_`、`MKL_`、`NVIDIA_`、`TRITON_`、`XLA_` 的；
 - 以及 `PATH`、`PYTHONPATH`、`LD_LIBRARY_PATH`、`VIRTUAL_ENV`、`CONDA_PREFIX`、`CONDA_DEFAULT_ENV`、`PYTHONHASHSEED`。
 
-名字像密钥的（`HF_TOKEN`、`VLLM_API_KEY` 这类）一律不记；值里 URL 带的账号密码、命令里 `--api-key X` 这类选项的值，给网页和导出看时隐去。
+名字像密钥的（`HF_TOKEN`、`VLLM_API_KEY` 这类）一律不记；值里 URL 带的账号密码、命令里 `--api-key X` 这类选项的值，在网页上显示时隐去。
 
 在哪复制：网页上 run 按钮旁边的「复刻」、「?」帮助里「这次跑了什么 → 复制」，或者 `runs show`。老 run 没存原始命令的，按 run 里存的参数拼一条并注明。复刻不是万能的：只记白名单里的环境变量，换一台机器照抄不一定能跑。
 
@@ -304,7 +304,7 @@ CLI 的 `trace` 默认**不**录事件；主菜单的录制表单里「录时序
 - 按名次上色而不是按时刻：模型加载这种长时段会把按时刻插值的颜色都挤到一头。
 - 同一个进程里从头到尾一直在反复调用的（轮询、每个 token 都走一遍的），序号后面带 ↻，它的序号只说明从什么时候开始。
 - 跟着阶段、时间段、切面和其他开关变。
-- 只在 serve 里、叠了一个录了事件的 run 时出现；导出的页面里没有（它要 serve 现算）。
+- 只在叠了一个录了事件的 run 时出现。
 
 ---
 
@@ -338,43 +338,6 @@ CLI 的 `trace` 默认**不**录事件；主菜单的录制表单里「录时序
 - 点结果先回到图上，展开到它所在的模块并选中，再在下面的详情里展开到它；「代码」按钮直接开全文窗口。图上包含命中项的节点会高亮。
 
 ---
-
-## 分享给别人
-
-`codestrata graph` 导出只读页面，不需要 serve。
-
-### 单文件 HTML
-
-```bash
-codestrata graph <repo> --hot demo@serving          # 默认写到 <repo>/.codestrata/overview-<run>.html；--out 可改
-```
-
-- 只读、离线，可以直接发给别人。
-- 单文件约 14 MB，在单文件宿主 16 MB 的上限以内（预算是内嵌数据 1400 万个字符）：这次跑到过的文件优先带全文，其余只带符号片段（`--per-pkg N`：每个包嵌入多少个符号的源码，默认 10）。vllm-omni 的 `vllm_omni/` 包（1648 个 `.py`）不叠 run 导出：809 个文件带全文（770 个 `.py`，其余是 `.md` 等），文件 14.5 MB（13.8 MiB）。
-- 切面固定（框照样画），不能展开 / 收起；没有时间轴、没有「时间顺序」、不能换阶段；不能跳编辑器。要交互就用 `serve`。
-- `--fragment` 去掉 doctype 外壳，给 artifact 之类的宿主用。
-
-### 带多个 run
-
-`graph <repo> --hot A --hot B`：单文件里能在这几个 run 之间切换。第一个是主 run；别的 run 只带图上的次数，边详情里的调用明细只有主 run 的。
-
-### 放到公网上：--public
-
-- 主目录写成 `~`（源码行里的也换，Ctrl+点击的列号跟着挪）；run 元数据里 PATH / LD_LIBRARY_PATH / PYTHONPATH 这种目录列表，仓库和录制目录以外的部分省略成 `…`（那些只是本机装了哪些工具）；还剩主目录就拒绝写出。
-- 页面上注明命令因此不能原样执行，原样的在录制那台机器上的 `runs show` 里。
-- 只换这两样东西。别的个人路径（比如 `/mnt/data/用户名`）、源码里写的名字照原样出现。
-
-### 源码从 GitHub 取：--link github
-
-```bash
-codestrata graph . --link github --public --hot qwen-chat@serving --out ../mysite/source/codestrata/myrepo
-```
-
-- 导出一个目录（`index.html` + `data/<版本>/`），放到 GitHub Pages 之类的地方。页面按**导出时的 HEAD 提交**从 jsDelivr（不行再 raw.githubusercontent.com）取源码，在浏览器里高亮（`web/hl.js`，和服务端 Pygments 对拍过）；codestrata 自己算的数据放在 `data/<版本>/` 里按需取。**没有体积上限**：所有文件都能看、都能 Ctrl+点击、看全仓的引用，每个文件带「GitHub ↗」。
-- 取回来的行数和扫描时对不上就不给跳转并说明。
-- GitHub 上那个提交里没有或不一样的本地文件（改了没提交、没进 git、skip-worktree、软链接）随页面带上；`--public` 时被 `.gitignore` 忽略的不带。
-- 导出时会试取一个文件，提交没推上去就不导出（`--no-remote-check` 跳过这一步）；`--code-base URL` 换取源码的地址模板（可重复，按顺序试，占位符 `{owner}` `{name}` `{sha}` `{path}`）。
-- 限制：origin 要在 github.com、提交已推上去、仓库是公开的；页面要放在 http(s) 上，`file://` 打开不行；看的人要连得上 jsDelivr 或 raw。
 
 ---
 
@@ -415,7 +378,6 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 | `runs <repo> note RUN TEXT` | 写备注（覆盖） | |
 | `runs <repo> rm RUN_ID…` | 删 run（只认完整 id） | `--yes`、`--events-only` |
 | `runs <repo> merge RUN` | 从原始数据重算计数和时序 | |
-| `graph [repo]` | 导出只读页面 | `--hot RUN`（可重复，第一个是主 run）<br>`--per-pkg N`（默认 10）<br>`--fragment`<br>`--link github`<br>`--code-base URL`（可重复）<br>`--no-remote-check`<br>`--public`<br>`--out`（默认 `.codestrata/overview[-<refs>].html`）<br>`--roots`（收但不起作用） |
 
 RUN 的写法见[管理 run](#管理-run)。
 
@@ -427,7 +389,6 @@ RUN 的写法见[管理 run](#管理-run)。
 |---|---|---|---|
 | `<repo>/.codestrata/index.json`、`symbols.json`、`xref.json` | 静态分析结果 | `scan` | 随时 |
 | `<repo>/.codestrata/runs/<YYYYmmdd-HHMMSS>-<case>/` | 一次录制 | `trace` | **不能** |
-| `<repo>/.codestrata/overview*.html` | 导出的单文件 | `graph` | 随时 |
 | `<repo>/.codestrata/.gitignore`、`README.txt` | 自动生成：`.gitignore` 里是 `*`，让被分析仓库的 `git status` 保持干净；README.txt 提醒 `runs/` 不能重建 | 自动 | – |
 | `~/.config/codestrata/`（跟 `$XDG_CONFIG_HOME` 走） | 主菜单的项目清单、口令 | `app` | – |
 
@@ -444,7 +405,7 @@ scan、serve、trace 不往 `~/.config` 写东西。
 - **serve 报 `OSError: [Errno 98] Address already in use`。** 8900 被占了，加 `--port N` 换一个。别用 `--port 0`：它会打印 `http://127.0.0.1:0/`，而不是实际拿到的端口。（app 遇到同样的情况会好好提示换端口。）
 - **serve 说没有 index.json。** 先 `codestrata scan`。
 - **重新 scan 了，页面没变。** 重启 serve。
-- **页面上没有「时间顺序」、时间条拖不动。** 这个 run 没录事件：重录时加 `--events`，并确认被录的 Python 是 3.12+。另外导出的页面里本来就没有时间顺序。
+- **页面上没有「时间顺序」、时间条拖不动。** 这个 run 没录事件：重录时加 `--events`，并确认被录的 Python 是 3.12+。
 - **主菜单打开是一页「请用终端里的链接」。** 第一次要用终端打印的带 `?t=…` 的链接打开。
 - **在远程机器上用。** serve 和 app 只监听 127.0.0.1，用 `ssh -L` 转发端口；app 加 `--proxy` 就只要转一个端口。
 
@@ -474,10 +435,6 @@ scan、serve、trace 不往 `~/.config` 写东西。
 - vllm-omni 仓库共有 3,260 个 `.py`，tests、examples、benchmarks 这些被有意跳过。
 - nerfstudio 扫描时 stderr 上会出现 3 次 `SyntaxWarning: invalid escape sequence '\,'`，来自它自己的源码，不影响结果（解析失败仍是 0）。
 
-### graph 导出
-
-vllm-omni 的 `vllm_omni/` 包（不叠 run）导出单文件：6.6–6.8 s，14.5 MB（CLI 打印的是 14089 KB，按字符数算），809 个文件带全文，16 条泳道。flask 叠 README 里的 `hello` run 导出：0.33–0.37 s，1.9 MB。
-
 ### trace 开销
 
 纯 Python 的 CPU 负载，5 次交替运行取中位数（取最小值得到的倍数基本一样）。「循环」是负载自己计时的那一段，「整条命令」是 `/usr/bin/time` 量的全程。
@@ -505,7 +462,6 @@ vllm-omni 的 `vllm_omni/` 包（不叠 run）导出单文件：6.6–6.8 s，14
 | 高 | **`--events`、时间顺序、任意时间段都要被录的 Python 是 3.12+**（`sys.monitoring`）。3.10 和 3.11 退回 `sys.setprofile`：仓库内的调用开销差不多，但仓库外的代码也要付回调的开销（3.12+ 上几乎为 0；3.10 上一个只调标准库的循环慢了约 8 倍）；3.10 还没有 `co_qualname`，录完一改代码，这个文件里的次数就挪不回函数上。 |
 | 高 | **serve 只在启动时读索引。** 重新 scan 之后，图和搜索要重启 serve 才更新（Ctrl+点击会自动换新；新录的 run 不用重启）。 |
 | 高 | **读运行时图要知道：** 「调用方」是最近的仓库内的帧，穿过框架、事件循环的调用会显示成直接调用；调用次数高的多半是轮询，不等于重要；import 触发的模块顶层执行不算调用。 |
-| 高 | **导出版功能受限。** 固定切面；没有时间轴、没有时间顺序；不能换阶段；不能跳编辑器；单文件只有部分文件带全文；除主 run 外，别的 run 只带图上的次数。 |
 | 高 | **自动探测优先挑带 `__init__.py` 的顶层包（或 `src/` 下的包）**，根目录的脚本、没有 `__init__.py` 的目录通常挑不中，要用 `--roots` 加。 |
 | 中 | **跳转很保守，没有类型推断。** `x = Foo(); x.bar` 不给跳；继承了仓库外类的，`self.xxx` 走到那个基类就放弃。 |
 | 中 | **时间段的次数只算跨文件的调用**；合成一行的连续调用按次数均匀摊开，是近似；阶段边界附近的调用可能算进相邻的阶段。 |
@@ -514,14 +470,12 @@ vllm-omni 的 `vllm_omni/` 包（不叠 run）导出单文件：6.6–6.8 s，14
 | 中 | **节点会挪位置。** 分层跟着叠的 run 变，换 run 时节点会上下挪；同一个切面在不同窗口宽度下排版也不同。 |
 | 中 | **scan 的几个盲点：** `from x import *` 有 import 边，但不知道带进了哪些名字；从 `__init__` 再导出的名字，import 边指向 `pkg.__init__` 而不是真正定义它的文件——这两种情况下，经它们调到的函数在展开到文件时显示成动态分派（假阳性）；只认 `if TYPE_CHECKING:` 的 if 分支。 |
 | 中 | **默认切面的阈值**（10% / 30 / 80 / 12）只在少数几个仓库上调过；自动拆分只看代码行数，不看依赖结构。 |
-| 中 | **`--link github` 只认** origin 在 github.com、提交已推上去的公开仓库；页面要放在 http(s) 上；看的时候要连得上 jsDelivr 或 raw。 |
-| 中 | **`--public` 只换两样东西**：本机主目录，和 PATH 这类目录列表；别的绝对路径照原样。 |
 | 中 | **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**（不会接着调用它），依赖它的程序（有些 conda / HPC 环境）录制时行为可能不同。 |
 | 中 | **复刻不是万能的**：环境变量只记白名单里的；密钥只按名字的形状认；换一台机器照抄不一定能跑。 |
 | 中 | **run 不能重建。** `.codestrata/runs/` 是唯一一份（可以软链到大盘）。 |
 | 中 | **还没在 GPU 录制上验收过。** 自动测试都在 CPU 上的假服务上跑；事件的开销没在真模型上测过。 |
 | 中 | **安全模型：** serve 没有鉴权，自定义头只挡浏览器里别的网页，挡不住本机进程；app 有口令；`--proxy` 让图页面和主菜单同源，少了一层隔离。 |
-| 中 | **`graph`、`serve` 的 `--roots` 不起作用。** |
+| 中 | **`serve` 的 `--roots` 不起作用。** |
 | 低 | 端口被占时 serve 直接抛异常；`serve --port 0` 打印的不是实际端口；忘了 `--` 时报错有误导。 |
 | 低 | Host 检查要求带端口号，所以 `--port 80` 用不了。 |
 | 低 | 主菜单被 SIGKILL 时，它起的任务和 serve 会留下来，没人收。 |
@@ -531,13 +485,7 @@ vllm-omni 的 `vllm_omni/` 包（不叠 run）导出单文件：6.6–6.8 s，14
 
 ## 前端和 API
 
-前端在 `codestrata/web/`，普通 HTML / CSS / JS，零构建、不要 npm。同一套代码跑三种模式，`web/ds.js` 一层决定数据从哪来：
-
-| 模式 | 命令 | 数据从哪来 | 能做什么 |
-|---|---|---|---|
-| 本地 | `codestrata serve .` | fetch `/api/*` | 全部功能：展开 / 收起、时间轴、时间顺序、跳编辑器 |
-| 单文件 | `codestrata graph .` | `render.py` 内联的 `window.CS_EMBEDDED` | 只读、离线 |
-| GitHub 站点 | `codestrata graph . --link github` | 源码从 GitHub 取，数据从 `data/` 按需取，`hl.js` 在浏览器里高亮 | 只读，没有体积上限 |
+前端在 `codestrata/web/`，普通 HTML / CSS / JS，零构建、不要 npm。数据全部经 `web/ds.js` 从 serve 的 `/api/*` 取。
 
 serve 提供的 API（agent 也可以直接调）：
 

@@ -36,26 +36,29 @@ def _tiny_repo():
     return repo
 
 
-def test_no_unix_bits_scan_graph_work():
-    """没有 fcntl、没有 SIGKILL（= Windows 的样子）：codestrata 的每个模块都能 import，scan、graph、runs ls 照常能用"""
+def test_no_unix_bits_scan_serve_work():
+    """没有 fcntl、没有 SIGKILL（= Windows 的样子）：codestrata 的每个模块都能 import，scan、serve 要的图数据、runs ls 照常能用"""
     repo = _tiny_repo()
-    out = repo / "g.html"
     r = _py(NO_UNIX, f"""
         import importlib, pkgutil, codestrata
+        from pathlib import Path
         mods = [m.name for m in pkgutil.walk_packages(codestrata.__path__, "codestrata.")]
         for m in mods:
             importlib.import_module(m)
         print("IMPORTED", len(mods))
         from codestrata.__main__ import main
-        rc = [main(["scan", {str(repo)!r}]), main(["graph", {str(repo)!r}, "--out", {str(out)!r}]),
-              main(["runs", {str(repo)!r}, "ls"])]
-        print("RC", rc)
+        from codestrata import payload
+        rc = [main(["scan", {str(repo)!r}]), main(["runs", {str(repo)!r}, "ls"])]
+        repo = Path({str(repo)!r})
+        g = payload.graph_payload(repo, payload.load_index(repo))
+        print("RC", rc, "NODES", len(g["graph"]["nodes"]))
     """)
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-3000:]
     n = int(r.stdout.split("IMPORTED ")[1].split()[0])
     assert n >= 20, r.stdout
-    assert "RC [0, 0, 0]" in r.stdout or "RC [None, None, None]" in r.stdout or "RC [0, 0, None]" in r.stdout, r.stdout
-    assert (repo / ".codestrata" / "index.json").is_file() and out.is_file() and out.stat().st_size > 1000
+    assert "RC [0, 0]" in r.stdout or "RC [None, None]" in r.stdout or "RC [0, None]" in r.stdout, r.stdout
+    assert int(r.stdout.split("NODES ")[1].split()[0]) >= 1, r.stdout
+    assert (repo / ".codestrata" / "index.json").is_file()
 
 
 def test_trace_refused_off_linux():

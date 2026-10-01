@@ -409,8 +409,6 @@ def test_rerun_command_reproduces():
     assert meta["rerun"] == cmd and meta["rerun_exact"] is True, meta["rerun"]
     assert meta["rerun_env"].startswith("cd ") and "env " in meta["rerun_env"] and "VLLM_FAKE_KNOB=7" in meta["rerun_env"]
     assert [t["name"] for t in meta["phase_at"]] == ["generate"] and meta["phase_log"][1][0] == "generate"
-    brief = payload._meta_brief(meta)
-    assert brief["rerun"] == cmd and brief["phase_at"] and brief["env_inherited"]
     # 照抄复刻命令（从别的目录起的 shell 里）：又录出一个同 case、同样分段的 run
     r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=180, cwd="/")
     assert r.returncode == 0, r.stdout + r.stderr
@@ -676,7 +674,7 @@ def test_fire_does_not_dump_on_traced_thread():
 
 
 def test_rerun_secrets_and_bytes():
-    """网页 / 导出里的复刻命令：--env 里像密钥的值、URL 里的账号密码隐去，runs show 给完整的；
+    """网页上的复刻命令：--env 里像密钥的值、URL 里的账号密码隐去，runs show 给完整的；
     TOKENIZERS_* 这种不是密钥；shell 里继承来的 CODESTRATA_EV_MAX 补进命令；不是 UTF-8 的参数
     写成 $'…'，bash 还原出原来的字节。"""
     repo = fresh()
@@ -691,20 +689,13 @@ def test_rerun_secrets_and_bytes():
     assert "--env=CODESTRATA_EV_MAX=500" in meta["rerun"] and meta["rerun_redacted"] is True, meta["rerun"]
     show = cs("runs", repo, "show", run["id"]).stdout
     assert "hf_secret123" in show and "CODESTRATA_EV_MAX=500" in show, show
-    out = rd.parent.parent / "sec-export.html"
-    cs("graph", repo, "--hot", run["id"], "--out", out)
-    html = out.read_text()
-    assert "hf_secret123" not in html and "pw9" not in html and "&lt;已隐去&gt;" in html or "<已隐去>" in html
-    # 网页 / 导出里显示的 case 命令、进程命令行：--api-key 的值、URL 里的密码也隐去（runs show 给完整的）
+    # 网页上显示的 case 命令、进程命令行：--api-key 的值、URL 里的密码也隐去（runs show 给完整的）
     cs("trace", repo, "--case", "sec2", "--", PY, "-m", "fakesvc.offline", "--api-key", "sk-999", "--hf-token=tok-888", "https://u:pw7@h.example/")
     run, _, rd = latest(repo)
     _, meta = payload.load_hot(repo, payload.load_index(repo), run["id"])
     shown = json.dumps([meta["cmd"], meta["procs"], meta["rerun"]], ensure_ascii=False)
     assert "sk-999" not in shown and "tok-888" not in shown and "pw7" not in shown and "<已隐去>" in shown, shown
     assert "sk-999" in cs("runs", repo, "show", run["id"]).stdout
-    out2 = rd.parent.parent / "sec2-export.html"
-    cs("graph", repo, "--hot", run["id"], "--out", out2)
-    assert "sk-999" not in out2.read_text() and "pw7" not in out2.read_text()
     # --no-auth 这种后面紧跟选项的是开关，不吃掉下一个选项
     assert runs._redact_argv(["x", "--no-auth", "--port", "80", "--api-key", "k"]) == \
         ["x", "--no-auth", "--port", "80", "--api-key", "<已隐去>"]
@@ -715,226 +706,6 @@ def test_rerun_secrets_and_bytes():
     r = subprocess.run(["bash", "-c", cmd.split("&& ", 1)[1].replace("codestrata trace . -- ", "")],
                        capture_output=True, timeout=10)
     assert r.stdout == b"caf\xe9\n", r.stdout
-
-
-def test_publicize_rules():
-    """publicize 的细则：带空格被引号包起来的 PATH 也收；keep 里的主目录、/ 不算（否则整条 PATH 都留下）；
-    case 脚本原文里的 PATH=… 不动；源码行换了主目录，这一行上 Ctrl+点击的列号跟着挪、跨着主目录的去掉；
-    句末的 /home/x. 也换，/home/x.bak、/home/xa 是别的名字不换；还剩主目录就不写出。"""
-    H = "/home/zz"
-    argv = ["codestrata", "trace", ".", "--env", f"PATH={H}/p/venv/bin:/opt/My Tools/bin:{H}/.secret/bin:/usr/bin", "--", "x"]
-    run = {"case": "c", "invocation": {"argv": argv, "cwd": f"{H}/p"}, "env_inherited": {"PATH": f"{H}/.kimi/bin:{H}/p/b"}}
-    pl = {"hotMeta": {"rerun": runs.rerun_command(run, "."), "rerun_env": runs.rerun_command(run, ".", with_env=True),
-                      "cmd": ["env", f"PATH={H}/.k/bin:/x", "run"], "procs": [{"argv": ["a", f"PATH={H}/p/x:/opt/y"]}],
-                      "env_inherited": {"PATH": f"{H}/.kimi/bin:{H}/p/b"}, "script": {"text": "export PATH=/opt/cuda/bin:$PATH"}},
-          "files": {"f.py": {"lines": [f'<span class="s">&quot;{H}/models&quot;</span>, <span class="n">NAME</span>'],
-                             "xref": {"toks": [[1, 19, 23, 5, 0], [1, 2, 6, 3, 0]]}}},
-          "sources": {"k": {"line": 10, "lines": ["x = 1", f'p = "{H}/a" ; NAME2'], "xref": {"toks": [[11, 19, 24, 1, 0]]}}},
-          "extra": {"n": {"md": f"weights in {H}. and {H}.bak and {H}a"}}}
-    for keep in ([f"{H}/p"], [f"{H}/p", H, "/", ""]):
-        o = payload.publicize(pl, H, keep)
-        m = o["hotMeta"]
-        assert m["rerun"] == "cd ~/p && codestrata trace . --env 'PATH=~/p/venv/bin:…' -- x", m["rerun"]
-        assert "'PATH=…:~/p/b'" in m["rerun_env"] and ".secret" not in m["rerun_env"], m["rerun_env"]
-        assert m["cmd"] == ["env", "PATH=…", "run"] and m["procs"][0]["argv"] == ["a", "PATH=~/p/x:…"], m
-        assert m["env_inherited"] == {"PATH": "…:~/p/b"} and m["script"]["text"] == "export PATH=/opt/cuda/bin:$PATH"
-    assert o["files"]["f.py"]["lines"][0].count("~/models") == 1 and o["files"]["f.py"]["xref"]["toks"] == [[1, 12, 16, 5, 0]]
-    assert o["sources"]["k"]["xref"]["toks"] == [[11, 12, 17, 1, 0]], o["sources"]
-    assert o["extra"]["n"]["md"] == f"weights in ~. and {H}.bak and {H}a", o["extra"]
-    try:                                            # 漏网的（比如非字符串里带着）：拒绝写出
-        payload.publicize({"x": [1, {"y": ("tuple " + H + "/q",)}]}, H, [])
-    except SystemExit as e:
-        assert "还有主目录" in str(e)
-    else:
-        raise AssertionError("还剩主目录也写出了")
-
-
-def test_public_export():
-    """graph --public（要放到公网上的页面）：主目录写成 ~，run 元数据里 PATH 这类目录列表中仓库和
-    录制目录以外的部分省略成 …；源码里写的 PATH=… 不动；页面上知道这是公开页。"""
-    repo = fresh()
-    home = str(Path.home())
-    tool = os.path.join(home, ".fake-tool-xyz", "bin")
-    cs("trace", repo, "--case", "pub", "--env", f"PATH={repo}/bin:/usr/bin:{tool}", "--",
-       PY, "-m", "fakesvc.offline", f"{home}/data/in.wav")
-    run, _, _ = latest(repo)
-    out = repo.parent / "pub.html"
-    cs("graph", repo, "--public", "--hot", run["id"], "--out", out)
-    html = out.read_text()
-    assert home + "/" not in html and ".fake-tool-xyz" not in html, "主目录 / 本机工具目录漏出去了"
-    assert f"PATH={repo}/bin:…" in html and "~/data/in.wav" in html, "仓库下的留着、主目录写成 ~"
-    assert '"public": true' in html
-    assert "PATH=/usr/bin:/bin python -m fakesvc.server" in html, "源码里的 PATH=… 被改了"
-    # 不带 --public 的导出照旧是原样的（本机自己看）
-    out2 = repo.parent / "priv.html"
-    cs("graph", repo, "--hot", run["id"], "--out", out2)
-    assert ".fake-tool-xyz" in out2.read_text() and '"public": true' not in out2.read_text()
-
-
-def git_repo(origin="https://github.com/acme/fakesvc.git") -> Path:
-    """fresh() 的仓库再做成一个 git 仓库（提交一次、设好 origin）。"""
-    repo = fresh()
-    g = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-    (repo / ".gitignore").write_text(".codestrata/\n")
-    subprocess.run(g + ["add", "-A"], check=True)
-    subprocess.run(g + ["commit", "-q", "-m", "init"], check=True)
-    if origin:
-        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", origin], check=True)
-    return repo
-
-
-def emb_of(html: str) -> dict:
-    i = html.index("window.CS_EMBEDDED = ") + len("window.CS_EMBEDDED = ")
-    return json.loads(html[i:html.index(";</script>", i)].replace("<\\/", "</"))
-
-
-def test_site_export():
-    """graph --link github --out 目录：页面不带源码，EMB.link 说从 GitHub 哪个提交取；data/ 里每个文件的
-    大纲 / 跳转（按序号命名，避开 Hexo 丢 _ 开头的文件）、引用倒排按 FNV-1a 分桶；本地改过、没进 git 的
-    文件随页面带上。origin 不是 GitHub、--out 是别人的目录都拒绝。"""
-    from codestrata import site
-    repo = git_repo()
-    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    (repo / "fakesvc" / "callee.py").write_text((repo / "fakesvc" / "callee.py").read_text() + "\n# 本地改的\n")
-    (repo / "fakesvc" / "extra.py").write_text("from fakesvc import work\n\n\ndef more():\n    return work.compute(3)\n")
-    cs("scan", repo)
-    trace_offline(repo, "site")
-    out = repo.parent / "site"
-    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--hot", "site", "--out", out)
-    assert "github.com/acme/fakesvc" in r.stdout and sha[:12] in r.stdout, r.stdout
-    E = emb_of((out / "index.html").read_text())
-    L = E["link"]
-    assert (L["owner"], L["name"], L["sha"], L["prefix"]) == ("acme", "fakesvc", sha, ""), L
-    assert not any(k in E for k in ("files", "sources", "xrefTargets", "edges", "search")), sorted(E)
-    files = L["files"]
-    D = out / L["data"]
-    assert L["data"].startswith(f"data/{sha[:10]}-"), L["data"]
-    w = files.index("fakesvc/work.py")
-    meta = json.loads((D / "f" / f"{w}.json").read_text())
-    text = (repo / "fakesvc" / "work.py").read_text()
-    assert meta["n_lines"] == text.count("\n") + 1 and meta["lang"] == "python" and meta["xref"]["toks"], meta.keys()
-    assert any(s["n"] == "compute" for s in meta["symbols"])
-    local = {files[i] for i in L["local"]}
-    assert local == {"fakesvc/callee.py", "fakesvc/extra.py"}, local
-    assert "# 本地改的" in (D / "src" / f"{files.index('fakesvc/callee.py')}.txt").read_text()
-    assert not (D / "src" / f"{w}.txt").exists()
-    assert (D / "edges.json").is_file() and (D / "search.json").is_file()
-    # 引用倒排：compute 的目标在它的桶里，引用它的地方里有 extra.py（本地文件也算）
-    t = next(v[0] for v in meta["xref"]["targets"].values() if v[0] == "s:fakesvc/work.py#compute")
-    B = json.loads((D / "refs" / f"{site.fnv1a(t) % L['refBuckets']}.json").read_text())
-    assert t in B and any((files[x[0]] if isinstance(x[0], int) else x[0]) == "fakesvc/extra.py" for x in B[t]["r"]), B.get(t)
-    assert B[t]["w"][0] == "fakesvc/work.py"
-    assert not any(p.name.startswith("_") for p in (out / "data").rglob("*")), "Hexo 会丢掉 _ 开头的文件"
-    # 再导出到同一个目录：认得出是自己的，照样覆盖；别人的目录拒绝
-    cs("graph", repo, "--link", "github", "--no-remote-check", "--out", out)
-    other = repo.parent / "notmine"
-    other.mkdir()
-    (other / "keep.txt").write_text("x")
-    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--out", other, check=False)
-    assert r.returncode != 0 and "不是空目录" in r.stdout + r.stderr and (other / "keep.txt").exists()
-    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--out", repo.parent / "x.html", check=False)
-    assert r.returncode != 0 and "--out 给目录" in r.stdout + r.stderr
-    # origin 不是 GitHub、根本没有 git：拒绝
-    for bad in (git_repo(origin="https://gitlab.com/acme/fakesvc.git"), fresh()):
-        r = cs("graph", bad, "--link", "github", "--no-remote-check", "--out", bad.parent / "s", check=False)
-        assert r.returncode != 0 and "--link github" in r.stdout + r.stderr, r.stdout + r.stderr
-
-
-def test_site_export_public_local_home():
-    """--link github --public：随页面带上的本地文件里有主目录也换成 ~，这个文件的跳转列号跟着挪；
-    GitHub 上的文件不经过这里（页面直接取），data/ 里的每个文件都查过没有主目录。"""
-    repo = git_repo()
-    home = str(Path.home())
-    (repo / "fakesvc" / "extra.py").write_text(
-        "from fakesvc import work\n\n\ndef more():\n"
-        f"    p = \"{home}/data/in.wav\"; return work.compute(len(p))\n")
-    cs("scan", repo)
-    out = repo.parent / "pub"
-    cs("graph", repo, "--link", "github", "--no-remote-check", "--public", "--out", out)
-    L = emb_of((out / "index.html").read_text())["link"]
-    i = L["files"].index("fakesvc/extra.py")
-    src = (out / L["data"] / "src" / f"{i}.txt").read_text()
-    assert home not in src and '"~/data/in.wav"' in src, src
-    toks = json.loads((out / L["data"] / "f" / f"{i}.json").read_text())["xref"]["toks"]
-    line = src.split("\n")[4]
-    tk = next(t for t in toks if t[0] == 5 and line[t[1]:t[2]] == "compute")        # 列号对得上换过之后的文本
-    assert tk
-    for p in out.rglob("*"):
-        if p.is_file():
-            assert home + "/" not in p.read_text(errors="replace"), p
-
-
-def test_site_export_edges():
-    """链接模式的边角：所有桶都写（空的也写，页面按桶号取不能 404）；没被引用的定义也在倒排里（引用栏要给
-    「定义」一行）；scan 之后改过的文件标出来；有单独 \r 的文件行数按扫描器的口径（浏览器会判「不一样」）；
-    软链接、skip-worktree 的本地改动算本地版本；--public 时被 .gitignore 忽略的文件不带源码；
-    试取 GitHub：416（空文件的 Range）算取得到，全是 404 才算没推上去，相对地址不试。"""
-    from codestrata import site
-    repo = git_repo()
-    (repo / "fakesvc" / "lonely.py").write_text("def nobody_calls_me():\n    return 1\n")
-    (repo / "fakesvc" / "crlf.py").write_bytes(b"x = 1\ry = 2\ndef z():\n    return y\n")
-    g = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run(g + ["add", "-A"], check=True)
-    (repo / "fakesvc" / "link.py").symlink_to("other.py")
-    subprocess.run(g + ["add", "fakesvc/link.py"], check=True)
-    subprocess.run(g + ["commit", "-q", "-m", "more"], check=True)
-    (repo / ".gitignore").write_text(".codestrata/\nfakesvc/secret_cfg.py\n")
-    (repo / "fakesvc" / "secret_cfg.py").write_text("TOKEN_FOR_TESTS = 'sk-the-secret-value-9f3a'\n")
-    subprocess.run(["git", "-C", str(repo), "update-index", "--skip-worktree", "fakesvc/truth.py"], check=True)
-    (repo / "fakesvc" / "truth.py").write_text((repo / "fakesvc" / "truth.py").read_text() + "\n# skip-worktree 的本地改动\n")
-    cs("scan", repo)
-    (repo / "fakesvc" / "work.py").write_text((repo / "fakesvc" / "work.py").read_text() + "\n# scan 之后改的\n")
-    out = repo.parent / "edges-site"
-    r = cs("graph", repo, "--link", "github", "--no-remote-check", "--public", "--out", out)
-    assert "fakesvc/secret_cfg.py" in r.stdout and "没带" in r.stdout, r.stdout
-    L = emb_of((out / "index.html").read_text())["link"]
-    D, files = out / L["data"], L["files"]
-    assert sorted(p.name for p in (D / "refs").iterdir()) == sorted(f"{b}.json" for b in range(L["refBuckets"]))
-    if L["attrBuckets"]:
-        assert len(list((D / "attrs").iterdir())) == L["attrBuckets"]
-    t = "s:fakesvc/lonely.py#nobody_calls_me"
-    B = json.loads((D / "refs" / f"{site.fnv1a(t) % L['refBuckets']}.json").read_text())
-    assert B[t] == {"w": ["fakesvc/lonely.py", 1], "r": []}, B.get(t)
-    assert files.index("fakesvc/work.py") in L["stale"], L["stale"]
-    crlf = json.loads((D / "f" / f"{files.index('fakesvc/crlf.py')}.json").read_text())
-    assert crlf["n_lines"] == 5, crlf["n_lines"]              # 扫描器按 \r 也换行；浏览器只按 \n 切出 4 行 → 判「不一样」
-    local = {files[i] for i in L["local"]}
-    assert {"fakesvc/link.py", "fakesvc/truth.py"} <= local, local
-    held = {files[i] for i in L["unpublished"]}
-    assert held == {"fakesvc/secret_cfg.py"}, held
-    i = files.index("fakesvc/secret_cfg.py")
-    assert not (D / "src" / f"{i}.txt").exists() and json.loads((D / "f" / f"{i}.json").read_text())["unpublished"]
-    # 源码（值）不出去；文件名、符号名是静态结构的一部分（图上本来就有），照常带
-    assert "sk-the-secret-value-9f3a" not in "".join(p.read_text(errors="replace") for p in out.rglob("*") if p.is_file())
-    # 不带 --public（自己本地看）：忽略的文件照样带上
-    cs("graph", repo, "--link", "github", "--no-remote-check", "--out", out)
-    L2 = emb_of((out / "index.html").read_text())["link"]
-    assert not L2["unpublished"] and L2["files"].index("fakesvc/secret_cfg.py") in L2["local"]
-    # 试取的分类（不连网：用一个本地 HTTP 服务模拟 GitHub）
-    import http.server
-    import threading
-
-    class H(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            code = 416 if "empty" in self.path else 404 if "gone" in self.path else 500 if "boom" in self.path else 200
-            self.send_response(code)
-            self.end_headers()
-
-        def log_message(self, *a):
-            pass
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{srv.server_address[1]}"
-    info = {"owner": "o", "name": "n", "sha": "s", "prefix": ""}
-    try:
-        assert site._reachable(info, "empty.py", [base + "/{path}"])[0] is True
-        assert site._reachable(info, "gone.py", [base + "/{path}", base + "/x/{path}"])[0] is False
-        assert site._reachable(info, "a.py", [base + "/gone/{path}", base + "/{path}"])[0] is True
-        assert site._reachable(info, "a.py", [base + "/boom/{path}", base + "/gone/{path}"])[0] is None
-        assert site._reachable(info, "a.py", ["gh/{path}"])[0] is None       # 相对地址：试不了
-    finally:
-        srv.shutdown()
 
 
 def test_manage():
@@ -1845,12 +1616,6 @@ def test_dynamic_dispatch_consistent_across_cuts():
     assert w["same_name"] == 2 and w["n"] == 3 and "dd.models.impl.net.Net" in w["refs"][0]["s"], w
     nr = payload.load_index(repo)["name_refs"]
     assert not any(f.endswith("impl/__init__.py") for f, *_ in nr["Net"]), nr["Net"]
-    # 导出里别的 run（hotBy）也带上：页面上换 run 时同样分得开
-    p = payload.export_payload(repo, idx, hot=hm, hot_meta=mm, others=[(hd, md)], code=False)
-    by = next(iter(p["hotBy"].values()))
-    alone = payload.graph_payload(repo, idx, hot=hd, hot_meta=md, open_=p["open"])
-    assert MR in by["dynOnlyEdges"] and by["dynOnlyEdges"] == alone["dynOnlyEdges"], (by["dynOnlyEdges"], p["open"])
-    assert by["dyn"] == alone["hot"]["dyn"], (by["dyn"], alone["hot"]["dyn"])
 
 
 _SYN = {
@@ -2207,8 +1972,6 @@ def test_type_checking_imports_are_not_dependencies():
         assert [(x["n"], x["why"]) for x in d["import_only"]] == [(n, "type")], d["import_only"]
     d = payload.edge_detail(repo, idx, CLI, APP)
     assert d["static_edge"] and d["type_edge"], d                     # 两样都有：是依赖
-    ex = payload.export_payload(repo, idx, code=False)["edges"]
-    assert ex[f"{CTX}|{APP}"]["type_edge"] and not ex[f"{CTX}|{APP}"]["static_edge"], ex.keys()
     # runtime：ctx 经 self.app 调到 app 的 hook——两端之间运行时没有 import，是只在 runtime 出现的边
     cs("trace", repo, "--case", "tc", "--", PY, "-m", "tc")
     hot, meta = payload.load_hot(repo, idx, "tc")
@@ -2284,31 +2047,11 @@ def test_duplicate_short_labels():
     assert {n["id"]: n["label"] for n in g2["graph"]["nodes"]}["lb/app.py"] == "app" and "lb/app.py" not in g2["alias"]
 
 
-def test_multi_run_export():
-    """导出能带多个 run（页面上切换）：别的 run 只带切面上的次数；同一个 run 写两遍只留一份；空值说清楚。
-    对比功能已经去掉：serve 忽略老链接里的 cmp=，图照常出来、不带对比的数据"""
+def test_serve_ignores_old_cmp_links():
+    """对比功能已经去掉：serve 忽略老链接里的 cmp=，图照常出来、不带对比的数据"""
     repo = fresh()
     cs("trace", repo, "--case", "a", "--", PY, "-c", "from fakesvc import work; work.init_model()")
     cs("trace", repo, "--case", "b", "--", PY, "-m", "fakesvc.truth")
-    idx = payload.load_index(repo)
-    ha, ma = payload.load_hot(repo, idx, "a")
-    hb, mb = payload.load_hot(repo, idx, "b")
-    out = repo / "exp.html"
-    r = cs("graph", repo, "--hot", "a", "--hot", "b", "--out", out)
-    html = out.read_text()
-    assert out.stat().st_size < 16 * 1024 * 1024 and '"hotBy"' in html, r.stdout
-    emb = json.loads(html.split("window.CS_EMBEDDED = ", 1)[1].split(";</script>", 1)[0].replace("<\\/", "</"))
-    gb = payload.graph_payload(repo, idx, hot=hb, hot_meta=mb)
-    (ref, alt), = emb["hotBy"].items()
-    assert ref.startswith(mb["run_id"]) and alt["packages"] == gb["hot"]["packages"] and "cmp" not in emb, list(emb)
-    r = cs("graph", repo, "--hot", "a", "--compare", check=False)                # 参数已经去掉
-    assert r.returncode != 0
-    r = cs("graph", repo, "--hot", "a", "--hot", "", check=False)          # 脚本里变量没设
-    assert r.returncode != 0 and "空值" in (r.stdout + r.stderr)
-    # 同一个 run 写两遍：不会把主 run 换成精简版
-    cs("graph", repo, "--hot", "a", "--hot", ma["run_id"], "--out", out)
-    emb = json.loads(out.read_text().split("window.CS_EMBEDDED = ", 1)[1].split(";</script>", 1)[0].replace("<\\/", "</"))
-    assert emb["hotBy"] == {} and emb["hot"]["symbols"], list(emb["hotBy"])
     import socket
     import urllib.request
     sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
@@ -2331,6 +2074,12 @@ def test_multi_run_export():
     finally:
         srv.kill()
         srv.wait()
+
+
+def test_no_export_command():
+    """导出 / 分享（graph 命令、单文件 HTML、静态站、--public）已经去掉：命令行不认 graph"""
+    r = cs("graph", fresh(), check=False)
+    assert r.returncode != 0 and "invalid choice" in (r.stdout + r.stderr), r.stdout + r.stderr
 
 
 if __name__ == "__main__":

@@ -5,7 +5,6 @@
     codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
     codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
-    codestrata graph <repo> [--hot RUN]…             导出单文件 HTML（只读、离线、可分享；多个 run 可切换）
 
 RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
 后面可以加 @阶段（如 minicpmo-duplex@serving）。
@@ -13,7 +12,6 @@ RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取�
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -23,7 +21,6 @@ from . import self_command
 from . import compat as _compat
 from . import cut as _cut
 from . import payload as _payload
-from . import render as _render
 from . import runs as _runs
 from . import scan as _scan
 from .trace import analysis as _tana
@@ -98,79 +95,6 @@ def _short(idx: dict, name: str) -> str:
     if pre and segs[:len(pre)] == pre and len(segs) > len(pre):
         segs = segs[len(pre):]
     return sep.join(segs)
-
-
-def cmd_graph(a) -> int:
-    """导出单文件 HTML（只读、离线、可分享）。要展开 / 收起、跳编辑器、看时间顺序，用 serve。"""
-    repo = Path(a.repo).resolve()
-    idx = _load_index(repo)
-    refs = a.hot or []
-    if any(not r.strip() for r in refs):
-        raise SystemExit("--hot 给了空值（脚本里的变量没设？）")
-    refs = list(dict.fromkeys(refs))              # 同一个写了两遍：只留一份
-    hot, meta = _payload.load_hot(repo, idx, refs[0]) if refs else (None, None)
-    others = [_payload.load_hot(repo, idx, r) for r in refs[1:]]
-    # 写法不同、解析到同一个 run（同一阶段）的只留一份
-    ref_of = lambda m: m["run_id"] + (f"@{m['phase']}" if m.get("phase") else "")
-    seen, uniq = {ref_of(meta)} if meta else set(), []
-    for h, m in others:
-        if ref_of(m) not in seen:
-            seen.add(ref_of(m))
-            uniq.append((h, m))
-    others = uniq
-    keep = []
-    if a.public:
-        # 要保留的目录：仓库，和各 run 录制时所在的目录（PATH 里的 venv 往往在那下面）
-        keep = [str(repo)]
-        for r in refs:
-            try:
-                run = _runs.resolve(repo, r)[0]
-            except SystemExit:
-                continue
-            cwd = (run.get("invocation") or {}).get("cwd") or run.get("cwd")
-            if cwd:
-                keep.append(cwd)
-    if a.link:
-        # 静态站点：源码不内嵌，页面按扫描时的提交号从 GitHub 取（见 site.py）
-        if not a.out or a.out.endswith(".html"):
-            raise SystemExit("--link github 导出的是一个目录（index.html + data/）：--out 给目录")
-        from . import site as _site
-        r = _site.export_site(repo, idx, Path(a.out), hot=hot, hot_meta=meta, others=others,
-                              per_pkg=a.per_pkg, public=a.public, home=str(Path.home()), keep=keep,
-                              code_bases=a.code_base or None, check_remote=not a.no_remote_check,
-                              title=f"{idx['repo']['name']} · codestrata")
-        inf = r["info"]
-        print(f"→ {r['out']}/  页面 {r['index_bytes'] / 1024:.0f} KB + data/{r['ver']}/ {r['data_bytes'] / 1024 / 1024:.1f} MB："
-              f"{r['files']} 个文件的大纲和跳转、引用倒排 {r['refBuckets']} 桶")
-        probe = ("已试取一个文件 ✓" if r["reach"] else "没去试取（--no-remote-check）" if r["probe"] == "skipped"
-                 else f"⚠ 没能确认 GitHub 上有这个提交（{r['probe'] or '没网？'}）：页面上取源码要联网")
-        print(f"  源码：github.com/{inf['owner']}/{inf['name']} @ {inf['sha'][:12]}"
-              + (f"（仓库里的 {inf['prefix']}/）" if inf["prefix"] else "") + f"，{probe}")
-        if r["local"]:
-            print(f"  随页面带上的本地版本（GitHub 上那个提交里没有或不一样）{len(r['local'])} 个："
-                  + "，".join(r["local"][:12]) + ("…" if len(r["local"]) > 12 else ""))
-        if r["held"]:
-            print(f"  --public：被 .gitignore 忽略的 {len(r['held'])} 个本地文件没带（页面上说明）："
-                  + "，".join(r["held"][:12]) + ("…" if len(r["held"]) > 12 else ""))
-        return 0
-    pl = _payload.export_payload(repo, idx, hot=hot, hot_meta=meta, per_pkg=a.per_pkg,
-                                 others=others)
-    if a.public:
-        pl = _payload.publicize(pl, str(Path.home()), keep)
-    html = _render.export(pl, title=f"{idx['repo']['name']} · codestrata",
-                          fragment=a.fragment)
-    tag = "+".join(refs)
-    name = f"overview{'-' + re.sub(r'[^A-Za-z0-9@._+-]', '_', tag) if refs else ''}.html"
-    out = Path(a.out) if a.out else (_outdir(repo) / name)
-    out.write_text(html, encoding="utf-8")
-    g = pl["graph"]
-    print(f"→ {out}  ({len(html) / 1024:.0f} KB，{len(g['nodes'])} 节点 / {len(g['edges'])} 边，"
-          f"泳道 {g['lanes']}"
-          + (f"，hot: {len(hot['packages'])} 个包跑到" if hot else "")
-          + (f"，另带 {len(others)} 个 run 可切换" if others else "") + ")")
-    parts = {k: len(json.dumps(pl.get(k), ensure_ascii=False)) for k in ("graph", "graphHot", "edges", "sources", "files", "hotBy")}
-    print("  各部分：" + "，".join(f"{k} {v / 1024:.0f} KB" for k, v in parts.items() if v > 4))
-    return 0
 
 
 _TAG_RE = re.compile(r"^[A-Za-z0-9._:=/+-]+$")
@@ -303,7 +227,7 @@ def cmd_trace(a) -> int:
     try:
         idx = _load_index(repo)
     except SystemExit:
-        print("  （还没 scan，跑 codestrata scan 之后再 graph --hot 就能叠图）")
+        print("  （还没 scan，跑 codestrata scan 之后再 serve --hot 就能叠图）")
         return 0 if run["status"] != "failed" else 1
     hp = _tana.to_package_graph(tr, idx)
     # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人；
@@ -556,25 +480,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--expand", action="append", default=[], metavar="DIR",
                    help="默认切面里额外展开这个目录（可重复），比如 vllm_omni.model_executor.models")
     s.set_defaults(fn=cmd_scan)
-
-    g = sub.add_parser("graph", help="导出单文件 HTML（只读、可分享）")
-    common(g)
-    g.add_argument("--hot", action="append", default=None, metavar="RUN",
-                   help="叠加某个 run 的 runtime 结果（run id 或 case 名，可加 @阶段）；可以给多个，第一个是主 run，其余在页面上可切换")
-    g.add_argument("--per-pkg", type=int, default=10, help="每个包嵌入多少个符号的源码")
-    g.add_argument("--fragment", action="store_true", help="去掉 doctype 外壳（给 artifact 之类的宿主用）")
-    g.add_argument("--link", choices=["github"], default=None,
-                   help="源码不内嵌：导出成一个目录（--out 给目录），页面按扫描时的提交号从 GitHub 取源码，"
-                        "codestrata 算的数据放在 data/ 里按需加载——没有体积上限，放 GitHub Pages 用")
-    g.add_argument("--code-base", action="append", default=None, metavar="URL",
-                   help="--link 时取源码的地址模板（可重复，按顺序试；默认 jsDelivr、再 raw.githubusercontent.com），"
-                        "占位符 {owner} {name} {sha} {path}")
-    g.add_argument("--no-remote-check", action="store_true",
-                   help="--link 时不去 GitHub 试取一个文件（没网、或测试时）")
-    g.add_argument("--public", action="store_true",
-                   help="要放到公网上：主目录写成 ~，PATH 这类目录列表里仓库和录制目录以外的部分省略成 …（页面上会注明）")
-    g.add_argument("--out", default=None)
-    g.set_defaults(fn=cmd_graph)
 
     t = sub.add_parser("trace", help="跑一个 case，记录真实调用")
     common(t, "仓库代码在哪些目录（安装包映射回仓库用）；默认用 scan 时选的目录，没 scan 过才自动探测")

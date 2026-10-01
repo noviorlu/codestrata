@@ -216,7 +216,6 @@ window.CS = window.CS || {};
     /* 这个节点在切面上是什么、能不能展开 / 收起 */
     _cutRow: function (id, v) {
       var h = '<div class="cutrow"><span class="kindtag">' + esc(KIND[v.kind] || '') + '</span>';
-      if (!CS.ds.canCut) return h + '</div>';
       if (v.expandable)
         h += '<button class="chip" data-cut="expand" title="在图上把它换成子模块">展开（' + v.fanout + ' 个子模块）</button>';
       if (v.collapsible)
@@ -238,7 +237,7 @@ window.CS = window.CS || {};
 
     /* ---- 文件树：模块根目录 → 子目录（缩进）→ 文件 → 类 / 函数 → 方法 ----
      * 目录和文件一次性画出来（文件数是有限的），文件里的符号在展开时才取：
-     * live 模式走 /api/outline（含方法），导出版用内嵌的全文大纲，都没有就退回顶层符号。 */
+     * 走 /api/outline（含方法），取不到就退回顶层符号。 */
     _mountTree: function (id) {
       var box = document.getElementById('tree');
       if (!box) return;
@@ -390,7 +389,7 @@ window.CS = window.CS || {};
       }
       [].forEach.call(box ? box.querySelectorAll('.tn.file') : [], function (x) { if (x.dataset.file === rel) n = x; });
       if (!n) {                                   // 这个模块的文件树里没有它（不该发生）：片段放在最下面
-        if (key) this.showSource(this._tree && this._tree.pkg, key, null, { f: rel, l: line });
+        if (key) this.showSource(this._tree && this._tree.pkg, key);
         return Promise.resolve(document.getElementById('srcslot'));
       }
       for (var p = n.parentNode; p && p !== box; p = p.parentNode)
@@ -409,10 +408,10 @@ window.CS = window.CS || {};
               var tg = cls.querySelector(':scope > .tr > .tg'); if (tg) tg.textContent = '▾';
             }
             var slot = b.parentNode.nextElementSibling;
-            if (!slot.innerHTML) self.showSource(self._tree.pkg, key, slot, { f: rel, l: line });
+            if (!slot.innerHTML) self.showSource(self._tree.pkg, key, slot);
             target = b.parentNode;
           } else {                                // 大纲里只有顶层和一层方法，更深的（嵌套函数）放在最下面
-            self.showSource(self._tree.pkg, key, null, { f: rel, l: line });
+            self.showSource(self._tree.pkg, key);
             target = document.getElementById('srcslot') || target;   // 滚到片段那里，而不是文件那一行
           }
         }
@@ -481,7 +480,7 @@ window.CS = window.CS || {};
             ev.stopPropagation();
             var slot = b.parentNode.nextElementSibling;
             if (slot.innerHTML) { slot.innerHTML = ''; return; }          // 再点一次收起
-            self.showSource(T.pkg, b.dataset.tsym, slot, { f: b.dataset.f, l: +b.dataset.l });
+            self.showSource(T.pkg, b.dataset.tsym, slot);
           };
         });
       };
@@ -492,27 +491,12 @@ window.CS = window.CS || {};
       return n._ready;
     },
 
-    showSource: function (pkg, key, slotEl, where) {
+    showSource: function (pkg, key, slotEl) {
       var slot = slotEl || document.getElementById('srcslot');
       if (!slot) return;
       slot.innerHTML = '<p class="hint" style="margin-top:10px">读取源码…</p>';
       var self = this;
-      CS.ds.source(key, where).then(function (s) {
-        if (!s) {
-          // 导出版只内嵌了每个包前几个符号的片段；其他符号退回到全文窗口——前提是这个文件内嵌了
-          if (!where) { slot.innerHTML = ''; return; }
-          CS.ds.file(where.f).catch(function (e) {
-            slot.innerHTML = '<p class="hint" style="margin:4px 0 6px">读取失败：' + esc(e.message) + '</p>';
-            return undefined;
-          }).then(function (fv) {
-            if (fv === undefined) return;
-            slot.innerHTML = '<p class="hint" style="margin:4px 0 6px">' + (fv
-              ? '导出版里没有这个符号的片段。<button class="linkbtn" data-view="' + esc(where.f) + '" data-line="' + where.l + '">在全文里看（第 ' + where.l + ' 行）</button>'
-              : '导出版的体积有上限，没带上这个文件。要看源码请用 <code>codestrata serve</code>。') + '</p>';
-            self._wireIn(slot);
-          });
-          return;
-        }
+      CS.ds.source(key).then(function (s) {
         var L = s.lines || [], g = [];
         for (var i = 0; i < L.length; i++) g.push(s.line + i);
         var hot = CS.graph.hot, h = (hot && hot.symbols[key]) || 0;
@@ -523,7 +507,7 @@ window.CS = window.CS || {};
           + (h ? '　<span style="color:var(--hot)">runtime ' + h + ' 次</span>' : '')
           + '</span>'
           + '<button data-copy="' + esc(s.file + ':' + s.line) + '">复制路径</button>'
-          + (CS.ds.canOpenEditor ? '<button data-open="' + esc(s.file) + '" data-line="' + s.line + '">编辑器打开</button>' : '')
+          + '<button data-open="' + esc(s.file) + '" data-line="' + s.line + '">编辑器打开</button>'
           + '<button data-view="' + esc(s.file) + '" data-line="' + s.line + '">整个文件</button>'
           + '</div><div class="srcscroll"><div class="srcgrid">'
           + '<div class="gut">' + g.join('\n') + '</div>'
@@ -590,7 +574,6 @@ window.CS = window.CS || {};
       var self = this, tok = ++this._detTok;
       CS.ds.edge(a, b).then(function (E) {
         if (tok !== self._detTok) return;          // 这期间面板已经换了内容
-        if (!E) { det.querySelector('.hint').textContent = '导出版里没有这条边的详情'; return; }
         self._renderEdge(E);
       }).catch(function (e) { if (tok === self._detTok) det.querySelector('.hint').textContent = '读取失败：' + e.message; });
     },

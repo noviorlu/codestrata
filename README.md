@@ -10,7 +10,7 @@ codestrata 先静态扫描出一张按依赖分层的模块图，再把一次真
 
 > [!IMPORTANT]
 > 早期版本（0.1.0）。目前只支持 **Python** 仓库；运行记录的格式和叠加与语言无关，其他语言在计划中。
-> **录制只支持 Linux**（别的系统上 `trace` 会直接说明并退出）；扫描、看图、导出、查看别处录好的 run 在其他系统上也能用，但只在 Linux 上测过。
+> **录制只支持 Linux**（别的系统上 `trace` 会直接说明并退出）；扫描、看图、查看别处录好的 run 在其他系统上也能用，但只在 Linux 上测过。
 > 要 Python ≥ 3.10，没有必需的第三方依赖；`trace --events`（时间轴上的任意一段、「时间顺序」要用它）要求**被录的程序**跑在 Python 3.12+ 上。
 > 所有服务只监听 `127.0.0.1`，在远程机器上用要走 `ssh -L`。
 
@@ -23,7 +23,7 @@ codestrata 先静态扫描出一张按依赖分层的模块图，再把一次真
 
 ## 快速上手
 
-要 Python ≥ 3.10 和 git。下面拿 [flask](https://github.com/pallets/flask) 当例子，扫描和录制加起来不到 1 秒。录服务、分阶段、导出、主菜单、完整的命令参考见 **[docs/usage.md](docs/usage.md)**。
+要 Python ≥ 3.10 和 git。下面拿 [flask](https://github.com/pallets/flask) 当例子，扫描和录制加起来不到 1 秒。录服务、分阶段、主菜单、完整的命令参考见 **[docs/usage.md](docs/usage.md)**。
 
 ```bash
 # 1. 安装。别用 pip install codestrata：PyPI 上同名的包是别人的
@@ -97,7 +97,6 @@ scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 
 
 - **读代码**：从图上点进任意文件打开全文窗口，符号大纲、语法高亮、Ctrl+点击跳定义 / 列引用、Ctrl+F 查找，也能一键在本机编辑器打开（截图见 [读代码](docs/usage.md#读代码)）。
 - **复刻**：每个 run 存下原样的命令、所在目录和相关环境变量，一键复制就能再录一次。见[管理 run](docs/usage.md#管理-run)。
-- **分享**：`codestrata graph` 导出一个离线 HTML；`--link github` 导出从 GitHub 取源码的静态站点。见[分享给别人](docs/usage.md#分享给别人)。
 - **主菜单**：`codestrata app` 在浏览器里选文件夹、点按钮扫描、录制、打开图。见[主菜单](docs/usage.md#主菜单-codestrata-app)。
 
 ## 它是怎么做到的
@@ -111,7 +110,6 @@ flowchart LR
   I --> P["切面 + 分层 + 叠加"]
   R --> P
   P --> V["serve：本地网页"]
-  P --> E["graph：单文件 HTML / GitHub 站点"]
 ```
 
 1. **静态分析。** 用标准库的 `ast` 解析每个 `.py`，记下谁 import 谁、实际用了对方哪些名字、类和函数在哪。
@@ -140,7 +138,6 @@ Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 - **录制只支持 Linux**：它靠 `/proc` 认进程、找出 setsid 出去的服务并停干净。3.10 / 3.11 能录但没有 `--events`，仓库外的代码也要付回调的开销。
 - **跳转保守、没有类型推断**：`x = Foo(); x.bar()` 不给跳。
 - **重新 scan 之后要重启 serve**（新录的 run 不用重启）。
-- **导出的页面功能少一些**：切面固定、没有时间轴和时间顺序；单文件约 14 MB，只带一部分文件的全文。
 - **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**，依赖它的程序在录制时行为可能不同。
 - **run 不能重建**：`.codestrata/runs/` 是唯一一份，删了就没了。
 - **自动测试都在 CPU 上的假服务上跑**，没在 GPU 录制上验收过。
@@ -155,7 +152,7 @@ Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 
 ## 致谢
 
-分层用的是 Eades、Lin、Smyth 的贪心去环启发式；源码高亮用 [Pygments](https://pygments.org/)；`--link github` 导出的站点经 [jsDelivr](https://www.jsdelivr.com/) 取源码。
+分层用的是 Eades、Lin、Smyth 的贪心去环启发式；源码高亮用 [Pygments](https://pygments.org/)。
 
 ## License
 

@@ -5,8 +5,8 @@ window.CS = window.CS || {};
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   // 「2026-09-27T15:34:10-0400」→「09-27 15:34」
-  /* 复制到剪贴板：serve 在 127.0.0.1 上是安全上下文，用 Clipboard API；导出的单文件（file://）
-     或被拒绝时退回选中一个临时 textarea 再 execCommand('copy')。结果是 Promise<是否成功> */
+  /* 复制到剪贴板：serve 在 127.0.0.1 上是安全上下文，用 Clipboard API；
+     被拒绝时退回选中一个临时 textarea 再 execCommand('copy')。结果是 Promise<是否成功> */
   function copyText(t) {
     function legacy() {
       var ta = document.createElement('textarea');
@@ -61,10 +61,7 @@ window.CS = window.CS || {};
           var s = document.getElementById('dsub'); if (s) s.textContent = '已在图上展开成框（框头的 − 收起）';
         };
         self.wireDrawer();
-        CS.graph.onExpand = function (id) {
-          if (!CS.ds.canCut) { document.getElementById('prog').textContent = '导出的单文件不能展开，请用 codestrata serve'; return; }
-          self.expand(id);
-        };
+        CS.graph.onExpand = function (id) { self.expand(id); };
         CS.graph.phaseMarks = self.phaseMarks();
         CS.graph.draw(document.getElementById('g'), d.graph, d.hot,
                       { kinds: d.edgeKinds, rtOnly: d.runtimeOnlyEdges, dynOnly: d.dynOnlyEdges, typeOnly: d.typeOnlyEdges });
@@ -81,7 +78,7 @@ window.CS = window.CS || {};
         window.addEventListener('resize', function () {
           clearTimeout(rt);
           rt = setTimeout(function () {
-            if (CS.ds.canCut && Math.abs(CS.graph.boxWidth() - self._w) >= 80) self.setCut(self.curOpen());
+            if (Math.abs(CS.graph.boxWidth() - self._w) >= 80) self.setCut(self.curOpen());
           }, 350);
         });
       }).catch(function (e) {
@@ -215,9 +212,6 @@ window.CS = window.CS || {};
           + '<pre class="rerun-cmd">' + esc(m.rerun) + '</pre>'
           + (m.rerun_exact ? '' : '<div class="lab warn">这个 run 录的时候还没存原始命令：上面是按 run 里存的参数拼的，'
              + 'codestrata 按 PATH 找，仓库路径是现在这个仓库的，执行目录不是仓库根目录的写成 --cwd</div>')
-          + (CS.ds.public ? '<div class="lab warn">这是公开页：路径里的主目录写成了 ~，PATH 这类目录列表里项目以外的部分'
-             + '省略成了 …，所以命令不能原样执行；原样的在录制的机器上用 <code>codestrata runs &lt;repo&gt; show '
-             + esc(m.run_id) + '</code> 看</div>' : '')
           + (m.rerun_redacted ? '<div class="lab warn">命令里像密钥的值（--env 里的、--api-key 这类选项的）和 URL 里的账号密码'
              + '已隐去，写成 &lt;已隐去&gt;；下面的 case 命令和进程表也一样。完整的命令用 <code>codestrata runs &lt;repo&gt; show '
              + esc(m.run_id) + '</code> 看</div>' : '')
@@ -318,12 +312,11 @@ window.CS = window.CS || {};
       var self = this;
       return CS.ds.runs().then(function (r) {
         self.runList = r.runs || [];
-        self.runListEmbedded = !!r.embedded;
         self._known = {};
         self.runList.forEach(function (x) { self._known[x.id] = 1; });
         var want = self._hashRun();
         if (want === null) want = r.default || '';
-        if (want && CS.ds.canSwitchRun) {
+        if (want) {
           var id = want.split('@')[0];
           var hit = self.runList.filter(function (x) { return x.id === id || x.case === id; })[0];
           if (!hit || !hit.loadable) {
@@ -332,7 +325,7 @@ window.CS = window.CS || {};
             want = '';
           }
         }
-        if (CS.ds.canSwitchRun) CS.ds.run = want;
+        CS.ds.run = want;
         self.wireRunSel();
       }).catch(function () { self.runList = []; self._known = {}; self.wireRunSel(); });
     },
@@ -385,14 +378,13 @@ window.CS = window.CS || {};
         rb.hidden = !(m && m.rerun);
         rb.onclick = function () { self.showRerun(); };
       }
-      b.title = !CS.ds.canSwitchRun ? '导出的单文件固定叠这一个（或不叠）；要换请用 codestrata serve'
-        : m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
+      b.title = m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
       var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
       // 时间轴：阶段按钮 + 时间条（录了时序事件的还能在条上拖出任意一段时间；老 run 不知道多长就只有按钮）
       var phases = run ? run.phases : m ? Object.keys(m.phases || {}).map(function (k) { return { name: k, n_funcs: m.phases[k] }; }) : [];
       if (phases.length < 2) phases = [];                       // 没分阶段：只剩全部 / 拖时间段
       var canDrag = !!(m && m.end_us) && this._runHasEvents();
-      if (!m || !(phases.length || canDrag) || !CS.ds.canSwitchRun || this.runListEmbedded) { pc.innerHTML = ''; return; }
+      if (!m || !(phases.length || canDrag)) { pc.innerHTML = ''; return; }
       var at = Object.create(null), hook = Object.create(null), tips = {};
       (m.phase_at || []).forEach(function (t) { at[t.name] = t; });
       (m.phase_log || []).forEach(function (x) { if (x[2] === 'hook') hook[x[0]] = 1; });
@@ -411,9 +403,9 @@ window.CS = window.CS || {};
           + '　<b class="pe">■ 终点</b> ' + (bd.end ? esc(bd.end.qualname) + '（切到 ' + esc(bd.end.name) + '）' : '程序结束') + '</span>');
     },
 
-    /* 「时间顺序」开关只在：serve（导出版没带时序数据）、叠着一个 run、它录了时序事件 */
+    /* 「时间顺序」开关只在：叠着一个 run、它录了时序事件 */
     canTimeOrder: function () {
-      return CS.ds.mode === 'live' && !!(this.data && this.data.hot) && this._runHasEvents();
+      return !!(this.data && this.data.hot) && this._runHasEvents();
     },
 
     /* 时间顺序上色要的数据：当前 run（阶段）、当前切面上每条边第一次 / 最后一次被调用的时刻。
@@ -490,7 +482,6 @@ window.CS = window.CS || {};
       var self = this, b = document.getElementById('runbtn'), pop = document.getElementById('runpop');
       if (!b || b._wired) return;
       b._wired = 1;
-      if (!CS.ds.canSwitchRun) { b.disabled = true; return; }
       b.onclick = function (e) { e.stopPropagation(); if (pop.hidden) self.openRunPop(); else self.closeRunPop(); };
       document.addEventListener('click', function (e) {
         if (!pop.hidden && !pop.contains(e.target) && e.target !== b) self.closeRunPop();
@@ -504,7 +495,6 @@ window.CS = window.CS || {};
 
     refreshRuns: function (quiet) {
       var self = this;
-      if (!CS.ds.canSwitchRun) return Promise.resolve();
       return CS.ds.runs().then(function (r) {
         var fresh = (r.runs || []).some(function (x) { return !self._known[x.id]; });
         self.runList = r.runs || [];
@@ -532,9 +522,7 @@ window.CS = window.CS || {};
     renderRunPop: function () {
       var self = this, pop = document.getElementById('runpop'), list = this.runList || [];
       var hm = this.data && this.data.hot && this.data.hotMeta;
-      // 导出版：同一个 run 的两个阶段可能是两行，按「id@阶段」认
-      var cur = hm ? (this.runListEmbedded ? hm.run_id + (hm.phase ? '@' + hm.phase : '') : hm.run_id) : '';
-      var keyOf = function (x) { return x.ref || x.id; };
+      var cur = hm ? hm.run_id : '';
       var h = '<button class="rr" role="menuitem" data-run="" aria-current="' + !cur + '"><span class="rt">静态图</span>'
         + '<span class="rm">不叠 runtime，只看 import 结构</span><span></span></button>';
       if (!list.length) {
@@ -555,10 +543,10 @@ window.CS = window.CS || {};
             + (x.stale && x.stale.changed ? '<span style="color:var(--stale)">⚠ 录制后改过 ' + x.stale.changed + ' 个文件</span>　' : '')
             + (x.stale && x.stale.mismatch ? '<span style="color:var(--stale)">录制时安装包和仓库有 ' + x.stale.mismatch + ' 个文件不一致</span>　' : '')
             + (x.note ? '「' + esc(x.note) + '」' : '');
-          h += '<button class="rr' + (ok ? '' : ' weak') + '" role="menuitem" data-run="' + esc(keyOf(x)) + '"'
+          h += '<button class="rr' + (ok ? '' : ' weak') + '" role="menuitem" data-run="' + esc(x.id) + '"'
             + (x.loadable ? '' : ' disabled title="还没有计数：还在录，或录制中断了（codestrata runs <repo> merge ' + esc(x.id) + '）"')
-            + ' aria-current="' + (keyOf(x) === cur) + '">'
-            + '<span class="rt" title="' + esc(keyOf(x)) + '">' + esc(shortTime(x.created)) + (x.ref && x.ref.indexOf('@') > 0 ? ' @' + esc(x.ref.split('@')[1]) : '') + '</span>'
+            + ' aria-current="' + (x.id === cur) + '">'
+            + '<span class="rt" title="' + esc(x.id) + '">' + esc(shortTime(x.created)) + '</span>'
             + '<span class="rm">' + meta + '</span>'
             + '<span class="rs ' + (ok ? 'ok' : 'bad') + '">' + esc(x.status || '') + '</span>'
             + (!ok && x.problems && x.problems.length ? '<span class="rx">' + esc(x.problems.join('；')) + '</span>' : '')
@@ -568,11 +556,9 @@ window.CS = window.CS || {};
       pop.innerHTML = h;
       [].forEach.call(pop.querySelectorAll('[data-run]'), function (el) {
         el.onclick = function () {
-          var id = el.dataset.run, x = list.filter(function (r) { return keyOf(r) === id; })[0];
+          var id = el.dataset.run, x = list.filter(function (r) { return r.id === id; })[0];
           if (id === cur) { self.closeRunPop(); return; }
-          // 导出版：只能换到导出时带上的那几个（它们的「id@阶段」就是 x.ref），不猜阶段
-          if (x && x.ref) { var rp = x.ref.split('@'); self.selectRun(rp[0], rp[1] || ''); }
-          else self.selectRun(id, x ? self._defaultPhase(x) : '');
+          self.selectRun(id, x ? self._defaultPhase(x) : '');
         };
       });
       var first = pop.querySelector('[aria-current=true]') || pop.querySelector('.rr');
@@ -609,7 +595,6 @@ window.CS = window.CS || {};
       var hm = d.hot && d.hotMeta;
       document.getElementById('stats').innerHTML =
         st.map(function (p) { return '<span>' + p[0] + ' <b>' + p[1] + '</b></span>'; }).join('')
-        + '<span>模式 <b>' + CS.ds.mode + '</b></span>'
         // hot 图：上面只留一个标记，来历（阶段、进程、安装包映射、命令）在「?」里
         + (hm ? '<button class="hottag" data-help title="这次 trace 的情况在帮助里">hot <b>' + esc(hm.case)
                  + (hm.phase ? '@' + esc(CS.timebar.label(hm.phase)) : '') + '</b>'
@@ -623,7 +608,7 @@ window.CS = window.CS || {};
         var m = d.hotMeta;
         // 地址里记完整的 id（case 名会随着重录指到别的 run 上），刷新页面还是同一个 run
         var ref = m.run_id + (m.phase ? '@' + m.phase : '');
-        if (CS.ds.run !== ref && CS.ds.canSwitchRun) { CS.ds.run = ref; this._writeHash(); }
+        if (CS.ds.run !== ref) { CS.ds.run = ref; this._writeHash(); }
         document.getElementById('hotbanner').innerHTML =
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
@@ -778,7 +763,7 @@ window.CS = window.CS || {};
     },
 
     /* 把一个模块在图上找出来并选中：它已经是节点就直接选；被收在某个目录里时，展开到它
-       （serve 算要展开哪些目录）；导出版不能展开，就选中装着它的那个节点。
+       （serve 算要展开哪些目录）。
        已经展开成框的目录选中那个框（不能去收起它）；图上画不出来的模块（空的 __init__.py）
        选中装着它的框；hot 视图里没跑到的，先退出 hot 视图。选中后滚到屏幕中间、闪一下。
        返回最后选中的节点（选中的是框或什么都没选时返回 null） */
@@ -824,7 +809,7 @@ window.CS = window.CS || {};
         return Promise.resolve(null);
       }
       var h0 = this.homeOf(id, kind);
-      if (h0 === id || !CS.ds.canCut) return Promise.resolve(finish());
+      if (h0 === id) return Promise.resolve(finish());
       return CS.ds.reveal(id, this.curOpen()).then(function (r) {
         return self.setCut(r.open, id).then(function (done) { return done ? finish() : null; });
       }).catch(function () { return finish(); });

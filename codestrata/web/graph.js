@@ -124,21 +124,19 @@ window.CS = window.CS || {};
         var g = el('g', { class: 'frame', 'data-frame': F.id });
         g.appendChild(el('rect', { x: F.x, y: F.y, width: F.w, height: F.h, rx: 10 }));
         fg.appendChild(g); self.frames[F.id] = g;
-        var h = el('g', { class: 'fh', 'data-frame': F.id }), tx = F.x + 10;
-        if (CS.ds.canCut) {
-          var cb = el('g', { class: 'xp', role: 'button', tabindex: '0', 'aria-label': '收起 ' + F.label });
-          cb.appendChild(el('circle', { cx: F.x + 15, cy: F.y + 12, r: 7 }));
-          var ct = el('text', { x: F.x + 15, y: F.y + 15.5, 'text-anchor': 'middle' });
-          ct.textContent = '−'; cb.appendChild(ct);
-          var tip = el('title', {});
-          tip.textContent = '收起 ' + F.label + '：框里的 ' + (F.total || F.n) + ' 个节点合回一个'; cb.appendChild(tip);
-          var go = function (ev) { ev.preventDefault(); ev.stopPropagation(); if (self.onCollapse) self.onCollapse(F.id); };
-          cb.onclick = go;
-          cb.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') go(ev); };
-          cb.onmouseenter = function () { g.classList.add('hover'); };
-          cb.onmouseleave = function () { g.classList.remove('hover'); };
-          h.appendChild(cb); tx = F.x + 28;
-        }
+        var h = el('g', { class: 'fh', 'data-frame': F.id }), tx = F.x + 28;
+        var cb = el('g', { class: 'xp', role: 'button', tabindex: '0', 'aria-label': '收起 ' + F.label });
+        cb.appendChild(el('circle', { cx: F.x + 15, cy: F.y + 12, r: 7 }));
+        var ct = el('text', { x: F.x + 15, y: F.y + 15.5, 'text-anchor': 'middle' });
+        ct.textContent = '−'; cb.appendChild(ct);
+        var tip = el('title', {});
+        tip.textContent = '收起 ' + F.label + '：框里的 ' + (F.total || F.n) + ' 个节点合回一个'; cb.appendChild(tip);
+        var go = function (ev) { ev.preventDefault(); ev.stopPropagation(); if (self.onCollapse) self.onCollapse(F.id); };
+        cb.onclick = go;
+        cb.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') go(ev); };
+        cb.onmouseenter = function () { g.classList.add('hover'); };
+        cb.onmouseleave = function () { g.classList.remove('hover'); };
+        h.appendChild(cb);
         var t = el('text', { x: tx, y: F.y + 16, class: 'fl' });
         t.textContent = F.label; h.appendChild(t);
         var c = el('text', { x: tx + F.lw + 8, y: F.y + 16, class: 'fn' });
@@ -226,7 +224,7 @@ window.CS = window.CS || {};
         var s = el('text', { x: n.cx, y: n.cy + 9, class: 'ns', 'text-anchor': 'middle' });
         s.textContent = n.files + 'f · ' + n.classes + 'c' + (hits ? ' · ' + hits : '');
         g.appendChild(s);
-        if (n.expandable && CS.ds.canCut) {
+        if (n.expandable) {
           // 左上角的 ＋：在当前图上展开成子模块
           var xp = el('g', { class: 'xp', role: 'button', tabindex: '0' });
           xp.appendChild(el('circle', { cx: n.cx - n.w / 2 + 1, cy: n.cy - n.h / 2 + 1, r: 7 }));
@@ -306,8 +304,8 @@ window.CS = window.CS || {};
     },
 
     /* 图框铺满页面中间那一大块（整页宽，上面一条和下面的抽屉之外的高度），在框里上下左右滚。
-       live 模式按图框宽度排版（app 把宽度传给 serve），画布宽就等于图框宽；展开多了画布更宽，
-       最多缩到 0.88 倍，再宽就横向滚动。导出版的画布宽度是固定的，宽屏上最多放大到 1.25 倍 */
+       按图框宽度排版（app 把宽度传给 serve），画布宽就等于图框宽；展开多了画布更宽，
+       最多缩到 0.88 倍，再宽就横向滚动；最多放大到 1.25 倍 */
     fit: function () {
       var svg = this.svg, G = this.G, box = svg && svg.parentNode, wrap = box && box.parentNode;
       if (!wrap || !G) return;
