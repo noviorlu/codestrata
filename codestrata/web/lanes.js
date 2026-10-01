@@ -215,7 +215,7 @@ window.CS = window.CS || {};
             g.appendChild(tp);
             g.onmouseenter = function () { self.twins(id, true); };
             g.onmouseleave = function () { self.twins(id, false); };
-            var pick = function (ev) { ev.stopPropagation(); self.pickNode(id); };
+            var pick = function (ev) { ev.stopPropagation(); self.pickNode(id, ln.id); };
             g.onclick = pick;
             g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(ev); } };
             ng.appendChild(g);
@@ -501,10 +501,11 @@ window.CS = window.CS || {};
 
     unselect: function () { this.sel = this.selMany = null; this.applySel(); if (this.tw) this.twins(null, false); },
 
-    /* 选中之后和模块图一样：选中的那一条（几条）和它两头的节点照常，其余的淡下去。选中节点：它在各列里的每一份、
-       列里碰到它的边、列之间碰到它的连线都高亮，这些边和连线另一头的节点照常 */
+    /* 选中之后和模块图一样：选中的那一条（几条）和它两头的节点照常，其余的淡下去。选中节点只算点的那一份（用户 10-01：
+       分列里只高亮这一个，不高亮它在别的列里的副本）：这一列里碰到它的边、碰到这一份的连线高亮，另一头的节点照常 */
     applySel: function () {
-      var s = this.sel, many = this.selMany, id = s && s.indexOf('n:') === 0 ? s.slice(2) : null;
+      var s = this.sel, many = this.selMany, nk = s && s.indexOf('n:') === 0 ? s.slice(2) : null;   // "列|节点"
+      var id = nk && nk.slice(nk.lastIndexOf('|') + 1), lane = nk && nk.slice(0, nk.lastIndexOf('|'));
       var keep = null, hi = {};                      // 照常的节点（"列|节点"）、高亮的边 / 连线
       function ends(E) {
         return E.kind === 'edge' ? [E.lane.id + '|' + E.e.a, E.lane.id + '|' + E.e.b]
@@ -513,24 +514,25 @@ window.CS = window.CS || {};
       if (s) {
         keep = {};
         this.edges.concat(this.links).forEach(function (E) {
-          var on = id ? (E.kind === 'edge' ? E.e.a === id || E.e.b === id : E.k.from.node === id || E.k.to.node === id)
+          var on = nk ? (E.kind === 'edge' ? E.lane.id === lane && (E.e.a === id || E.e.b === id)
+                         : (E.k.from.lane === lane && E.k.from.node === id) || (E.k.to.lane === lane && E.k.to.node === id))
             : s === E.key || (!!many && many.indexOf(E.key) >= 0);
           if (!on) return;
           hi[E.key] = 1;
           ends(E).forEach(function (k) { keep[k] = 1; });
         });
-        if (id) this.nodes.forEach(function (x) { if (x.id === id) keep[x.lane + '|' + x.id] = 1; });
+        if (nk) keep[nk] = 1;
       }
       this.edges.concat(this.links).forEach(function (E) {
         var on = !!hi[E.key], dim = !!keep && !on;
-        E.p.classList.toggle('sel', on && !id);
-        E.p.classList.toggle('hi', on && !!id);
+        E.p.classList.toggle('sel', on && !nk);
+        E.p.classList.toggle('hi', on && !!nk);
         E.p.classList.toggle('dim', dim);
         if (E.lab) E.lab.classList.toggle('dim', dim);
         if (on) [E.p, E.lab].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
       this.nodes.forEach(function (x) {
-        x.g.classList.toggle('sel', !!id && x.id === id);
+        x.g.classList.toggle('sel', x.lane + '|' + x.id === nk);
         x.g.classList.toggle('dim', !!keep && !keep[x.lane + '|' + x.id]);
       });
       if (this.tg) [].forEach.call(this.tg.childNodes, function (g) {
@@ -573,8 +575,10 @@ window.CS = window.CS || {};
       });
     },
 
-    pickNode: function (id) {
-      var key = 'n:' + id;
+    /* 选中节点的一份（lane：哪一列；不给就取它出现的第一列）。详情讲这个节点（不分线程） */
+    pickNode: function (id, lane) {
+      if (!lane) { var x = this.nodes.filter(function (y) { return y.id === id; })[0]; lane = x ? x.lane : ''; }
+      var key = 'n:' + lane + '|' + id;
       if (this.sel === key) { CS.graph.clear(); return; }
       this.select(key);
       this.twins(id, false);
@@ -582,13 +586,13 @@ window.CS = window.CS || {};
       CS.app.drawer(true);
     },
 
-    /* 同一个节点在别的列里的副本：高亮并连上（鼠标停着的，和选中的） */
+    /* 同一个节点在别的列里的副本：鼠标停着的时候高亮并连上（选中只高亮点的那一份，不连副本） */
     twins: function (id, on) {
       if (!this.svg) return;
-      var keep = this.sel && this.sel.indexOf('n:') === 0 ? this.sel.slice(2) : null, self = this;
+      var self = this;
       this.tw.textContent = '';
-      this.nodes.forEach(function (x) { x.g.classList.toggle('twin', (on && x.id === id) || x.id === keep); });
-      [on ? id : null, keep].forEach(function (z) {
+      this.nodes.forEach(function (x) { x.g.classList.toggle('twin', on && x.id === id); });
+      [on ? id : null].forEach(function (z) {
         if (!z) return;
         var ps = self.nodes.filter(function (x) { return x.id === z; }).map(function (x) { return self.pos[x.lane + '|' + z]; })
           .sort(function (p, q) { return p.cx - q.cx; });

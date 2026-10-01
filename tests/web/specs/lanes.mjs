@@ -48,19 +48,20 @@ export default async function (t) {
     const id = Object.keys(ids).find(k => ids[k] > 1);
     const g = [...document.querySelectorAll('#g .ln-nd')].find(x => x.dataset.id === id);
     CS.graph.showEl(g);
-    const b = g.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2, id, ids[id]];
+    const b = g.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2, id, ids[id], g.dataset.lane];
   })()`);
   await page.mouse('mouseMoved', r[0], r[1]);
   ok(await page.wait(`document.querySelectorAll('#g .ln-nd.twin').length === ${r[3]} && document.querySelectorAll('#g .ln-twin').length === ${r[3] - 1}`, 3000),
      '悬停：' + r[2] + ' 的 ' + r[3] + ' 份都高亮、连上');
   // 点节点：选中、详情栏打开讲它
   await click(page, { x: r[0], y: r[1] });
-  ok(await page.wait(`CS.lanes.sel === 'n:' + ${JSON.stringify(r[2])} && document.getElementById('drawer').classList.contains('open')
+  ok(await page.wait(`CS.lanes.sel === 'n:' + ${JSON.stringify(r[4] + '|' + r[2])} && document.getElementById('drawer').classList.contains('open')
                       && document.getElementById('det').dataset.pkg === ${JSON.stringify(r[2])}`, 5000), '点节点：选中、详情栏打开讲它');
-  // 和模块图一样：碰到它的边、连线高亮，它们另一头的节点照常，别的淡下去
+  // 和模块图一样：碰到它的边、连线高亮，它们另一头的节点照常，别的淡下去。只算点的这一份（这一列），别的列里的副本也淡下去
   const nb = JSON.parse(await page.ev(`JSON.stringify((() => {
-    const id = ${JSON.stringify(r[2])}, keep = new Set(), bad = [];
-    const touch = E => E.kind === 'edge' ? E.e.a === id || E.e.b === id : E.k.from.node === id || E.k.to.node === id;
+    const id = ${JSON.stringify(r[2])}, lane = ${JSON.stringify(r[4])}, keep = new Set([lane + '|' + id]), bad = [];
+    const touch = E => E.kind === 'edge' ? E.lane.id === lane && (E.e.a === id || E.e.b === id)
+      : (E.k.from.lane === lane && E.k.from.node === id) || (E.k.to.lane === lane && E.k.to.node === id);
     const ends = E => E.kind === 'edge' ? [E.lane.id + '|' + E.e.a, E.lane.id + '|' + E.e.b]
       : [E.k.from.lane + '|' + E.k.from.node, E.k.to.lane + '|' + E.k.to.node];
     let hi = 0, dim = 0;
@@ -72,14 +73,17 @@ export default async function (t) {
     });
     let nd = 0;
     CS.lanes.nodes.forEach(x => {
-      const k = x.lane + '|' + x.id, want = x.id === id || keep.has(k), d = x.g.classList.contains('dim');
+      const k = x.lane + '|' + x.id, want = keep.has(k), d = x.g.classList.contains('dim');
       if (want === d) bad.push(k);
       if (d) nd++;
     });
-    return { hi, dim, nd, bad: bad.slice(0, 5) };
+    const sel = CS.lanes.nodes.filter(x => x.g.classList.contains('sel')).map(x => x.lane + '|' + x.id);
+    const otherCopies = CS.lanes.nodes.filter(x => x.id === id && x.lane !== lane && !keep.has(x.lane + '|' + x.id) && !x.g.classList.contains('dim')).length;
+    return { hi, dim, nd, sel, otherCopies, bad: bad.slice(0, 5) };
   })())`));
-  ok(nb.hi > 0 && nb.dim > 0 && nb.nd > 0 && nb.bad.length === 0,
-     '选中节点：碰到它的 ' + nb.hi + ' 条边 / 连线高亮、另一头的节点照常，别的淡下去（' + nb.dim + ' 条线、' + nb.nd + ' 个节点）' + JSON.stringify(nb.bad));
+  ok(nb.hi > 0 && nb.dim > 0 && nb.nd > 0 && nb.bad.length === 0 && nb.sel.length === 1 && nb.sel[0] === r[4] + '|' + r[2] && nb.otherCopies === 0,
+     '选中节点：只有点的这一份选中，这一列里碰到它的 ' + nb.hi + ' 条边 / 连线高亮、另一头的节点照常，别的（包括别的列里的副本）淡下去（'
+     + nb.dim + ' 条线、' + nb.nd + ' 个节点）' + JSON.stringify(nb.bad));
 
   // 列里的边：同一列里接点错开，每一条在自己路径的中点点下去，最上面的就是它（不会点到叠在一起的另一条）
   const stolen = await page.ev(`(() => {

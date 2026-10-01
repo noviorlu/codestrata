@@ -55,7 +55,7 @@ window.CS = window.CS || {};
         var ln = laneOf(e.lane);
         return '<div class="lk-end"><span class="lk-lab">' + label + '</span><b>' + esc(ln.proc) + '</b> · ' + esc(ln.thread)
           + (ln.n_threads > 1 ? ' ×' + ln.n_threads : '') + (ln.external ? '（只跑仓库外的代码）' : '')
-          + (e.node ? '　<button class="chip" data-node="' + esc(e.node) + '">' + esc(names[e.node] || e.node) + '</button>' : '')
+          + (e.node ? '　<button class="chip" data-node="' + esc(e.node) + '" data-lane="' + esc(e.lane) + '">' + esc(names[e.node] || e.node) + '</button>' : '')
           + '</div>';
       }
       function site(label, name, def, line, code, ext) {
@@ -94,7 +94,7 @@ window.CS = window.CS || {};
         b.onclick = function () { if (b.dataset.f) CS.viewer.open(b.dataset.f, +b.dataset.l); };
       });
       [].forEach.call(det.querySelectorAll('[data-node]'), function (b) {
-        b.onclick = function () { lanes.pickNode(b.dataset.node); };
+        b.onclick = function () { lanes.pickNode(b.dataset.node, b.dataset.lane); };
       });
     }
   };
