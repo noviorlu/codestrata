@@ -5,6 +5,8 @@
 测试数据是仓库自带的假服务（tests/trace_cases/fake_repo）当场录的两次 run，不依赖开发机上的任何录制：
   A = truth：--events，--phase 切出 loop / forks 两个阶段（加上开头的 start），跨模块的调用多，时间顺序有得排
   B = offline：另一个 run，给「换 run」用
+  录了时序事件的 run 叠上去是按进程 · 线程分列（lanes.js）；A、B 各有一个不录时序事件的同样的 run（an、bn），叠上去是一张模块图，
+  测模块图上的叠加（overlay、calls）用它们
 另有一个只 scan 的小仓库（_CUT：嵌套目录、一个又有子目录又有十几个文件的目录），给展开 / 收起、搜索定位用（base2）；
 再一个录过的小仓库（_DYN：runner 经 self.model.forward 调到按字符串加载的类，代码里看不出），给虚线边用（base3）；
 它录了两次，第二次去掉调用行当老 run。
@@ -93,6 +95,10 @@ def fixture() -> dict:
     cs("trace", repo, "--case", "truth", "--events",
        "--phase", "loop=fakesvc.truth:s_loop", "--phase", "forks=fakesvc.truth:s_fork", "--", PY, "-m", "fakesvc.truth")
     cs("trace", repo, "--case", "offline", "--events", "--", PY, "-m", "fakesvc.offline")
+    # 同样的两次、不录时序事件：叠这种 run 时运行时的图是一张（录了事件的 run 一律按线程分列），测模块图上的叠加用
+    cs("trace", repo, "--case", "truthne", "--no-events",
+       "--phase", "loop=fakesvc.truth:s_loop", "--phase", "forks=fakesvc.truth:s_fork", "--", PY, "-m", "fakesvc.truth")
+    cs("trace", repo, "--case", "offlinene", "--no-events", "--", PY, "-m", "fakesvc.offline")
     srv, base = _serve(repo)
     cut = tmpdir("cs-browser-cut-") / "cutrepo"
     for rel, src in _CUT.items():
@@ -106,6 +112,7 @@ def fixture() -> dict:
         (dyn / rel).write_text(src)
     cs("scan", dyn)
     cs("trace", dyn, "--case", "dyn", "--", PY, "-m", "dyn.main")
+    cs("trace", dyn, "--case", "dynne", "--no-events", "--", PY, "-m", "dyn.main")
     # 同样跑一次、去掉调用行，当 2026-09-30 之前录的老 run
     cs("trace", dyn, "--case", "dynold", "--no-events", "--", PY, "-m", "dyn.main")
     cp = dyn / ".codestrata" / "runs" / _run_id(dyn, "dynold") / "counts.json.gz"
@@ -114,9 +121,9 @@ def fixture() -> dict:
         ph.pop("func_lines", None)
     cp.write_bytes(gzip.compress(json.dumps(c).encode()))
     srv3, base3 = _serve(dyn)
-    _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"))
+    _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"), dynn=_run_id(dyn, "dynne"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
-               a=_run_id(repo, "truth"), b=_run_id(repo, "offline"))
+               a=_run_id(repo, "truth"), b=_run_id(repo, "offline"), an=_run_id(repo, "truthne"), bn=_run_id(repo, "offlinene"))
     fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))

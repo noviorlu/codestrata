@@ -4,8 +4,8 @@ import { clickEdge, sleep, waitRun } from '../lib.mjs';
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#view=graph&run=' + fx.a);
-  ok(await waitRun(page, fx.a), '叠上 run A');
+  await page.goto(base + '#run=' + fx.an);
+  ok(await waitRun(page, fx.an), '叠上 run A');
   const chips = await page.ev(`[...document.querySelectorAll('#edgechips [data-t]')].map(b => b.dataset.t)`);
   ok(chips.includes('scan') && chips.includes('hot') && !chips.includes('imp') && !chips.includes('type'),
      '图例：代码里的调用、这次跑了，没有「只 import」「仅类型」 ' + JSON.stringify(chips));
@@ -86,8 +86,8 @@ export default async function (t) {
   await page.key('Escape', 'Escape', 27);
 
   // 全是代码里看不出的边：橙虚线，代码里写了调用的（scan 边）也一样；关掉「代码里看不出」就不画它，和「这次跑了」各管各的
-  await page.goto(fx.base3 + '#view=graph&run=' + fx.dyn);
-  ok(await waitRun(page, fx.dyn), '第三个小仓库叠上它的 run');
+  await page.goto(fx.base3 + '#run=' + fx.dynn);
+  ok(await waitRun(page, fx.dynn), '第三个小仓库叠上它的 run');
   const d = await page.ev(`(E => E && [E.a, E.b, E.p.getAttribute('class'), E.lab && E.lab.textContent, E.scan])(CS.graph.edges.find(E => E.dashed))`);
   ok(d && d[0] === 'dyn/runner.py' && d[2].includes('dyn') && d[2].includes('warm') && d[3] === '3' && d[4] > 0,
      'runner → net 代码里写了一处调用、跑到的 3 次全是代码里看不出的：橙虚线、标着 3 ' + JSON.stringify(d));
@@ -118,7 +118,7 @@ export default async function (t) {
   await page.key('Escape', 'Escape', 27);
 
   // 老 run（没有调用行）：调用处是按名字找到的，写明
-  await page.goto(fx.base3 + '#view=graph&run=' + fx.dynold);
+  await page.goto(fx.base3 + '#run=' + fx.dynold);
   ok(await waitRun(page, fx.dynold), '叠上老 run');
   await clickEdge(page, 'dyn/runner.py', 'dyn/models/net.py');
   ok(await page.wait(`document.getElementById('det').textContent.includes('这个 run 没记调用行')`), '老 run 的卡片写明没记调用行、调用处是猜的');

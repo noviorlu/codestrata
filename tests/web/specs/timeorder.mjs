@@ -1,37 +1,51 @@
-// 时间顺序：跑到的边按第一次被调用的先后编号、上色，反复调用的带 ↻；换阶段重排；关掉就撤色
+// 时间顺序（分列视图里）：列里的边和交接连线放在一起，跨线程按第一次发生的先后编号、上色，反复的带 ↻；
+// 序号牌点了开它那一条；换阶段重排；关掉就撤色
 import { sleep, waitRun } from '../lib.mjs';
 
-const ranked = page => page.ev(`CS.graph.edges.filter(E => E._t).sort((x, y) => x._t.k - y._t.k).map(E => E.a + '|' + E.b)`);
+const ranked = page => page.ev(`CS.lanes.edges.concat(CS.lanes.links).filter(E => E._t).sort((x, y) => x._t.k - y._t.k)
+  .map(E => ({ key: E.key, first: E.first, kind: E.kind, via: E.k ? E.k.via : null }))`);
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#view=graph&run=' + fx.a);
-  ok(await waitRun(page, fx.a), '打开 A（整个 run）');
+  await page.goto(base + '#run=' + fx.a);
+  ok(await waitRun(page, fx.a), '打开 A（整个 run，按线程分列）');
   const chip = '#edgechips [data-t="timeorder"]';
-  ok(await page.ev(`document.querySelector('${chip}').getAttribute('aria-pressed')`) === 'false', '默认关着');
+  ok(await page.ev(`!!document.querySelector('${chip}') && document.querySelector('${chip}').getAttribute('aria-pressed')`) === 'false',
+     '分列里有「时间顺序」，默认关着');
   await page.click(chip);
-  ok(await page.wait(`CS.graph.edges.filter(E => E._tc).length === 3`, 15000), '开：三条跑到的边都上了色');
-  const order = await ranked(page);
-  ok(JSON.stringify(order) === JSON.stringify(['fakesvc/truth.py|fakesvc/callee.py', 'fakesvc/callee.py|fakesvc/other.py', 'fakesvc/execd.py|fakesvc/work.py']),
-     '按第一次被调用排：truth→callee、callee→other、最后是 exec 出来的进程 ' + JSON.stringify(order));
+  ok(await page.wait(`CS.lanes.edges.some(E => E._tc)`, 15000), '开：上了色');
+  const r = await ranked(page);
+  const n = await page.ev(`CS.lanes.edges.filter(E => E.show && E.first != null).length
+    + CS.lanes.links.filter(E => E.k.kind === 'handoff' && E.first != null).length`);
+  ok(r.length === n && n > 3, '列里的边和交接连线都排上了名次：' + r.length + ' / ' + n);
+  ok(r.every((x, i) => i === 0 || r[i - 1].first <= x.first), '按第一次发生的先后排（跨线程）');
+  ok(r.some(x => x.kind === 'link' && x.via === 'queue'), '线程之间的交接（queue）也排在里面');
+  ok(await page.ev(`CS.lanes.links.filter(E => E.k.kind === 'spawn').every(E => !E._t)`), '「谁起了谁」不排名次');
   const badges = await page.ev(`[...document.querySelectorAll('#g .tord .tn')].map(g => g.textContent)`);
-  ok(badges.length === 3 && badges.some(b => b.includes('↻')), '边上有序号，反复调用的 truth→callee 带 ↻ ' + JSON.stringify(badges));
-  ok(await page.ev(`new Set(CS.graph.edges.filter(E => E._tc).map(E => E._tc)).size`) === 3, '三种颜色（早 → 晚）');
-  const hidden = await page.ev(`(() => {                 // 序号牌不盖住边上的次数
-    const labs = CS.graph.edges.filter(E => E.lab && E._show).map(E => E.lab.getBBox());
-    return [...document.querySelectorAll('#g .tord .tn rect')].map(r => r.getBBox()).filter(b => labs.some(l =>
-      b.x < l.x + l.width && b.x + b.width > l.x && b.y < l.y + l.height && b.y + b.height > l.y)).length;
-  })()`);
-  ok(hidden === 0, '序号牌没有盖住次数标签（' + hidden + ' 个盖住了）');
+  ok(badges.length === n && new Set(badges.map(b => parseInt(b, 10))).size === n, '每一条都有序号牌，1…N 各一个');
+  ok(badges.some(b => b.includes('↻')), '一直在反复的带 ↻ ' + JSON.stringify(badges.slice(0, 8)));
+  ok(+(await page.ev(`document.querySelector('${chip} .n').textContent`)) === n, '开关上的数 = 排上名次的条数');
   ok((await page.ev(`(document.querySelector('.tmleg') || {}).textContent || ''`)).includes('早'), '有图例');
+  ok(await page.ev(`new Set(CS.lanes.edges.concat(CS.lanes.links).filter(E => E._tc).map(E => E._tc)).size`) > 2, '颜色按名次从早到晚');
 
-  // 换阶段：按 loop 的时间窗重排（exec 那条不在）
+  // 点一个序号牌：选中它那一条、开详情
+  const k0 = await page.ev(`document.querySelector('#g .tord .tn').dataset.key`);
+  await page.ev(`document.querySelector('#g .tord .tn').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(k0)} && document.getElementById('drawer').classList.contains('open')`, 3000),
+     '点序号牌：选中它那一条、详情栏打开');
+  await page.key('Escape', 'Escape', 27);
+  ok(await page.wait(`!CS.lanes.sel`, 3000), 'Esc 取消选中');
+
+  // 换阶段：按 loop 的时间窗重排
   await page.click('.tph[data-ph="loop"]');
   ok(await waitRun(page, fx.a + '@loop'), '换到 loop');
-  ok(await page.wait(`CS.graph.edges.filter(E => E._tc).length === 2`, 15000), 'loop 里只有两条边上色');
+  ok(await page.wait(`CS.lanes.edges.some(E => E._tc)`, 15000), 'loop 里照样上色');
+  const r2 = await ranked(page);
+  ok(r2.length > 0 && r2.length < r.length, 'loop 里排上名次的少一些：' + r2.length + ' < ' + r.length);
 
   // 关掉
   await page.click(chip);
   await sleep(300);
-  ok(await page.ev(`CS.graph.edges.filter(E => E._tc).length === 0 && !document.querySelector('#g .tord .tn')`), '关：颜色和序号都撤掉');
+  ok(await page.ev(`!CS.lanes.edges.concat(CS.lanes.links).some(E => E._tc) && !document.querySelector('#g .tord .tn')`),
+     '关：颜色和序号都撤掉');
 }

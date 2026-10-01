@@ -3,8 +3,8 @@ import { clickEdge, drawnNodes, hash, hotEdges, sleep, waitRun } from '../lib.mj
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#view=graph&run=' + fx.a);
-  ok(await waitRun(page, fx.a), '按地址叠上 run A');
+  await page.goto(base + '#run=' + fx.an);
+  ok(await waitRun(page, fx.an), '按地址叠上 run A');
   ok((await page.ev(`document.getElementById('runbtn').textContent`)).startsWith('truth'), '运行按钮写 case 名');
   const he = await hotEdges(page);
   ok(JSON.stringify(Object.keys(he).sort()) === JSON.stringify(['fakesvc/callee.py|fakesvc/other.py', 'fakesvc/execd.py|fakesvc/work.py', 'fakesvc/truth.py|fakesvc/callee.py']),
@@ -22,8 +22,8 @@ export default async function (t) {
   await page.ev(`document.getElementById('helpX').click()`);
   await page.click('#readnote .rnx');
   ok(await page.ev(`document.getElementById('readnote').hidden`), '点 × 关掉');
-  await page.goto(base + '#view=graph&run=' + fx.a);
-  ok(await waitRun(page, fx.a) && await page.ev(`document.getElementById('readnote').hidden`), '刷新之后还是关着');
+  await page.goto(base + '#run=' + fx.an);
+  ok(await waitRun(page, fx.an) && await page.ev(`document.getElementById('readnote').hidden`), '刷新之后还是关着');
   await page.ev(`localStorage.removeItem('codestrata.readnote')`);
 
   // 叠了 run 默认只看跑到的：没跑到、也不在路径上的节点藏起来；点一下回全图，再点回来
@@ -48,7 +48,7 @@ export default async function (t) {
 
   // 换阶段：点时间轴上的 loop
   await page.click('.tph[data-ph="loop"]');
-  ok(await waitRun(page, fx.a + '@loop'), '点 loop：换成这个阶段');
+  ok(await waitRun(page, fx.an + '@loop'), '点 loop：换成这个阶段');
   ok(/@loop(&|$)/.test(await hash(page)), '地址里记下阶段');
   const hl = await hotEdges(page);
   ok(!hl['fakesvc/execd.py|fakesvc/work.py'] && hl['fakesvc/truth.py|fakesvc/callee.py'] > 0, 'loop 阶段：exec 那条边不在（它在 forks 阶段）');
@@ -58,12 +58,12 @@ export default async function (t) {
 
   // 从「运行」菜单换成另一个 run（B = offline）：叠加跟着换，地址里记下它
   await page.click('#runbtn');
-  ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run^="${fx.b}"]')`), '运行菜单里有 B');
-  await page.click(`#runpop [data-run^="${fx.b}"]`);
-  ok(await page.wait(`CS.app.data.hotMeta && CS.app.data.hotMeta.run_id === '${fx.b}'`, 15000), '换成 B');
+  ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run^="${fx.bn}"]')`), '运行菜单里有 B');
+  await page.click(`#runpop [data-run^="${fx.bn}"]`);
+  ok(await page.wait(`CS.app.data.hotMeta && CS.app.data.hotMeta.run_id === '${fx.bn}'`, 15000), '换成 B');
   const hb = await hotEdges(page);
   ok(hb['fakesvc/offline.py|fakesvc/work.py'] > 0 && !hb['fakesvc/truth.py|fakesvc/callee.py'], '图上换成 B 跑到的边 ' + JSON.stringify(hb));
-  ok((await hash(page)).includes(fx.b), '地址里记下 B');
+  ok((await hash(page)).includes(fx.bn), '地址里记下 B');
   await page.click('#runbtn');
   ok(await page.wait(`!document.getElementById('runpop').hidden && !!document.querySelector('#runpop [data-run=""]')`), '再打开运行菜单');
   await page.click('#runpop [data-run=""]');

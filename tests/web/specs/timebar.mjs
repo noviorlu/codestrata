@@ -7,7 +7,7 @@ const st = page => page.ev(`JSON.stringify({pressed: [...document.querySelectorA
 
 export default async function (t) {
   const { page, base, fx, ok } = t;
-  await page.goto(base + '#view=graph&run=' + fx.a + '@loop');
+  await page.goto(base + '#run=' + fx.a + '@loop');
   ok(await waitRun(page, fx.a + '@loop'), '打开 A@loop');
   ok(JSON.stringify(await page.ev(`[...document.querySelectorAll('.tph')].map(b => b.dataset.ph)`)) === JSON.stringify(['', 'start', 'loop', 'forks']),
      '阶段按钮：全部 + start / loop / forks');
@@ -62,7 +62,7 @@ export default async function (t) {
 
   // 地址里的时间段超出终点：条放长，选中框照样画出来
   const end = await page.ev('CS.app.data.hotMeta.end_us');
-  await page.goto(base + '#view=graph&run=' + fx.a + '@t=' + (end + 1000) + '-' + (end + 5000));
+  await page.goto(base + '#run=' + fx.a + '@t=' + (end + 1000) + '-' + (end + 5000));
   ok(await page.ev(`!!CS.app.data.hotMeta.window && !document.querySelector('.tsel').hidden && document.querySelector('.tsel').getBoundingClientRect().width > 0`),
      '超出终点的时间段：选中框照样画出来');
 }

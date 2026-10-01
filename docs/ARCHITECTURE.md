@@ -96,7 +96,7 @@ flowchart LR
 | `events.py` | 352 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠 |
 | `seq.py` | 442 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
 | `path.py` | 318 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
-| `lanes.py` | 265 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁把数据交给谁，同样两头的合成一条（`build`，`/api/lanes`）；进程名（`proc_names`） |
+| `lanes.py` | 306 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁把数据交给谁，同样两头的合成一条（`build`，`/api/lanes`）；进程名（`proc_names`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
 | `ui/graphview.py` | 136 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`） |
 | `ui/edge.py` | 107 | 边详情（`/api/edge`）：两端底下函数之间的调用——trace 的函数对（调用行、和 scan 比的说明、按名字接线的地方）和代码里写了、这次没录到的 |
@@ -117,7 +117,7 @@ flowchart LR
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 339 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/lanes.js` | 265 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；缩放拖动借 graph.js 的图框 |
+| `web/lanes.js` | 486 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；缩放拖动借 graph.js 的图框 |
 | `web/path.js` | 86 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |

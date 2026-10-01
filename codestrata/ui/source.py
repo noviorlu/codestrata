@@ -61,17 +61,7 @@ def file_view(repo: Path, idx: dict, rel: str, hot: dict | None = None) -> dict 
             **({"runtime": runtime_lines(idx, rel, hot)} if hot else {})}
 
 
-def node_def(idx: dict, key: str) -> dict:
-    """graph 节点的定义在哪 {f, l, k}：符号是它的 def 行；<文件>#<module>、<文件>#<改过、对不上> 是文件头；
-    <外层>.<L行> 是那一行"""
-    syms = idx.get("symbols") or {}
-    s = syms.get(key)
-    if s:
-        return {"f": s["f"], "l": s["l"], "k": s["k"]}
-    base, _, rest = key.partition(".<L")
-    s = syms.get(base)
-    f = s["f"] if s else base.partition("#")[0]
-    return {"f": f, "l": int(rest.rstrip(">")) if rest else (s["l"] if s else 1), "k": "anon" if rest else "module"}
+node_def = _align.node_def           # graph 节点的定义在哪 {f, l, k}（ui 里一直这么叫）
 
 
 def runtime_lines(idx: dict, rel: str, hot: dict) -> dict:

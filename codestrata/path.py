@@ -177,11 +177,11 @@ def _contexts(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, call
         def walk(c: tuple) -> None:
             first, last, n, _ = nd[c]
             via = c[-2] if len(c) > 1 else None
-            row = {"d": len(c) - 1, "t": when(c), "fn": c[-1], "def": _def(idx, c[-1]), "from": via,
+            row = {"d": len(c) - 1, "t": when(c), "fn": c[-1], "def": _align.node_def(idx, c[-1]), "from": via,
                    "n": n or None, "rep": bool(n >= repeat and last - first > span / 2), "untimed": False,
                    "before": first is None, "line": _line(calls, via, c[-1]) if via else None}
             if row["line"]:
-                row["line"]["f"] = _def(idx, via)["f"]
+                row["line"]["f"] = _align.node_def(idx, via)["f"]
             rows_out.append(row)
             for k in sorted(kids.get(c, ()), key=when):
                 walk(k)
@@ -232,12 +232,12 @@ def _tree(edges: dict, calls: dict, idx: dict, span: int, fill_same_file: bool) 
     def walk(node: str, d: int, via: str | None) -> None:
         done.add(node)
         e = edges.get((via, node)) if via else None
-        row = {"d": d, "t": seen[node], "fn": node, "def": _def(idx, node), "from": via,
+        row = {"d": d, "t": seen[node], "fn": node, "def": _align.node_def(idx, node), "from": via,
                "n": e[2] if e and node not in untimed else None,
                "rep": bool(e and e[2] >= repeat and e[1] - e[0] > span / 2),
                "untimed": node in untimed, "line": _line(calls, via, node) if via else None}
         if row["line"]:
-            row["line"]["f"] = _def(idx, via)["f"]
+            row["line"]["f"] = _align.node_def(idx, via)["f"]
         rows.append(row)
         for k in sorted(kids.get(node, ()), key=lambda x: seen[x]):
             if k not in done:
@@ -264,13 +264,6 @@ def _below(c: str, r: str, parent: dict) -> bool:
 
 def _file(node: str) -> str:
     return node.partition("#")[0]
-
-
-def _def(idx: dict, node: str) -> dict:
-    s = (idx.get("symbols") or {}).get(_align.base_node(node))
-    f = s["f"] if s else _file(node)
-    rest = node.partition(".<L")[2]
-    return {"f": f, "l": int(rest.rstrip(">")) if rest else (s["l"] if s else 1)}
 
 
 def _line(calls: dict, f_: str, g: str) -> dict | None:

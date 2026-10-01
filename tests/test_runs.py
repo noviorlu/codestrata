@@ -2379,12 +2379,20 @@ def test_lanes():
     hs = [(x["via"], x["from"]["lane"], x["from"]["node"], x["to"]["lane"], x["to"]["node"], x["n"])
           for x in L["links"] if x["kind"] == "handoff"]
     assert ("queue", main["id"], C, cons["id"], C, 1) in hs, hs
+    # 连线带函数级的明细：哪一对函数、几次、第一次在什么时候；首末时刻
+    q = next(x for x in L["links"] if x["kind"] == "handoff" and x["via"] == "queue" and x["to"]["lane"] == cons["id"])
+    assert [(p_["a"], p_["b"], p_["n"], p_["xa"], p_["xb"]) for p_ in q["pairs"]] == \
+        [("fakesvc/callee.py#put_job", "fakesvc/callee.py#take_job", 1, False, False)], q
+    assert q["pairs"][0]["da"]["f"] == C and q["first"] is not None and q["first"] == q["last"], q
+    assert all("last" in e and e["last"] >= e["first"] for x in L["lanes"] for e in x["edges"])
     z = [h for h in hs if h[0] == "zmq"]
     assert len(z) == 2 and {by[h[1]]["pid"] == main["pid"] for h in z} == {True, False} and all(h[4] == C for h in z), hs
     # 只跑仓库外代码的线程（stdlib-put）是交接的一头：给它一列空的（external），连到主线程的 take_job 上
     ext = next(x for x in L["lanes"] if x["thread"] == "stdlib-put")
     assert ext.get("external") and not ext["nodes"], ext
     assert ("queue", ext["id"], None, main["id"], C, 1) in hs, hs
+    xq = next(x for x in L["links"] if x["from"]["lane"] == ext["id"])
+    assert xq["pairs"][0]["a"] is None and xq["pairs"][0]["xa"] and xq["pairs"][0]["b"] == "fakesvc/callee.py#take_job", xq
 
 
 _PA = {

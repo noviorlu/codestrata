@@ -56,12 +56,13 @@ window.CS = window.CS || {};
   }
 
   CS.graph = {
+    ports: ports,              // 接点沿节点宽度摊开（分列视图 lanes.js 也用）
     nodes: {}, edges: [], G: null, hot: null, onPick: null, onPickEdge: null,
     zoom: 1, panMode: false,   // 缩放倍数（相对「适应宽度」）；移动模式：按住任意位置拖动
     // timeOrder：跑到的边按「第一次被调用」的先后上色、标序号（setTimes 给数据，app.applyTimes 取）
     state: { sel: null, selEdge: null, selFrame: null, scan: true, hot: true, dyn: true,
              timeOrder: false,
-             onlyHot: false, lanes: false },   // lanes：按进程 · 线程分列（lanes.js 画，app.drawMain 选）
+             onlyHot: false },
     counts: { scan: 0, warm: 0, dyn: 0 },
 
     draw: function (svg, G, hot, extra) {

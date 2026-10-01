@@ -45,7 +45,7 @@ window.CS = window.CS || {};
         CS.graph.onPick = function (id) { CS.panel.showPkg(id); self.drawerTitle(id); };
         CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); self.drawerTitle(null, a, b); };
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
-        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); };
+        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); if (CS.lanes) CS.lanes.unselect(); };
         // 时间顺序的颜色是画的时候按当前主题的 --tm0/1/2 算好写死的：换了亮 / 暗（系统设置或页面上的切换）要重画
         var retint = function () { if (CS.graph.state.timeOrder && CS.graph.times) CS.graph.paint(); };
         if (window.matchMedia) {
@@ -318,7 +318,7 @@ window.CS = window.CS || {};
     },
 
     _writeHash: function () {
-      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|cmp)=/.test(x); });
+      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view|cmp)=/.test(x); });
       if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
       history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
     },
@@ -390,13 +390,6 @@ window.CS = window.CS || {};
         CS.graph.state.onlyHot = true;
         if (oh) oh.setAttribute('aria-pressed', 'true');
       }
-      // 叠了录了时序事件的 run 默认按线程分列（用户 10-01 定的）；用户自己关过就不再替他打开
-      var lc = document.querySelector('[data-t="lanes"]'), ev = !!m && this.runHasEvents();
-      if (/(?:^#|&)view=graph(?:&|$)/.test(location.hash || '')) this._lanesChosen = true;   // 链接里要的是模块图
-      if (lc) lc.hidden = !ev;
-      if (!ev && CS.graph.state.lanes) CS.graph.state.lanes = false;
-      else if (ev && !CS.graph.state.lanes && !this._lanesChosen) CS.graph.state.lanes = true;
-      if (lc) lc.setAttribute('aria-pressed', CS.graph.state.lanes ? 'true' : 'false');
       b.classList.toggle('on', !!m);
       b.textContent = m ? m.case + ' · ' + shortTime(m.created) : '静态图';
       var rb = document.getElementById('rerunbtn');
@@ -438,6 +431,10 @@ window.CS = window.CS || {};
        开关关着就把颜色撤掉；同一个 run + 切面取过的直接用；取回来时已经换了 run / 切面的丢掉 */
     applyTimes: function () {
       var s = CS.graph.state, self = this;
+      if (this.lanesMode()) {                     // 分列：时刻在 /api/lanes 里已经有了，不另取
+        CS.lanes.paint(); this.edgeChips(); this.controls();
+        return;
+      }
       if (!s.timeOrder || !this.canTimeOrder()) {
         if (CS.graph.times) CS.graph.setTimes(null);
         if (s.timeOrder && !this.canTimeOrder()) s.timeOrder = false;
@@ -642,7 +639,7 @@ window.CS = window.CS || {};
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
           + (m.window ? '时间段 <b>' + esc(CS.timebar.label(m.phase)) + '</b>'
-             + '<span class="lab">（次数按这段时间里的时序事件算：时序事件只记跨文件的调用，同一个文件里的调用不在里面）</span>　'
+             + '<span class="lab">（次数按这段时间里的时序事件算；2026-10-01 之前录的 run 只记了跨文件的调用）</span>　'
              : m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
           + (m.status && m.status !== 'ok' ? '<span style="color:var(--stale)">⚠ 这次录制不完整'
              + (m.problems && m.problems.length ? '：' + esc(m.problems.join('；')) : '') + '</span>　' : '')
@@ -865,15 +862,24 @@ window.CS = window.CS || {};
       b.style.display = same ? 'none' : '';
     },
 
-    /* 画中间那张图：「按线程分列」开着（叠着录了时序事件的 run）时画分列（lanes.js），否则画模块图 */
+    /* 叠着录了时序事件的 run：运行时的图一律按进程 · 线程分列（lanes.js；用户 10-01 定的，不要合成一张图的功能） */
+    lanesMode: function () { return !!(this.data && this.data.hot && this.runHasEvents()); },
+
+    /* 画中间那张图：分列（lanesMode）或模块图 */
     drawMain: function () {
-      var d = this.data, s = CS.graph.state;
-      var lanes = !!(s.lanes && d.hot && this.runHasEvents());
+      var d = this.data, s = CS.graph.state, lanes = this.lanesMode();
       document.body.classList.toggle('lanesmode', lanes);
-      if (lanes) { CS.graph.clear(); CS.lanes.show(); return; }
+      // 分列也把当前 run 的叠加交给 CS.graph.hot：详情面板、搜索、代码窗口、开关都按它取运行时的次数
+      if (lanes) { CS.graph.hot = d.hot; CS.graph.clear(); CS.lanes.show(); return; }
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { rtOnly: d.runtimeOnlyEdges });
     },
+
+    /* 分列画好了（取数是异步的）：开关上的条数、时间顺序的名次按它重数 */
+    lanesDrawn: function () { this.edgeChips(); this.controls(); },
+
+    /* 开关变了：重新上色（分列或模块图） */
+    repaint: function () { if (this.lanesMode()) CS.lanes.paint(); else CS.graph.paint(); },
 
     redraw: function () {
       CS.graph.phaseMarks = this.phaseMarks();
@@ -888,7 +894,7 @@ window.CS = window.CS || {};
     controls: function () {
       var s = CS.graph.state, self = this;
       var KEY = { scan: 'scan', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot',
-                  timeorder: 'timeOrder', lanes: 'lanes' };
+                  timeorder: 'timeOrder' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
         if (key === 'onlyHot') {                 // 换 run 时会来回切：没叠 runtime 就藏起来
@@ -899,12 +905,11 @@ window.CS = window.CS || {};
           s[key] = b.getAttribute('aria-pressed') !== 'true';
           b.setAttribute('aria-pressed', s[key]);
           if (key === 'onlyHot') self._onlyHotChosen = true;     // 用户自己点过：之后换 run 不再替他打开
-          if (key === 'lanes') { self._lanesChosen = true; self.redraw(); return; }
           // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
           if (key === 'onlyHot' && self.data.graphHot) self.redraw();
           else if (key === 'timeOrder') self.applyTimes();
-          else if (key === 'hot') { CS.graph.paint(); self.edgeChips(); self.controls(); }   // 「其中代码里看不出」跟着它能不能点
-          else CS.graph.paint();
+          else if (key === 'hot') { self.repaint(); self.edgeChips(); self.controls(); }   // 「其中代码里看不出」跟着它能不能点
+          else { self.repaint(); if (self.lanesMode()) { self.edgeChips(); self.controls(); } }
         };
       });
       var rc = document.getElementById('resetcut');
