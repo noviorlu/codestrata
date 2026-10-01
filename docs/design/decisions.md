@@ -340,6 +340,17 @@
   不录 86.0 s、`trace --events`（那时只记跨文件）87.9 s。之前默认不开，是因为 GPU 上的开销还没实测。
 - 放弃的方案：按栈配对；按深度认兄弟；hook 里直接写 span；只记跨文件的调用（2026-10-01 之前）；每对函数第一次出现时记下栈（同文件的都记了就不需要）。
 - 在哪：`trace/hook.py` 的 `_ev_call`、`_ev_mark`、`_ev_room`、`_ev_flush`；`events.py` 的 `parse`、`pair`、`fold`、`build`。
+
+### 谁起了谁：包一层 Thread.start、fork_exec，fork 前后各记一笔
+- 决定：时序事件开着时，hook 包一层 `threading.Thread.start`（记下在哪个线程的哪个 span 里起的，新线程第一次登记时写 F 行）、
+  `_posixsubprocess.fork_exec` 和 `os.posix_spawn(p)`（起完拿到 pid，在父进程里写 P 行），`os.register_at_fork` 的 before / after_in_child
+  （fork 之前记下，子进程里写 B 行）。「在哪个 span 里」是从调用处往外找第一个记过账的帧。只包一层、照原样调，出错不影响被 trace 的程序。
+- 为什么：P0（用户 2026-10-01 定）要画线程之间「谁起了谁」。subprocess 和 multiprocessing 的 spawn 最后都经 `fork_exec`，fork 方式都经 `os.fork`，
+  包这几处就够，不用为了打补丁去 import multiprocessing。exec 出来的子进程是全新的解释器，只有父进程知道是谁起的；fork 出来的子进程继承了父进程的
+  内存，fork 之前记下、子进程自己写最简单。
+- 放弃的方案：按时刻猜（子进程的起始时刻落在父进程的哪个 span 里——同一时刻好几个线程都在跑）；包 `subprocess.Popen`、`multiprocessing.Process.start`
+  （要 import 它们、而且漏掉直接用 `os.fork` 的）。asyncio 的 `create_task` 不记：task 跑在同一个线程里，不另起一列。
+- 在哪：`trace/hook.py` 的 `_ev_here`、`_start`、`_spawned`、`_before_fork`、`_after_fork_ev`；`events.py` 的 `parse`、`_origins`。测试 `test_events_truth`。
 ### 调用的先后画在模块图的边上，按名次上色
 - 决定：录了事件的 run 在 serve 里多一个「时间顺序」开关：看得见的、跑到的边按第一次被调用的先后排名 1…N，按名次在三个色标之间插值上色、标序号。
   同一个进程里第一次到最后一次隔了超过阶段总长一半、而且至少 5 次的，序号后加 ↻。

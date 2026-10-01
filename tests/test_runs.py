@@ -1068,6 +1068,17 @@ def test_events_truth():
     xf = sum(v for ph in counts.values() for v in ph["func_edges"].values())
     assert run["events"]["n_calls"] == xf, (run["events"], xf)
     assert idx["scope"] == "all", idx
+    # 谁起了谁：worker 线程在 s_threads 那次调用里 start；fork 的子进程记在 s_fork / s_exec 那次调用上；
+    # subprocess exec 出来的记在 s_spawn 那次调用上
+    rows = {pid: [s for s in sp if s["pid"] == pid] for pid in {s["pid"] for s in sp}}
+    tn = keys["threads"][str(main_pid)]
+    tf = idx["thread_from"][str(main_pid)]
+    workers = {t_: v for t_, v in tf.items() if tn[t_].startswith("worker-")}
+    assert len(workers) == 2 and all(rows[main_pid][r]["b"] == k(T, "s_threads") and tn[str(ft)] == "MainThread"
+                                     for ft, r in workers.values()), (tf, tn)
+    how = {(s["how"], rows[main_pid][s["row"]]["b"]) for s in idx["spawns"] if s["pid"] == main_pid and s["row"] >= 0}
+    assert {("fork", k(T, "s_fork")), ("fork", k(T, "s_exec")), ("exec", k(T, "s_spawn"))} <= how, idx["spawns"]
+    assert all(s["child"] for s in idx["spawns"]), idx["spawns"]
     # 父 span：同一个进程、同一个线程，调用那一刻在跑；它的被调方就是这次的调用方（或者是同一个文件里转过来的不可能：都记了）
     for s in sp:
         if s["parent"] is not None:

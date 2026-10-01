@@ -182,8 +182,25 @@ if _root and _out:
             return c[1]
         i = next(_ids[2])
         _tls.ev = (_gen[0], i)
-        _ev.append("N %d %s" % (i, _clean(threading.current_thread().name)))
+        th = threading.current_thread()
+        _ev.append("N %d %s" % (i, _clean(th.name)))
+        fr = getattr(th, "_codestrata_from", None)      # 谁起的这个线程（_th_start 记的）；fork 之前起的不算
+        if fr is not None and fr[0] == _gen[0]:
+            _ev.append("F %d %d %d %d" % (i, fr[1], fr[2], fr[3]))
         return i
+
+    def _ev_here():
+        # 当前线程上最里层正在执行的 span 号（没有是 0）：从调用者的调用者往外找第一个记过账的帧
+        f = sys._getframe(2)
+        while f is not None:
+            x = _xf.get(id(f))
+            if x is not None and x[1] is f.f_code:
+                return x[0]
+            f = f.f_back
+        return 0
+
+    def _ev_t():
+        return (time.monotonic_ns() - _t0[0]) // 1000
 
     def _ev_room():
         # 上限只管调用（C）；返回 / 挂起 / 恢复只写已经在 _xf 里的 span，数量有界，照写——
@@ -645,6 +662,52 @@ if _root and _out:
         _ids[:] = [itertools.count(1), itertools.count(1), itertools.count(1)]
         _start_flusher()
     os.register_at_fork(after_in_child=_after_fork)
+
+    # ---- 谁起了谁（时序事件开着时）。线程：Thread.start 时记下在哪个线程的哪个 span 里（新线程第一次登记时写 F 行）。
+    # 子进程：exec 出来的（subprocess、multiprocessing 的 spawn 都经 _posixsubprocess.fork_exec；还有 os.posix_spawn）
+    # 起完才知道 pid，在父进程里写 P 行；fork 出来的（os.fork、multiprocessing 的 fork）fork 之前记下，子进程里写 B 行。
+    # 只包一层、照原样调，出错不影响被 trace 的程序
+    _fork_from = [None]
+    if _EV:
+        _th_start = threading.Thread.start
+        def _start(self, *a, **kw):
+            try:
+                self._codestrata_from = (_gen[0], _ev_tid(), _ev_here(), _ev_t())
+            except Exception:
+                pass
+            return _th_start(self, *a, **kw)
+        threading.Thread.start = _start
+
+        def _spawned(fn):
+            def wrap(*a, **kw):
+                pid = fn(*a, **kw)
+                try:
+                    _ev.append("P %d %d %d %d" % (_ev_t(), _ev_tid(), _ev_here(), pid))
+                except Exception:
+                    pass
+                return pid
+            return wrap
+        try:
+            import _posixsubprocess
+            _posixsubprocess.fork_exec = _spawned(_posixsubprocess.fork_exec)
+            if "subprocess" in sys.modules:           # 已经 import 过的 subprocess 自己存了一份
+                sys.modules["subprocess"]._fork_exec = _posixsubprocess.fork_exec
+        except Exception:
+            pass
+        for _n in ("posix_spawn", "posix_spawnp"):
+            if hasattr(os, _n):
+                setattr(os, _n, _spawned(getattr(os, _n)))
+
+        def _before_fork():
+            try:
+                _fork_from[0] = (_t0[0], _ev_tid(), _ev_here())
+            except Exception:
+                _fork_from[0] = None
+        def _after_fork_ev():                         # 在 _after_fork 之后跑（按注册的先后）
+            fr = _fork_from[0]
+            if fr is not None:
+                _ev.append("B %d %d %d" % fr)
+        os.register_at_fork(before=_before_fork, after_in_child=_after_fork_ev)
 
     _mon = getattr(sys, "monitoring", None)
     if _mon is not None:

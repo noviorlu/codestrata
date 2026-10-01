@@ -293,6 +293,9 @@ R <t_us> <tid> <span>                       返回，或异常展开
 Y <t_us> <tid> <span>                       挂起（yield、await）
 S <t_us> <tid> <span>                       恢复
 T                                           达到行数上限，之后不再记调用（计数不受影响）
+F <tid> <起它的 tid> <span> <t_us>           谁起的这个线程：在哪个线程的哪个 span 里 Thread.start（span 0：不在任何 span 里）。新线程第一次登记（N）时写
+P <t_us> <tid> <span> <子进程 pid>           在这个 span 里 exec 出一个子进程（subprocess、multiprocessing 的 spawn、os.posix_spawn）
+B <父进程映像的 t0_ns> <tid> <span>          这个进程映像是从父进程的哪个线程、哪个 span 里 fork 出来的（os.fork、multiprocessing 的 fork）
 ```
 
 真实片段（vllm-omni 的一个 engine core 进程）：
@@ -335,6 +338,8 @@ R 3784145 1 2
 | `chunks` | [{pid, chunk, t0_us, t1_us, n}] | 每块 span 文件：属于哪个 pid、文件名、块里最早的开始、最晚的结束（`max(t0 + max(dur, 0))`）、行数。**块上没有 truncated 字段** | `seq`：按 `t0_us` / `t1_us` 跳过和时间段不重叠的块；`seq.run_end` 取所有块的 `t1_us` 最大值当时间轴终点的候选 |
 | `procs` | [{pid, ppid, t0_us, n_events, n_spans, truncated}] | 每个进程映像一条（同一 pid exec 前后是两条）；`n_events` 是 C/R/Y/S 行数；`truncated` 是这个映像到了行数上限 | `runs._build_events`（数进程） |
 | `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.edge_times` 原样带出 |
+| `thread_from` | {"\<pid\>": {"\<tid\>": [起它的 tid, span 下标]}} | 线程是谁起的（F 行）：在同一个进程的哪个线程、哪个 span 里 `Thread.start`；span 下标是 `-1` 时不在任何 span 里（模块顶层、线程的入口函数）。没记到的线程（2026-10-01 之前的 run、主线程）没有 | （P0 的运行时模型） |
+| `spawns` | [{pid, tid, row, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （P0 的运行时模型） |
 | `n_lines` | int | 所有日志的 C/R/Y/S 行数 | run.json 的 `events` |
 | `n_spans` | int | span 行数（折叠后） | 同上 |
 | `n_calls` | int | 调用次数（`Σ rep`） | 同上 |

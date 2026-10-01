@@ -2,6 +2,8 @@
 单独跑：python -m fakesvc.truth"""
 import asyncio
 import os
+import subprocess
+import sys
 import threading
 
 from fakesvc import callee
@@ -65,6 +67,10 @@ def s_exec():                 # exec：exec 前后各一份
         callee.pre_exec()
         callee.exec_child()
     os.waitpid(pid, 0)
+
+
+def s_spawn():                # exec 出来的子进程（subprocess）：父进程里记下是哪个调用起的它
+    subprocess.run([sys.executable, "-c", "pass"], check=True)
 
 
 def s_loop():                 # 第一级折叠：连续 50 次调同一个叶子 → 一条 rep=50；有子调用的 mid 不合
@@ -142,6 +148,7 @@ def main():
     s_threads()
     s_fork()
     s_exec()
+    s_spawn()
 
 
 if __name__ == "__main__":
