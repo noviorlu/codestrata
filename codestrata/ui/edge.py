@@ -14,7 +14,7 @@ MAX_ITEMS = 60
 
 def _sig(repo: Path, d: dict | None) -> list[str] | None:
     """被调函数的签名（Python：def 那一行到冒号为止；C / C++ / CUDA：到函数体的 { 之前；最多 6 行），多行的压成一行"""
-    if not d or d.get("k") not in ("func", "class", "kernel"):
+    if not d or not d.get("f") or d.get("k") not in ("func", "class", "kernel"):   # 仓库外的 kernel 没有源码
         return None
     ls = _source.lines_of(str(repo / d["f"]), (repo / d["f"]).stat().st_mtime_ns) if (repo / d["f"]).exists() else ()
     if not 0 < d["l"] <= len(ls):

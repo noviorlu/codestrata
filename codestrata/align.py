@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 
+from . import cut as _cut
 from . import graph as _graph
 
 
@@ -48,7 +49,7 @@ def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
                 def 行——所以落在类符号上的帧只能是定义（3.12 泛型类的 <generic parameters of X> 帧也在这一行）。
                 按行号认，已经录好的老 run 加载时一样分得出来"""
     if ln == 0:
-        return "module"
+        return None if _cut.is_virtual_rel(rel) else "module"   # 虚拟单元的键（?gpu/<kernel>:0）是调用
     sk = loc2sym.get((rel, ln))
     if sk:                                      # 扫描端标了 defexec 的符号（Python 的类）：落在定义行上的是定义时的执行
         return "class" if "defexec" in (symbols[sk].get("x") or ()) else None
@@ -58,7 +59,7 @@ def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
 def to_package_graph(trace: dict, index: dict) -> dict:
     """把一个 run 的 trace 记录（计数，键是「文件:首行」）放到当前 index 的节点上，并和 scan 记录比（classify）。
 
-    返回 {"packages": {单元: 次数}, "symbols": {符号键: 次数}, "files": {文件: 次数},
+    返回 {"packages": {单元: 次数}, "symbols": {符号键: 次数}, "files": {文件: 次数}, "kernels": {kernel 节点: {n, gpu_us}}（trace --gpu 的 run 才有）,
           "calls": {"调用方|被调方": {a, b, n, only, lines, guessed, …}},   见 classify；a、b 是两端的单元（没有是 null）
           "redirect": {"trace 的键对": 类},   整个归到构造 F→C 上的调用（见 classify），「时间顺序」、请求路径也算到 C 上
           "module_exec": [顶层代码执行过的文件], "module_frames": n, "class_frames": n, "anon": n, "unmapped": n}
@@ -95,7 +96,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
             sym_hits[sk] = sym_hits.get(sk, 0) + n
         else:
             anon += n
-        pkg = files.get(rel)
+        pkg = _cut.unit_of_rel(files, rel)
         if pkg:
             pkg_hits[pkg] = pkg_hits.get(pkg, 0) + n
             file_hits[rel] = file_hits.get(rel, 0) + n
@@ -120,7 +121,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         pk = f"{label(a)}|{label(b)}"
         x = pairs.get(pk)
         if x is None:
-            x = pairs[pk] = {"a": files.get(fa), "b": files.get(fb), "n": 0, "lines": None}
+            x = pairs[pk] = {"a": _cut.unit_of_rel(files, fa), "b": _cut.unit_of_rel(files, fb), "n": 0, "lines": None}
             raw[pk] = []
         x["n"] += n
         raw[pk].append(k)
@@ -138,7 +139,12 @@ def to_package_graph(trace: dict, index: dict) -> dict:
     # 整个挪到构造 F→C 上的函数对：「时间顺序」、请求路径读 span 时这些键对也算到 C 上
     redirect = {k: c for pk, c in moved.items() if c in symbols for k in raw[pk]}
 
-    return {"packages": pkg_hits, "symbols": sym_hits, "files": file_hits,
+    # GPU kernel（trace --gpu）：每个 kernel 的次数和 GPU 上跑了多久，节点详情里列（仓库外的没有符号，只能从这里看）
+    kernels = {}
+    for k, us in (trace.get("gpu_us") or {}).items():
+        kernels[label(k)] = {"n": trace["funcs"].get(k, 0), "gpu_us": us}
+
+    return {"packages": pkg_hits, "symbols": sym_hits, "files": file_hits, "kernels": kernels,
             "calls": calls, "redirect": redirect,
             "module_exec": sorted(module_exec),
             "module_frames": module_frames, "class_frames": class_frames, "anon": anon,
@@ -158,7 +164,9 @@ def node_labeler(index: dict, loc2sym: dict | None = None, spans: dict | None = 
         if hit is None:
             rel, _, ln = key.rpartition(":")
             ln_i = int(ln)
-            if ln_i < 0:                # remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
+            if _cut.is_virtual_rel(rel):    # 仓库外的 kernel：?gpu#<限定名>
+                hit = f"{_cut.VIRTUAL_GPU}#{rel[len(_cut.VIRTUAL_GPU) + 1:]}"
+            elif ln_i < 0:                # remap 对不上的（录制之后改过的文件里）：归到文件、不归到函数
                 hit = f"{rel}#{UNMATCHED}"
             elif (sk := None if ln_i == 0 else loc2sym.get((rel, ln_i))):
                 hit = sk
@@ -200,6 +208,11 @@ def remap(counts: dict, names: dict, fs: dict, idx: dict) -> tuple[dict, list[st
         nk = new(a) + "|" + new(b)
         edges[nk] = edges.get(nk, 0) + v
     out = {"funcs": funcs, "func_edges": edges}
+    if "gpu_us" in counts:
+        out["gpu_us"] = {}
+        for k, v in counts["gpu_us"].items():
+            nk = new(k)
+            out["gpu_us"][nk] = out["gpu_us"].get(nk, 0) + v
     if "func_lines" in counts:
         # 调用行跟着调用方挪：函数整个挪了几行，里面的调用也挪几行（函数体里面改过的，行就可能偏）；
         # 调用方是模块顶层（文件:0，没有可以对的 def 行）、对不上的（文件:-1），不知道挪到哪了，行记成 0
@@ -276,6 +289,8 @@ def node_def(idx: dict, key: str) -> dict:
     s = syms.get(key)
     if s:
         return {"f": s["f"], "l": s["l"], "k": s["k"], "lang": s.get("lang", "python")}
+    if key.startswith(_cut.VIRTUAL_GPU + "#"):          # 仓库外的 kernel：没有源码
+        return {"f": None, "l": 0, "k": "kernel", "lang": "cuda", "virtual": True}
     base, _, rest = key.partition(".<L")
     s = syms.get(base)
     f = s["f"] if s else base.partition("#")[0]
@@ -335,7 +350,8 @@ def judge(recs: list, callee: str, whole: bool = False, *, fn: list | None = Non
                                       names 定不下的名字（"" 是调一个表达式的结果：f()()、fs[i]()；super().x 是 MRO 上的下一个类）；
                                       只看从这一行开始的调用（跨过这一行的多行外层调用不算），语法触发的特殊方法不算；没有的键不给
       {"k": "none"}                   这一行 scan 没看到调用（取普通属性触发的、模块级 __getattr__）
-      {"k": "nomatch"}                whole：调用方里没有同名的调用（不知道是哪一行，别的就不猜了）"""
+      {"k": "nomatch"}                whole：调用方里没有同名的调用（不知道是哪一行，别的就不猜了）
+    被调方是 GPU kernel 的不走这里（classify 直接记成 trace + {"k": "gpu"}：Python 不会直接写调 kernel）"""
     last = _last(callee)
     if any(r[2] == callee for r in recs):
         return "both", None
@@ -401,6 +417,10 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
         recs = by.get(base_node(caller), [])
         local = ".<L" in callee and base_node(callee) == base_node(caller)
         prop = _last(callee) == "__getattr__" or _is_prop(syms.get(base_node(callee)))
+        if _is_kernel(syms, callee):        # GPU kernel（trace --gpu）：调用方是发起它时栈上最近的仓库函数，不知道是哪一行
+            ls = [{"l": l, "n": n, "status": "trace", "note": {"k": "gpu"}} for l, n in sorted((x["lines"] or {0: x["n"]}).items())]
+            out[pk] = {**x, "lines": ls, "only": x["n"], "guessed": None}
+            continue
         if x["lines"] is None:
             cs = ctor_classes(index, recs, callee)
             if cs:
@@ -443,6 +463,11 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
     return out, moved
 
 
+def _is_kernel(syms: dict, key: str) -> bool:
+    """被调方是 GPU kernel：仓库外的（?gpu#…）或扫描端标了 k = kernel 的符号"""
+    return key.startswith(_cut.VIRTUAL_GPU + "#") or (syms.get(base_node(key)) or {}).get("k") == "kernel"
+
+
 def _is_prop(sym: dict | None) -> bool:
     """符号是 property 这类（读、写属性就是调它）：装饰器名以 property 结尾，或者是 setter / deleter"""
     return any(x.endswith("property") or x in ("setter", "deleter") for x in (sym or {}).get("d") or ())
@@ -452,7 +477,7 @@ def node_unit(index: dict, key: str) -> str | None:
     """graph 的节点落在哪个单元：符号键看符号表；<文件>#<module>、<外层>.<L行> 看文件"""
     syms = index.get("symbols") or {}
     s = syms.get(base_node(key))
-    return (index.get("files") or {}).get(s["f"] if s else key.partition("#")[0])
+    return _cut.unit_of_rel(index.get("files") or {}, s["f"] if s else key.partition("#")[0])
 
 
 def scan_edges_on_cut(index: dict, node_of: dict) -> dict[str, int]:

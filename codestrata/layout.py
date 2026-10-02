@@ -154,9 +154,10 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
     # 过滤：小包和 top-N。同时丢掉「既无符号又无连边」的空包——
     # 典型是只有一个空 __init__.py 的目录，画出来纯是噪声。
     items = [(p, v) for p, v in pkgs.items()
-             if v["files"] >= min_files
-             and not (v["out"] == 0 and v["in"] == 0
-                      and v["classes"] == 0 and v["funcs"] == 0)]
+             if (v["files"] >= min_files
+                 and not (v["out"] == 0 and v["in"] == 0 and v["classes"] == 0 and v["funcs"] == 0))
+             # 虚拟单元（GPU · 仓库外）：叠着的 run 跑到了它才画
+             or (v.get("kind") == "virtual" and only is not None and p in only)]
     if only is not None:
         items = [(p, v) for p, v in items if p in only]
     if top:
@@ -181,6 +182,12 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
             s[0], s[1] = min(s[0], i), max(s[1], i)
     else:
         span_of = {}
+        # 虚拟节点（GPU · 仓库外）不在总图上：放在最下面多出来的一条泳道（它只被调、不调别人）
+        extra = [p for p in keep if p not in lane_of]
+        if extra:
+            low = max(lane_of.values(), default=-1) + 1
+            lane_of = {**lane_of, **{p: low for p in extra}}
+            lane_labels = {**(lane_labels or {}), low: "GPU"}
     lanes = max(lane_of.values(), default=0) + 1
 
     # 框：展开着的目录把它底下的节点框在一起。fparent 是框的嵌套，home 是每个节点直接所在的框

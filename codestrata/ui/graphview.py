@@ -98,8 +98,9 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     if hot:
         hot_view = {**{k: v for k, v in hot.items() if k not in ("calls", "redirect", "keymap")},
                     "packages": hp, "edges": he, "dyn": hd}
+        drawn = shown | {n for n in v["nodes"] if _cut.is_virtual(n)}    # 虚拟节点只在 hot 图上
         rt_only = [[*k.split("|"), n] for k, n in sorted(he.items())
-                   if k not in kinds and set(k.split("|")) <= shown]
+                   if k not in kinds and set(k.split("|")) <= drawn]
     # hot 视图单独排版：只放跑到的节点，每个节点的层沿用总图，纵坐标含义不变、横向更紧凑
     # 「跑到的」节点：这一段里有函数被调用进去的，加上这一段里任何一条 runtime 边（只有 trace 的也算）的两端。
     # 调用方不一定有「被调用」的次数：一直在跑的外层函数（case 脚本的 main 在上一个阶段就进去了）、

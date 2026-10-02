@@ -10,6 +10,8 @@
 另有一个只 scan 的小仓库（_CUT：嵌套目录、一个又有子目录又有十几个文件的目录），给展开 / 收起、搜索定位用（base2）；
 再一个录过的小仓库（_DYN：runner 经 self.model.forward 调到按字符串加载的类，代码里看不出），给虚线边用（base3）；
 它录了两次，第二次去掉调用行当老 run。
+还有一个 GPU 的（_DYN 加一个 .cu 文件，base4）：在 CPU 上录一次，再往 parts/ 里放一份手写的 GPU 日志、runs merge，
+当 trace --gpu 录到了两个 kernel（一个是仓库里 .cu 定义的，一个在仓库外），不用 GPU。
 serve 用随机端口，测完关掉；Chrome 由 tests/web/cdp.mjs 自己起、自己关。
 """
 from __future__ import annotations
@@ -73,6 +75,37 @@ _DYN = {
 }
 
 
+def _gpu_repo() -> tuple:
+    """_DYN 加一个 .cu 文件，录一次（CPU），再手写一份 GPU 日志：Net.forward 里各启动一次仓库里的 k::scale 和仓库外的
+    at::native::foo（三次 step 各一次），runs merge 把它们挂上去。返回 (仓库, run id)"""
+    repo = tmpdir("cs-browser-gpu-") / "gpurepo"
+    for rel, src in {**_DYN, "dyn/csrc/k.cu": "namespace k {\n__global__ void scale(float* x) { x[0] *= 2; }\n}\n"}.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "gpu", "--", PY, "-m", "dyn.main")
+    rid = _run_id(repo, "gpu")
+    rd = repo / ".codestrata" / "runs" / rid
+    run = json.loads((rd / "run.json").read_text())
+    spans = rd / "events" / "spans"
+    keys = json.loads((spans / "keys.json").read_text())
+    chunk = json.loads((spans / "index.json").read_text())["chunks"][0]
+    rows = [json.loads(x) for x in gzip.decompress((spans / chunk["chunk"]).read_bytes()).splitlines()]
+    fwd = [r for r in rows if keys["keys"][r[5]] == "dyn/models/net.py:5"]
+    pid, mono0 = chunk["pid"], run["clock"]["mono0_ns"]
+    ntid = keys["native"][str(pid)][str(fwd[0][2])]
+    lines = [f"H {pid} {mono0}"]
+    for i, r in enumerate(fwd):
+        t = mono0 + (r[0] + max(r[1], 0) // 2) * 1000
+        for j, name in enumerate(("void k::scale(float*)", "void at::native::foo<float>(float*)")):
+            c = 10 * i + j + 1
+            lines += [f"A {t} {t + 1000} {ntid} {c}\tcudaLaunchKernel", f"K {t + 2000} {t + 52000} 0 7 {c}\t_Z\t{name}"]
+    (rd / "parts").mkdir(exist_ok=True)
+    (rd / "parts" / f"cu-{pid}-{mono0}.log").write_text("\n".join(lines) + "\n")
+    cs("runs", repo, "merge", rid)
+    return repo, rid
+
+
 def _serve(repo) -> tuple:
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
     srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
@@ -124,11 +157,14 @@ def fixture() -> dict:
         ph.pop("func_lines", None)
     cp.write_bytes(gzip.compress(json.dumps(c).encode()))
     srv3, base3 = _serve(dyn)
+    gpu, gpu_run = _gpu_repo()
+    srv4, base4 = _serve(gpu)
+    _FX.update(srv4=srv4, base4=base4, gpu=gpu_run)
     _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"), dynn=_run_id(dyn, "dynne"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
                a=_run_id(repo, "truth"), b=_run_id(repo, "offline"), an=_run_id(repo, "truthne"), bn=_run_id(repo, "offlinene"),
                cutrun=_run_id(cut, "cutrun"))
-    fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3")}
+    fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3", "srv4")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))
     _FX["path"] = str(path)
@@ -189,11 +225,15 @@ def test_calls():
     _spec("calls")
 
 
+def test_gpu():
+    _spec("gpu")
+
+
 if __name__ == "__main__":
     try:
         rc = run_tests(globals(), sys.argv[1:])
     finally:
-        for k in ("srv", "srv2", "srv3"):
+        for k in ("srv", "srv2", "srv3", "srv4"):
             if _FX.get(k):
                 _FX[k].kill()
                 _FX[k].wait()

@@ -89,6 +89,7 @@ h1{margin:8px 0 6px;font-size:clamp(22px,3.4vw,30px);color:var(--ink);letter-spa
 .prow .ptime{color:var(--faint);min-width:58px}
 .prow .pfn{border:0;background:none;color:var(--ink);cursor:pointer;padding:0;font:inherit;font-weight:600}
 .prow .pfn:hover,.prow .pfrom:hover{text-decoration:underline}
+.prow span.pfn{cursor:default}.prow span.pfn:hover{text-decoration:none}
 .prow .pn{color:var(--hot)}
 .prow .prep{color:var(--tm1);font-size:13px}
 .prow .pun{color:var(--muted);font-size:11px;border:1px dashed var(--line);border-radius:4px;padding:0 4px}
@@ -655,8 +656,9 @@ body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{dis
 /* 起线程 / 回收线程：和阶段的起点 / 终点同色（绿 / 红） */
 .ln-link.spawn{stroke:var(--pstart);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
 .ln-link.join{stroke:var(--pend);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
+.ln-link.launch{stroke:var(--hot);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
 .ln-ltxt{font:600 9.5px/1 ui-monospace,monospace;stroke:var(--card);stroke-width:3px;paint-order:stroke}
-.ln-ltxt.handoff{fill:var(--cool)}.ln-ltxt.spawn{fill:var(--pstart)}.ln-ltxt.join{fill:var(--pend)}
+.ln-ltxt.handoff{fill:var(--cool)}.ln-ltxt.launch{fill:var(--hot)}.ln-ltxt.spawn{fill:var(--pstart)}.ln-ltxt.join{fill:var(--pend)}
 .ln-life{font:600 9.5px/1 ui-monospace,monospace}.ln-life.start{fill:var(--pstart)}.ln-life.end{fill:var(--pend)}
 /* 段外的起 / 收（选了阶段 / 时间段时，这一段里跑过的线程是在段前起的、段后收的）：淡一点 */
 .ln-link.out{opacity:.4;stroke-dasharray:2 4}.ln-life.out,.ln-mark.out{opacity:.55}
@@ -687,7 +689,7 @@ body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{dis
 .ln-e.hover,.ln-e.sel{stroke-width:3}
 .ln-e.sel,.ln-link.sel{stroke:var(--sel)!important;filter:drop-shadow(0 0 2px var(--sel-bg))}
 .ln-link.hover{stroke-width:3.4;opacity:1}
-.ln-link.spawn.hover,.ln-link.join.hover{stroke-width:2.2}
+.ln-link.spawn.hover,.ln-link.join.hover,.ln-link.launch.hover{stroke-width:2.2}
 .ln-link.sel{stroke-width:3.4;opacity:1}
 .ln-e.bg,.ln-link.bg{opacity:.25}
 /* 选中节点 / 边 / 连线时，和它不相干的淡下去（同模块图的 .e.dim）；碰到选中节点的边和连线加粗 */
@@ -711,3 +713,9 @@ body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{dis
 .lk-pair .ptime{color:var(--faint);font:11px ui-monospace,monospace}
 .lk-fn{all:unset;cursor:pointer;color:var(--t-fn);font:12px ui-monospace,monospace;border-bottom:1px dotted currentColor}
 .lk-fn:hover{color:var(--sel)}
+/* 节点详情里的 GPU kernel 表（trace --gpu） */
+.ktab{margin:6px 0 10px;font-size:12px}
+.krow{display:flex;gap:8px;padding:2px 0;border-bottom:1px solid var(--line)}
+.krow .kn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
+.krow .kc,.krow .kt{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.krow .kt{width:72px;text-align:right}

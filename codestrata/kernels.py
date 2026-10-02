@@ -12,7 +12,8 @@ hook 的 U 行把系统线程号对回线程号（keys.json 的 native），在�
 产出（attach 返回）：
   rows    {pid: [span 行]}：和 CPU 的 span 同一种 9 列，t0 是**启动时刻**（时间顺序按发起排），dur 到 GPU 上跑完，
           tid 是发起它的线程、parent 是那一刻正在跑的 span、depth 比它深一层；第 10 列 [设备, 流, 晚了多少 µs 才开始在 GPU 上跑]
-  counts  {阶段: {funcs, func_edges, func_lines}}：按启动时刻落进阶段；调用行是 0（不知道是哪一行：没录 Python 调进原生代码的那一跳）
+  counts  {阶段: {funcs, func_edges, func_lines, gpu_us}}：按启动时刻落进阶段；调用行是 0（不知道是哪一行：没录 Python 调进原生代码的那一跳）；
+          gpu_us {kernel 键: 在 GPU 上一共跑了多少 µs}
   names   {键: 限定名}
   summary {kernels: {键: {n, gpu_us}}, unattached: 找不到调用方的 kernel 数, dropped: CUPTI 丢掉的记录数, procs: [pid]}
 """
@@ -183,7 +184,8 @@ def attach(logs: list[Path], mono0_ns: int | None, pid_rows, keys: list[str], na
             t_end = (end - base) // 1000
             new.append([t_launch, max(0, t_end - t_launch), tid, p[3] + 1, p[5], kidx[key], 1, 0, parent,
                         [dev, stream, max(0, (start - base) // 1000 - t_launch)]])
-            ph = out["counts"].setdefault(phase_at(t_launch), {"funcs": {}, "func_edges": {}, "func_lines": {}})
+            ph = out["counts"].setdefault(phase_at(t_launch), {"funcs": {}, "func_edges": {}, "func_lines": {}, "gpu_us": {}})
+            ph["gpu_us"][key] = ph["gpu_us"].get(key, 0) + max(0, (end - start) // 1000)
             pair = f"{caller}|{key}"
             ph["funcs"][key] = ph["funcs"].get(key, 0) + 1
             ph["func_edges"][pair] = ph["func_edges"].get(pair, 0) + 1

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from common import cs, run_tests, tmpdir  # noqa: E402
 
-from codestrata import events  # noqa: E402
+from codestrata import align, cut, events, kernels  # noqa: E402
 from codestrata.trace import gpu  # noqa: E402
 
 TOY = '''import torch
@@ -73,6 +73,89 @@ def test_native_thread_ids_parsed():
     assert keys["native"] == {"100": {"1": 100, "2": 4242}}, keys["native"]
 
 
+def test_kernel_name():
+    """还原后的名字 → 限定名：去掉返回类型、模板参数（可以嵌套）、参数表；匿名命名空间里的空格不拆"""
+    for raw, want in [
+        ("void at::native::reduce_kernel<512, 1, at::native::R<float, 4>>(at::native::R<float, 4>)", "at::native::reduce_kernel"),
+        ("k::main_kernel(float*)", "k::main_kernel"),
+        ("void (anonymous namespace)::softmax_warp<float>(float*, int)", "(anonymous namespace)::softmax_warp"),
+        ("triton_poi_fused_add_0", "triton_poi_fused_add_0"),
+    ]:
+        assert kernels.kernel_name(raw) == want, (raw, kernels.kernel_name(raw))
+
+
+SYMS = {"pkg/csrc/kern.cu#k::main_kernel": {"k": "kernel", "n": "k::main_kernel", "f": "pkg/csrc/kern.cu", "l": 16}}
+
+
+def _gpu_run(t):
+    """手写的一次录制：主线程（系统线程号 4242）里 go 调 launch；三个 kernel——launch 里发起的仓库内 kernel、
+    go 里发起的仓库外 kernel、找不到启动调用的一个"""
+    ev = t / "ev-100-1000000000.log"
+    ev.write_text("H 100 1000000000 1\nN 1 MainThread\nU 1 4242\n"
+                  "K 1 pkg/run.py:0\nK 2 pkg/run.py:1\nK 3 pkg/lib.py:3\n"
+                  "C 10 1 1 1 2\nC 20 1 2 2 3\nR 50 1 2\nR 100 1 1\n")
+    cu = t / "cu-100-1000000000.log"
+    cu.write_text("H 100 1000000000\n"
+                  "A 1000030000 1000031000 4242 7\tcudaLaunchKernel\n"
+                  "K 1000040000 1000045000 0 7 7\t_Z\tvoid k::main_kernel(float*)\n"
+                  "A 1000015000 1000016000 4242 8\tcuLaunchKernel\n"
+                  "K 1000017000 1000019000 0 7 8\t_Z\tvoid at::native::foo<float>(float*)\n"
+                  "K 1000060000 1000061000 0 7 9\t_Z\tvoid at::native::foo<float>(float*)\n"
+                  "D 2\n")
+    got = {}
+
+    def hook(pid_rows, keys, native):
+        got.update(kernels.attach([cu], 1000000000, pid_rows, keys, native, kernels.resolver(SYMS), lambda t: "start"))
+        return got
+    idx = events.build([ev], 1000000000, t / "spans", gpu=hook)
+    return idx, got
+
+
+def test_attach_kernels():
+    """kernel 挂到启动那一刻同一条线程上最里层的 span 下：调用方是它，第 10 列是 [设备, 流, 晚了多少 µs]；
+    仓库里的 kernel 按限定名对到定义行，仓库外的落到 ?gpu/<名字>:0；找不到启动调用的只进摘要"""
+    import gzip
+    import json
+    t = tmpdir("cs-gpu-")
+    idx, got = _gpu_run(t)
+    keys = json.loads((t / "spans" / "keys.json").read_text())["keys"]
+    rows = [json.loads(ln) for c in idx["chunks"] for ln in gzip.decompress((t / "spans" / c["chunk"]).read_bytes()).splitlines()]
+    gpu_rows = [r for r in rows if len(r) == 10]
+    assert len(gpu_rows) == 2 and len(rows) == 4, rows
+    by_callee = {keys[r[5]]: r for r in gpu_rows}
+    inrepo, outside = by_callee["pkg/csrc/kern.cu:16"], by_callee["?gpu/at::native::foo:0"]
+    assert keys[inrepo[4]] == "pkg/lib.py:3" and rows[inrepo[8]][5] == keys.index("pkg/lib.py:3"), inrepo
+    assert inrepo[0] == 30 and inrepo[1] == 15 and inrepo[9] == [0, 7, 10], inrepo     # 启动于 30µs，跑完在 45µs，晚了 10µs
+    assert keys[outside[4]] == "pkg/run.py:1" and outside[3] == rows[outside[8]][3] + 1, outside
+    assert [r[0] for r in rows] == sorted(r[0] for r in rows)                             # 和 CPU 的行排在一起
+    assert idx["n_calls"] == 2, idx["n_calls"]                                             # 只数 Python 的调用
+    s = idx["gpu"]
+    assert s["unattached"] == 1 and s["dropped"] == 2 and s["kernels"]["?gpu/at::native::foo:0"]["n"] == 2, s
+    c = got["counts"]["start"]
+    assert c["func_edges"] == {"pkg/lib.py:3|pkg/csrc/kern.cu:16": 1, "pkg/run.py:1|?gpu/at::native::foo:0": 1}, c
+    assert c["func_lines"]["pkg/run.py:1|?gpu/at::native::foo:0|0"] == 1, c
+    assert got["names"]["?gpu/at::native::foo:0"] == "at::native::foo"
+
+
+def test_virtual_gpu_node():
+    """仓库外的 kernel 落到虚拟单元 ?gpu：模块图上叠加时算它的次数，调用方 → ?gpu#<名字> 是只有 trace 的边；
+    切面上有这个节点，但只有叠着的 run 跑到了才画"""
+    idx = {"files": {"pkg/run.py": "pkg/run.py"}, "symbols": {"pkg/run.py#go": {"k": "func", "n": "go", "f": "pkg/run.py", "l": 1, "e": 2}},
+           "packages": {"pkg/run.py": {"files": 1, "loc": 2, "classes": 0, "funcs": 1, "out": 0, "in": 0}},
+           "dirs": {}, "edges": []}
+    tr = {"funcs": {"pkg/run.py:1": 1, "?gpu/at::native::foo:0": 3},
+          "func_edges": {"pkg/run.py:1|?gpu/at::native::foo:0": 3},
+          "func_lines": {"pkg/run.py:1|?gpu/at::native::foo:0|0": 3}}
+    g = align.to_package_graph(tr, idx)
+    assert g["packages"].get(cut.VIRTUAL_GPU) == 3 and g["module_frames"] == 0, g
+    x = g["calls"]["pkg/run.py#go|?gpu#at::native::foo"]
+    assert x["a"] == "pkg/run.py" and x["b"] == cut.VIRTUAL_GPU and x["only"] == 3 and x["lines"][0]["status"] == "trace", x
+    assert x["lines"][0]["note"] == {"k": "gpu"}, x                                        # 不按「代码里看不出」的规则猜
+    assert align.node_def(idx, "?gpu#at::native::foo")["virtual"]
+    assert cut.unit_of_rel(idx["files"], "?gpu/x") == cut.VIRTUAL_GPU and cut.unit_of_rel(idx["files"], "nope.py") is None
+    assert cut.kind(idx, cut.VIRTUAL_GPU) == "virtual" and cut.parent_of(idx, cut.VIRTUAL_GPU) is None
+
+
 def test_trace_gpu_toy():
     """真录一次：cu-*.log 里有 kernel 和发起它的启动调用（同一个关联号），启动调用的线程是 hook 记的主线程"""
     py = _cuda_python()
@@ -101,6 +184,14 @@ def test_trace_gpu_toy():
         u = [ln for ln in tf.extractfile(ev).read().decode().splitlines() if ln.startswith("U ")]
     native = {ln.split()[2] for ln in u}
     assert {ln.split("\t")[0].split()[3] for ln in A} <= native, (A[:2], u)
+    # 导入端：kernel 挂到了 step / main 上，计数里有 ?gpu 的键，run.json 的 events 有 GPU 摘要
+    import gzip
+    import json
+    run = json.loads((rd / "run.json").read_text())
+    assert run["events"]["gpu"]["n_kernels"] > 0 and not run["events"]["gpu"]["unattached"], run["events"]
+    edges = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]["start"]["func_edges"]
+    callers = {k.split("|")[0] for k in edges if "|?gpu/" in k}
+    assert callers <= {"toy/run.py:4", "toy/run.py:8"} and "toy/run.py:4" in callers, edges
 
 
 if __name__ == "__main__":

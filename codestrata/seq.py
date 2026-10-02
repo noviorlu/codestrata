@@ -140,7 +140,7 @@ class _Map:
         return hit
 
     def file_node(self, rel: str):
-        unit = self.files.get(rel)
+        unit = _cut.unit_of_rel(self.files, rel)
         return self.node_of.get(unit) if unit else None
 
 
@@ -235,7 +235,7 @@ def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> 
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）：只能按阶段看，不能选时间段")
     ix = _index(spans)
-    keys, funcs, edges = ix["keys"], {}, {}
+    keys, funcs, edges, gpu = ix["keys"], {}, {}, {}
     for c in ix["chunks"]:
         if c["t0_us"] > t1 or c["t1_us"] < t0:
             continue
@@ -246,7 +246,11 @@ def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> 
             a, b, n = keys[r[4]], keys[r[5]], got[0]
             funcs[b] = funcs.get(b, 0) + n
             edges[f"{a}|{b}"] = edges.get(f"{a}|{b}", 0) + n
+            if len(r) > 9:                       # GPU 的行（kernel）：按发起的时刻算在不在这一段里，时长是它在 GPU 上跑完为止
+                gpu[b] = gpu.get(b, 0) + max(0, r[1] - r[9][2])
     out = {"funcs": funcs, "func_edges": edges}
+    if gpu:
+        out["gpu_us"] = gpu
     if ref_lines is not None:
         out["func_lines"] = spread_lines(edges, ref_lines)
     return out

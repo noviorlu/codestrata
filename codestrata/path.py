@@ -292,7 +292,8 @@ def format_text(path: dict, max_depth: int | None = None) -> str:
                 ln = r["line"]
                 where = f"  ← {Path(ln['f']).name}:{ln['l']}" if ln and ln.get("l") else ""
                 tags = ("  ↻" if r["rep"] else "") + ("  （同文件）" if r["untimed"] else "") \
-                    + ("  [看不出]" if ln and ln.get("status") == "trace" else "")
+                    + ("  [GPU]" if ln and (ln.get("note") or {}).get("k") == "gpu" else
+                       "  [看不出]" if ln and ln.get("status") == "trace" else "")
                 n = f"  ×{r['n']}" if r["n"] else ""
                 when = "（之前）" if r.get("before") else f"+{(r['t'] - t0) / 1e6:.3f}s"
                 out.append(f"{'  ' * r['d']}{when}  {_short(r['fn'])}{n}{tags}{where}")

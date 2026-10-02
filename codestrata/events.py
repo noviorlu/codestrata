@@ -59,6 +59,9 @@ via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按（�
 
 写出 events/spans/：keys.json {keys, threads, native}、index.json {chunks, truncated, scope, thread_from, spawns, thread_end, reaps, ...}、
 p<pid>-NNN.jsonl.gz（按 t0 排好，每块最多 10 万行）。
+
+GPU 上跑的 kernel（trace --gpu，见 kernels.py）由调用方经 gpu 参数挂进来：它们和 CPU 的 span 排在同一个 pid 的行里，
+多一列 [设备, 流, 晚了多少 µs]（第 10 列，CPU 的行只有 9 列）；index.json 多一个 gpu（摘要），n_calls 只数 Python 的调用。
 """
 from __future__ import annotations
 
@@ -220,9 +223,11 @@ def fold(spans: list[list]) -> list[list]:
     return out
 
 
-def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
+def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> dict:
     """把一个 run 的所有 ev 日志整理成 span，写进 out_dir（先写到旁边的临时目录，再整个换上）。
-    返回 index（也写进 out_dir/index.json）。"""
+    返回 index（也写进 out_dir/index.json）。
+    gpu(pid_rows, keys, native) → {rows: {pid: [行]}, summary}：GPU 的行（kernels.attach 的格式，parent 是 pid_rows(pid)
+    里的下标），keys 由它往后加 kernel 的键"""
     keys: list[str] = []
     kidx: dict[str, int] = {}
     threads: dict[str, dict] = {}
@@ -274,6 +279,14 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
         per_pid.setdefault(log["pid"], []).extend(rows)
         procs.append({"pid": log["pid"], "ppid": log["ppid"], "t0_us": base, "n_events": len(log["ev"]),
                       "n_spans": len(rows), "truncated": log["truncated"]})
+    gpu_summary = None
+    if gpu is not None:
+        got = gpu(lambda pid: per_pid.get(pid, []), keys, native)
+        gpu_summary = got.get("summary")
+        for pid, grows in got["rows"].items():
+            mine = per_pid.setdefault(pid, [])
+            for i, r in enumerate(grows):             # parent 换成那一行的 span 号；自己的号是 ("gpu", i)
+                mine.append([*r[:8], mine[r[8]][9] if r[8] is not None else None, ("gpu", i), r[9]])
     tmp = out_dir.with_name(out_dir.name + f".{os.getpid()}.tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
@@ -301,11 +314,13 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
             chunks.append({"pid": pid, "chunk": name, "t0_us": part[0][0],
                            "t1_us": max(r[0] + max(r[1], 0) for r in part), "n": len(part)})
         n_spans += len(rows)
-        n_calls += sum(r[6] for r in rows)
+        n_calls += sum(r[6] for r in rows if len(r) == 9)
     index = {"pairing": "frame", "scope": "all" if scopes == {"all"} else "mixed" if "all" in scopes else "cross",
              "chunks": chunks, "procs": procs, "truncated": sorted(p for p in truncated if p),
              "thread_from": thread_from, "spawns": spawns, "thread_end": thread_end, "reaps": reaps, "handoffs": handoffs,
              "n_lines": n_lines, "n_spans": n_spans, "n_calls": n_calls}
+    if gpu_summary is not None:
+        index["gpu"] = gpu_summary
     (tmp / "keys.json").write_text(json.dumps({"keys": keys, "threads": threads, "native": native}, ensure_ascii=False),
                                    encoding="utf-8")
     (tmp / "index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")

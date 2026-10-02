@@ -245,6 +245,13 @@ def cmd_trace(a) -> int:
               f"原始日志 {_size(ev['bytes'] or 0)}"
               + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限，之后的调用没记时序（计数完整）"
                  if ev["truncated"] else ""))
+        g = ev.get("gpu")
+        if g:
+            print(f"  GPU kernel {g['n_kernels']} 次（{g['n_names']} 种，GPU 上共 {g['gpu_us'] / 1000:.1f} ms）"
+                  + (f"；⚠ {g['unattached']} 次找不到发起它的 Python 调用（没算进图）" if g["unattached"] else "")
+                  + (f"；⚠ CUPTI 丢了 {g['dropped']} 条记录" if g["dropped"] else ""))
+        elif getattr(a, "gpu", False):
+            print("  ⚠ --gpu 没录到 kernel：命令没用 GPU，或者 CUDA 没按 CUDA_INJECTION64_PATH 载入录制端")
     elif a.events:
         old = sorted({v["version"] for v in (detail.get("pythons") or {}).values()
                       if v.get("version") and tuple(map(int, v["version"].split(".")[:2])) < (3, 12)})

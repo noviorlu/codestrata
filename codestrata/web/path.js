@@ -16,15 +16,17 @@ window.CS = window.CS || {};
 
   function rowHtml(r, next, t0) {
     var ln = r.line, kids = next && next.d > r.d;
-    var why = ln && ln.status === 'trace'
+    var why = ln && ln.note && ln.note.k === 'gpu' ? '<span class="dtag" title="' + esc(CS.panel.noteText(ln.note)) + '">GPU kernel</span>'
+      : ln && ln.status === 'trace'
       ? '<span class="dtag" title="' + esc((CS.panel.noteText(ln.note) || '代码里看不出会调到它')
           + (ln.guessed ? '（这个 run 没记调用行，调用处是按名字猜的）' : '')) + '">代码里看不出</span>' : '';
     return '<div class="prow" data-d="' + r.d + '" style="--d:' + r.d + '">'
       + (kids ? '<button class="pt" aria-expanded="true" title="收起 / 展开它下面的调用">▾</button>' : '<span class="pt"></span>')
       + (r.before ? '<span class="ptime" title="这一段之前就在跑（这一段里没再调过它），列出来是为了看清下面的调用是在谁里面">之前</span>'
           : '<span class="ptime">+' + ((r.t - t0) / 1e6).toFixed(3) + 's</span>')
-      + '<button class="pfn" data-f="' + esc(r.def.f) + '" data-l="' + r.def.l + '" title="' + esc(r.fn) + '（点了看定义）">'
-      + esc(short(r.fn)) + '</button>'
+      + (r.def.virtual ? '<span class="pfn" title="' + esc(r.fn) + '（仓库外的 GPU kernel，没有源码）">' + esc(short(r.fn)) + '</span>'
+         : '<button class="pfn" data-f="' + esc(r.def.f) + '" data-l="' + r.def.l + '" title="' + esc(r.fn) + '（点了看定义）">'
+           + esc(short(r.fn)) + '</button>')
       + (r.n ? '<span class="pn">×' + r.n + '</span>' : '')
       + (r.rep ? '<span class="prep" title="反复调用：轮询、每个 token 都走一遍">↻</span>' : '')
       + (r.untimed ? '<span class="pun" title="同一个文件里调过来的：这个 run 的时序事件只记了跨文件的调用，这一跳没有时刻，排的位置按它自己第一次往外调的时刻">同文件</span>' : '')
@@ -76,7 +78,7 @@ window.CS = window.CS || {};
         h += '<p class="hint warn">进程 ' + P.truncated.join('、') + ' 的时序事件录到了上限，之后的调用不在这里。</p>';
       var det = document.getElementById('det');
       det.innerHTML = h;
-      [].forEach.call(det.querySelectorAll('.pfn, .pfrom'), function (b) {
+      [].forEach.call(det.querySelectorAll('button.pfn, .pfrom'), function (b) {
         b.onclick = function () { CS.viewer.open(b.dataset.f, +b.dataset.l); };
       });
       [].forEach.call(det.querySelectorAll('button.pt'), function (b) {

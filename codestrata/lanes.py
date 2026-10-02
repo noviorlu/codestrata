@@ -9,6 +9,8 @@
   - 谁把数据交给谁（handoff）：进程内的队列、跨进程的 ZMQ（events 的 handoffs），按 (起点列, 起点节点, 终点列, 终点节点, 通道) 合起来；
   - 谁回收了谁（join）：线程是在哪一列的哪个节点里被 join 等到结束的，子进程是在哪里被 waitpid 等到退出的（events 的
     thread_end、reaps），从被回收的那一列的入口节点连过去。
+  - 谁启动了哪个 GPU kernel（launch，trace --gpu）：kernel 按 GPU 设备 · 流各成一列（gpu 列），从发起它的那一列的调用方节点
+    连到 gpu 列里的 kernel 节点；时刻按发起算。
 每一头都带着那一行代码（起线程、放 / 取、发 / 收、join 的那一行）。每列还有起止的摘要（start / stop）。
 数据：时序事件的 span（seq.span_index / pid_rows；带 parent 的才准，老 run 也能出列，只是没有连线）+ 这次 run 的叠加 hot
 （录制之后改过的文件走 hot["keymap"]、构造挪到类上走 hot["redirect"]、函数对和代码比的结果 hot["calls"]）。
@@ -48,13 +50,14 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
          "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first", "last"}],
          "external": 只跑仓库外的代码、因为是交接的一头才有这一列（没有节点）,
          "idle": 跑过仓库代码、这一段里没有调用、因为是交接的一头才有这一列（只放交接的那个节点；起 / 收不算它）,
+         "gpu": [设备, 流]（只有 GPU 的列有：这一列是这个进程在这个设备 · 流上跑的 kernel，没有边、没有起止）,
          "proc_main": 这一列代表整个子进程（fork / exec / waitpid 接在它上面：主线程，或者从非主线程 fork 的子进程里唯一的线程）,
          "start": {"n": 知道是谁起的线程数, "t": 最早起的时刻, "lane": 起它的列（这一段里没跑的线程也写，那一列不在 lanes 里）,
                    "daemon": 其中守护线程数, "out": 段外的是 before / after} 或 None（不知道谁起的：
                   程序的主线程、hook 装上之前起的）,
          "stop": {"joined": 被 join / waitpid 等到的个数, "t": 最晚那一次的时刻, "lane": 等它的列,
                   "exited": 自己跑完、没人等的个数, "running": 到录制结束还没跑完的个数（子进程是不知道有没有退出）} 或 None}
-    连线：{"kind": "spawn" | "handoff" | "join", "via": thread / exec / fork / queue / asyncio / janus / zmq / join / wait,
+    连线：{"kind": "spawn" | "handoff" | "join" | "launch", "via": thread / exec / fork / queue / asyncio / janus / zmq / join / wait / cuda,
            "from": {"lane", "node", "fn", "t", "line"}, "to": {…}, "n", "first", "last",
            "pairs": [{"a": 起点函数, "b": 终点函数, "la" / "lb": 那一头的行（0 不知道）, "ta" / "tb": 那一行的代码,
                       "xa" / "xb": 那一头经仓库外的代码, "da" / "db": 定义 {f, l, k}, "n", "first"}]
@@ -114,6 +117,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         return hit[0]
 
     lanes: dict[str, dict] = {}
+    launches: list[tuple] = []                   # GPU 的行：(pid, 发起它的线程, 调用方键下标, kernel 键下标, 调用方节点, kernel 节点, 首次, 末次, 次数, [设备, 流])
     rows_of: dict[int, list] = {}
     tid_lane: dict[tuple, str] = {}
     # (pid, tid) → {调用方键下标: [最早开始, 最晚结束]}：深度 0 的调用的调用方是这条线程最底下的仓库函数，它至少在这段时间里在栈上
@@ -140,8 +144,12 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             if not got:
                 continue
             n, first, last = got
-            first_in[(pid, r[2])] = min(first_in.get((pid, r[2]), first), first)
             na, nb, defining, only = nodes_of(r[4], r[5])
+            if len(r) > 9:                       # GPU 的行（kernel）：不算进发起它的那条线程，最后单独成列（见下面）
+                if na is not None and nb is not None:
+                    launches.append((pid, r[2], r[4], r[5], na, nb, first, last, n, r[9][:2]))
+                continue
+            first_in[(pid, r[2])] = min(first_in.get((pid, r[2]), first), first)
             if na is None or nb is None or defining:
                 continue
             L = lanes.get(lid)
@@ -369,6 +377,21 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             a = entry_end(_lane_end(lanes, lid, e.get("t")), int(pid), int(tid))
             if a and b and a["lane"] != b["lane"]:
                 link("join", "join", a, b, t=j[3])
+    for pid, tid, ka, kb, na, nb, first, last, n, (dev, stream) in launches:
+        lid = f"{pid}:GPU {dev} · 流 {stream}"
+        G = lanes.get(lid)
+        if G is None:
+            G = lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": f"GPU {dev} · 流 {stream}",
+                              "names": set(), "tids": set(), "ran": set(), "first": first, "last": last, "entry": None,
+                              "entry_fn": None, "entry_t": None, "nodes": {}, "edges": {}, "gpu": [dev, stream]}
+        G["first"], G["last"] = min(G["first"], first), max(G["last"], last)
+        v = G["nodes"].setdefault(nb, {"n": 0, "first": first})
+        v["n"] += n
+        v["first"] = min(v["first"], first)
+        src = tid_lane.get((pid, tid))
+        if src in lanes and na in lanes[src]["nodes"]:
+            link("launch", "cuda", {"lane": src, "node": na, "fn": fn_of(ka), "t": first, "line": 0},
+                 {"lane": lid, "node": nb, "fn": fn_of(kb), "t": first, "line": 0})
     pstart: dict[int, int] = {}                  # 进程映像最早的起点：fork 出来的子进程就是在这一刻起的（B 行没有时刻）
     for p in ix.get("procs") or []:
         pstart[p["pid"]] = min(pstart.get(p["pid"], p["t0_us"]), p["t0_us"])
@@ -472,7 +495,9 @@ def _order(lanes: list, links: list, pstart: dict) -> dict:
                 continue
             seq.append(cur)
             todo.extend(x["to"]["lane"] for x in hand if x["from"]["lane"] == cur and pid_of.get(x["to"]["lane"]) == pid)
-        rest = sorted((L for L in ls if L["id"] not in seq), key=lambda L: (L["thread"] != "MainThread", L["first"]))
+        # GPU 的列放在这个进程的最后，按设备、流排
+        rest = sorted((L for L in ls if L["id"] not in seq),
+                      key=lambda L: (bool(L.get("gpu")), L.get("gpu") or [], L["thread"] != "MainThread", L["first"]))
         for i, lid in enumerate(seq + [L["id"] for L in rest]):
             rank[lid] = i
     return rank

@@ -20,7 +20,8 @@ window.CS = window.CS || {};
     var L = (D && D.labels) || {};
     return (Object.prototype.hasOwnProperty.call(L, id) ? L[id] : id) + (CS.ids.isResidual(id) ? '/ 本层' : '');
   }
-  var KIND = { dir: '目录（整棵子树收成一个节点）', residual: '目录里直接放着的文件（不含子目录）', unit: '单个文件' };
+  var KIND = { dir: '目录（整棵子树收成一个节点）', residual: '目录里直接放着的文件（不含子目录）', unit: '单个文件',
+               virtual: '不是仓库里的文件：定义不在仓库里的 GPU kernel 都在这' };
   /* 符号键 codestrata/payload.py#Handler.do_GET → payload:Handler.do_GET（包的 __init__.py 写包名）；
      兜底键（文件:行、文件:<module>）写成 文件名:行 / 文件名 顶层 */
   function symLabel(k) {
@@ -75,6 +76,8 @@ window.CS = window.CS || {};
           ns.length ? '定不下的 ' + (nameList(ns) || '表达式的结果') : ''].filter(function (x) { return x; }).join('；')
           + '——经其中一个转了一道才到这里';
       case 'none': return '这一行 scan 没看到调用（取属性、框架或仓库外的代码触发的）';
+      case 'gpu': return 'GPU kernel：发起它（cudaLaunchKernel 这类）时栈上最近的仓库函数是调用方，不知道是哪一行——'
+                         + 'Python 经扩展、PyTorch 这类仓库外的代码转了几道才启动它';
       case 'nomatch': return '调用方里没有同名的调用：多半是经仓库外的代码（框架、引擎循环、回调）转了一道——'
                              + '调用方只是栈上最近的仓库内函数';
     }
@@ -96,7 +99,9 @@ window.CS = window.CS || {};
       var notes = {}, unk = 0;
       (P.lines || []).forEach(function (x) { if (x.note) notes[noteText(x.note)] = 1; if (!x.l) unk += x.n; });
       if (!P.lines && P.note) notes[noteText(P.note)] = 1;
-      var tag = only ? '<span class="dtag" title="这次跑了，但代码里看不出会调到它：多态、注册表、回调、框架转了一道">代码里看不出</span>'
+      var gpu = (P.lines || []).some(function (x) { return x.note && x.note.k === 'gpu'; });
+      var tag = gpu ? '<span class="dtag" title="GPU 上跑的 kernel（trace --gpu 录的），Python 代码里本来就不会直接写">GPU kernel</span>'
+              : only ? '<span class="dtag" title="这次跑了，但代码里看不出会调到它：多态、注册表、回调、框架转了一道">代码里看不出</span>'
               : mixed ? '<span class="dtag" title="有的调用处代码里看得出，有的看不出">其中 ' + P.only + ' 次代码里看不出</span>' : '';
       return '<div class="call' + (only ? ' dyn' : '') + '">'
         + '<div class="ch"><span class="rt">×' + P.n + '</span><b>' + esc(name) + '</b>'
@@ -108,7 +113,8 @@ window.CS = window.CS || {};
                                                                : '这个 run 没记调用行，不知道是哪一行') + '</div>' : '')
         + (unk ? '<div class="via">其中 ' + unk + ' 次不知道是哪一行（录制之后这个文件改过，调用行挪不过来），按调用方整个函数比</div>' : '')
         + Object.keys(notes).map(function (t) { return '<div class="via">' + esc(t) + '</div>'; }).join('')
-        + '<div class="cs"><span class="lab">to</span>' + jump(P.def, P.def ? fname(P.def.f) + ':' + P.def.l : '（没找到定义）') + '</div>'
+        + '<div class="cs"><span class="lab">to</span>' + (P.def && P.def.virtual ? '<span>仓库外，没有源码</span>'
+             : jump(P.def, P.def ? fname(P.def.f) + ':' + P.def.l : '（没找到定义）')) + '</div>'
         + code(P.sig)
         + (P.wiring ? '<div class="via">仓库里按名字提到 ' + esc(symLabel(P.wiring.cls)) + ' 的地方（注册表、插件表，接线多半在这）'
              + (P.wiring.same_name > 1 ? '；仓库里有 ' + P.wiring.same_name + ' 个同名类，不一定指它' : '') + '：'
@@ -187,6 +193,15 @@ window.CS = window.CS || {};
         }).join('') + '</div>';
       }
       det.dataset.pkg = id;
+      if (v.kind === 'virtual') {                 // 「GPU · 仓库外」：没有文件、符号、import，只有叠着的 run 里的 kernel
+        det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
+          + '<div class="sub">trace --gpu 录到的、定义不在仓库里的 kernel（PyTorch、cuBLAS、Triton 生成的……）。'
+          + '调用方是发起它时栈上最近的仓库函数</div>' + this._cutRow(id, v)
+          + '<div id="nbslot">' + pills(x.i, '← 被调用', false) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
+          + this._kernels(id, v);
+        this._wireDet(id);
+        return;
+      }
       det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
         + '<div class="sub" title="按 import 算：(出 − 入) / (出 + 入)，+1 靠入口、−1 是叶子">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　import 出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
@@ -199,7 +214,7 @@ window.CS = window.CS || {};
         // 分列里这一块换成这条线程里这一份的（CS.laneDetail.node）
         + '<div id="nbslot">' + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
         + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
-        + this._docs(id)
+        + this._docs(id) + this._kernels(id, v)
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
       this._wireDet(id);
@@ -225,6 +240,27 @@ window.CS = window.CS || {};
         h += '<button class="chip" data-cut="collapse" title="连同框里的兄弟节点一起收回到上一级">收起到 '
           + esc(short(v.parent)) + '</button>';
       return h + '</div>';
+    },
+
+    /* 这个节点上的 GPU kernel（trace --gpu）：叠着的 run（阶段）里每种跑了几次、在 GPU 上一共跑了多久，按时间排。
+       虚拟节点是 ?gpu#… 的那些，别的节点是定义在它的文件里的 */
+    _kernels: function (id, v) {
+      var K = (D.hot && D.hot.kernels) || {}, files = {};
+      ((D.pkgFiles || {})[id] || []).forEach(function (f) { files[f] = 1; });
+      var ks = Object.keys(K).filter(function (k) {
+        var f = k.slice(0, k.indexOf('#'));
+        return v.kind === 'virtual' ? f === id : files[f];
+      });
+      if (!ks.length) return '';
+      ks.sort(function (a, b) { return K[b].gpu_us - K[a].gpu_us; });
+      var ms = function (us) { return us >= 1000 ? (us / 1000).toFixed(1) + ' ms' : us + ' µs'; };
+      var tot = ks.reduce(function (s, k) { return s + K[k].gpu_us; }, 0);
+      return '<div class="kv"><span>GPU kernel <b>' + ks.length + '</b> 种</span><span>GPU 上共 <b>' + ms(tot) + '</b></span></div>'
+        + '<div class="ktab">' + ks.map(function (k) {
+          var q = k.slice(k.indexOf('#') + 1);
+          return '<div class="krow" title="' + esc(q) + '"><span class="kn">' + esc(q) + '</span><span class="kc">×' + K[k].n
+            + '</span><span class="kt">' + ms(K[k].gpu_us) + '</span></div>';
+        }).join('') + '</div>';
     },
 
     /* 作者写的文档：包内 README、frontmatter 声明了管这里的设计文档 */

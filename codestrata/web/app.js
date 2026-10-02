@@ -174,7 +174,8 @@ window.CS = window.CS || {};
       t.title = id || '';
       if (id) {
         t.textContent = CS.panel.full(id);
-        s.textContent = v ? v.files + ' 个文件 · ' + v.classes + ' 个类 · ' + v.funcs + ' 个函数' : '';
+        s.textContent = !v ? '' : v.kind === 'virtual' ? '仓库外的 GPU kernel（trace --gpu）'
+          : v.files + ' 个文件 · ' + v.classes + ' 个类 · ' + v.funcs + ' 个函数';
       } else if (a) {
         t.textContent = CS.panel.short(a) + ' → ' + CS.panel.short(b);
         s.textContent = '这条边上是哪些函数在调用：代码里写的、这次跑到的';

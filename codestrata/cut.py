@@ -30,10 +30,30 @@ MAX_NODES = 80       # 自动拆分：图上节点数的上限
 MIN_NODES = 4        # 小仓库：节点少于这个数时，不看比例，先把最大的拆开
 
 ROOT_DIR = "./"      # 仓库根目录直接放着的脚本（scan --roots .）所在的目录
+# 虚拟单元：不是仓库里的文件，只在叠着的 run 里有次数时才画。GPU 上跑的、定义不在仓库里的 kernel（trace --gpu）
+# 都落在它上面，run 里的键是 ?gpu/<kernel 名>:0（kernels.py）
+VIRTUAL_GPU = "?gpu"
+VIRTUAL_LABEL = {VIRTUAL_GPU: "GPU · 仓库外"}
 INDEX_FORMAT = 5     # 索引的格式：单元、目录按路径（本模块），符号键是 <路径>#<限定名>，graph.json 带 ctors；旧的读到了要重新 scan
 
 
 # ---------------------------------------------------------------- id 的写法
+
+def is_virtual(node: str) -> bool:
+    return node in VIRTUAL_LABEL
+
+
+def is_virtual_rel(rel: str) -> bool:
+    """run 里键的文件部分是不是虚拟单元的（?gpu/<kernel 名>）"""
+    return rel.startswith(VIRTUAL_GPU + "/")
+
+
+def unit_of_rel(files: dict, rel: str) -> str | None:
+    """run 里一个键的文件部分 → 它的单元：仓库里的文件查 index 的 files；?gpu/… 是虚拟单元；都不是是 None"""
+    if is_virtual_rel(rel):
+        return VIRTUAL_GPU
+    return files.get(rel)
+
 
 def unit_dir(unit: str) -> str:
     """单元所在的目录。"""
@@ -71,6 +91,8 @@ def within(x: str, d: str) -> bool:
 def label(index: dict, node: str) -> tuple[list[str], str]:
     """节点的显示段和分隔符：(["vllm_omni", "engine"], ".")。本层文件用它目录的。
     扫描端没给的，按路径切。"""
+    if is_virtual(node):
+        return [VIRTUAL_LABEL[node]], "/"
     base = residual_base(node) if is_residual(node) else node
     x = (index.get("dirs") or {}).get(base) or (index.get("packages") or {}).get(base) or {}
     if x.get("label"):
@@ -149,6 +171,8 @@ def roots_of(index: dict) -> list[str]:
 
 def node_of(index: dict, open_: set, unit: str) -> str:
     """一个单元在这个切面上落在哪个节点。"""
+    if is_virtual(unit):
+        return unit
     tree = index["dirs"]
     d = unit_dir(unit)
     chain = [d]
@@ -175,18 +199,22 @@ def members(index: dict, open_: set) -> dict[str, list]:
 
 
 def kind(index: dict, node: str) -> str:
+    if is_virtual(node):
+        return "virtual"
     if is_residual(node):
         return "residual"
     return "dir" if node in index["dirs"] else "unit"
 
 
 def is_node(index: dict, node: str) -> bool:
-    return node in index.get("packages", {}) or node in index.get("dirs", {}) \
+    return is_virtual(node) or node in index.get("packages", {}) or node in index.get("dirs", {}) \
         or (is_residual(node) and residual_base(node) in index.get("dirs", {}))
 
 
 def units_of(index: dict, node: str) -> list[str]:
     """一个节点（不论当前切面）代表哪些单元：目录是整棵子树，本层文件是直接文件，单元是它自己。"""
+    if is_virtual(node):
+        return [node]
     tree = index["dirs"]
     if is_residual(node):
         return list(tree[residual_base(node)]["units"])
@@ -203,6 +231,8 @@ def units_of(index: dict, node: str) -> list[str]:
 
 def fanout(index: dict, node: str) -> int:
     """展开这个节点后，它会变成几个节点。"""
+    if is_virtual(node):
+        return 0
     tree = index["dirs"]
     if is_residual(node):
         return len(tree[residual_base(node)]["units"])
@@ -219,6 +249,8 @@ def expandable(index: dict, node: str) -> bool:
 
 def parent_of(index: dict, node: str) -> str | None:
     """收起这个节点时，要收起的是哪个展开着的目录（或本层文件节点）。"""
+    if is_virtual(node):
+        return None
     if is_residual(node):
         return residual_base(node)
     tree = index["dirs"]
@@ -252,6 +284,11 @@ def view(index: dict, open_: set) -> dict:
     for v in nodes.values():
         o, i = v["out"], v["in"]
         v["alt"] = round((o - i) / (o + i), 4) if o + i else 0.0
+    for vu in VIRTUAL_LABEL:              # 虚拟单元：没有文件、符号和 import 边，只有叠着的 run 让它「跑到了」才画（layout 的 only）
+        of[vu] = vu
+        mem[vu] = [vu]
+        nodes[vu] = {"files": 0, "loc": 0, "classes": 0, "funcs": 0, "out": 0, "in": 0, "alt": 0.0, "kind": "virtual",
+                     "units": 1, "expandable": False, "parent": None, "fanout": 0, "label": VIRTUAL_LABEL[vu], "sep": "/"}
     return {"nodes": nodes, "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
             "members": mem, "node_of": of}
 
@@ -294,7 +331,7 @@ def disambiguate(index: dict, ids) -> dict[str, str]:
 def visible(v: dict) -> list[str]:
     """切面上真正会画出来的节点：既没符号又没连边的（只有空 __init__.py 的目录）不画。"""
     return [n for n, x in v["nodes"].items()
-            if not (x["out"] == 0 and x["in"] == 0 and x["classes"] == 0 and x["funcs"] == 0)]
+            if x["kind"] != "virtual" and not (x["out"] == 0 and x["in"] == 0 and x["classes"] == 0 and x["funcs"] == 0)]
 
 
 def depth_of(index: dict, d: str) -> int:

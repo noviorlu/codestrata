@@ -37,6 +37,7 @@ from pathlib import Path
 from . import align as _align
 from . import compat as _compat
 from . import events as _events
+from . import kernels as _kernels
 from . import seq as _seq
 from .trace import analysis as _tana
 from .trace import driver as _tdrv
@@ -348,21 +349,56 @@ def _pack_all(rd: Path, src: Path) -> bool:
     return ok
 
 
-def _build_events(rd: Path, src: Path, run: dict) -> dict | None:
+def _gpu_hook(repo: Path, src: Path, run: dict, tr: dict):
+    """src 下有 GPU 日志（trace --gpu）：给 events.build 的 gpu 参数。kernel 的计数按启动时刻落进阶段，加进 tr 的
+    phases / names（录制收尾和 runs merge 每次都从分片重算 tr，所以加一次不会重复）。没有就是 None"""
+    cu = sorted(p for p in src.iterdir() if p.is_file() and _kernels.is_log(p))
+    if not cu:
+        return None
+    sym_path = Path(repo) / ".codestrata" / "symbols.json"
+    symbols = (read_json(sym_path).get("symbols") or {}) if sym_path.is_file() else {}
+    segs = _seq.phase_segments(run, float("inf"))
+    names = list(tr["phases"]) or ["start"]
+
+    def phase_at(t: int) -> str:
+        return next((n for n, a, b in reversed(segs) if a <= t), names[0])
+
+    def hook(pid_rows, keys, native):
+        got = _kernels.attach(cu, (run.get("clock") or {}).get("mono0_ns"), pid_rows, keys, native,
+                              _kernels.resolver(symbols), phase_at)
+        for ph, c in got["counts"].items():
+            dst = tr["phases"].setdefault(ph, {"funcs": {}, "func_edges": {}, "func_lines": {}})
+            for part, xs in c.items():
+                d = dst.setdefault(part, {})
+                for k, n in xs.items():
+                    d[k] = d.get(k, 0) + n
+        tr["names"] = {**(tr.get("names") or {}), **got["names"]}
+        return got
+    return hook
+
+
+def _build_events(repo: Path, rd: Path, src: Path, run: dict, tr: dict) -> dict | None:
     """src 下有事件日志就整理成 span（派生数据，写 events/spans/）。返回 run.json 的 events 摘要。
     在打包之后调（原始日志先落进 events/raw.tar.gz）；整理失败只记下来，不耽误计数——
-    之后可以 runs merge 重来。"""
+    之后可以 runs merge 重来。有 GPU 日志的，kernel 挂进 span、计数加进 tr（_gpu_hook）。"""
     ev = sorted(p for p in src.iterdir() if p.is_file() and _is_event_log(p))
     if not ev:
         return None
     raw = rd / "events" / "raw.tar.gz"
     size = raw.stat().st_size if raw.is_file() else None      # 一律是压缩包的大小
     try:
-        idx = _events.build(ev, (run.get("clock") or {}).get("mono0_ns"), rd / "events" / "spans")
+        idx = _events.build(ev, (run.get("clock") or {}).get("mono0_ns"), rd / "events" / "spans",
+                            gpu=_gpu_hook(repo, src, run, tr))
     except Exception as e:                                     # noqa: BLE001 —— 派生数据，失败了能重来
         return {"error": f"{type(e).__name__}: {e}"[:300], "bytes": size}
-    return {"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"], "scope": idx.get("scope"),
-            "truncated": idx["truncated"], "n_procs": len({p["pid"] for p in idx["procs"]}), "bytes": size}
+    out = {"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"], "scope": idx.get("scope"),
+           "truncated": idx["truncated"], "n_procs": len({p["pid"] for p in idx["procs"]}), "bytes": size}
+    if idx.get("gpu"):
+        g = idx["gpu"]
+        out["gpu"] = {"n_kernels": sum(x["n"] for x in g["kernels"].values()), "n_names": len(g["kernels"]),
+                      "gpu_us": sum(x["gpu_us"] for x in g["kernels"].values()),
+                      "unattached": g["unattached"], "dropped": g["dropped"]}
+    return out
 
 
 def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: bool,
@@ -446,7 +482,7 @@ def finalize(repo: Path, rd: Path, tr: dict, *, stop: str, returncode: int | Non
     packed, events = True, None
     if parts.is_dir():
         packed = _pack_all(rd, parts)             # 原始数据先落包，再整理派生的 span
-        events = _build_events(rd, parts, run)
+        events = _build_events(repo, rd, parts, run, tr)
         if packed:
             shutil.rmtree(parts, ignore_errors=True)
     return derive(repo, rd, tr, run, detail, packed=packed, events=events)
@@ -636,8 +672,9 @@ def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
 
 def _sum(phases: dict) -> dict:
     out: dict[str, dict] = {"funcs": {}, "func_edges": {}}
-    if any("func_lines" in ph for ph in phases.values()):
-        out["func_lines"] = {}
+    for opt in ("func_lines", "gpu_us"):        # 只有有的 run 才有：调用行（09-30 起）、GPU 时间（trace --gpu）
+        if any(opt in ph for ph in phases.values()):
+            out[opt] = {}
     for ph in phases.values():
         for name, dst in out.items():
             for k, v in (ph.get(name) or {}).items():
@@ -877,7 +914,7 @@ def merge_run(repo: Path, ref: str) -> dict:
         packed = True
         if parts.is_dir():
             packed = _pack_all(rd, tmp)
-        events = _build_events(rd, tmp, run)
+        events = _build_events(repo, rd, tmp, run, tr)
         if parts.is_dir() and packed:
             shutil.rmtree(parts, ignore_errors=True)
     finally:

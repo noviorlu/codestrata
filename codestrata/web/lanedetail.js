@@ -38,7 +38,8 @@ window.CS = window.CS || {};
       }
       var out = T.out.filter(function (E) { return !E.dashed; }), inn = T.inn.filter(function (E) { return !E.dashed; });
       var dout = T.out.filter(function (E) { return E.dashed; }), dinn = T.inn.filter(function (E) { return E.dashed; });
-      var h = '<p class="hint">下面只算 <b>' + esc(laneName(lane)) + '</b> 这条线程里的这一份</p>'
+      var L1 = L.lanes.filter(function (x) { return x.id === lane; })[0];
+      var h = '<p class="hint">下面只算 <b>' + esc(laneName(lane)) + '</b> ' + (L1 && L1.gpu ? '这个 GPU 流' : '这条线程') + '里的这一份</p>'
         + edges(out, '调用 →', true) + edges(inn, '← 被调用', false)
         + edges(dout, '代码里没写、这次跑了 →', true) + edges(dinn, '← 代码里没写、这次跑了', false);
       if (T.links.length) h += '<div class="kv"><span>连线</span>' + T.links.sort(byN).map(function (E) {
