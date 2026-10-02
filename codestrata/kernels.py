@@ -1,25 +1,23 @@
 """GPU 录制端（trace --gpu）的导入端：cu-<pid>-<t0>.log → 计数和 span。
 
-每个 kernel 挂到发起它的那次调用上：GPU 录制端记下了启动调用（cudaLaunchKernel、cuLaunchKernel…）在哪个系统线程上、什么时候；
-hook 的 U 行把系统线程号对回线程号（keys.json 的 native），在那条线程的 span 里找启动那一刻正在跑的最里层的
-仓库函数，它就是调用方（用户 10-02 定的：不经静态的 C 链去补）。
+两件事分开，后一件不拖累前一件：
+  计数（counts）  每个 kernel 都算：次数、GPU 上跑了多久，按发起的时刻（没录到启动调用的按开始跑的时刻）落进阶段。
+                  只看 cu 日志，不靠时序事件——时序事件到了行数上限、整理失败、根本没录，kernel 的次数和 GPU 时间照样是全的。
+  调用方（attach） 发起它的那次启动调用（cudaLaunchKernel、cuLaunchKernel、cudaGraphLaunch…）在哪个系统线程上、什么时候；
+                  events.pair 重放事件时在那一刻看这个线程真实的调用栈，栈顶（正在执行、没挂起的）那个仓库函数就是调用方
+                  （用户 10-02 定的：不经静态的 C 链去补）。看不到的（启动的线程上那一刻没有仓库函数、在事件截断之后、没录事件）
+                  只算次数，没有调用边，记进 unattached。
 
 被调方（kernel）的键：
   仓库里定义的 kernel（扫描端标了 k = kernel 的符号，按限定名对）     <文件>:<定义行>，和 Python 函数一样
   仓库外的（PyTorch、cuBLAS、Triton……）                               ?gpu/<名字>:0，都落到「GPU · 仓库外」这个虚拟节点上（cut.VIRTUAL_GPU）
 名字是 CUPTI 给的还原后的名字去掉返回类型、模板参数、参数表（`void at::native::reduce_kernel<…>(…)` → `at::native::reduce_kernel`）。
 
-产出（attach 返回）：
-  rows    {pid: [span 行]}：和 CPU 的 span 同一种 9 列，t0 是**启动时刻**（时间顺序按发起排），dur 到 GPU 上跑完，
-          tid 是发起它的线程、parent 是那一刻正在跑的 span、depth 比它深一层；第 10 列 [设备, 流, 晚了多少 µs 才开始在 GPU 上跑]
-  counts  {阶段: {funcs, func_edges, func_lines, gpu_us}}：按启动时刻落进阶段；调用行是 0（不知道是哪一行：没录 Python 调进原生代码的那一跳）；
-          gpu_us {kernel 键: 在 GPU 上一共跑了多少 µs}
-  names   {键: 限定名}
-  summary {kernels: {键: {n, gpu_us}}, unattached: 找不到调用方的 kernel 数, dropped: CUPTI 丢掉的记录数, procs: [pid]}
+用法（runs）：g = Gpu(日志, mono0_ns, resolver(符号表), phase_at)；g.counts() 加进计数；events.build(…, gpu=g) 重放时
+按 g.probes 找调用方、调 g.attach 拿 GPU 的行；之后 g.edges 是调用边的计数、g.summary() 是摘要。
 """
 from __future__ import annotations
 
-import bisect
 from pathlib import Path
 
 from . import cut as _cut
@@ -116,79 +114,92 @@ def resolver(symbols: dict):
     return resolve
 
 
-class _Active:
-    """一条线程上某一时刻正在跑的最里层的 span。线程上的 span 是嵌套的（调用栈），按开始时刻排好后，从 t 往前找到的
-    第一个还没结束的就是最里层的"""
+def _ph() -> dict:
+    return {"funcs": {}, "func_edges": {}, "func_lines": {}, "gpu_us": {}}
 
-    def __init__(self, rows: list):
-        self.by_tid: dict[int, tuple[list, list]] = {}
-        tmp: dict[int, list] = {}
-        for i, r in enumerate(rows):
-            if r is None:
+
+class Gpu:
+    """一个 run 的全部 GPU 日志。kernels：[(编号, pid, 起 ns, 止 ns, 设备, 流, 键, 启动调用 (起 ns, 系统线程号) 或 None)]"""
+
+    def __init__(self, logs: list[Path], mono0_ns: int | None, resolve, phase_at):
+        self.base = mono0_ns or 0
+        self.phase_at = phase_at
+        self.names: dict[str, str] = {}
+        self.kernels: list[tuple] = []
+        self.dropped = 0
+        for path in sorted(logs, key=lambda p: p.name):
+            log = parse(path)
+            self.dropped += log["dropped"]
+            if log["pid"] is None:
                 continue
-            end = r[0] + r[1] if r[1] >= 0 else float("inf")
-            tmp.setdefault(r[2], []).append((r[0], end, i))
-        for tid, xs in tmp.items():
-            xs.sort()
-            self.by_tid[tid] = ([x[0] for x in xs], xs)
+            for start, end, dev, stream, corr, name in log["kernels"]:
+                key, qname = resolve(name)
+                self.names[key] = qname
+                api = log["api"].get(corr)
+                self.kernels.append((len(self.kernels), log["pid"], start, end, dev, stream, key,
+                                     (api[0], api[2]) if api else None))
+        self.found: dict[int, tuple] = {}         # 编号 → (调用方键, 发起它的线程号, 父 span 的号, 父 span 的深度)：attach 填
+        self.edges: dict[str, dict] = {}          # 阶段 → {func_edges, func_lines}：attach 填，events.build 成功之后才加进计数
 
-    def at(self, tid: int, t: float) -> int | None:
-        hit = self.by_tid.get(tid)
-        if not hit:
-            return None
-        starts, xs = hit
-        i = bisect.bisect_right(starts, t) - 1
-        while i >= 0:
-            if xs[i][1] >= t:
-                return xs[i][2]
-            i -= 1
-        return None
+    def _t_us(self, k: tuple) -> int:
+        """发起的时刻（µs，相对 run 起点）；没录到启动调用的用开始跑的时刻"""
+        return ((k[7][0] if k[7] else k[2]) - self.base) // 1000
 
+    def counts(self) -> dict:
+        """{阶段: {funcs: {kernel 键: 次数}, gpu_us: {kernel 键: µs}}}：每个 kernel 都算，不管找没找到调用方"""
+        out: dict[str, dict] = {}
+        for k in self.kernels:
+            ph = out.setdefault(self.phase_at(self._t_us(k)), {"funcs": {}, "gpu_us": {}})
+            key = k[6]
+            ph["funcs"][key] = ph["funcs"].get(key, 0) + 1
+            ph["gpu_us"][key] = ph["gpu_us"].get(key, 0) + max(0, (k[3] - k[2]) // 1000)
+        return out
 
-def attach(logs: list[Path], mono0_ns: int | None, pid_rows, keys: list[str], native: dict,
-           resolve, phase_at) -> dict:
-    """把 GPU 日志挂到 CPU 的 span 上。pid_rows(pid) → 这个进程的 span 行；keys 是 keys.json 的键表（会往后加 kernel 的键）；
-    native 是 keys.json 的 native；resolve 见 resolver；phase_at(t_us) → 那一刻的阶段名"""
-    kidx = {k: i for i, k in enumerate(keys)}
-    out = {"rows": {}, "counts": {}, "names": {}, "summary": {"kernels": {}, "unattached": 0, "dropped": 0, "procs": []}}
-    base = mono0_ns or 0
-    for path in sorted(logs, key=lambda p: p.name):
-        log = parse(path)
-        out["summary"]["dropped"] += log["dropped"]
-        pid = log["pid"]
-        if pid is None or not log["kernels"]:
-            continue
-        out["summary"]["procs"].append(pid)
-        rows = pid_rows(pid)
-        active = _Active(rows)
-        tid_of = {v: int(k) for k, v in (native.get(str(pid)) or {}).items()}
-        new = out["rows"].setdefault(pid, [])
-        for start, end, dev, stream, corr, name in log["kernels"]:
-            key, qname = resolve(name)
-            out["names"][key] = qname
-            st = out["summary"]["kernels"].setdefault(key, {"n": 0, "gpu_us": 0})
-            st["n"] += 1
-            st["gpu_us"] += max(0, (end - start) // 1000)
-            api = log["api"].get(corr)
-            tid = tid_of.get(api[2]) if api else None
-            t_launch = (api[0] - base) // 1000 if api else None
-            parent = active.at(tid, t_launch) if tid is not None else None
-            if parent is None:
-                out["summary"]["unattached"] += 1
+    def probes(self) -> dict[int, list]:
+        """{pid: [(启动调用的时刻 ns（monotonic，绝对）, 系统线程号, 编号)]}：events.pair 重放时在这些时刻看栈"""
+        out: dict[int, list] = {}
+        for k in self.kernels:
+            if k[7]:
+                out.setdefault(k[1], []).append((k[7][0], k[7][1], k[0]))
+        return out
+
+    def attach(self, found: dict, keys: list[str], kidx: dict) -> dict:
+        """found：{编号: (调用方键, 线程号, 父 span 的号, 父 span 的深度)}（events.build 重放出来的）→ {pid: [GPU 的行]}。
+        行是 [发起时刻, 到跑完的时长, 线程号, 深度, 调用方键下标, kernel 键下标, 1, 0, 父 span 的号, [设备, 流, 晚了多少 µs]]，
+        keys / kidx 由这里往后加 kernel 的键。调用边按阶段记进 self.edges，调用行一律是 0（不知道是哪一行）"""
+        self.found = found
+        rows: dict[int, list] = {}
+        for k in self.kernels:
+            hit = found.get(k[0])
+            if hit is None:
                 continue
-            p = rows[parent]
-            caller = keys[p[5]]
+            caller, tid, parent, depth = hit
+            key = k[6]
             if key not in kidx:
                 kidx[key] = len(keys)
                 keys.append(key)
-            t_end = (end - base) // 1000
-            new.append([t_launch, max(0, t_end - t_launch), tid, p[3] + 1, p[5], kidx[key], 1, 0, parent,
-                        [dev, stream, max(0, (start - base) // 1000 - t_launch)]])
-            ph = out["counts"].setdefault(phase_at(t_launch), {"funcs": {}, "func_edges": {}, "func_lines": {}, "gpu_us": {}})
-            ph["gpu_us"][key] = ph["gpu_us"].get(key, 0) + max(0, (end - start) // 1000)
+            t = self._t_us(k)
+            rows.setdefault(k[1], []).append(
+                [t, max(0, (k[3] - self.base) // 1000 - t), tid, depth + 1, kidx[caller], kidx[key], 1, 0, parent,
+                 [k[4], k[5], max(0, (k[2] - self.base) // 1000 - t)]])
+            ph = self.edges.setdefault(self.phase_at(t), {"func_edges": {}, "func_lines": {}})
             pair = f"{caller}|{key}"
-            ph["funcs"][key] = ph["funcs"].get(key, 0) + 1
             ph["func_edges"][pair] = ph["func_edges"].get(pair, 0) + 1
-            lk = f"{pair}|0"
-            ph["func_lines"][lk] = ph["func_lines"].get(lk, 0) + 1
-    return out
+            ph["func_lines"][f"{pair}|0"] = ph["func_lines"].get(f"{pair}|0", 0) + 1
+        return rows
+
+    def summary(self) -> dict:
+        """run.json 的 gpu：{n_kernels, n_names, gpu_us, unattached（没找到调用方的，只算次数）, dropped, procs}"""
+        return {"n_kernels": len(self.kernels), "n_names": len({k[6] for k in self.kernels}),
+                "gpu_us": sum(max(0, (k[3] - k[2]) // 1000) for k in self.kernels),
+                "unattached": len(self.kernels) - len(self.found), "dropped": self.dropped,
+                "procs": sorted({k[1] for k in self.kernels})}
+
+    def kernel_table(self) -> dict:
+        """{kernel 键: {n, gpu_us}}：整个 run 的（events 的 index.json 里存一份）"""
+        out: dict[str, dict] = {}
+        for k in self.kernels:
+            x = out.setdefault(k[6], {"n": 0, "gpu_us": 0})
+            x["n"] += 1
+            x["gpu_us"] += max(0, (k[3] - k[2]) // 1000)
+        return out

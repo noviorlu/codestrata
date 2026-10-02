@@ -154,17 +154,38 @@ def parse(path: Path) -> dict:
     return out
 
 
-def pair(log: dict) -> list[list]:
+def pair(log: dict, probes: dict | None = None, hits: dict | None = None) -> list[list]:
     """一个进程映像的事件 → span（还没折叠）：[t0, t1, tid, depth, a, b, n_susp, n_children, 父 span, 段, span 号]，
     t0 / t1 相对这个进程映像的 t0（微秒），a / b 是进程内的键号；没返回的 t1 = None。
     「段」：这个线程上每发生一次挂起或恢复加一——fold 只合同一个父 span 下、同一段里的兄弟。
-    落盘重试可能把一批行写两遍：重复的调用、已经挂起的再挂起、已经在跑的再恢复，都不算。"""
+    落盘重试可能把一批行写两遍：重复的调用、已经挂起的再挂起、已经在跑的再恢复，都不算。
+    probes：{线程号: [(相对这个映像 t0 的 ns, 编号)]（按时刻排好）}——在这些时刻看这个线程真实的调用栈（GPU 的启动调用，
+    kernels.Gpu）：栈顶那个正在执行（没挂起）的 span 号记进 hits[编号]，栈是空的记 None。同一微秒里的调用 / 恢复算在它之前、
+    返回 / 挂起算在它之后（发起一次启动要好几微秒，调用它的函数一定已经进去了）。日志截断了的，最后一个事件之后的都是 None"""
     spans: dict[int, list] = {}
     active: dict[int, list[int]] = {}             # tid → 正在执行的 span（按进入顺序）
     where: dict[int, int] = {}                    # span → 它现在挂在哪个线程的 active 上（挂起时没有）
     epoch: dict[int, int] = {}
     order: list[int] = []
+    pq = {tid: [list(xs), 0] for tid, xs in (probes or {}).items()}
+
+    def look(tid: int, before_ns: float) -> None:
+        q = pq.get(tid)
+        if not q:
+            return
+        xs, i = q
+        st = active.get(tid)
+        while i < len(xs) and xs[i][0] < before_ns:
+            if hits.get(xs[i][1]) is None:        # 系统线程号复用时一个探针会排进几个线程：哪个栈上有就算哪个
+                hits[xs[i][1]] = st[-1] if st else None
+            i += 1
+        q[1] = i
+
+    last = 0
     for tag, t, tid, sp, a, b in log["ev"]:
+        if pq:
+            look(tid, t * 1000 if tag in ("C", "S") else (t + 1) * 1000)
+            last = max(last, t)
         if tag == "C":
             if sp in spans:                       # 重复的调用行（落盘重试写了两遍）：只认第一次
                 continue
@@ -198,16 +219,18 @@ def pair(log: dict) -> list[list]:
             active.setdefault(tid, []).append(sp)
             where[sp] = tid
             epoch[tid] = epoch.get(tid, 0) + 1
+    for tid in pq:                                # 最后一个事件之后：还在栈上的就是调用方（没截断的话）
+        look(tid, (last + 1) * 1000 if log.get("truncated") else float("inf"))
     return [spans[sp] for sp in order]
 
 
-def fold(spans: list[list]) -> list[list]:
+def fold(spans: list[list], alias: dict | None = None) -> list[list]:
     """第一级折叠。输入按 t0 排好的同一个线程的 span（pair 的输出）；
     输出 [t0, t1, tid, depth, a, b, rep, n_susp, 父 span 号, span 号]（合起来的那一行用第一次的号：叶子没有孩子，
     不会被谁当父亲）。只合同一个父 span 下紧挨着的同步叶子（没挂起过、没有记下的子调用）：它们之间夹着的只能是
     没记下的工作（递归自调用、老 run 里同文件的调用、仓库外的代码）。按父 span 认「兄弟」而不按深度——同一线程上交错执行的两个协程，各自的
     子调用深度相同，但不是兄弟；还要在同一「段」里（中间这个线程上没有挂起 / 恢复），否则
-    合出来的时间窗会盖住别的协程在这期间的调用。"""
+    合出来的时间窗会盖住别的协程在这期间的调用。alias 给了的话记下被合掉的 span 号 → 合进的那一行的号。"""
     out: list[list] = []
     cand: dict[tuple, int | None] = {}            # (父 span, 段) → 这个父亲最近的一个孩子（out 里的下标）
     for t0, t1, tid, depth, a, b, n_susp, n_child, parent, ep, sp in spans:
@@ -217,6 +240,8 @@ def fold(spans: list[list]) -> list[list]:
         if leaf and c is not None and out[c][4] == a and out[c][5] == b:
             out[c][6] += 1
             out[c][1] = t1
+            if alias is not None:
+                alias[sp] = out[c][9]
             continue
         out.append([t0, t1, tid, depth, a, b, 1, n_susp, parent, sp])
         cand[key] = len(out) - 1 if leaf else None
@@ -226,8 +251,8 @@ def fold(spans: list[list]) -> list[list]:
 def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> dict:
     """把一个 run 的所有 ev 日志整理成 span，写进 out_dir（先写到旁边的临时目录，再整个换上）。
     返回 index（也写进 out_dir/index.json）。
-    gpu(pid_rows, keys, native) → {rows: {pid: [行]}, summary}：GPU 的行（kernels.attach 的格式，parent 是 pid_rows(pid)
-    里的下标），keys 由它往后加 kernel 的键"""
+    gpu：kernels.Gpu（trace --gpu 的 run）——重放事件时按它的 probes 在每次启动 kernel 的那一刻看发起它的线程的真实调用栈，
+    栈顶的 span 就是调用方，交给 gpu.attach 换成 GPU 的行，和 CPU 的排在一起"""
     keys: list[str] = []
     kidx: dict[str, int] = {}
     threads: dict[str, dict] = {}
@@ -239,6 +264,15 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
     n_lines = 0
     tid_base: dict[int, int] = {}                 # 同一个 pid 的多个映像（exec 前后）线程号接着编
     images: list[tuple] = []                      # (映像名, pid, 线程号偏移, 起点, log)：最后整理「谁起了谁」用
+    probes = gpu.probes() if gpu is not None else {}
+    found: dict[int, tuple] = {}                  # 探针编号 → (调用方键, 线程号, 父 span 的号, 父 span 的深度)
+    starts: dict[int, list] = {}                  # pid → 各映像的起点（ns）：exec 前后的探针分给各自的映像
+    for path in files:
+        try:
+            pid_s, t0_s = path.name[len("ev-"):-len(".log")].split("-")[:2]
+            starts.setdefault(int(pid_s), []).append(int(t0_s))
+        except ValueError:
+            pass
     for path in sorted(files, key=lambda p: p.name):
         log = parse(path)
         img = path.name                           # 同一个 pid 的几个映像（exec 前后）span 号各自从 1 数
@@ -260,13 +294,26 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
         threads.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["threads"].items()})
         if log["native"]:
             native.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["native"].items()})
-        raw = pair(log)
+        mine, hits, alias = None, {}, {}
+        if probes.get(log["pid"]) and log["t0"] is not None:
+            nxt = min((x for x in starts.get(log["pid"], []) if x > log["t0"]), default=None)
+            local: dict[int, list] = {}
+            for tid, ntid in log["native"].items():
+                local.setdefault(ntid, []).append(tid)
+            mine = {}
+            for t_ns, ntid, i in probes[log["pid"]]:
+                if t_ns >= log["t0"] and (nxt is None or t_ns < nxt):
+                    for tid in local.get(ntid, ()):
+                        mine.setdefault(tid, []).append((t_ns - log["t0"], i))
+            for xs in mine.values():
+                xs.sort()
+        raw = pair(log, mine, hits)
         by_tid: dict[int, list] = {}
         for s in raw:
             by_tid.setdefault(s[2], []).append(s)
         rows = []
         for tid, ss in by_tid.items():
-            for t0, t1, tid_, depth, a, b, rep, n_susp, parent, sp in fold(sorted(ss, key=lambda s: s[0])):
+            for t0, t1, tid_, depth, a, b, rep, n_susp, parent, sp in fold(sorted(ss, key=lambda s: s[0]), alias):
                 ra, rb = remap.get(a), remap.get(b)
                 if ra is None or rb is None:           # 键的登记行丢了：指到 "?"，不用 -1（keys[-1] 会静默取到最后一个）
                     if "?" not in kidx:
@@ -277,16 +324,21 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
                 rows.append([base + t0, -1 if t1 is None else t1 - t0, tid_ + off, depth, ra, rb, rep, n_susp,
                              (img, parent) if parent else None, (img, sp)])
         per_pid.setdefault(log["pid"], []).extend(rows)
+        if hits:
+            by_sp = {s[10]: s for s in raw}
+            for i, sp in hits.items():
+                s = by_sp.get(sp) if sp is not None else None
+                if s is not None and remap.get(s[5]) is not None:
+                    found[i] = (keys[remap[s[5]]], s[2] + off, (img, alias.get(sp, sp)), s[3])
         procs.append({"pid": log["pid"], "ppid": log["ppid"], "t0_us": base, "n_events": len(log["ev"]),
                       "n_spans": len(rows), "truncated": log["truncated"]})
     gpu_summary = None
     if gpu is not None:
-        got = gpu(lambda pid: per_pid.get(pid, []), keys, native)
-        gpu_summary = got.get("summary")
-        for pid, grows in got["rows"].items():
-            mine = per_pid.setdefault(pid, [])
-            for i, r in enumerate(grows):             # parent 换成那一行的 span 号；自己的号是 ("gpu", i)
-                mine.append([*r[:8], mine[r[8]][9] if r[8] is not None else None, ("gpu", i), r[9]])
+        for pid, grows in gpu.attach(found, keys, kidx).items():
+            rows = per_pid.setdefault(pid, [])
+            for i, r in enumerate(grows):             # parent 已经是 span 号；自己的号是 ("gpu", i)
+                rows.append([*r[:9], ("gpu", i), r[9]])
+        gpu_summary = {**gpu.summary(), "kernels": gpu.kernel_table()}
     tmp = out_dir.with_name(out_dir.name + f".{os.getpid()}.tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)

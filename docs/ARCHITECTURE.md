@@ -93,12 +93,12 @@ flowchart LR
 | `layout.py` | 649 | 依赖分层 + 横向排序 + 框，出坐标；分层（`weighted_layers`）、框里的名字（`name_in`）、框头宽度（`head_w`）分列也用 |
 | `trace/hook.py` | 1007 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
-| `kernels.py` | 194 | `trace --gpu` 的导入端：读 `cu-*.log`，按启动调用的系统线程号和时刻把每个 kernel 挂到那一刻最里层的 Python span 下，仓库外的 kernel 落到虚拟单元 `?gpu`（`cut.VIRTUAL_GPU`）；`runs` 经 `events.build(gpu=…)` 调它，计数加进 counts |
+| `kernels.py` | 205 | `trace --gpu` 的导入端（`Gpu`）：读 `cu-*.log`；kernel 的次数和 GPU 时间直接从日志算；给 `events.pair` 启动调用的时刻和系统线程号（`probes`），重放时在那一刻看真实的栈找调用方，再换成 GPU 的行（`attach`）；仓库外的 kernel 落到虚拟单元 `?gpu`（`cut.VIRTUAL_GPU`） |
 | `trace/gpu.py` | 73 | `trace --gpu`：找带 CUPTI 的 CUDA 工具链、用 g++ 现编 GPU 录制端（按哈希缓存），给出要注入的 `CUDA_INJECTION64_PATH` |
 | `trace/cupti_inject.cpp` | 152 | GPU 录制端（C++，CUDA 载进被录的进程）：CUPTI activity 记 kernel 和发起它的启动调用，写 `cu-*.log`；时刻用 CLOCK_MONOTONIC |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
-| `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
-| `events.py` | 399 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
+| `runs.py` | 1048 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
+| `events.py` | 472 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
 | `seq.py` | 446 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
 | `path.py` | 311 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
 | `lanes.py` | 624 | 运行时按进程 · 线程分列：每列这条线程调到的切面节点和边（每列可以有自己的切面，`cuts`）、调到的单元、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的；GPU kernel 按设备 · 流各一列），列之间谁起了谁、谁回收了谁、谁把数据交给谁、谁启动了哪个 kernel，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
@@ -204,7 +204,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
   构造只算一次、老 run 和时间段的调用行、请求路径（`test_request_path`）、分层方向、分列（`test_lanes`：起 / 收、谁把数据交给谁、时间段；
   `test_lanes_percut`：每列各自的切面、`place`、框、名字，在一个有几层目录、两条线程的仓库上；`test_lanes_wrap`：同一层子模块多于 5 个折行）。
 - `test_native_scan.py`：C / C++ / CUDA 的扫描端（命名空间、类、重载、kernel、按名字对上 / 不连、启动、include、`__align__` 和 `#pragma`）和它装进 scan 的样子；没装 tree-sitter 时原生文件照旧挂成 aux。
-- `test_gpu.py`：GPU 录制（找工具链、hook 的系统线程号）、导入端（手写的日志：kernel 挂到哪个 span、仓库里 / 外的键、虚拟节点的叠加和边的说明）；给了 `CODESTRATA_TEST_CUDA_PY`（装了 CUDA 版 torch 的 Python）时真录一个小程序，核对 kernel 和启动调用的关联号、线程号。
+- `test_gpu.py`：GPU 录制（找工具链、hook 的系统线程号）、导入端（手写的日志：kernel 挂到哪个 span——按重放出来的真实的栈，折叠的连续调用、挂起的生成器、截断之后都测了；次数不靠时序事件；仓库里 / 外的键、虚拟节点的叠加和边的说明）；给了 `CODESTRATA_TEST_CUDA_PY`（装了 CUDA 版 torch 的 Python）时真录一个小程序，核对 kernel 和启动调用的关联号、线程号。
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。

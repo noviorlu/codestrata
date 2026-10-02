@@ -79,7 +79,10 @@ def _gpu_repo() -> tuple:
     """_DYN 加一个 .cu 文件，录一次（CPU），再手写一份 GPU 日志：Net.forward 里各启动一次仓库里的 k::scale 和仓库外的
     at::native::foo（三次 step 各一次），runs merge 把它们挂上去。返回 (仓库, run id)"""
     repo = tmpdir("cs-browser-gpu-") / "gpurepo"
-    for rel, src in {**_DYN, "dyn/csrc/k.cu": "namespace k {\n__global__ void scale(float* x) { x[0] *= 2; }\n}\n"}.items():
+    # forward 睡 2 ms：手写的启动时刻放在它中间，离它的进 / 出都远（事件的时刻是微秒）
+    net = _DYN["dyn/models/net.py"].replace("        return x * self.k\n", "        import time\n        time.sleep(0.002)\n        return x * self.k\n")
+    for rel, src in {**_DYN, "dyn/models/net.py": net,
+                     "dyn/csrc/k.cu": "namespace k {\n__global__ void scale(float* x) { x[0] *= 2; }\n}\n"}.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(src)
     cs("scan", repo)
@@ -161,7 +164,8 @@ def fixture() -> dict:
     srv3, base3 = _serve(dyn)
     gpu, gpu_run = _gpu_repo()
     srv4, base4 = _serve(gpu)
-    _FX.update(srv4=srv4, base4=base4, gpu=gpu_run)
+    from codestrata import native_scan
+    _FX.update(srv4=srv4, base4=base4, gpu=gpu_run, gpu_native=native_scan.available() is None)
     _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"), dynn=_run_id(dyn, "dynne"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
                a=_run_id(repo, "truth"), b=_run_id(repo, "offline"), an=_run_id(repo, "truthne"), bn=_run_id(repo, "offlinene"),

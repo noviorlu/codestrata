@@ -349,9 +349,10 @@ def _pack_all(rd: Path, src: Path) -> bool:
     return ok
 
 
-def _gpu_hook(repo: Path, src: Path, run: dict, tr: dict):
-    """src 下有 GPU 日志（trace --gpu）：给 events.build 的 gpu 参数。kernel 的计数按启动时刻落进阶段，加进 tr 的
-    phases / names（录制收尾和 runs merge 每次都从分片重算 tr，所以加一次不会重复）。没有就是 None"""
+def _load_kernels(repo: Path, src: Path, run: dict, tr: dict):
+    """src 下有 GPU 日志（trace --gpu）：kernels.Gpu，没有是 None。kernel 的次数和 GPU 时间（按发起的时刻落进阶段）
+    当场加进 tr 的 phases / names——只看 cu 日志，时序事件没有、截断了、整理失败都不影响（录制收尾和 runs merge 每次都从
+    分片重算 tr，所以加一次不会重复）。调用边要等 events.build 重放完，见 _build_events"""
     cu = sorted(p for p in src.iterdir() if p.is_file() and _kernels.is_log(p))
     if not cu:
         return None
@@ -363,48 +364,46 @@ def _gpu_hook(repo: Path, src: Path, run: dict, tr: dict):
     def phase_at(t: int) -> str:
         return next((n for n, a, b in reversed(segs) if a <= t), names[0])
 
-    def hook(pid_rows, keys, native):
-        got = _kernels.attach(cu, (run.get("clock") or {}).get("mono0_ns"), pid_rows, keys, native,
-                              _kernels.resolver(symbols), phase_at)
-        for ph, c in got["counts"].items():
-            dst = tr["phases"].setdefault(ph, {"funcs": {}, "func_edges": {}, "func_lines": {}})
-            for part, xs in c.items():
-                d = dst.setdefault(part, {})
-                for k, n in xs.items():
-                    d[k] = d.get(k, 0) + n
-        tr["names"] = {**(tr.get("names") or {}), **got["names"]}
-        return got
-    return hook
+    g = _kernels.Gpu(cu, (run.get("clock") or {}).get("mono0_ns"), _kernels.resolver(symbols), phase_at)
+    _add_counts(tr, g.counts())
+    tr["names"] = {**(tr.get("names") or {}), **g.names}
+    return g
 
 
-def _build_events(repo: Path, rd: Path, src: Path, run: dict, tr: dict) -> dict | None:
-    """src 下有事件日志就整理成 span（派生数据，写 events/spans/）。返回 run.json 的 events 摘要。
-    在打包之后调（原始日志先落进 events/raw.tar.gz）；整理失败只记下来，不耽误计数——
-    之后可以 runs merge 重来。有 GPU 日志的，kernel 挂进 span、计数加进 tr（_gpu_hook）。"""
+def _add_counts(tr: dict, phases: dict) -> None:
+    for ph, c in phases.items():
+        dst = tr["phases"].setdefault(ph, {"funcs": {}, "func_edges": {}})
+        for part, xs in c.items():
+            d = dst.setdefault(part, {})
+            for k, n in xs.items():
+                d[k] = d.get(k, 0) + n
+
+
+def _build_events(repo: Path, rd: Path, src: Path, run: dict, tr: dict) -> tuple[dict | None, dict | None]:
+    """src 下有事件日志就整理成 span（派生数据，写 events/spans/）。返回 (run.json 的 events 摘要, gpu 摘要)。
+    在打包之后调（原始日志先落进 events/raw.tar.gz）；整理失败只记下来，不耽误计数——之后可以 runs merge 重来。
+    有 GPU 日志的：kernel 的次数先加进 tr（_load_kernels）；重放事件时按真实的栈找到调用方的，整理成功之后再把调用边加进 tr"""
+    g = _load_kernels(repo, src, run, tr)
     ev = sorted(p for p in src.iterdir() if p.is_file() and _is_event_log(p))
     if not ev:
-        return None
+        return None, (g.summary() if g else None)
     raw = rd / "events" / "raw.tar.gz"
     size = raw.stat().st_size if raw.is_file() else None      # 一律是压缩包的大小
     try:
-        idx = _events.build(ev, (run.get("clock") or {}).get("mono0_ns"), rd / "events" / "spans",
-                            gpu=_gpu_hook(repo, src, run, tr))
+        idx = _events.build(ev, (run.get("clock") or {}).get("mono0_ns"), rd / "events" / "spans", gpu=g)
     except Exception as e:                                     # noqa: BLE001 —— 派生数据，失败了能重来
-        return {"error": f"{type(e).__name__}: {e}"[:300], "bytes": size}
-    out = {"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"], "scope": idx.get("scope"),
-           "truncated": idx["truncated"], "n_procs": len({p["pid"] for p in idx["procs"]}), "bytes": size}
-    if idx.get("gpu"):
-        g = idx["gpu"]
-        out["gpu"] = {"n_kernels": sum(x["n"] for x in g["kernels"].values()), "n_names": len(g["kernels"]),
-                      "gpu_us": sum(x["gpu_us"] for x in g["kernels"].values()),
-                      "unattached": g["unattached"], "dropped": g["dropped"]}
-    return out
+        return {"error": f"{type(e).__name__}: {e}"[:300], "bytes": size}, (g.summary() if g else None)
+    if g:
+        _add_counts(tr, g.edges)
+    return ({"n_lines": idx["n_lines"], "n_spans": idx["n_spans"], "n_calls": idx["n_calls"], "scope": idx.get("scope"),
+             "truncated": idx["truncated"], "n_procs": len({p["pid"] for p in idx["procs"]}), "bytes": size},
+            g.summary() if g else None)
 
 
 def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: bool,
-           events: dict | None = None) -> dict:
+           events: dict | None = None, gpu: dict | None = None) -> dict:
     """派生数据：计数、各阶段、状态。录制收尾和 runs merge 都走这里；录制时的数据
-    （detail 里除 procs 以外的字段、files/）不动。"""
+    （detail 里除 procs 以外的字段、files/）不动。gpu 是 trace --gpu 的摘要（kernels.Gpu.summary），写进 run.json 的 gpu"""
     phases = tr["phases"]
     _write(rd / "counts.json.gz", {"phases": phases, "names": tr.get("names") or {}}, gz=True)
     detail = {**detail, "procs": _procs_of(tr, (run.get("clock") or {}).get("mono0_ns"))}
@@ -449,6 +448,8 @@ def derive(repo: Path, rd: Path, tr: dict, run: dict, detail: dict, *, packed: b
     if events is not None:
         run["events"] = events
     run.setdefault("events", None)
+    if gpu is not None:
+        run["gpu"] = gpu
     run.update({
         "status": status, "problems": problems,
         "phases": [{"name": n, "t_us": t_of.get(n), "n_funcs": len(phases[n]["funcs"]),
@@ -479,13 +480,13 @@ def finalize(repo: Path, rd: Path, tr: dict, *, stop: str, returncode: int | Non
     detail = (read_json(rd / "detail.json") if (rd / "detail.json").is_file() else
               capture(repo, rd, tr, run, leftovers=leftovers, attach=attach))
     parts = rd / "parts"
-    packed, events = True, None
+    packed, events, gpu = True, None, None
     if parts.is_dir():
         packed = _pack_all(rd, parts)             # 原始数据先落包，再整理派生的 span
-        events = _build_events(repo, rd, parts, run, tr)
+        events, gpu = _build_events(repo, rd, parts, run, tr)
         if packed:
             shutil.rmtree(parts, ignore_errors=True)
-    return derive(repo, rd, tr, run, detail, packed=packed, events=events)
+    return derive(repo, rd, tr, run, detail, packed=packed, events=events, gpu=gpu)
 
 
 # ---------------------------------------------------------------- 迁移老的 trace-<case>.json
@@ -914,12 +915,12 @@ def merge_run(repo: Path, ref: str) -> dict:
         packed = True
         if parts.is_dir():
             packed = _pack_all(rd, tmp)
-        events = _build_events(repo, rd, tmp, run, tr)
+        events, gpu = _build_events(repo, rd, tmp, run, tr)
         if parts.is_dir() and packed:
             shutil.rmtree(parts, ignore_errors=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    return derive(repo, rd, tr, run, detail, packed=packed, events=events)
+    return derive(repo, rd, tr, run, detail, packed=packed, events=events, gpu=gpu)
 
 
 # 复刻时要一样、但不会出现在命令行里的环境变量：被 trace 的命令继承 shell 的整个环境。

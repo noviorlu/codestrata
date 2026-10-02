@@ -87,39 +87,47 @@ def test_kernel_name():
 SYMS = {"pkg/csrc/kern.cu#k::main_kernel": {"k": "kernel", "n": "k::main_kernel", "f": "pkg/csrc/kern.cu", "l": 16}}
 
 
-def _gpu_run(t):
-    """手写的一次录制：主线程（系统线程号 4242）里 go 调 launch；三个 kernel——launch 里发起的仓库内 kernel、
-    go 里发起的仓库外 kernel、找不到启动调用的一个"""
-    ev = t / "ev-100-1000000000.log"
-    ev.write_text("H 100 1000000000 1\nN 1 MainThread\nU 1 4242\n"
-                  "K 1 pkg/run.py:0\nK 2 pkg/run.py:1\nK 3 pkg/lib.py:3\n"
-                  "C 10 1 1 1 2\nC 20 1 2 2 3\nR 50 1 2\nR 100 1 1\n")
-    cu = t / "cu-100-1000000000.log"
-    cu.write_text("H 100 1000000000\n"
-                  "A 1000030000 1000031000 4242 7\tcudaLaunchKernel\n"
-                  "K 1000040000 1000045000 0 7 7\t_Z\tvoid k::main_kernel(float*)\n"
-                  "A 1000015000 1000016000 4242 8\tcuLaunchKernel\n"
-                  "K 1000017000 1000019000 0 7 8\t_Z\tvoid at::native::foo<float>(float*)\n"
-                  "K 1000060000 1000061000 0 7 9\t_Z\tvoid at::native::foo<float>(float*)\n"
-                  "D 2\n")
-    got = {}
+T0 = 1000000000
 
-    def hook(pid_rows, keys, native):
-        got.update(kernels.attach([cu], 1000000000, pid_rows, keys, native, kernels.resolver(SYMS), lambda t: "start"))
-        return got
-    idx = events.build([ev], 1000000000, t / "spans", gpu=hook)
-    return idx, got
+
+def _cu(t, launches, extra=()):
+    """手写一份 cu 日志：launches 是 [(启动时刻 µs, 系统线程号, 名字)]，每个 kernel 在启动后 10 µs 开始、跑 5 µs；
+    extra 是没有启动调用的 kernel 名字（开始于 60 µs）"""
+    lines = [f"H 100 {T0}"]
+    for i, (us, ntid, name) in enumerate(launches):
+        a = T0 + us * 1000
+        lines += [f"A {a} {a + 1000} {ntid} {i + 1}\tcudaLaunchKernel", f"K {a + 10000} {a + 15000} 0 7 {i + 1}\t_Z\t{name}"]
+    for j, name in enumerate(extra):
+        lines.append(f"K {T0 + 60000} {T0 + 61000} 0 7 {900 + j}\t_Z\t{name}")
+    lines.append("D 2")
+    p = t / f"cu-100-{T0}.log"
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+def _gpu_run(t, ev_text, launches, extra=()):
+    """手写的事件日志 + cu 日志 → events.build（gpu=kernels.Gpu）。返回 (index, Gpu, keys, 全部行)"""
+    import gzip
+    import json
+    ev = t / f"ev-100-{T0}.log"
+    ev.write_text(f"H 100 {T0} 1\nN 1 MainThread\nU 1 4242\n" + ev_text)
+    g = kernels.Gpu([_cu(t, launches, extra)], T0, kernels.resolver(SYMS), lambda us: "start")
+    idx = events.build([ev], T0, t / "spans", gpu=g)
+    keys = json.loads((t / "spans" / "keys.json").read_text())["keys"]
+    rows = [json.loads(ln) for c in idx["chunks"] for ln in gzip.decompress((t / "spans" / c["chunk"]).read_bytes()).splitlines()]
+    return idx, g, keys, rows
+
+
+FOO, MAIN_K = "void at::native::foo<float>(float*)", "void k::main_kernel(float*)"
 
 
 def test_attach_kernels():
-    """kernel 挂到启动那一刻同一条线程上最里层的 span 下：调用方是它，第 10 列是 [设备, 流, 晚了多少 µs]；
-    仓库里的 kernel 按限定名对到定义行，仓库外的落到 ?gpu/<名字>:0；找不到启动调用的只进摘要"""
-    import gzip
-    import json
+    """kernel 挂到启动那一刻发起它的线程的栈顶（重放事件得到的真实的栈）：调用方是它，第 10 列是 [设备, 流, 晚了多少 µs]；
+    仓库里的 kernel 按限定名对到定义行，仓库外的落到 ?gpu/<名字>:0；找不到启动调用的只算次数"""
     t = tmpdir("cs-gpu-")
-    idx, got = _gpu_run(t)
-    keys = json.loads((t / "spans" / "keys.json").read_text())["keys"]
-    rows = [json.loads(ln) for c in idx["chunks"] for ln in gzip.decompress((t / "spans" / c["chunk"]).read_bytes()).splitlines()]
+    idx, g, keys, rows = _gpu_run(t, "K 1 pkg/run.py:0\nK 2 pkg/run.py:1\nK 3 pkg/lib.py:3\n"
+                                     "C 10 1 1 1 2\nC 20 1 2 2 3\nR 50 1 2\nR 100 1 1\n",
+                                  [(30, 4242, MAIN_K), (15, 4242, FOO)], extra=[FOO])
     gpu_rows = [r for r in rows if len(r) == 10]
     assert len(gpu_rows) == 2 and len(rows) == 4, rows
     by_callee = {keys[r[5]]: r for r in gpu_rows}
@@ -131,10 +139,50 @@ def test_attach_kernels():
     assert idx["n_calls"] == 2, idx["n_calls"]                                             # 只数 Python 的调用
     s = idx["gpu"]
     assert s["unattached"] == 1 and s["dropped"] == 2 and s["kernels"]["?gpu/at::native::foo:0"]["n"] == 2, s
-    c = got["counts"]["start"]
-    assert c["func_edges"] == {"pkg/lib.py:3|pkg/csrc/kern.cu:16": 1, "pkg/run.py:1|?gpu/at::native::foo:0": 1}, c
-    assert c["func_lines"]["pkg/run.py:1|?gpu/at::native::foo:0|0"] == 1, c
-    assert got["names"]["?gpu/at::native::foo:0"] == "at::native::foo"
+    assert g.edges["start"]["func_edges"] == {"pkg/lib.py:3|pkg/csrc/kern.cu:16": 1, "pkg/run.py:1|?gpu/at::native::foo:0": 1}
+    assert g.edges["start"]["func_lines"]["pkg/run.py:1|?gpu/at::native::foo:0|0"] == 1
+    c = g.counts()["start"]                                                                # 次数：找没找到调用方都算
+    assert c["funcs"] == {"pkg/csrc/kern.cu:16": 1, "?gpu/at::native::foo:0": 2} and c["gpu_us"]["?gpu/at::native::foo:0"] == 6, c
+    assert g.names["?gpu/at::native::foo:0"] == "at::native::foo"
+
+
+def test_caller_is_real_stack():
+    """调用方按重放出来的真实的栈认，不按折叠之后的时间区间猜（critic 10-02 #1）：
+    - go 连着调了三次叶子 f（折叠成一行，覆盖 20–42 µs），在第一次和第二次之间（25 µs）go 自己发起的 kernel 算 go 的；
+    - 生成器 gen 挂起之后（Y，一直没返回）go 发起的 kernel 算 go 的，不算 gen 的；
+    - f 里面（31 µs）发起的算 f 的，挂在折叠的那一行下面"""
+    t = tmpdir("cs-gpu-")
+    ev = ("K 1 pkg/run.py:0\nK 2 pkg/run.py:1\nK 3 pkg/run.py:5\nK 4 pkg/run.py:9\n"
+          "C 10 1 1 1 2\n"
+          "C 20 1 2 2 3\nR 22 1 2\nC 30 1 3 2 3\nR 32 1 3\nC 40 1 4 2 3\nR 42 1 4\n"
+          "C 50 1 5 2 4\nY 52 1 5\n"
+          "R 100 1 1\n")
+    idx, g, keys, rows = _gpu_run(t, ev, [(25, 4242, FOO), (31, 4242, MAIN_K), (60, 4242, FOO)])
+    callers = sorted((keys[r[4]], keys[r[5]], round(r[0])) for r in rows if len(r) == 10)
+    assert callers == [("pkg/run.py:1", "?gpu/at::native::foo:0", 25), ("pkg/run.py:1", "?gpu/at::native::foo:0", 60),
+                       ("pkg/run.py:5", "pkg/csrc/kern.cu:16", 31)], callers
+    folded = next(r for r in rows if len(r) == 9 and r[6] == 3)                            # f ×3 合成的那一行
+    k = next(r for r in rows if len(r) == 10 and keys[r[5]] == "pkg/csrc/kern.cu:16")
+    assert rows[k[8]] is folded, (k, folded)
+    assert g.summary()["unattached"] == 0
+
+
+def test_truncated_and_no_events():
+    """事件截断之后发起的 kernel 没有调用方（不按截断那一刻的栈瞎猜），但次数和 GPU 时间照算（critic 10-02 #2）；
+    完全没有事件时 Gpu.counts 一样是全的"""
+    t = tmpdir("cs-gpu-")
+    ev = "K 1 pkg/run.py:0\nK 2 pkg/run.py:1\nC 10 1 1 1 2\nT\n"                   # go 进去之后就到了上限
+    idx, g, keys, rows = _gpu_run(t, ev, [(10, 4242, FOO), (500, 4242, FOO), (600, 999, FOO)])
+    assert [keys[r[4]] for r in rows if len(r) == 10] == ["pkg/run.py:1"], rows            # 10 µs 的那次在 go 里（截断前最后一个事件那一微秒）；之后的没有
+    s = g.summary()
+    assert s["n_kernels"] == 3 and s["unattached"] == 2, s
+    assert g.counts()["start"]["funcs"] == {"?gpu/at::native::foo:0": 3}
+    assert g.edges["start"]["func_edges"] == {"pkg/run.py:1|?gpu/at::native::foo:0": 1}
+    t2 = tmpdir("cs-gpu-")
+    g2 = kernels.Gpu([_cu(t2, [(11, 4242, FOO)], extra=[MAIN_K])], T0, kernels.resolver(SYMS), lambda us: "p")
+    assert g2.counts() == {"p": {"funcs": {"?gpu/at::native::foo:0": 1, "pkg/csrc/kern.cu:16": 1},
+                                 "gpu_us": {"?gpu/at::native::foo:0": 5, "pkg/csrc/kern.cu:16": 1}}}, g2.counts()
+    assert g2.summary()["unattached"] == 2 and not g2.edges
 
 
 def test_virtual_gpu_node():
@@ -188,7 +236,7 @@ def test_trace_gpu_toy():
     import gzip
     import json
     run = json.loads((rd / "run.json").read_text())
-    assert run["events"]["gpu"]["n_kernels"] > 0 and not run["events"]["gpu"]["unattached"], run["events"]
+    assert run["gpu"]["n_kernels"] > 0 and not run["gpu"]["unattached"], run["gpu"]
     edges = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]["start"]["func_edges"]
     callers = {k.split("|")[0] for k in edges if "|?gpu/" in k}
     assert callers <= {"toy/run.py:4", "toy/run.py:8"} and "toy/run.py:4" in callers, edges

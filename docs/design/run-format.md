@@ -136,6 +136,7 @@
 | `phases` | [{name, t_us, n_funcs, n_calls}] | 各阶段：顺序按 `phase_log` 里第一次出现的先后，再补上只在 counts 里有的；只列 counts.json.gz 里有的阶段。`t_us` 取这个名字在 `phase_log` 里第一次出现的时刻；`n_funcs` 是这一阶段被调到的函数键数，`n_calls` 是次数之和 | H（阶段名要能解析） | `derive`；迁移 | `resolve`（`@阶段` 必须在这里）、`/api/runs`、页面（阶段按钮：两个以上才显示）、`seq._phase_log`（老 run 没有 `phase_log` 时用它的 `t_us`） |
 | `summary` | object | `n_funcs`（全部阶段里不同的函数键数）、`n_func_edges`、`n_files`（`detail.file_shas` 的文件数）、`n_procs`（进程映像数）、`n_procs_active`（跑到仓库代码的）、`n_mapped`、`n_leftovers`、`n_unclean`（最后一次落盘是定时或切阶段的——被强杀了） | — | `derive` | 列表、`/api/runs`、页面 |
 | `sizes` | {文件名: 字节} | run 目录下各文件的大小。在最后一次写 run.json **之前**取的，所以 `run.json` 自己的数不准 | — | `derive` | 没有代码读（`runs ls` 的大小是现走目录算的） |
+| `gpu` | object | 只有 `trace --gpu` 的 run 有：`{n_kernels, n_names, gpu_us, unattached, dropped, procs}`——kernel 次数、种数、GPU 上一共多少 µs、找不到发起它的调用（只算次数、没有调用边）的次数、CUPTI 丢掉的记录数、有 GPU 日志的进程。不靠时序事件 | — | `derive`（`kernels.Gpu.summary`） | `trace` 的输出、`runs show` |
 | `events` | object \| null | 时序事件的摘要：`{n_lines, n_spans, n_calls, scope, truncated: [pid], n_procs, bytes}`（`scope` 同 span 的 index.json，2026-10-01 之前的 run 没有）；整理 span 失败时是 `{error, bytes}`；没录事件是 null。`bytes` 是 `events/raw.tar.gz` 的大小 | 时序要 | `derive`（`runs._build_events` 的结果）、`remove_events` | `/api/runs`（`events` 为真且没有 `error` 时，页面才开放「时间顺序」和在时间条上拖时间段）、`runs ls/show` |
 | `migrated_from` | str | 只有迁移来的 run 有：老文件名 `trace-<case>.json` | — | 迁移 | 页面、`/api/runs` |
 
@@ -239,8 +240,10 @@
 - 阶段的次数是**每个进程**里「切阶段时的累计快照」相邻相减、负数丢掉，再把所有进程加起来（`analysis.merge`）。
   所以阶段归属是按各进程看到阶段切换的那一刻：各进程每 0.05 秒看一次 `PHASE`（另外每秒兜底读一次）；`--phase` 切的，
   触发的那个线程当场切、再停 0.1 秒等别的进程跟上。计数的阶段边界和 `phase_log` 的时刻因此可能差几十毫秒。
-- `trace --gpu` 录到的 kernel 也在这里（收尾 / merge 时由 `kernels.attach` 从 `cu-*.log` 算出来、加进去，按启动时刻落进阶段）：
-  调用方是发起它时最里层的 span 的被调方，被调方是 kernel 的键——仓库里扫描到的 kernel 是 `<文件>:<定义行>`，仓库外的是
+- `trace --gpu` 录到的 kernel 也在这里（收尾 / merge 时由 `kernels.Gpu` 从 `cu-*.log` 算出来、加进去，按发起的时刻落进阶段，
+  没录到启动调用的按开始跑的时刻）：`funcs` 和 `gpu_us` 里是**每一个** kernel（只看 cu 日志，不靠时序事件）；`func_edges` / `func_lines`
+  只有找到了调用方的——`events.pair` 重放时序事件时，在启动调用的那一刻看发起它的线程的栈，栈顶的 span 的被调方就是调用方，
+  而且要时序事件整理成功才加。被调方是 kernel 的键——仓库里扫描到的 kernel 是 `<文件>:<定义行>`，仓库外的是
   `?gpu/<限定名>:0`（虚拟单元 `?gpu`，图上的「GPU · 仓库外」）；调用行一律是 0（不知道是哪一行），`names` 里是 kernel 的限定名。
 - 不带阶段加载（`<id>` 不带 `@`）= 各阶段逐键相加（`runs._sum`）。
 - 加载时从这里算出的东西（`module_frames`、`class_frames`、`anon`、函数对和它们和 scan 比的结果 `calls`、`redirect`…）
@@ -363,9 +366,9 @@ R 3784145 1 2
 | `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us, 行]`（老的没有行），`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （P0 的运行时模型） |
 | `spawns` | [{pid, tid, row, line, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` / `line` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里；`line` 0 是不知道，老 run 没有），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （P0 的运行时模型） |
 | `n_lines` | int | 所有日志的 C/R/Y/S 行数 | run.json 的 `events` |
-| `n_spans` | int | span 行数（折叠后） | 同上 |
+| `n_spans` | int | span 行数（折叠后；含 GPU 的行） | 同上 |
 | `n_calls` | int | Python 的调用次数（`Σ rep`，不含 GPU 的行） | 同上 |
-| `gpu` | {kernels: {键: {n, gpu_us}}, unattached, dropped, procs} | 只有 `trace --gpu` 录到 kernel 的 run 有：每种 kernel 的次数和 GPU 上一共跑了多久（µs）、找不到发起它的 Python 调用（没算进图）的次数、CUPTI 丢掉的记录数、有 GPU 日志的进程。run.json 的 `events.gpu` 是它的合计 {n_kernels, n_names, gpu_us, unattached, dropped} | `trace` 的输出 |
+| `gpu` | {n_kernels, n_names, gpu_us, unattached, dropped, procs, kernels: {键: {n, gpu_us}}} | 只有 `trace --gpu` 的 run 有：和 run.json 的 `gpu` 一样，多一个每种 kernel 整个 run 的次数和 GPU 时间（µs） | 没有代码读 |
 
 **keys.json**：`{"keys": [函数键…], "threads": {"<pid>": {"<tid>": 线程名}}, "native": {"<pid>": {"<tid>": 系统线程号}}}`（`native` 来自 U 行，老 run 没有）。`keys` 是整个 run 的全局键表，span 里的
 `a` / `b` 是它的下标；键的登记行丢了的指向 `"?"` 这一项（不会静默指到别的函数上）。同一个 pid 的多个映像，线程号接着编（exec 之后的
@@ -389,8 +392,8 @@ R 3784145 1 2
 | 4 / 5 | `a` / `b` | 调用方 / 被调方在 keys.json `keys` 里的下标 |
 | 6 | `rep` | 这一行合了几次调用（≥1） |
 | 7 | `n_susp` | 挂起了几次；>0 就是 async 的 span（折叠行一定是 0） |
-| 9 | `gpu` | **只有 GPU 的行有这一列**（`trace --gpu`，`kernels.attach`）：`[设备, 流, 晚了多少 µs]`。GPU 的行是一个 kernel：`t0` 是发起它的启动调用的时刻（时间顺序按发起排），`dur` 到它在 GPU 上跑完，`tid` / `parent` 是发起它的线程和那一刻最里层的 span，`a` 是那个 span 的被调方，`b` 是 kernel 的键（见 §4），`rep` 是 1；最后一项是从发起到真正开始在 GPU 上跑隔了多久 |
 | 8 | `parent` | 父 span 在这个 pid 的 span 里的下标，没有（线程的根、父亲在行数上限之后）是 `-1`。父 span 是调用那一刻这个线程上最里层正在执行的 span（挂起的不算），按原始日志重放得到，async 的也准。`scope` 是 `"all"` 时父 span 的被调方就是这一行的调用方。2026-10-01 之前整理的 span 没有这一列，`runs merge` 从原始日志重建就有 |
+| 9 | `gpu` | **只有 GPU 的行有这一列**（`trace --gpu`，`kernels.attach`）：`[设备, 流, 晚了多少 µs]`。GPU 的行是一个 kernel：`t0` 是发起它的启动调用的时刻（时间顺序按发起排），`dur` 到它在 GPU 上跑完，`tid` / `parent` 是发起它的线程和那一刻那个线程栈顶的 span（重放事件得到的；栈顶是被合成一行的连续调用之一时，是合成的那一行），`a` 是那个 span 的被调方，`b` 是 kernel 的键（见 §4），`rep` 是 1；最后一项是从发起到真正开始在 GPU 上跑隔了多久。GPU 的行不折叠、不受时序事件的行数上限管（行数上限只管 hook 写的事件） |
 
 真实的行（vllm-omni）：`[89391161, 25097353, 2, 0, 994, 995, 2268, 0]` 是一个轮询：同一对函数连续调了 2268 次、
 从 89.4 秒到 114.5 秒；`[6338823, 4321, 2, 1, 572, 574, 1, 1]` 是一次挂起过一次的 async 调用（这两行是加 `parent` 之前的）。
