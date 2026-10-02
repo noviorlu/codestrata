@@ -105,9 +105,11 @@ def fixture() -> dict:
         (cut / rel).parent.mkdir(parents=True, exist_ok=True)
         (cut / rel).write_text(src)
     cs("scan", cut)
-    # 有几层目录的仓库上录一次时序事件：分列里节点角上的 ＋ / −（改切面）在它上面测
-    cs("trace", cut, "--case", "cutrun", "--events", "--", PY, "-c",
-       "from cx.app import run; from cx.big.sub.s import s; from cx.big.f00 import f00; run(); s(); f00()")
+    # 有几层目录的仓库上录一次时序事件：分列里每列各自的切面、展开的目录画框在它上面测。主线程 run() 和 f00()，
+    # 另起一条线程 side 跑 s()（两列都调到 cx/ops/），阶段 two 从 f00 开始
+    cs("trace", cut, "--case", "cutrun", "--events", "--phase", "two=cx.big.f00:f00", "--", PY, "-c",
+       "import threading; from cx.app import run; from cx.big.sub.s import s; from cx.big.f00 import f00; run(); "
+       "t = threading.Thread(target=s, name='side'); t.start(); t.join(); f00()")
     srv2, base2 = _serve(cut)
     dyn = tmpdir("cs-browser-dyn-") / "dynrepo"
     for rel, src in _DYN.items():
@@ -163,6 +165,10 @@ def test_timebar():
 
 def test_lanes():
     _spec("lanes")
+
+
+def test_lanecut():
+    _spec("lanecut")
 
 
 def test_timeorder():

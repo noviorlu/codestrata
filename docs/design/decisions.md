@@ -137,13 +137,22 @@
   否则按 depth 0 的调用方的起止时间认，认不出就是仓库外的代码；被起的一头同理，名字里没写 target 的取最早的 depth 0 调用方，
   它之前已经在仓库外收发过的不算。fork 的时刻用子进程映像的起点（不用调 fork 的那个 span 的开始）；从非主线程 fork 的子进程没有 MainThread，
   接它唯一的那条线程。
+  切面每列各自的（用户 10-02：「我点击一个thread的expand collapse不应该影响另外一个thread或者是进程」），展开着的目录画成框
+  （「我需要类似于静态图里面的外边框include展开的所有内容」「而非现在直接换名字了」），名字照模块图在那一列的切面上的写法。
+  一个节点在哪一行只看它自己：在共用切面的图上就照它的高度，比它细的排在装着它的那个节点那一层下面的子行里（子行按这一段里
+  调到的单元自己分一次层），比它粗的取它装着的里面最高的一层——一列展开 / 收起，别的列的层和先后不变，最多被推开几个像素（用户 10-02 认可）。
+  没用「各列切面的并集」排高度：cx 仓库上实测一列展开 cx/ops/ 会让别的列的 cx/sansio/ 换一层、换先后。框的横排照搬模块图（layout.py）
+  的轨道排法；排线把框当障碍（竖轨在框外、S 形不穿过不相干的框、不压框头的 −）。换阶段 / 时间段保留各列的展开，换 run 清掉、回到共用的切面；
+  「恢复默认层级」清掉所有列单独的展开；详情里的展开 / 收起改选中那一份的列，搜索改调到它的第一列；时间顺序还是所有列一起排名次（用户 10-02 定）。
 - 为什么：多进程、多线程的服务（vLLM：主线程、orchestrator、每个 stage 的收请求 / 主循环 / 输出 / 收发 chunk 的线程）合在一张图上
   看不出谁交给谁；请求路径按线程分节、只展开主线程，交接散在几节里。用户的原话是「有几个 thread 就把那个 thread call 到的 module duplicate
   对应的 thread 数量然后平行和主 thread 放置，这样我们就能够很清晰的看到 thread 和 thread 之间的 collaboration」。
   共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条（外部评审量的），按同一高度对齐就看得出。
 - 放弃的方案（设计说明里比过）：泳道时间线（Perfetto 那种，自己做工作量最大）、按时间合并的一张表（看不出重叠）、顺序图（箭头没有录的话只能按时刻猜）。
 - 在哪：`lanes.py`（`build` 里的 `held` / `root_at` / `named_target` / `target_of` / `out_of`、`thread_group`、`_order`、连线的 `pairs`、`out`）、
-  `serve.py` 的 `/api/lanes`、`web/lanes.js`（`draw`、`paint`、`touching`、`snapshot` / `restoreSel`、`fold`、`settled`、`reveal`、`highlight`）、
+  `serve.py` 的 `/api/lanes`、`ui/lanesview.py`（`decorate`：节点信息、子层、每列的名字和框）、`web/lanepack.js`（`keys`、`pack`）、
+  `web/laneroute.js`（框当障碍、框头的高度）、`web/lanecut.js`（`CS.laneCut`：各列的切面、改了之后接着选）、
+  `web/lanes.js`（`draw`、`drawFrames`、`paint`、`touching`、`snapshot`、`pickFrame`、`copies` / `twins`、`fold`、`settled`、`reveal`、`highlight`）、
   `web/lanedetail.js`（`link`、`node`、`marks`）、
   `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`、`revealLane`、`goNode` / `goEdge`。
   测试 `test_lanes`、`tests/web/specs/lanes.mjs`。

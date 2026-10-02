@@ -12,7 +12,7 @@ window.CS = window.CS || {};
   function nodeChip(node, lane) {
     var lanes = CS.lanes;
     if (!node) return '<span class="chip off">仓库外的代码</span>';
-    var nm = esc(lanes.label(node));
+    var nm = esc(CS.panel.short(node));
     if (lanes.pos[lane + '|' + node]) return '<button class="chip" data-node="' + esc(node) + '" data-lane="' + esc(lane) + '">' + nm + '</button>';
     var L0 = lanes.L.lanes.filter(function (x) { return x.id === lane; })[0];
     var why = L0 && lanes.collapsed[L0.pid] ? '这个进程收起了，展开后能点' : '这一段里这一列没画它';
@@ -26,6 +26,7 @@ window.CS = window.CS || {};
     node: function (id, lane) {
       var lanes = CS.lanes, det = document.getElementById('det'), slot = document.getElementById('nbslot');
       if (!slot || det.dataset.pkg !== id) return;
+      det.dataset.lane = lane;                      // 详情里的展开 / 收起只改这一列（panel 的按钮读它）
       var T = lanes.touching(lane, id), L = lanes.L;
       function byN(a, b) { return b.n - a.n; }
       function edges(list, label, out) {
@@ -57,10 +58,34 @@ window.CS = window.CS || {};
       });
     },
 
+    /* 选中了一列里的框（展开着的目录）、详情原来不在讲它：写它在哪一列里展开着、框着这条线程调到的哪几个，能在这一列里收起 */
+    frame: function (f, lane) {
+      var lanes = CS.lanes, ln = lanes.laneIx[lane] || {}, frs = ln.frames || {}, info = lanes.L.info || {};
+      function inside(id) {
+        for (var g = (info[id] || {}).frame, k = 0; g && k < 64; g = (frs[g] || {}).parent, k++) if (g === f) return true;
+        return false;
+      }
+      var ids = Object.keys(ln.nodes || {}).filter(inside).sort();
+      var h = '<p class="hint">在 <b>' + esc(laneName(lane)) + '</b> 这一列里展开着（只这一列；别的列里它可能还收着），'
+        + '框着这条线程调到的 ' + ids.length + ' 个子模块：</p>'
+        + '<div class="kv"><span>框里</span>' + ids.map(function (id) { return nodeChip(id, lane); }).join(' ') + '</div>'
+        + '<div class="cutrow"><span class="kindtag">已在这一列里展开成框</span><button class="chip" data-fold="1" title="框里的子模块合回一个节点（别的列不变）">'
+        + '收起</button></div>';
+      CS.panel.claim(h);
+      var det = document.getElementById('det'), t = document.getElementById('dtitle'), s = document.getElementById('dsub');
+      det.dataset.lane = lane;
+      if (t) { t.textContent = CS.panel.full(f); t.title = f; }
+      if (s) s.textContent = '已在 ' + laneName(lane) + ' 这一列里展开成框（框头的 − 收起）';
+      [].forEach.call(det.querySelectorAll('[data-node]'), function (b) {
+        b.onclick = function () { lanes.pickNode(b.dataset.node, b.dataset.lane); };
+      });
+      det.querySelector('[data-fold]').onclick = function () { CS.app.collapseFrame(f, lane); };
+    },
+
     /* 点了节点上的「▶ 起 / ■ 收」、这里起了 / 收了好几列：这几条连线都高亮，详情里逐条列出起 / 收的那一行代码，
        点名字选中那一条 */
     marks: function (m, Es) {
-      var lanes = CS.lanes, L = lanes.L, start = m.kind === 'start', nm = lanes.label(m.node);
+      var lanes = CS.lanes, L = lanes.L, start = m.kind === 'start', nm = CS.panel.short(m.node);
       var key = 'm:' + m.kind + ':' + m.lane + '|' + m.node;
       if (lanes.sel === key) { CS.graph.clear(); return; }
       lanes.select(key, Es.map(function (E) { return E.key; }));

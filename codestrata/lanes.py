@@ -13,6 +13,7 @@
 数据：时序事件的 span（seq.span_index / pid_rows；带 parent 的才准，老 run 也能出列，只是没有连线）+ 这次 run 的叠加 hot
 （录制之后改过的文件走 hot["keymap"]、构造挪到类上走 hot["redirect"]、函数对和代码比的结果 hot["calls"]）。
 时间都是微秒、相对 run 起点；只算选的阶段（时间段）里的调用（seq.calls_in）。
+每列可以有自己的切面（cuts：在一列里展开 / 收起不动别的列），没给的列用共用的那个（open_）。
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ import re
 from pathlib import Path
 
 from . import align as _align
+from . import cut as _cut
 from . import seq as _seq
 
 
@@ -39,10 +41,13 @@ def thread_group(name: str) -> str:
     return m.group(1) if m else name
 
 
-def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None) -> dict:
-    """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线]}。
-    列按进程启动的先后排，进程里主线程在前。
+def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None,
+          cuts: dict | None = None) -> dict:
+    """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线],
+    "units": [各列调到的单元（排好序）]}。open_ 是共用的切面（None 是默认切面）；cuts 是 {列 id: 这一列自己的切面}——
+    列里的节点、边、入口，连线在这一列的那一头，都落在这一列的切面上。列按进程启动的先后排，进程里主线程在前。
     列：{"id": "pid:线程名", "pid", "proc": 进程名, "thread": 归一之后的线程名, "names": 合进来的原名（最多 6 个）,
+         "open": 这一列用的切面（规整过、排好序）, "u": 这一列调到的单元（units 的下标；和切面无关）,
          "n_threads", "first", "last", "entry": 入口节点,
          "nodes": {节点: {"n": 被调次数, "first", "handoff": 这一列里它只是交接的地方（这一段里这条线程没调到它）}},
          "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first", "last"}],
@@ -69,14 +74,32 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     ix = _seq.span_index(rd)
     segs, win, end = _seq.window_segments(run, rd, phase)
     lo, hi = segs[0][0], segs[-1][1]
-    m = _seq.cut_map(idx, open_)
     keys, threads = ix["keys"], ix["threads"]
     keymap, redirect = hot.get("keymap"), hot.get("redirect") or {}
     label = _labeler(idx)
     share = _only_share(hot, label)
     names = proc_names(rd)
-    node_cache: dict[int, tuple] = {}
+    cuts = {lid: sorted(_cut.norm_open(idx, o)) for lid, o in (cuts or {}).items()}
+    maps: dict = {}                              # 切面的键 → cut_map：这一次请求里每个不同的切面只建一次（不管 cut_map 的缓存怎么挤）
+    lane_map: dict[str, tuple] = {}              # 列 → (切面的键, cut_map)
+    node_cache: dict[tuple, tuple] = {}          # (切面的键, 键下标) → (节点,)
     fn_cache: dict[int, str | None] = {}
+
+    def map_of(lid: str) -> tuple:
+        """一列的切面：(切面的键, cut_map)。cuts 里没有这一列就是共用的切面"""
+        hit = lane_map.get(lid)
+        if hit is None:
+            o = cuts.get(lid, open_)
+            k = None if o is None else ",".join(sorted(o))
+            if k not in maps:
+                maps[k] = _seq.cut_map(idx, o)
+            hit = lane_map[lid] = (k, maps[k])
+        return hit
+
+    def key_at(a: int) -> str:
+        """键下标 → 现在的键（录制之后文件改过的，换成函数现在的行号）；越界是 ?"""
+        ka = keys[a] if 0 <= a < len(keys) else "?"
+        return keymap(ka) if keymap is not None else ka
 
     def fn_of(a: int) -> str | None:
         """键下标 → 函数级的节点（file#Qual），落不到函数上是 None"""
@@ -96,22 +119,30 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         now = int(keymap(kb).rpartition(":")[2])
         return ln + now - int(old) if int(old) > 0 and now > 0 else 0
 
-    def nodes_of(a: int, b: int):
-        """span 两端的键下标 → (调用方节点, 被调方节点, 被调方是不是定义时的执行, 这对函数代码里看不出的比例)"""
-        ka, kb = keys[a] if 0 <= a < len(keys) else "?", keys[b] if 0 <= b < len(keys) else "?"
-        if keymap is not None:
-            ka, kb = keymap(ka), keymap(kb)
+    def nodes_of(a: int, b: int, lid: str):
+        """span 两端的键下标 → (调用方节点, 被调方节点（都落在 lid 这一列的切面上）, 被调方是不是定义时的执行,
+        这对函数代码里看不出的比例, 调用方单元, 被调方单元)"""
+        ka, kb = key_at(a), key_at(b)
         to = redirect.get(f"{ka}|{kb}")
+        m = map_of(lid)[1]
         na = m.of(ka)[0]
-        nb, defining = (m.file_node(m.syms[to]["f"]), False) if to and to in m.syms else m.of(kb)
-        return na, nb, defining, share(ka, kb)
+        if to and to in m.syms:
+            nb, defining, ub = m.file_node(m.syms[to]["f"]), False, m.files.get(m.syms[to]["f"])
+        else:
+            (nb, defining), ub = m.of(kb), m.unit(kb)
+        return na, nb, defining, share(ka, kb), m.unit(ka), ub
 
-    def node(a: int) -> str | None:
-        hit = node_cache.get(a)
+    def node(a: int, lid: str) -> str | None:
+        """键下标 → lid 这一列的切面上的节点"""
+        ck, m = map_of(lid)
+        hit = node_cache.get((ck, a))
         if hit is None:
-            ka = keys[a] if 0 <= a < len(keys) else "?"
-            hit = node_cache[a] = (m.of(keymap(ka) if keymap is not None else ka)[0],)
+            hit = node_cache[(ck, a)] = (m.of(key_at(a))[0],)
         return hit[0]
+
+    def unit_of(a: int, lid: str) -> str | None:
+        """键下标 → 它所在的单元（和切面无关；落不到 index 里是 None）"""
+        return map_of(lid)[1].unit(key_at(a))
 
     lanes: dict[str, dict] = {}
     rows_of: dict[int, list] = {}
@@ -141,14 +172,15 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                 continue
             n, first, last = got
             first_in[(pid, r[2])] = min(first_in.get((pid, r[2]), first), first)
-            na, nb, defining, only = nodes_of(r[4], r[5])
+            na, nb, defining, only, ua, ub = nodes_of(r[4], r[5], lid)
             if na is None or nb is None or defining:
                 continue
             L = lanes.get(lid)
             if L is None:
                 L = lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": tname,
                                   "names": set(), "tids": set(), "ran": set(), "first": first, "last": last, "entry": None,
-                                  "entry_fn": None, "entry_t": None, "nodes": {}, "edges": {}}
+                                  "entry_fn": None, "entry_t": None, "nodes": {}, "edges": {}, "u": set()}
+            L["u"].update((ua, ub))
             L["tids"].add(r[2])
             L["ran"].add(r[2])
             L["names"].add(raw)
@@ -184,10 +216,11 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             continue
         for tid in sorted(L["tids"]):
             k = root_at(L["pid"], tid, first_in.get((L["pid"], tid), lo))
-            nd = node(k) if k is not None else None
+            nd = node(k, L["id"]) if k is not None else None
             if nd is not None:
                 L["entry"], L["entry_fn"] = nd, fn_of(k)
                 L["nodes"].setdefault(nd, {"n": 0, "first": L["first"]})
+                L["u"].add(unit_of(k, L["id"]))
                 break
 
     def named_target(pid: int, tid: int) -> tuple[bool, int | None]:
@@ -219,7 +252,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             idle = (pid, tid) in held                # 这条线程跑过仓库代码（深度 0 的调用都记在 held 里）
             lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": lid.partition(":")[2],
                           "names": set(), "tids": set(), "ran": set(), "first": t, "last": t, "entry": None, "entry_fn": None,
-                          "entry_t": None, "nodes": {}, "edges": {}, ("idle" if idle else "external"): True}
+                          "entry_t": None, "nodes": {}, "edges": {}, "u": set(), ("idle" if idle else "external"): True}
         L = lanes[lid]
         inw = t is not None and any(a <= t <= b for a, b in segs)
         # 交接的这一头不在这一段里的线程不算进这一列（列头的 ×N、原名、首末时刻），除非这一列就是为它建的
@@ -232,18 +265,20 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         rows = rows_of.get(pid) or []
         r = rows[row] if 0 <= row < len(rows) else None
         if r is not None:
-            nd, fn = node(r[5]) or lanes[lid]["entry"], fn_of(r[5])
+            k = r[5]
+            nd, fn = node(k, lid) or lanes[lid]["entry"], fn_of(k)
         else:
             # 不在任何 span 里（放 / 取发生在仓库外的代码里，比如 vLLM 引擎循环取请求）：那一刻这条线程最底下在跑的仓库函数
             # （线程名写着的 target，或者 root_at）；没有在跑的（vLLM 自己的收发循环）就是仓库外的代码，接在列头上
             k = named_target(pid, tid)[1]
             if k is None:                            # target 在仓库外（asyncio.run 之类）：按那一刻还没返回的深度 0 调用认
                 k = root_at(pid, tid, t)
-            nd, fn = (node(k), fn_of(k)) if k is not None else (None, None)
+            nd, fn = (node(k, lid), fn_of(k)) if k is not None else (None, None)
         if create and nd is not None and not L.get("external"):
             # 交接的那个节点这一列里没有（这条线程这一段里没调到它，交接却在这一段里）：放上去，连线接在节点上而不是列头上；
             # 标 handoff：它在这一列里只是交接的地方，不是调了谁
             L["nodes"].setdefault(nd, {"n": 0, "first": t if t is not None else L["first"], "handoff": True})
+            L["u"].add(unit_of(k, lid))              # 落回入口节点的（k 落不到 index 里）是 None，出结果时去掉
         return {"lane": lid, "node": nd, "fn": fn, "ext": r is None,
                 "t": t if t is not None else (r[0] if r else None), "line": line_of(r[5], line) if r else 0}
 
@@ -341,7 +376,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         if e is None:
             return None
         k = target_of(pid, tid)
-        e["fn"], e["node"] = (fn_of(k), node(k) or e["node"]) if k is not None else (None, None)
+        e["fn"], e["node"] = (fn_of(k), node(k, e["lane"]) or e["node"]) if k is not None else (None, None)
         return e
 
     for pid, by_tid in tfrom.items():
@@ -423,8 +458,12 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                 pr["tb"] = text(db["f"], lb) if db and lb else ""
             x["pairs"].append(pr)
 
+    units = sorted({u for L in lanes.values() for u in L["u"] if u is not None})
+    at = {u: i for i, u in enumerate(units)}
     out = []
     for L in lanes.values():
+        L["open"] = sorted(_cut.norm_open(idx, cuts.get(L["id"], open_)))
+        L["u"] = sorted(at[u] for u in L["u"] if u is not None)
         L["start"], L["stop"] = _start_sum(starts.get(L["id"])), _stop_sum(stops.get(L["id"]))
         for sm, late in ((L["start"], False), (L["stop"], True)):
             if sm is not None:
@@ -446,7 +485,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     links.sort(key=lambda x: (x["from"]["t"] if x["from"]["t"] is not None else 0))
     return {"phase": phase, "window": [lo, hi], "segs": [list(s) for s in segs], "scope": ix.get("scope") or "cross",
             "truncated": ix.get("truncated") or [],
-            "lanes": out, "links": links}
+            "lanes": out, "links": links, "units": units}
 
 
 def _order(lanes: list, links: list, pstart: dict) -> dict:

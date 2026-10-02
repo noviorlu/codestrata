@@ -70,7 +70,8 @@ flowchart LR
    挪到函数现在的行号，`align.to_package_graph(counts, idx)` 落到 graph 的节点上、得到函数对和调用行，再和 graph.json 比（`align.classify`），
    返回 `(hot, meta)`。所以代码改了之后老 run 照样能叠。
 6. **界面取数**（`ui/`）：`ui.load.load_index` 合并 index.json 和 symbols.json；`ui.graphview.graph_payload` 做切面（`cut.view`）、
-   叠加（`align.hot_on_cut`）、排版（`layout.build`）。边详情 `ui.edge.edge_detail`（两边怎么对上由加载 run 时的 `align.classify` 定），代码窗口 `ui.source`（`file_view` / `symbol_source` 经 `highlight`，跳转 `xref_for` / `refs`），搜索栏 `ui.search`（`search_index`、`reveal`）。
+   叠加（`align.hot_on_cut`）、排版（`layout.build`）。边详情 `ui.edge.edge_detail`（两边怎么对上由加载 run 时的 `align.classify` 定），代码窗口 `ui.source`（`file_view` / `symbol_source` 经 `highlight`，跳转 `xref_for` / `refs`），搜索栏 `ui.search`（`search_index`、`reveal`），
+   分列 `lanes.build`（每列各自的切面）加 `ui.lanesview.decorate`（节点信息、框、名字、子层）。
 7. **交付**：`serve.main` 启动时读一次 index；`serve.Handler` 按请求调 `ui/` 的模块（`_hot` 按 run id、阶段、文件 mtime 缓存 8 个），
    `/api/seq/edges` 交给 `seq.edge_times`（读 `events/spans/`）。
 8. **前端**：数据都经 `web/ds.js` 从 serve 取（见「前端结构」）。
@@ -88,39 +89,42 @@ flowchart LR
 | `graph.py` | 226 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处、构造过的类跑到的方法，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
 | `align.py` | 526 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
-| `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
+| `layout.py` | 649 | 依赖分层 + 横向排序 + 框，出坐标；分层（`weighted_layers`）、框里的名字（`name_in`）、框头宽度（`head_w`）分列也用 |
 | `trace/hook.py` | 1007 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 399 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
-| `seq.py` | 442 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
+| `seq.py` | 446 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
 | `path.py` | 311 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
-| `lanes.py` | 556 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
+| `lanes.py` | 595 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边（每列可以有自己的切面，`cuts`）、调到的单元、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
-| `ui/graphview.py` | 136 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`） |
+| `ui/graphview.py` | 172 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`）；框（`frame_tree`）、节点的符号 / 文件 / 文档（`node_details`）、短名（`short_names`）、切面上撞名的补父目录段（`cut_alias`）分列也用 |
+| `ui/lanesview.py` | 206 | 分列里和切面有关的数据（`/api/lanes` 在 `lanes.build` 上补的）：画出来的每个 id 的节点信息（同模块图的 pkgs / names / labels，加调用次数）、不在共用切面上的节点的符号 / 文件 / 文档、比共用切面细的节点挂在哪个节点的第几个子层（`place`）、每列的框和图上的名字；`?cuts=` 的解析（`parse_cuts`） |
 | `ui/edge.py` | 107 | 边详情（`/api/edge`）：两端底下函数之间的调用——trace 的函数对（调用行、和 scan 比的说明、按名字接线的地方）和代码里写了、这次没录到的 |
 | `ui/source.py` | 266 | 代码窗口：整个文件、符号片段、大纲、Ctrl+点击的跳转和引用、index 落后几个文件；叠着 run 时只有 trace 的调用行（`runtime_lines`）；graph 节点的定义在哪（`node_def`） |
 | `ui/search.py` | 33 | 搜索栏的名字表、让一个模块在图上露出来 |
 | `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
-| `serve.py` | 464 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
+| `serve.py` | 477 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
 | `projects.py` | 203 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
-| `web/ds.js` | 63 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 1022 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/ds.js` | 65 | 数据源层：fetch serve 的 `api/*` |
+| `web/app.js` | 1040 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 686 | SVG 绘图（纯函数式），边的配色约定 |
-| `web/panel.js` | 616 | 详情面板：节点的事实和源码，边上实际调了哪些函数（可按先后排） |
+| `web/panel.js` | 618 | 详情面板：节点的事实和源码，边上实际调了哪些函数（可按先后排） |
 | `web/viewer.js` | 455 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
-| `web/search.js` | 341 | 搜索栏：模块、文件、类 / 函数 |
+| `web/search.js` | 345 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/lanes.js` | 837 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
-| `web/laneroute.js` | 489 | 分列的排线（纯函数）：节点放在哪、每条线怎么走——轨带里的横轨、列两侧和缝里的竖轨，按交叉最少排先后（ELK 式），往右的走上面、往左的走下面；放不下就推层、加宽；`picker` 找离一点最近的线 |
+| `web/lanes.js` | 905 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
+| `web/lanepack.js` | 167 | 分列的摆放（纯函数）：每个节点在第几行只看它自己（公共切面上的高度、在哪个节点里面的子行），一列换了切面不动别的列；一列里横着怎么排——展开的目录画成框，照模块图的轨道排法（框在左、散节点在右居中） |
+| `web/lanecut.js` | 125 | 分列里每列各自的切面（`CS.laneCut`）：共用的切面 + 各列单独的，改一列只重取分列；画好后只在改过的那一列里闪新节点、接着选原来选着的 |
+| `web/laneroute.js` | 576 | 分列的排线（纯函数）：节点放在哪、每条线怎么走——轨带里的横轨、列两侧和缝里的竖轨，按交叉最少排先后（ELK 式），往右的走上面、往左的走下面；放不下就推层、加宽；`picker` 找离一点最近的线 |
 | `web/lanepick.js` | 130 | 分列里点线：离鼠标最近的那条加粗、出提示，点了选中它；一样近的弹单子挑；换视图 / 重画前撤掉 |
-| `web/lanedetail.js` | 149 | 分列的详情栏：节点这一份的调用 / 被调用 / 连线（只算这条线程）、点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
+| `web/lanedetail.js` | 174 | 分列的详情栏：节点这一份的调用 / 被调用 / 连线（只算这条线程）、点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
 | `web/path.js` | 99 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |

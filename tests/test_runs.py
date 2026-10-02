@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import os
@@ -60,6 +61,33 @@ def wait_phase(repo: Path, name: str, timeout: float = 60) -> Path:
 
 def by_argv(detail: dict, needle: str) -> list[dict]:
     return [p for p in detail["procs"] if needle in " ".join(p["argv"] or [])]
+
+
+@contextlib.contextmanager
+def served(repo: Path):
+    """在随机端口上起 serve：给出 get(路径) → (状态码, JSON)，get.base 是地址；用完按 pid 关掉"""
+    import socket
+    import urllib.request
+    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def get(path):
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("serve 没起来")
+    get.base = f"http://127.0.0.1:{port}"
+    try:
+        yield get
+    finally:
+        srv.kill()
+        srv.wait()
 
 
 # ---------------------------------------------------------------- 用例
@@ -1259,24 +1287,10 @@ def _truth_run():
 
 def test_edge_times_api():
     """/api/seq/edges 经真的 serve 走一遍：录了事件的 run 给每条边的时间；没录事件的、没有这个阶段的给 404 说明。"""
-    import socket
     import urllib.request
     repo, run, det, rd = _truth_run()
     cs("trace", repo, "--case", "plain", "--no-events", "--", PY, "-m", "fakesvc.truth")
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
-    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        def get(path):
-            for _ in range(50):
-                try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
-                        return r.status, json.loads(r.read())
-                except urllib.error.HTTPError as e:
-                    return e.code, json.loads(e.read())
-                except OSError:
-                    time.sleep(0.1)
-            raise AssertionError("serve 没起来")
+    with served(repo) as get:
         st, te = get(f"/api/seq/edges?run={run['id']}")
         assert st == 200 and te["edges"] and all(v["first"] <= v["last"] for v in te["edges"].values()), te
         st, e = get("/api/seq/edges?run=plain")
@@ -1293,15 +1307,12 @@ def test_edge_times_api():
         assert st == 400
         for gone in ("/api/seq", "/api/seq/overview", "/api/seq/find"):     # 时序图去掉了
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}{gone}?run={run['id']}", timeout=10)
+                urllib.request.urlopen(f"{get.base}{gone}?run={run['id']}", timeout=10)
                 raise AssertionError(f"{gone} 还在")
             except urllib.error.HTTPError as e:
                 assert e.code == 404, (gone, e.code)
         st, rl = get("/api/runs")
         assert {x["case"]: x["events"] for x in rl["runs"]} == {"truth": True, "plain": False}
-    finally:
-        srv.kill()
-        srv.wait()
 
 
 def test_seq_edge_times():
@@ -2190,28 +2201,10 @@ def test_serve_ignores_old_cmp_links():
     repo = fresh()
     cs("trace", repo, "--case", "a", "--", PY, "-c", "from fakesvc import work; work.init_model()")
     cs("trace", repo, "--case", "b", "--", PY, "-m", "fakesvc.truth")
-    import socket
-    import urllib.request
-    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
-    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        def get(path):
-            for _ in range(50):
-                try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
-                        return r.status, json.loads(r.read())
-                except urllib.error.HTTPError as e:
-                    return e.code, json.loads(e.read())
-                except OSError:
-                    time.sleep(0.1)
-            raise AssertionError("serve 没起来")
+    with served(repo) as get:
         st, g = get("/api/graph?run=a&cmp=b")
         st0, g0 = get("/api/graph?run=a")
         assert st == st0 == 200 and "cmp" not in g and g["hot"]["edges"] == g0["hot"]["edges"], (st, list(g))
-    finally:
-        srv.kill()
-        srv.wait()
 
 
 def test_no_export_command():
@@ -2505,6 +2498,53 @@ def test_lanes():
     rh = next(x for x in L["links"] if x["kind"] == "handoff" and x["to"]["lane"] == rl["id"])
     assert rs["to"]["fn"] is None and (rh["to"]["fn"], rh["to"]["node"], rh["pairs"][0]["xb"]) == ("fakesvc/truth.py#a_getter", T, True), (rs, rh)
 
+    # 每列自己的切面（cuts）：一列全收起（只剩根目录 fakesvc/）——它的节点、边、入口、连线在它那一头都落到 fakesvc/，
+    # 别的列、连线别的那一头和不给 cuts 时一模一样；各列的 open 是它用的切面；调到的单元（u / units）和切面无关。
+    # 连线在这一列的那一头三种来路都过一遍：worker 的是线程的入口（被起 / 被回收的那一头），主线程的是 span 里的那一行
+    # （起线程、放 / 取、join），in_launch 的 waitpid 不在任何 span 里（按线程的 target 认）
+    from codestrata.ui import lanesview
+    wid = f"{main['pid']}:worker"
+
+    def root_ends(x, lid):                       # lid 那一头换成 fakesvc/ 之后比
+        x = json.loads(json.dumps(x))
+        for e in (x["from"], x["to"]):
+            if e["lane"] == lid and e["node"] is not None:
+                e["node"] = "fakesvc/"
+        return x
+    got = {}
+    for lid in (wid, main["id"], launch):
+        Lc = got[lid] = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]), cuts={lid: []},
+                         text=lambda f, l: source.line_text(repo, f, l).strip())
+        byc = {x["id"]: x for x in Lc["lanes"]}
+        assert [x["id"] for x in Lc["lanes"]] == [x["id"] for x in L["lanes"]], [x["id"] for x in Lc["lanes"]]
+        c = byc[lid]
+        assert (set(c["nodes"]), c["edges"], c["entry"], c["open"]) == \
+            ({"fakesvc/"}, [], by[lid]["entry"] and "fakesvc/", []) and by[lid]["nodes"], (lid, c)
+        assert all(x["open"] == sorted(idx["dirs"]) for x in Lc["lanes"] if x["id"] != lid)
+        for x in L["lanes"]:
+            y = byc[x["id"]]
+            if x["id"] == lid:
+                x, y = ({k: v for k, v in z.items() if k not in ("nodes", "edges", "entry", "open")} for z in (x, y))
+            assert x == y, (x, y)
+        assert Lc["units"] == L["units"], Lc["units"]
+        mine = [e for x in Lc["links"] for e in (x["from"], x["to"]) if e["lane"] == lid and e["node"]]
+        assert mine and all(e["node"] == "fakesvc/" for e in mine) and (lid != launch or any(e.get("ext") for e in mine)), (lid, mine)
+        assert [root_ends(x, lid) for x in Lc["links"]] == [root_ends(x, lid) for x in L["links"]], lid
+    assert {T, C} <= {L["units"][i] for i in main["u"]}, L["units"]
+    Lc = got[wid]
+    byc = {x["id"]: x for x in Lc["lanes"]}
+    wc = byc[wid]
+    # 加上节点信息、框、名字（lanesview.decorate）：画出来的每个 id（节点、连线两头、框）都有 info；每列有 names / frames，
+    # 原来的线程原名挪到 thread_names；全收起的那一列没有框、也没有比共用切面细的节点（place 空），它的 fakesvc/ 不是共用切面的节点（more 里有）
+    D = lanesview.decorate(idx, hot, Lc, sorted(idx["dirs"]))
+    ends = {e["node"] for x in D["links"] for e in (x["from"], x["to"]) if e["node"]}
+    frames = {f for x in D["lanes"] for f in x["frames"]}
+    assert set(D["info"]) >= {n for x in D["lanes"] for n in x["nodes"]} | ends | frames, (set(D["info"]), ends, frames)
+    assert all(set(x["names"]) == set(x["nodes"]) | set(x["frames"]) for x in D["lanes"]), [x["names"] for x in D["lanes"]]
+    assert [x["thread_names"] for x in D["lanes"]] == [x["names"] for x in L["lanes"]]
+    assert wc["frames"] == {} and D["place"] == {} and D["more"]["fakesvc/"]["files"], (wc["frames"], D["place"])
+    assert (byc[main["id"]]["names"][T], byc[main["id"]]["names"][C], D["info"][T]["name"]) == ("truth", "callee", "truth")
+
     # 时间段：只算这一段里跑过的线程（用户 10-01）。s_threads2 先后起 req-0…3，从 req-2 开始的时间段里 req 那一列只有 2 条线程，
     # 起它们的连线也是 ×2，段外的起 / 收标 before / after
     import gzip as _gz
@@ -2560,6 +2600,191 @@ def test_lanes():
     assert f"{kpid}:MainThread" not in {x["id"] for x in L8["lanes"]} and not bg.get("proc_main"), bg
     assert not any(x["via"] in ("fork", "exec", "wait") and bg["id"] in (x["from"]["lane"], x["to"]["lane"]) for x in L8["links"]), L8["links"]
     assert bg["start"]["lane"] == f"{kpid}:MainThread" and bg["start"]["out"] == "before", bg["start"]
+
+
+# 几层目录、两条线程的仓库（目录同 test_browser.py 的 _CUT，加一个起 side 线程的 main）：分列里每列各自展开 / 收起。
+# 子层要的几处：sansio/ 里 hooks 调 app 注册的回调、import 却是 app → hooks，sansio 的 util 只 import hooks（不调）；
+# kernels/ 里 util → k2 → k 一条链（kernels/ 里跑到的单元在两个子层上）。撞名的：app（cx/ 和 sansio/，side 只调 sansio 的）、
+# util（ops/ 和 sansio/）
+_CX = {"cx/__init__.py": "",
+       "cx/app.py": ("from cx.ops import util\nfrom cx.sansio import app as a, hooks, util as su\n\n\n"
+                     "def run():\n    return a.go() + hooks.fire() + su.c() + util.u()\n"),
+       "cx/sansio/__init__.py": "", "cx/sansio/app.py": "from cx.sansio import hooks\n\n\ndef go():\n    return 1\n\n\nhooks.REG.append(go)\n",
+       "cx/sansio/hooks.py": "REG = []\n\n\ndef fire():\n    return REG[0]()\n",
+       "cx/sansio/util.py": "from cx.sansio import hooks\n\n\ndef c():\n    return len(hooks.REG)\n",
+       "cx/ops/__init__.py": "", "cx/ops/util.py": "from cx.ops.kernels import k2\n\n\ndef u():\n    return k2.kk2()\n",
+       "cx/ops/kernels/__init__.py": "", "cx/ops/kernels/k.py": "def kk():\n    return 2\n",
+       "cx/ops/kernels/k2.py": "from cx.ops.kernels import k\n\n\ndef kk2():\n    return k.kk()\n",
+       "cx/big/__init__.py": "", "cx/big/sub/__init__.py": "",
+       "cx/big/sub/s.py": "from cx.ops import util\nfrom cx.sansio import app as a\n\n\ndef s():\n    return util.u() + a.go()\n",
+       **{f"cx/big/f{i:02d}.py": f"from cx.ops import util\n\n\ndef f{i:02d}():\n    return util.u()\n" for i in range(14)},
+       "cx/main.py": ("import threading\n\nfrom cx.app import run\nfrom cx.big.sub.s import s\nfrom cx.big.f00 import f00\n\n\n"
+                      "def main():\n    run()\n    t = threading.Thread(target=s, name='side')\n    t.start()\n    t.join()\n    f00()\n\n\n"
+                      "if __name__ == '__main__':\n    main()\n")}
+
+
+def test_lanes_wrap():
+    """一列里展开一个有很多子模块的目录：同一层的子模块每 5 个占一个子行（同模块图折行），不排成一长行；
+    名次只看这一段里调到过的、同一深度的兄弟，按 id 排，和这一列画了哪几个无关"""
+    from codestrata import lanes
+    from codestrata.ui import lanesview
+    repo = tmpdir("cs-runs-wide-") / "repo"
+    files = {"ww/__init__.py": "", "ww/main.py": "from ww.wide import " + ", ".join(f"m{i}" for i in range(8)) + "\n\n\n"
+             "def main():\n" + "".join(f"    m{i}.f()\n" for i in range(8)) + "\n\nmain()\n",
+             "ww/wide/__init__.py": ""}
+    files.update({f"ww/wide/m{i}.py": "def f():\n    return 1\n" for i in range(8)})
+    for rel, src in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "wide", "--events", "--", PY, "-m", "ww.main")
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "wide")
+    run, rd, phase = runs.resolve(repo, "wide")
+    L0 = lanes.build(idx, rd, run, phase, hot, ["ww/"])
+    main = next(x["id"] for x in L0["lanes"] if x["thread"] == "MainThread")
+    D = lanesview.decorate(idx, hot, lanes.build(idx, rd, run, phase, hot, ["ww/"], cuts={main: ["ww/", "ww/wide/"]}), ["ww/"])
+    subs = {n: D["place"][n] for n in D["place"] if n.startswith("ww/wide/m")}
+    assert subs == {f"ww/wide/m{i}.py": ["ww/wide/", 0 if i < 5 else 1] for i in range(8)}, D["place"]
+
+
+def test_lanes_percut():
+    """分列里每列自己的切面（lanes.build 的 cuts + lanesview.decorate）：info 管到画出来的每个 id、和模块图的 pkgs / names 一样；
+    比共用切面细的节点挂在 base 的哪个节点里、第几个子层（place）只看 id，和哪一列展开了什么、画了哪些兄弟无关，
+    一样粗、更粗的不在里面；每列的框是节点往上的每一层（单根的根不算），图上的名字、框头同模块图在这一列的切面上的写法；
+    连线在一列的那一头、时间段里补的入口都落在这一列的切面上；/api/lanes 的 cuts 参数"""
+    from urllib.parse import quote
+    from codestrata import lanes, layout
+    from codestrata.ui import lanesview
+    repo = tmpdir("cs-runs-cx-") / "repo"
+    for rel, src in _CX.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "cxrun", "--events", "--phase", "two=cx.big.f00:f00", "--", PY, "-m", "cx.main")
+    idx = ui_load.load_index(repo)
+    hot, meta = ui_load.load_hot(repo, idx, "cxrun")
+    run, rd, phase = runs.resolve(repo, "cxrun")
+    base = ["cx/"]
+
+    def lanes_of(cuts, base=base):
+        D = lanesview.decorate(idx, hot, lanes.build(idx, rd, run, phase, hot, base, cuts=cuts), base)
+        return D, {x["thread"]: x for x in D["lanes"]}
+    D0, by0 = lanes_of(None)
+    main, side = by0["MainThread"]["id"], by0["side"]["id"]
+    assert set(by0["side"]["nodes"]) == {"cx/big/", "cx/ops/", "cx/sansio/"} and D0["place"] == {} and D0["more"] == {}, \
+        (by0, D0["place"])
+
+    def covered(D):
+        ends = {e["node"] for x in D["links"] for e in (x["from"], x["to"]) if e["node"]}
+        ids = {n for x in D["lanes"] for n in list(x["nodes"]) + list(x["frames"])} | ends
+        assert ids <= set(D["info"]) and ends, (ids - set(D["info"]), ends)
+        assert all(set(x["names"]) == set(x["nodes"]) | set(x["frames"]) for x in D["lanes"])
+
+    def like_graph(ln):
+        """这一列图上的名字、框头同模块图在它的切面上的写法（框里写相对于框的名字，撞名按整个切面算）"""
+        g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=ln["open"])
+        lab = {**{n["id"]: n["label"] for n in g["graph"]["nodes"]}, **{f["id"]: f["label"] for f in g["graph"]["frames"]}}
+        assert {n: ln["names"][n] for n in ln["nodes"]} == {n: lab[n] for n in ln["nodes"]}, (ln["names"], lab)
+        assert {f: x["label"] for f, x in ln["frames"].items()} == {f: lab[f] for f in ln["frames"]}, (ln["frames"], lab)
+        return g
+    # side 展开 cx/ops/：它的 util / kernels/ 比 base 的 cx/ops/ 细，挂在 cx/ops/ 里；cx/ops/ 里跑到的 util → k2 → k 分三层，
+    # kernels/ 取它里面跑到的单元（k2、k）里最靠上的那层
+    D1, by1 = lanes_of({side: ["cx/", "cx/ops/"]})
+    covered(D1)
+    assert by1["side"]["open"] == ["cx/", "cx/ops/"] and by1["MainThread"]["open"] == base and by1["MainThread"] == by0["MainThread"]
+    assert D1["place"] == {"cx/ops/util.py": ["cx/ops/", 0], "cx/ops/kernels/": ["cx/ops/", 1000]}, D1["place"]
+    assert by1["side"]["frames"] == {"cx/ops/": {"parent": None, "n": 2, "minw": round(layout.head_w("ops/", "· 2"), 1),
+                                                 "label": "ops/"}}, by1["side"]["frames"]
+    assert by1["side"]["names"] == {"cx/big/": "big/", "cx/ops/util.py": "util", "cx/ops/kernels/": "kernels/", "cx/ops/": "ops/",
+                                    "cx/sansio/": "sansio/"}, by1["side"]["names"]
+    assert set(D1["more"]) == {"cx/ops/util.py", "cx/ops/kernels/"} and D1["units"] == D0["units"], D1["more"]
+    # 兄弟画法不同（side 再展开 kernels/，main 也展开 cx/ops/）：util、kernels/ 的位置不变；k2、k 在 kernels/ 里，各在自己那层。
+    # 套着的框（kernels/ 在 ops/ 里）的框头、框里的名字同模块图
+    D2, by2 = lanes_of({side: ["cx/", "cx/ops/", "cx/ops/kernels/"], main: ["cx/", "cx/ops/"]})
+    covered(D2)
+    assert D2["place"]["cx/ops/util.py"] == D1["place"]["cx/ops/util.py"] and D2["place"]["cx/ops/kernels/"] == D1["place"]["cx/ops/kernels/"]
+    assert (D2["place"]["cx/ops/kernels/k2.py"], D2["place"]["cx/ops/kernels/k.py"]) == (["cx/ops/", 1000], ["cx/ops/", 2000]), D2["place"]
+    assert by2["side"]["frames"]["cx/ops/kernels/"]["parent"] == "cx/ops/" and by2["side"]["names"]["cx/ops/kernels/k.py"] == "k"
+    assert by2["side"]["frames"]["cx/ops/kernels/"]["label"] == by2["side"]["names"]["cx/ops/kernels/"] == "kernels/"
+    like_graph(by2["side"])
+    like_graph(by2["MainThread"])
+    assert [x["u"] for x in D2["lanes"]] == [x["u"] for x in D0["lanes"]] and D2["units"] == D0["units"]
+    # 只是框的 id（两列都展开了 cx/ops/，哪一列里都没收成节点）：只有框的几项，调用次数同收起它的模块图
+    g0 = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=base)
+    assert set(D2["info"]["cx/ops/"]) == {"kind", "label", "sep", "name", "frame", "collapsible", "hits"} \
+        and D2["info"]["cx/ops/"]["hits"] == g0["hot"]["packages"]["cx/ops/"] > 0, D2["info"]["cx/ops/"]
+    # 一样粗、更粗的不在 place 里：base 展开了 cx/ops/，side 收起它（更粗），main 的 util（和 base 一样）；main 的 k2、k 比 base 细
+    D3, by3 = lanes_of({side: ["cx/"], main: ["cx/", "cx/ops/", "cx/ops/kernels/"]}, base=["cx/", "cx/ops/"])
+    covered(D3)
+    assert "cx/ops/" in by3["side"]["nodes"] and D3["place"] == {"cx/ops/kernels/k2.py": ["cx/ops/kernels/", 0],
+                                                                 "cx/ops/kernels/k.py": ["cx/ops/kernels/", 1000]}, D3["place"]
+    # 名字、节点信息同模块图：main 展开 sansio/、ops/，它的节点正好是这个切面上画得出来的全部节点
+    cut3 = ["cx/", "cx/ops/", "cx/sansio/"]
+    D4, by4 = lanes_of({main: cut3})
+    covered(D4)
+    m4 = by4["MainThread"]
+    g = like_graph(m4)
+    assert set(m4["nodes"]) == {n["id"] for n in g["graph"]["nodes"]}, (m4["nodes"], g["graph"]["nodes"])
+    assert set(m4["frames"]) == {f["id"] for f in g["graph"]["frames"]}, m4["frames"]
+    assert m4["names"]["cx/sansio/app.py"] == "sansio.app" and m4["names"]["cx/app.py"] == "app", m4["names"]   # 撞名补父目录段
+    for n in m4["nodes"]:
+        x = dict(D4["info"][n])
+        assert (x.pop("hits"), x.pop("name"), x["label"]) == (g["hot"]["packages"].get(n, 0), g["names"][n], g["labels"][n]) \
+            and x == g["pkgs"][n], (n, x)
+        if n in D4["more"]:
+            assert D4["more"][n] == {"syms": g["pkgSyms"].get(n, []), "files": g["pkgFiles"].get(n, []),
+                                     "docs": g["pkgDocs"].get(n, [])}, n
+    assert set(D4["more"]) == {"cx/sansio/app.py", "cx/sansio/hooks.py", "cx/sansio/util.py", "cx/ops/util.py", "cx/ops/kernels/"}, \
+        D4["more"]
+    assert (m4["names"]["cx/sansio/util.py"], m4["names"]["cx/ops/util.py"]) == ("sansio.util", "ops.util"), m4["names"]
+    # 子层：hooks 调 app（注册的回调），import 却是 app → hooks——调用的权重大（同模块图的分层），调用方 hooks 在上；
+    # sansio 的 util 只 import hooks、不调它，也排在 hooks 上面
+    assert {n: D4["place"][n] for n in ("cx/sansio/util.py", "cx/sansio/hooks.py", "cx/sansio/app.py")} == \
+        {"cx/sansio/util.py": ["cx/sansio/", 0], "cx/sansio/hooks.py": ["cx/sansio/", 1000], "cx/sansio/app.py": ["cx/sansio/", 2000]}, D4["place"]
+    # 撞名按这一列的切面算，同模块图：side 展开 sansio/ 只画了 sansio 的 app（cx/app.py 只有主线程调），切面上撞了名，
+    # 照样写 sansio.app，面板上的短名也是；主线程那一列一点不变
+    D5, by5 = lanes_of({side: ["cx/", "cx/sansio/"]})
+    covered(D5)
+    assert "cx/app.py" not in by5["side"]["nodes"] and like_graph(by5["side"])
+    assert by5["side"]["names"]["cx/sansio/app.py"] == "sansio.app" == D5["info"]["cx/sansio/app.py"]["name"], by5["side"]["names"]
+    assert by5["MainThread"] == by0["MainThread"]
+    # 主线程展开 sansio/、side 展开 ops/：两个 util 不在同一个切面上，各写 util（图上、面板上）；side 展开 ops/ 改不了主线程那一列的名字
+    D7, by7 = lanes_of({main: ["cx/", "cx/sansio/"], side: ["cx/", "cx/ops/"]})
+    covered(D7)
+    like_graph(by7["MainThread"])
+    like_graph(by7["side"])
+    assert (by7["MainThread"]["names"]["cx/sansio/util.py"], by7["side"]["names"]["cx/ops/util.py"],
+            D7["info"]["cx/sansio/util.py"]["name"], D7["info"]["cx/ops/util.py"]["name"]) == ("util",) * 4, D7["info"]
+    assert by7["MainThread"] == lanes_of({main: ["cx/", "cx/sansio/"]})[1]["MainThread"]
+    # 主线程全收起（只剩 cx/）：起 side（span 里的那一行）、join side（等它的那一行）在主线程的那一头落到 cx/，side 那一头、side 那一列不变
+    D6, by6 = lanes_of({main: []})
+    covered(D6)
+
+    def ends(D):
+        return sorted((x["kind"], x["from"]["lane"], x["from"]["node"], x["to"]["lane"], x["to"]["node"]) for x in D["links"])
+    assert ends(D0) == [("join", side, "cx/big/", main, "cx/main.py"), ("spawn", main, "cx/main.py", side, "cx/big/")], ends(D0)
+    assert ends(D6) == [("join", side, "cx/big/", main, "cx/"), ("spawn", main, "cx/", side, "cx/big/")], ends(D6)
+    assert by6["side"] == by0["side"] and set(by6["MainThread"]["nodes"]) == {"cx/"}, by6["MainThread"]
+    # 时间段里入口调用在段前就进去了的列（阶段 two 从 f00 开始，main() 早就进去了）：入口按还在跑的那个调用补上，也落在这一列的切面上
+    hot2 = ui_load.load_hot(repo, idx, "cxrun@two")[0]
+    run2, rd2, ph2 = runs.resolve(repo, "cxrun@two")
+    for cuts, entry in ((None, "cx/main.py"), ({main: []}, "cx/")):
+        L2 = lanes.build(idx, rd2, run2, ph2, hot2, base, cuts=cuts)
+        assert ph2 == "two" and [(x["id"], x["entry"]) for x in L2["lanes"]] == [(main, entry)], L2["lanes"]
+    # /api/lanes：cuts 是 JSON（同样切面的列一组）；写错了 400
+    with served(repo) as get:
+        q = quote(json.dumps([{"lanes": [main], "open": cut3}]))
+        st, A = get(f"/api/lanes?run=cxrun&open=cx/&cuts={q}")
+        assert st == 200 and {x["id"]: x["open"] for x in A["lanes"]} == {main: cut3, side: base}, (st, A.get("error"))
+        assert json.loads(json.dumps(D4["place"])) == A["place"] and set(A["info"]) == set(D4["info"]) \
+            and [x["names"] for x in A["lanes"]] == [x["names"] for x in D4["lanes"]], A["place"]
+        for bad in ("nojson", json.dumps({"lanes": [main]}), json.dumps([{"lanes": main, "open": []}]),
+                    json.dumps([{"lanes": [main], "open": [1]}])):
+            st, e = get(f"/api/lanes?run=cxrun&open=cx/&cuts={quote(bad)}")
+            assert st == 400 and "cuts" in e["error"], (bad, st, e)
+        st, e = get("/api/lanes?run=nosuch")
+        assert st == 404, e
 
 
 _PA = {

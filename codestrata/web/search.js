@@ -316,17 +316,21 @@ window.CS = window.CS || {};
     /* 图上高亮：命中项所在的节点。换了切面（重画）之后 app 会再调一次 */
     highlight: function (list) {
       if (!CS.graph || !CS.graph.highlight || !CS.app || !CS.app.data) return;
-      var lanes = CS.app.lanesMode() && CS.lanes;   // 分列：按分列画着的节点找、描它的每一份
+      var lanes = CS.app.lanesMode() && CS.lanes;   // 分列：每列按自己画着的节点找（各列切面不一样），描那一份
       if (!list.length) { if (lanes) CS.lanes.highlight(null); else CS.graph.highlight(null); return; }
       // 命中常有上万条，落到的模块只有一两千个：先去重再找节点（早先每条都找一遍，敲一个字要 200ms）
-      var hit = {}, seen = {}, g = lanes ? CS.lanes.asGraph() : undefined;
-      list.forEach(function (p) {
-        if (seen[p[0]]) return;
-        seen[p[0]] = 1;
-        var h = CS.app.homeOf(p[0], p[1], g); if (h) hit[h] = 1;
-      });
-      if (lanes) CS.lanes.highlight(function (id) { return !!hit[id]; });
-      else CS.graph.highlight(function (n) { return !!hit[n.id]; });
+      var hit = {}, seen = {}, uniq = [];
+      list.forEach(function (p) { if (!seen[p[0]]) { seen[p[0]] = 1; uniq.push(p); } });
+      if (lanes) {
+        Object.keys(CS.lanes.laneIx || {}).forEach(function (lane) {
+          var g = CS.lanes.asGraph(lane);
+          if (g.nodes.length) uniq.forEach(function (p) { var h = CS.app.homeOf(p[0], p[1], g); if (h) hit[lane + '|' + h] = 1; });
+        });
+        CS.lanes.highlight(function (id, lane) { return !!hit[lane + '|' + id]; });
+        return;
+      }
+      uniq.forEach(function (p) { var h = CS.app.homeOf(p[0], p[1]); if (h) hit[h] = 1; });
+      CS.graph.highlight(function (n) { return !!hit[n.id]; });
     },
 
     /* 图重画了（换切面、切 hot 视图）：高亮按新图重新套 */

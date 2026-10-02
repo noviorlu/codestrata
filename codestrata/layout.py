@@ -42,10 +42,15 @@ class Node:
     meta: dict = field(default_factory=dict)
 
 
-def _text_w(s: str) -> float:
+def text_w(s: str) -> float:
     """等宽字体下一段文字大约多宽（像素）。中文字是西文的两倍宽——早先一律按西文算，
     「本层文件」这种名字的框和框头都装不下。"""
     return sum(12.4 if ord(c) >= 0x2E80 else 7.25 for c in s)
+
+
+def head_w(label: str, count: str) -> float:
+    """框头（收起按钮 + 名字 + 节点数「· n」）要多宽：框至少要装得下它"""
+    return 28 + text_w(label) + 8 + text_w(count) * 11 / 12 + 12
 
 
 def _segs(x: dict) -> tuple[list[str], str]:
@@ -69,6 +74,27 @@ def _suffix(kind: str | None) -> str:
 def _display(x: dict, kind: str | None, pre: list[str]) -> str:
     """图上的名字：收起的目录带 /，「本层文件」节点写成 目录/ 本层，单个文件原样。"""
     return _label(*_segs(x), pre) + _suffix(kind)
+
+
+def name_in(info: dict, alias: dict, pre: list[str], p: str, f: str | None) -> str:
+    """节点 / 框 p 在框 f 里（None 是不在任何框里）时图上写的名字。框里的节点只写相对于框的名字：框头已经写了 diffusion/，
+    里面的 diffusion.executor/ 写成 executor/，框就窄得多。同一张图上撞了名的（两个 app）
+    不管在哪个框里都写补过父目录段的名字（alias，cut.disambiguate）——框头离得远，只看节点分不出来。
+    info：{id: {"kind", "label", "sep"}}（cut.view 的节点、graphview 的框）；pre：只有一个根时它的显示段（不再重复写它）"""
+    x = info.get(p) or {}
+    kind = x.get("kind")
+    own = _cut.residual_base(p) if kind == "residual" else p
+    if f is not None and own == (_cut.residual_base(f) if _cut.is_residual(f) else f):
+        return "本层文件"
+    if own in alias:
+        return alias[own] + _suffix(kind)
+    if f is None:
+        return _display(x, kind, pre)
+    fs, _ = _segs(info.get(f) or {})
+    ps, sep = _segs(x)
+    if len(ps) <= len(fs) or ps[:len(fs)] != fs:
+        return _display(x, kind, pre)
+    return sep.join(ps[len(fs):]) + _suffix(kind)
 
 
 MAX_LANES = 16      # 层太多时按比例压到这么多条泳道（会有少数边落在同一条里）
@@ -140,6 +166,14 @@ def layers(ids, edges) -> dict[str, int]:
     return {n: top - h for n, h in height.items()}
 
 
+def weighted_layers(ids, edges, runtime_edges=None) -> dict[str, int]:
+    """layers，边带上排版用的权重：静态边 [(a, b, import 语句数)] 取对数——几百条 import 的一对不该压过几十对只有一条的；
+    runtime_edges（叠着的 run 的调用 [(a, b, 次数)]）比静态边重得多（RUNTIME_WEIGHT），叠了 run 就先顺着实际的调用"""
+    weighted = ([(a, b, 1 + math.log1p(w)) for a, b, w in edges]
+                + [(a, b, RUNTIME_WEIGHT * (1 + math.log1p(n))) for a, b, n in runtime_edges or ()])
+    return layers(ids, weighted)
+
+
 def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: dict[int, str] | None = None,
           min_files: int = 1, top: int | None = None, width: float = 1180.0,
           only: set[str] | None = None, runtime_edges: list | None = None) -> dict:
@@ -168,10 +202,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
 
     edges = [(a, b, w) for a, b, w in index["edges"] if a in keep and b in keep]
     if lane_of is None:
-        # 边的权重取对数：几百条 import 的一对不该压过几十对只有一条的
-        weighted = ([(a, b, 1 + math.log1p(w)) for a, b, w in edges]
-                    + [(a, b, RUNTIME_WEIGHT * (1 + math.log1p(n))) for a, b, n in runtime_edges or ()])
-        lay = layers(keep, weighted)
+        lay = weighted_layers(keep, edges, runtime_edges)
         deep = max(lay.values(), default=0) + 1
         lane_of = {p: (i * MAX_LANES // deep if deep > MAX_LANES else i) for p, i in lay.items()}
         # 每条泳道装的是哪几层（层太多被压过时，一条泳道里有好几层）：泳道标签用
@@ -189,37 +220,18 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
     info = {**pkgs, **fr_in}
     alias = index.get("alias") or {}          # 切面上撞了名的：补过父目录段的名字（cut.disambiguate）
 
-    def name_in(p: str, f: str | None) -> str:
-        """框里的节点只写相对于框的名字：框头已经写了 diffusion/，
-        里面的 diffusion.executor/ 写成 executor/，框就窄得多。同一张图上撞了名的（两个 app）
-        不管在哪个框里都写补过父目录段的名字——框头离得远，只看节点分不出来。"""
-        x = info.get(p) or {}
-        kind = x.get("kind")
-        own = _cut.residual_base(p) if kind == "residual" else p
-        if f is not None and own == (_cut.residual_base(f) if _cut.is_residual(f) else f):
-            return "本层文件"
-        if own in alias:
-            return alias[own] + _suffix(kind)
-        if f is None:
-            return _display(x, kind, pre)
-        fs, _ = _segs(info.get(f) or {})
-        ps, sep = _segs(x)
-        if len(ps) <= len(fs) or ps[:len(fs)] != fs:
-            return _display(x, kind, pre)
-        return sep.join(ps[len(fs):]) + _suffix(kind)
-
     nodes: dict[str, Node] = {}
     for p, v in items:
         f = v.get("frame") if v.get("frame") in fr_in else None
         nodes[p] = Node(
-            id=p, label=name_in(p, f), lane=lane_of[p], frame=f,
+            id=p, label=name_in(info, alias, pre, p, f), lane=lane_of[p], frame=f,
             alt=v["alt"], files=v["files"], loc=v["loc"],
             classes=v["classes"], funcs=v["funcs"], out=v["out"], inn=v["in"],
         )
 
     # 节点宽度：标签长度为底，文件数给一点加成（面积编码规模）
     for n in nodes.values():
-        base = max(_text_w(n.label) + 24, 78)
+        base = max(text_w(n.label) + 24, 78)
         bonus = min(56.0, 10.0 * math.log1p(n.files))
         n.w = base + bonus
         n.h = 30.0 + min(14.0, 3.2 * math.log1p(n.files))
@@ -280,7 +292,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
             lo, hi = span.get(f, (n.lane, n.lane))
             span[f] = (min(lo, n.lane), max(hi, n.lane))
             f = fparent[f]
-    flabel = {f: name_in(f, fparent[f]) for f in used}
+    flabel = {f: name_in(info, alias, pre, f, fparent[f]) for f in used}
 
     MARGIN, GAP = 74.0, 26.0
     FPAD, PGAP = 12.0, 18.0     # 框内左右留白；同一层相邻两块之间的空隙
@@ -391,7 +403,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
         nat, mn = res
         if a is not None:
             # 框头：收起按钮 + 名字 + 节点数，框至少要装得下它
-            head = 28 + _text_w(flabel[a]) + 8 + _text_w(head_text(a)) * 11 / 12 + 12
+            head = head_w(flabel[a], head_text(a))
             nat, mn = max(nat + 2 * FPAD, head), max(mn + 2 * FPAD, head)
         need[a] = (nat, mn)
 
@@ -622,7 +634,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
         lo, hi = span[f]
         fy0 = rows[lo]["y"] + 5 + HEAD_H * sdepth[f]
         fy1 = rows[hi]["y"] + rows[hi]["h"] - 5 - FOOT_H * edepth[f]
-        frames.append({"id": f, "label": flabel[f], "lw": round(_text_w(flabel[f]) * 11.5 / 12, 1),
+        frames.append({"id": f, "label": flabel[f], "lw": round(text_w(flabel[f]) * 11.5 / 12, 1),
                        "kind": fr_in[f].get("kind"), "count": head_text(f),
                        "parent": fparent[f], "depth": depth(f), "n": len(below[f]),
                        "total": fr_in[f].get("n") or len(below[f]),

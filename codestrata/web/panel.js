@@ -153,10 +153,12 @@ window.CS = window.CS || {};
 
     /* 展开 / 收起之后换一份切面数据 */
     setData: function (data) { D = data; },
+    /* 面板现在用的数据（分列里是模块图那份加上各列单独切面的节点，见 lanes.panelData） */
+    data: function () { return D || {}; },
 
     reset: function () {
       this._detTok++;
-      delete det.dataset.pkg;
+      delete det.dataset.pkg; delete det.dataset.lane;
       det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是一层，箭头尽量从上指向下：'
         + '越上面越靠入口、越下面越是被调用的叶子；节点大小编码文件数。图上的边只有调用。'
         + '点节点看它调用谁、里面有什么符号；点箭头看这条边上是哪些函数在调用。</p>';
@@ -185,7 +187,7 @@ window.CS = window.CS || {};
             + '" data-edge="' + esc(s + '|' + t) + '" title="看这条边上具体是哪些函数在调用">' + tag + ' ⇢</button></span>';
         }).join('') + '</div>';
       }
-      det.dataset.pkg = id;
+      det.dataset.pkg = id; delete det.dataset.lane;   // 分列里讲的是哪一列的那一份：lanedetail.node 再写上
       det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
         + '<div class="sub" title="按 import 算：(出 − 入) / (出 + 入)，+1 靠入口、−1 是叶子">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　import 出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
@@ -207,12 +209,12 @@ window.CS = window.CS || {};
     },
 
     /* 详情里的节点刚被展开成了框：内容照旧，只把「展开」换成「收起」 */
-    asFrame: function (id) {
+    asFrame: function (id, tag) {                   // tag：怎么说它展开了（分列里是「已在这一列里展开成框」）
       var row = det.querySelector('.cutrow');
       if (det.dataset.pkg !== id || !row) return;
-      row.innerHTML = '<span class="kindtag">已在图上展开成框</span>'
+      row.innerHTML = '<span class="kindtag">' + esc(tag || '已在图上展开成框') + '</span>'
         + '<button class="chip" title="框里的子模块合回一个节点">收起</button>';
-      row.querySelector('button').onclick = function () { CS.app.collapseFrame(id); };
+      row.querySelector('button').onclick = function () { CS.app.collapseFrame(id, det.dataset.lane); };
     },
 
     /* 这个节点在切面上是什么、能不能展开 / 收起 */
@@ -561,7 +563,7 @@ window.CS = window.CS || {};
         b.onclick = function () { var ab = b.dataset.edge.split('|'); CS.app.goEdge(ab[0], ab[1]); };
       });
       [].forEach.call(det.querySelectorAll('[data-cut]'), function (b) {
-        b.onclick = function () { CS.app[b.dataset.cut](pkg); };
+        b.onclick = function () { CS.app[b.dataset.cut](pkg, det.dataset.lane); };   // 分列里只改这一份所在的列
       });
       [].forEach.call(det.querySelectorAll('[data-view]'), function (b) {
         b.onclick = function () { CS.viewer.open(b.dataset.view, b.dataset.line ? +b.dataset.line : 0); };
@@ -570,7 +572,7 @@ window.CS = window.CS || {};
 
     /* ---- 左：一条边承载了什么 ---- */
     showEdge: function (a, b) {
-      delete det.dataset.pkg;
+      delete det.dataset.pkg; delete det.dataset.lane;
       det.innerHTML = '<h2>' + esc(short(a)) + '<span class="arr">→</span>' + esc(short(b)) + '</h2>'
         + '<div class="sub">' + esc(full(a)) + ' → ' + esc(full(b)) + '</div><p class="hint">读取中…</p>';
       var self = this, tok = ++this._detTok;

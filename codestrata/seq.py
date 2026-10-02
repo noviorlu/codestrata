@@ -97,11 +97,11 @@ def _chunk(spans: Path, name: str) -> list:
 
 # ---------------------------------------------------------------- 映射到切面
 
-_MAPS: "OrderedDict[tuple, tuple]" = OrderedDict()   # (id(idx), 切面) → (idx, _Map)
+_MAPS: "OrderedDict[tuple, tuple]" = OrderedDict()   # (id(idx), 切面) → (idx, _Map)（最近 16 个：分列里每列可以有自己的切面）
 
 
 def cut_map(idx: dict, open_) -> "_Map":
-    """键 rel:行 → 切面上的节点（_Map.of / file_node）。一个 (idx, 切面) 算一次"""
+    """键 rel:行 → 切面上的节点（_Map.of / file_node / unit）。一个 (idx, 切面) 算一次"""
     key = (id(idx), None if open_ is None else ",".join(sorted(open_)))
     with _LOCK:
         hit = _MAPS.get(key)
@@ -111,7 +111,7 @@ def cut_map(idx: dict, open_) -> "_Map":
     m = _Map(idx, open_)
     with _LOCK:
         _MAPS[key] = (idx, m)
-        while len(_MAPS) > 8:
+        while len(_MAPS) > 16:
             _MAPS.popitem(last=False)
     return m
 
@@ -142,6 +142,10 @@ class _Map:
     def file_node(self, rel: str):
         unit = self.files.get(rel)
         return self.node_of.get(unit) if unit else None
+
+    def unit(self, key: str) -> str | None:
+        """键 rel:行 → 它所在的单元（和切面无关）；落不到 index 里是 None"""
+        return self.files.get(key.rpartition(":")[0])
 
 
 # ---------------------------------------------------------------- 每条边的时间
