@@ -80,13 +80,13 @@ window.CS = window.CS || {};
     }
     return '';
   }
-  var SCAN_KIND = ['调用', '构造', '装饰器', 'property', '语法触发', 'getattr', '仓库外'];
+  var SCAN_KIND = ['调用', '构造', '装饰器', 'property', '语法触发', 'getattr', '仓库外', '启动 kernel'];
 
   /* 边详情的主体：每一对「谁调了谁」一张卡片——被调的函数、from（调用写在调用方的哪一行）、
      to（被调函数的签名）。只有 trace 的（代码里看不出会调到它）在前，再按次数排 */
   function callCards(E) {
     return E.calls.map(function (P) {
-      var q = P.callee.slice(P.callee.indexOf('#') + 1), parts = q.split('.');
+      var q = P.callee.slice(P.callee.indexOf('#') + 1), parts = CS.ids.qparts(q), qsep = CS.ids.qsep(q);
       var name = parts.pop(), only = P.status === 'trace', mixed = P.status === 'mixed';
       var lines = P.lines || P.guessed || [];
       var first = lines.filter(function (x) { return x.l; })[0];
@@ -100,7 +100,7 @@ window.CS = window.CS || {};
               : mixed ? '<span class="dtag" title="有的调用处代码里看得出，有的看不出">其中 ' + P.only + ' 次代码里看不出</span>' : '';
       return '<div class="call' + (only ? ' dyn' : '') + '">'
         + '<div class="ch"><span class="rt">×' + P.n + '</span><b>' + esc(name) + '</b>'
-        + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '') + tag + '</div>'
+        + (parts.length ? '<span class="cls">' + esc(parts.join(qsep)) + '</span>' : '') + tag + '</div>'
         + '<div class="cs"><span class="lab">from</span>' + from + more
         + '<span class="who">' + esc(symLabel(P.caller)) + '</span></div>'
         + (first && first.s ? code([first.s]) : '')
@@ -120,11 +120,12 @@ window.CS = window.CS || {};
   /* 代码里写了、这次没录到的调用（没叠 run 时就是全部）：from 调用那一行，to 被调的定义 */
   function scanCards(items) {
     return items.map(function (x) {
-      var q = x.callee.slice(x.callee.indexOf('#') + 1), parts = q.split('.'), u = x.lines[0];
+      var q = x.callee.slice(x.callee.indexOf('#') + 1), parts = CS.ids.qparts(q), u = x.lines[0];
       return '<div class="call ref">'
         + '<div class="ch"><b>' + esc(parts.pop()) + '</b>'
-        + (parts.length ? '<span class="cls">' + esc(parts.join('.')) + '</span>' : '')
+        + (parts.length ? '<span class="cls">' + esc(parts.join(CS.ids.qsep(q))) + '</span>' : '')
         + (u && u.k ? '<span class="cls">' + esc(SCAN_KIND[u.k] || '') + '</span>' : '')
+        + (x.approx ? '<span class="cls" title="C / C++ / CUDA 的调用按名字对上（tree-sitter，没有编译器的名字解析）">近似</span>' : '')
         + (x.n_lines > 1 ? '<span class="cls">' + x.n_lines + ' 处</span>' : '') + '</div>'
         + (x.unseen ? '<div class="via">构造这个类不跑仓库里的代码（dataclass 生成的 __init__、仓库外基类的），'
                       + '跑没跑 trace 都看不到</div>' : '')
@@ -432,12 +433,18 @@ window.CS = window.CS || {};
       var top = T.byFile[f] || [];
       var draw = function (all) {
         // all：完整大纲（含方法）；拿不到就只有顶层
-        var kids = {};
-        (all || []).forEach(function (x) {
+        // 方法挂在类下面：Python 是 Cls.m（只看一层）；C++ 是 ns::Cls::m，前缀是一个类才算方法（命名空间里的函数算顶层）
+        var kids = {}, cls = {};
+        (all || []).forEach(function (x) { if (x.k === 'class') cls[x.n] = 1; });
+        var owner = function (x) {
+          if (CS.ids.qsep(x.n) === '::') { var pre = x.n.slice(0, x.n.lastIndexOf('::')); return cls[pre] ? pre : null; }
           var parts = x.n.split('.');
-          if (parts.length === 2) (kids[parts[0]] = kids[parts[0]] || []).push(x);
-        });
-        var list = all ? all.filter(function (x) { return x.n.indexOf('.') === -1; }) : top;
+          return parts.length === 2 ? parts[0] : null;
+        };
+        (all || []).forEach(function (x) { var o = owner(x); if (o) (kids[o] = kids[o] || []).push(x); });
+        var list = all ? all.filter(function (x) {
+          return CS.ids.qsep(x.n) === '::' ? !owner(x) : x.n.indexOf('.') === -1;
+        }) : top;
         // 一个类跑了多少次：它自己加上它的方法。有方法被调到的类默认展开，被调到的名字标橙
         var hits = function (x) {
           return (hotS[x.key] || 0) + (kids[x.n] || []).reduce(function (a, m) { return a + (hotS[m.key] || 0); }, 0);
@@ -456,7 +463,8 @@ window.CS = window.CS || {};
           return '<div class="tn sym' + (ms.length && !open ? ' closed' : '') + '">'
             + '<div class="tr' + (hx ? ' ran' : '') + '" style="--d:' + depth + '">'
             + (ms.length ? '<button class="tg" aria-label="展开方法">' + (open ? '▾' : '▸') + '</button>' : '<span class="tg sp"></span>')
-            + '<span class="k' + (isC ? ' c' : '') + '">' + (isC ? 'C' : 'f') + '</span>'
+            + '<span class="k' + (isC ? ' c' : '') + '"' + (x.k === 'kernel' ? ' title="GPU kernel"' : '') + '>'
+            + (isC ? 'C' : x.k === 'kernel' ? 'K' : 'f') + '</span>'
             + '<button class="tn-name symname" data-tsym="' + esc(x.key) + '" data-f="' + esc(f) + '" data-l="' + x.l + '">' + esc(x.n) + '</button>'
             + '<span class="tn-meta">:' + x.l + (ms.length ? ' · ' + ms.length + (isC ? ' 个方法' : ' 个内部函数') + (T.onlyHot ? '被调到' : '') : '') + '</span>'
             + (hx ? '<span class="rt">' + hx + '</span>' : '') + '</div>'

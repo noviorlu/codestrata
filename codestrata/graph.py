@@ -21,7 +21,8 @@ graph 是 codestrata 的中心数据结构（见 ARCHITECTURE 开头）：节点
 行、末行是调用那个表达式占的行（跨行的调用末行更大）。种类：
   0 调用  1 构造（被调方是类）  2 装饰器（@x 定义时调 x）  3 用 property（读、赋值、del 调 getter、setter、deleter）
   4 语法触发的特殊方法（with、for、[]、运算符、len() 这类，只记仓库里有类定义过的特殊方法）
-  5 getattr(…, "名字")  6 调的是仓库外的（名字是写的那个）
+  5 getattr(…, "名字")  6 调的是仓库外的（名字是写的那个）  7 启动 GPU kernel（CUDA 的 k<<<…>>>(…)）
+C / C++ / CUDA 的调用由 native_scan 按名字对上（近似档），scan 把它们放在 index 的 native_graph 里交过来。
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ from pathlib import Path
 from . import cut as _cut
 from . import xref as _xref
 
-CALL, NEW, DECO, PROP, SYN, STR, EXT = range(7)
+CALL, NEW, DECO, PROP, SYN, STR, EXT, LAUNCH = range(8)
 _HOW = {_xref.HOW_CALL: CALL, _xref.HOW_DECO: DECO, _xref.HOW_PROP: PROP, _xref.HOW_STR: STR}
 
 
@@ -49,6 +50,22 @@ class Builder:
         self.calls: dict[str, list] = {}
         self.sites: dict[str, list] = {}
         self.ctors: dict[str, list] = {}
+        self._add_native(index.get("native_graph") or {})
+
+    def _callee(self, key: str) -> int:
+        i = self._cid.get(key)
+        if i is None:
+            i = self._cid[key] = len(self.callees)
+            self.callees.append(key)
+        return i
+
+    def _add_native(self, native: dict) -> None:
+        """native_scan 对上的 C / C++ / CUDA 调用和对不上的调用处"""
+        for caller, xs in (native.get("calls") or {}).items():
+            for key, l, e, kind in xs:
+                self.calls.setdefault(caller, []).append([self._callee(key), l, e, kind])
+        for caller, xs in (native.get("sites") or {}).items():
+            self.sites.setdefault(caller, []).extend(list(x) for x in xs)
 
     def add_file(self, rel: str, tree, calls: list, spans: list) -> None:
         syms = self.symbols
@@ -58,11 +75,7 @@ class Builder:
                 key = target[2:]
                 if kind == CALL and syms[key].get("k") == "class":
                     kind = NEW
-                i = self._cid.get(key)
-                if i is None:
-                    i = self._cid[key] = len(self.callees)
-                    self.callees.append(key)
-                self.calls.setdefault(caller, []).append([i, l, e, kind])
+                self.calls.setdefault(caller, []).append([self._callee(key), l, e, kind])
             else:
                 if kind == CALL and target and target.startswith("x:"):
                     kind = EXT

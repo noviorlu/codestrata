@@ -19,7 +19,7 @@ from pathlib import Path
 from common import FAKE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
 from codestrata import app as app_mod  # noqa: E402
-from codestrata import projects, runs, serve  # noqa: E402
+from codestrata import native_scan, projects, runs, serve  # noqa: E402
 from codestrata.ui import load as ui_load  # noqa: E402
 from codestrata import scan as scan_mod  # noqa: E402
 from codestrata.jobs import Busy, JobManager, TraceSpec, scan_argv  # noqa: E402
@@ -199,7 +199,7 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     cs("scan", repo, "--roots", ".", "pkg", "sub/proj/ext")
     idx = ui_load.load_index(repo)
     units = set(idx["packages"])
-    labels = {v["label"] for v in idx["packages"].values()}
+    labels = {v["label"] for v in idx["packages"].values() if "label" in v}     # 原生文件不给 label
     assert {"pkg/build/wheel.py", "pkg/env/__init__.py", "train.py", "setup_tools.py"} <= units, units
     assert {"pkg.build.wheel", "pkg.env.__init__", "my_repo.train", "my_repo.setup_tools"} <= labels, labels
     assert not any("lib" in u for u in units), units
@@ -208,8 +208,12 @@ def test_scan_build_pkg_root_scripts_and_ext_sources():
     # 根目录的脚本在 ./ 这个目录里，显示成仓库名
     assert idx["dirs"]["./"]["parent"] is None and idx["dirs"]["./"]["label"] == "my_repo"
     assert idx["files"]["train.py"] == "train.py"
-    assert idx["aux"] == {"sub/proj/ext/inner.cu": "sub/proj/ext/", "sub/proj/csrc/k.cu": "sub/proj/ext/",
-                          "sub/proj/tests/t.cpp": "sub/proj/ext/"}, idx["aux"]
+    # 扫描目录里的原生文件：装了 tree-sitter 就自己成单元，否则挂成 aux；嵌套工程里、扫描目录外的照旧挂到包上
+    nested = {"sub/proj/csrc/k.cu": "sub/proj/ext/", "sub/proj/tests/t.cpp": "sub/proj/ext/"}
+    if native_scan.available() is None:
+        assert "sub/proj/ext/inner.cu" in units and idx["aux"] == nested, idx["aux"]
+    else:
+        assert idx["aux"] == {"sub/proj/ext/inner.cu": "sub/proj/ext/", **nested}, idx["aux"]
     assert idx["file_loc"]["sub/proj/csrc/k.cu"] == 3
     # 根目录的脚本 trace 得到：函数记在 my_repo.train 上
     cs("trace", repo, "--case", "s", "--phase", "work=my_repo.train:main", "--", PY, "train.py")

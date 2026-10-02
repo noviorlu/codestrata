@@ -12,9 +12,13 @@ def _unit_syms(idx: dict) -> dict:
     """顶层类 / 函数按单元分组（方法太多，只在文件树展开时按需取）。"""
     if "_unit_syms" not in idx:
         out: dict[str, list] = {}
-        for key, s in (idx.get("symbols") or {}).items():
-            if "." in s["n"]:
-                continue
+        syms = idx.get("symbols") or {}
+        for key, s in syms.items():
+            if s.get("lang", "python") == "python":
+                if "." in s["n"]:
+                    continue
+            elif "::" in s["n"] and (syms.get(f"{s['f']}#{s['n'].rsplit('::', 1)[0]}") or {}).get("k") == "class":
+                continue                     # C++ 的成员（类里的方法）；命名空间里的函数算顶层
             out.setdefault(s["p"], []).append(
                 {"key": key, "n": s["n"], "k": s["k"], "f": s["f"], "l": s["l"], "b": s.get("b", [])})
         idx["_unit_syms"] = out

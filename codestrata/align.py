@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from . import graph as _graph
 
 
@@ -268,12 +270,12 @@ def base_node(key: str) -> str:
 
 
 def node_def(idx: dict, key: str) -> dict:
-    """graph 节点的定义在哪 {f, l, k}：符号是它的 def 行；<文件>#<module>、<文件>#<改过、对不上> 是文件头；
+    """graph 节点的定义在哪 {f, l, k, lang}：符号是它的 def 行；<文件>#<module>、<文件>#<改过、对不上> 是文件头；
     <外层>.<L行> 是那一行"""
     syms = idx.get("symbols") or {}
     s = syms.get(key)
     if s:
-        return {"f": s["f"], "l": s["l"], "k": s["k"]}
+        return {"f": s["f"], "l": s["l"], "k": s["k"], "lang": s.get("lang", "python")}
     base, _, rest = key.partition(".<L")
     s = syms.get(base)
     f = s["f"] if s else base.partition("#")[0]
@@ -281,8 +283,8 @@ def node_def(idx: dict, key: str) -> dict:
 
 
 def _last(key: str) -> str:
-    """节点键的最后一段名字：pkg/a.py#A.run → run"""
-    return key.partition("#")[2].rsplit(".", 1)[-1]
+    """节点键的最后一段名字：pkg/a.py#A.run → run，csrc/k.cu#ns::Cls::run → run"""
+    return re.split(r"::|\.", key.partition("#")[2])[-1]
 
 
 def scan_by_base(index: dict) -> dict:

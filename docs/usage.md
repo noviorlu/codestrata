@@ -19,6 +19,7 @@ README 讲 codestrata 是什么、怎么几分钟内跑起来；这份手册讲�
 
 - **Python ≥ 3.10**（`pyproject.toml` 的 `requires-python`）。在 3.10 和 3.13 上装过、扫过、录过。
 - **没有必需的第三方依赖**，只用标准库。可选的 `[highlight]` 装上 Pygments ≥ 2.17，用来给源码上色；不装的话，本地网页里的代码是纯文本。
+  可选的 `[native]` 装上 tree-sitter 和它的 CUDA 语法（也认普通 C / C++），C / C++ / CUDA 文件才进图（见[扫描](#扫描)）；不装的话它们只能浏览。
 - **时序事件（`trace` 默认录）要求被录的那个 Python 是 3.12+**（它要用 `sys.monitoring`），和 codestrata 自己装在哪个 Python 里无关：codestrata 装在 3.10 的 venv 里、去录一个 3.13 的程序，照样录得到事件。被录的 Python 低于 3.12 时，run 照样录完，只是没有事件（会打印一句说明），请求路径、时间顺序看不了。
 - **操作系统**：录制（`trace`）只支持 Linux，别的系统上会直接说明并退出——它靠 `/proc` 认进程、找出 setsid 出去的服务，靠进程组和 SIGKILL 停干净。scan / serve / runs 在其他系统上也能 import、能用（测试里模拟过没有 `fcntl`、没有 SIGKILL 的环境），但只在 Linux 上实际跑过。
 - **编辑器跳转**要 PATH 上有 `code`、`cursor`、`codium`、`code-insiders` 或 `subl` 之一（按这个顺序找）；都没有时 serve 会打印「没找到」，跳转按钮返回 501。
@@ -79,7 +80,7 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 
 ## 扫描
 
-`codestrata scan [repo]` 用 `ast` 逐个解析 `.py` 文件，写出 `.codestrata/index.json`（模块、import 边、切面）、`symbols.json`（类和函数的位置）、`xref.json`（交叉引用，Ctrl+点击用）和 `graph.json`（函数之间的调用，格式见 [run-format §9.3](design/run-format.md#93-扫描端要产出的静态索引)），并打印扫了哪些目录。
+`codestrata scan [repo]` 用 `ast` 逐个解析 `.py` 文件（装了 `[native]` 时，扫描目录里的 C / C++ / CUDA 文件用 tree-sitter 解析，见下面「C / C++ / CUDA」），写出 `.codestrata/index.json`（模块、import 边、切面）、`symbols.json`（类和函数的位置）、`xref.json`（交叉引用，Ctrl+点击用）和 `graph.json`（函数之间的调用，格式见 [run-format §9.3](design/run-format.md#93-扫描端要产出的静态索引)），并打印扫了哪些目录。
 
 ### 扫哪些目录
 
@@ -89,6 +90,15 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 - 最后一段同名的、或者一个在另一个里面的目录不能一起扫：模块名会撞。
 - **src 布局**（`src/mypkg/...`）的模块名相对 `src/` 算，和代码里的 `import mypkg.x` 对得上。
 - `trace` 默认用上次 scan 选的目录；没 scan 过才自动探测。
+
+### C / C++ / CUDA
+
+装了 `[native]` 时，扫描目录里的 `.c` / `.cc` / `.cpp` / `.cxx` / `.h` / `.hh` / `.hpp` / `.hxx` / `.inl` / `.cu` / `.cuh` 每个文件也是一个节点（按路径显示，比如 `gemm.cuh`）：
+
+- **符号**：函数、方法、类 / 结构体，CUDA 的 `__global__` 记成 kernel（大纲里标 K）；限定名用 `::`（`qmk::decode_kernel`）。同一个文件里同名的几个定义（重载）算一个。
+- **边**：函数调用和 `kernel<<<…>>>(…)` 启动都是代码里的调用（启动在边详情里标「启动 kernel」）；`#include "…"` 只用来排版，和 Python 的 import 一样。
+- **近似**：名字是按文本对的，没有编译器的名字解析——被调的名字取最后一段，在仓库的原生函数里找同名的；写了 `a::b` 就要求限定名以它结尾；还剩好几个时依次只留同一个文件的、本文件 `#include` 得到的文件里的；仍然不止一个就不连（宁可不连，也不连错）。边详情里这些调用标「近似」。宏展开出来的定义和调用、模板实例化、虚函数、函数指针都认不了。
+- Python 调进原生代码（ctypes、pybind11、`torch.ops`）在静态图上还没有边。
 
 ### 切面参数
 
@@ -528,7 +538,7 @@ scan、serve、trace 不往 `~/.config` 写东西。
 
 | 严重度 | 局限 |
 |---|---|
-| 高 | **只看 Python。** 静态图只收 `.py`；C/C++/CUDA 只能浏览，不进 import 图（pybind、`torch.ops` 这类跨语言的边没有）；运行时只 hook Python 函数。 |
+| 高 | **原生代码只到静态、近似。** 装了 `[native]` 时 C / C++ / CUDA 文件进图，调用按名字对（近似）；Python 调进原生代码（ctypes、pybind、`torch.ops`）在图上没有边；运行时只 hook Python 函数。 |
 | 高 | **录制只支持 Linux**，别的系统上 `trace` 直接拒绝。其余命令在别的系统上能用但只在 Linux 上跑过；「还在录吗」的判断靠 `/proc`，没有 `/proc` 的系统上看别处正在录的 run 会显示成「中断」。 |
 | 高 | **时序事件（请求路径、时间顺序、任意时间段）要被录的 Python 是 3.12+**（`sys.monitoring`）。3.10 和 3.11 退回 `sys.setprofile`：仓库内的调用开销差不多，但仓库外的代码每次调用也要回调（3.12+ 上为 0）——只调标准库的循环在 3.11 / 3.10 上慢 3.4 / 4.7 倍，几乎全是标准库纯 Python 代码的慢 7.9 / 11 倍（见[实测数字](#不同-python-版本)），大框架上可能慢一个数量级；3.10 还没有 `co_qualname`，录完一改代码，这个文件里的次数就挪不回函数上。 |
 | 高 | **serve 只在启动时读索引。** 重新 scan 之后，图和搜索要重启 serve 才更新（Ctrl+点击会自动换新；新录的 run 不用重启）。 |

@@ -538,7 +538,8 @@ scan 写 index.json 和 symbols.json，加载时（`ui.load.load_index`）合成
 调用方是符号键，另有三种符号表里没有的：`<文件路径>#<module>`（模块顶层的代码）、`<外层>.<L行>`（lambda、生成器表达式：运行时是单独的帧）；
 类体里的代码记在类自己身上，列表 / 集合 / 字典推导式算外层（3.12 起它们不是单独的帧）。行、末行是调用那个表达式占的行。
 种类：0 调用、1 构造（被调方是类）、2 装饰器（`@x` 在定义时调 `x`）、3 用 property（读、赋值、`del` 调 getter、setter、deleter）、4 语法触发的特殊方法（`with`、`for`、`[]`、运算符、`len()` 这类，
-只记仓库里有类定义过的）、5 `getattr(…, "名字")`、6 调的是仓库外的。
+只记仓库里有类定义过的）、5 `getattr(…, "名字")`、6 调的是仓库外的、7 启动 GPU kernel（CUDA 的 `k<<<…>>>(…)`）。
+C / C++ / CUDA 的记录来自 `native_scan`（按名字对上，近似）：符号的 `lang` 是 `c` / `cpp` / `cuda`，`k` 多一种 `kernel`，限定名用 `::`，不给 `m`。
 
 `layout.build` 读的 `frames`、`alias` 不是扫描端的：是 `ui.graphview.graph_payload` 按切面现算、塞进给 layout 的那个字典里的。
 

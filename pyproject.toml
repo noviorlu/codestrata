@@ -13,6 +13,7 @@ dependencies = []            # 标准库为主
 
 [project.optional-dependencies]
 highlight = ["Pygments>=2.17"]   # 源码高亮，可选
+native = ["tree-sitter>=0.26", "tree-sitter-cuda>=0.21"]   # C / C++ / CUDA 文件进图（CUDA 语法也认普通 C++）
 
 [project.scripts]
 codestrata = "codestrata.__main__:main"

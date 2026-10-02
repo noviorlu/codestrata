@@ -13,21 +13,26 @@ MAX_ITEMS = 60
 
 
 def _sig(repo: Path, d: dict | None) -> list[str] | None:
-    """被调函数的签名（def 那一行到冒号为止，最多 6 行），多行的压成一行"""
-    if not d or d.get("k") not in ("func", "class"):
+    """被调函数的签名（Python：def 那一行到冒号为止；C / C++ / CUDA：到函数体的 { 之前；最多 6 行），多行的压成一行"""
+    if not d or d.get("k") not in ("func", "class", "kernel"):
         return None
     ls = _source.lines_of(str(repo / d["f"]), (repo / d["f"]).stat().st_mtime_ns) if (repo / d["f"]).exists() else ()
     if not 0 < d["l"] <= len(ls):
         return None
-    out = []
+    native = d.get("lang", "python") != "python"
+    out, closed = [], False
     for t in ls[d["l"] - 1:d["l"] + 5]:
+        if native and "{" in t:
+            out.append(t.split("{", 1)[0].rstrip())
+            closed = True
+            break
         out.append(t.rstrip())
-        if t.split("#", 1)[0].rstrip().endswith(":"):
+        if not native and t.split("#", 1)[0].rstrip().endswith(":"):
+            closed = True
             break
     if len(out) == 1:
         return [out[0].strip()[:200]]
-    one = re.sub(r"\(\s+", "(", re.sub(r",?\s*\)", ")", " ".join(t.strip() for t in out)))
-    closed = out[-1].split("#", 1)[0].rstrip().endswith(":")
+    one = re.sub(r"\(\s+", "(", re.sub(r",?\s*\)", ")", " ".join(t.strip() for t in out if t.strip())))
     return [one[:200] + ("" if closed else " …")]
 
 
@@ -93,6 +98,8 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None, 
         caller, _, callee = pk.partition("|")
         cd, d = _source.node_def(idx, caller), _source.node_def(idx, callee)
         scan_only.append({"caller": caller, "callee": callee, "caller_def": cd, "def": d, "sig": _sig(repo, d),
+                          # C / C++ / CUDA 的调用是按名字对上的（native_scan，近似档）
+                          "approx": (cd or {}).get("lang", "python") != "python",
                           "lines": [{"f": cd["f"], "l": l, "k": k, "s": text(cd["f"], l)} for l, _, k in sl[:5]],
                           "n_lines": len(sl),
                           # 构造一个构造时不跑仓库里代码的类（dataclass 生成的 __init__、仓库外基类的）：trace 看不到

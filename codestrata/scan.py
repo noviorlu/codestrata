@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import cut as _cut
+from . import native_scan as _native
 
 SKIP_DIRS = {
     "__pycache__", ".git", ".hg", ".svn", ".tox", ".venv", "venv", "env",
@@ -230,6 +231,18 @@ PROJECT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
 # 扫描目录「.」：仓库根目录直接放着的 .py（研究代码的 train.py / render.py 这类入口脚本）。只取这一层，
 # 不往下——下面的目录各自是别的扫描目录。图上它们装在一个以仓库名命名的目录节点里（scripts_package）
 ROOT_SCRIPTS = "."
+
+
+def iter_native_files(root: Path) -> Iterable[Path]:
+    """一个扫描目录下的 C / C++ / CUDA 源文件（和 .py 一样跳过环境、构建目录这些）"""
+    for dp, dn, fn in os.walk(root):
+        if _is_env(fn, dn):
+            dn[:] = []
+            continue
+        dn[:] = [d for d in dn if not _skip_dir(dp, d)]
+        for f in fn:
+            if _native.is_native(f):
+                yield Path(dp) / f
 
 
 def root_py_files(root: Path, r: str) -> list[Path]:
@@ -606,6 +619,31 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                         seen_dst.add(dst)
                         edges[(pkg, dst)] = edges.get((pkg, dst), 0) + 1
 
+    # C / C++ / CUDA 源文件：装了 tree-sitter 就各自成单元（native_scan 的分片），#include 当排版权重；
+    # 没装就照旧只挂在所在目录下供浏览（下面的 aux）
+    native_why = _native.available()
+    native_syms: dict[str, dict] = {}
+    native_graph: dict = {"calls": {}, "sites": {}}
+    native_info: dict = {}
+    if native_why is None:
+        nrels = sorted({str(p.relative_to(root)) for r in roots if r != ROOT_SCRIPTS and (root / r).is_dir()
+                        for p in iter_native_files(root / r)})
+        shard = _native.scan_files(root, nrels)
+        for rel, u in shard["units"].items():
+            files[rel] = rel
+            file_sha[rel] = shard["file_sha"][rel]
+            file_loc[rel] = u["loc"]
+            pkg_files[rel], pkg_loc[rel] = 1, u["loc"]
+            pkg_cls[rel], pkg_fn[rel] = u["classes"], u["funcs"]
+        for a, b in shard["includes"]:
+            edges[(a, b)] = edges.get((a, b), 0) + 1
+        native_syms = shard["symbols"]
+        native_graph = {"calls": shard["calls"], "sites": shard["sites"]}
+        native_info = {"n_files": len(shard["units"]), "partial": shard["errors"]}
+        n_files += len(shard["units"])
+    else:
+        native_info = {"skipped": native_why}
+
     # 架构高度
     out: dict[str, int] = {}
     inn: dict[str, int] = {}
@@ -620,8 +658,9 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             "classes": pkg_cls.get(p, 0), "funcs": pkg_fn.get(p, 0),
             "out": o, "in": i,
             "alt": round((o - i) / (o + i), 4) if (o + i) else 0.0,
-            "label": unit_label[p], "sep": ".",
         }
+        if p in unit_label:                  # Python 的点分名；原生文件不给，按路径显示
+            packages[p]["label"], packages[p]["sep"] = unit_label[p], "."
 
     # 包目录里的 C++ / CUDA 源文件：挂到所在的包下，供浏览和高亮。
     # 它们不进 import 图——C++ 与 Python 之间的绑定边（pybind、torch.ops）
@@ -652,6 +691,8 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
         if r == ROOT_SCRIPTS or not base.is_dir():
             continue
         for p in walk_aux(base, set()):
+            if str(p.relative_to(root)) in packages:     # 已经是单元的原生文件
+                continue
             # 挂到所在目录；图上显示在包含这个目录的节点里
             add_aux(p, _cut.unit_dir(str(p.relative_to(root))))
         # 包在一个嵌套的工程里（submodules/<工程>/<包>，工程目录有 setup.py）：C++ / CUDA 源码常放在
@@ -671,13 +712,17 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
                  "n_files": n_files, "n_parse_errors": n_err,
                  # 哪个文件 import 了哪个模块：文件写路径，模块写 import 语句里的点分名（仓库里没有它，也就没有路径）
                  "unresolved_imports": sorted(f"{a}：import {b}" for a, b in unresolved),
-                 "n_aux": len(aux)},
+                 "n_aux": len(aux),
+                 # C / C++ / CUDA：n_files、partial（解析不全的文件 → 原因），或 skipped（没装 tree-sitter 的说明）
+                 "native": native_info},
         "aux": aux,
         # 字符串里按名字提到的仓库内的类：{"类名": [[文件, 行], ...]}（注册表、getattr、插件表）
         "name_refs": {k: v for k, v in sorted(str_refs.items()) if k in class_names},
         "packages": packages,
         "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
-        "symbols": {k: s.as_json() for k, s in symbols.items()},
+        "symbols": {**{k: s.as_json() for k, s in symbols.items()}, **native_syms},
+        # 原生代码的调用（graph.Builder 读，不落进 index.json）
+        "native_graph": native_graph,
         "files": files,
         "file_sha": file_sha,
         "dirs": _cut.dir_tree(packages, roots),
@@ -699,6 +744,7 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     docs = index.pop("docs", {})
     file_loc = index.pop("file_loc", {})
     file_sha = index.pop("file_sha", {})
+    native_graph = index.pop("native_graph", None)
     (outdir / "symbols.json").write_text(
         json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs, "file_loc": file_loc,
                     "file_sha": file_sha, "name_refs": name_refs},
@@ -712,4 +758,6 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     index["docs"] = docs
     index["file_loc"] = file_loc
     index["file_sha"] = file_sha
+    if native_graph is not None:
+        index["native_graph"] = native_graph
     return p
