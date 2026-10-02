@@ -35,6 +35,30 @@ export default async function (t) {
      '点序号牌：选中它那一条、详情栏打开');
   await page.key('Escape', 'Escape', 27);
   ok(await page.wait(`!CS.lanes.sel`, 3000), 'Esc 取消选中');
+  const chipN = () => page.ev(`+document.querySelector('${chip} .n').textContent`);
+  ok(await chipN() === n, '取消选中之后开关上的数不变：' + n);
+  // 选中列里的一条边，详情里点一头的名字：选中那个节点，开关上的数不变
+  const ek = await page.ev(`CS.lanes.edges.find(E => E.show).key`);
+  await page.ev(`CS.lanes.open(CS.lanes.byKey[${JSON.stringify(ek)}])`);
+  ok(await page.wait(`!!document.querySelector('#det [data-go]')`, 5000), '选中一条边');
+  await page.ev(`document.querySelector('#det [data-go]').click()`);
+  ok(await page.wait(`(CS.lanes.sel || '').indexOf('n:') === 0`, 3000) && await chipN() === n, '详情里点节点名：选中它，开关上的数还是 ' + n);
+  await page.key('Escape', 'Escape', 27);
+  // 换主题：颜色按新主题重算，开关上的数不变
+  const c0 = await page.ev(`CS.lanes.edges.find(E => E._tc).p.style.stroke`);
+  await page.ev(`document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark'`);   // 换成和现在相反的
+  const changed = await page.wait(`CS.lanes.edges.find(E => E._tc).p.style.stroke !== ${JSON.stringify(c0)}`, 3000);
+  ok(changed && await chipN() === n,
+     '换主题：时间顺序的颜色跟着变，开关上的数还是 ' + n + ' ' + JSON.stringify([c0, await page.ev(`CS.lanes.edges.find(E => E._tc).p.style.stroke`),
+       await page.ev(`document.documentElement.dataset.theme`), await page.ev(`matchMedia('(prefers-color-scheme: dark)').matches`), await chipN()]));
+  await page.ev(`delete document.documentElement.dataset.theme`);
+  // 收起一个进程：开关上的数 = 剩下的序号牌
+  await page.ev(`document.querySelector('#g .ln-proc .ln-fold').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  ok(await page.wait(`+document.querySelector('${chip} .n').textContent === document.querySelectorAll('#g .tord .tn').length
+                      && document.querySelectorAll('#g .ln-col.fold').length === 1`, 3000),
+     '收起一个进程：开关上的数跟着序号牌变 ' + await chipN());
+  await page.ev(`document.querySelector('#g .ln-proc .ln-fold').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0 && +document.querySelector('${chip} .n').textContent === ${n}`, 3000), '再展开：回到 ' + n);
 
   // 换阶段：按 loop 的时间窗重排
   await page.click('.tph[data-ph="loop"]');

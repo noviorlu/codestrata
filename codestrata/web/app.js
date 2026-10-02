@@ -47,7 +47,7 @@ window.CS = window.CS || {};
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
         CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); if (CS.lanes) CS.lanes.unselect(); };
         // 时间顺序的颜色是画的时候按当前主题的 --tm0/1/2 算好写死的：换了亮 / 暗（系统设置或页面上的切换）要重画
-        var retint = function () { if (CS.graph.state.timeOrder && CS.graph.times) CS.graph.paint(); };
+        var retint = function () { if (CS.graph.state.timeOrder) self.repaint(); };   // 分列或模块图
         if (window.matchMedia) {
           var mq = window.matchMedia('(prefers-color-scheme: dark)');
           if (mq.addEventListener) mq.addEventListener('change', retint);
@@ -56,6 +56,7 @@ window.CS = window.CS || {};
           new MutationObserver(retint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
         // 开关（这次跑了 / 代码里看不出 / 只看跑到的）改了看得见的边：时间顺序重排名次，开关上的数跟着变
         CS.graph.onTimed = function (n) {
+          if (self.lanesMode()) return;               // 分列自己数（CS.lanes.timed），模块图那套在分列下数出来的是 0
           var c = document.querySelector('#edgechips [data-t=timeorder] .n');
           if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
         };
@@ -678,7 +679,7 @@ window.CS = window.CS || {};
                    + (c.dyn ? '其中 ' + c.dyn + ' 条跑到的全是代码里看不出的，画虚线，后一个开关单独管它们' : ''), true]);
         if (c.dyn) defs.push(['dyn', 'e dyn warm', '其中代码里看不出', c.dyn, DYN_TIP + (s.hot === false ? '。要先开「这次跑了」' : ''), true]);
         if (this.canTimeOrder())
-          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : CS.graph.timed || 0) : '',
+          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : (this.lanesMode() ? CS.lanes.timed : CS.graph.timed) || 0) : '',
                      '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
                      + '换阶段、展开收起都会按新的时间窗重算', true]);
       }
@@ -731,7 +732,7 @@ window.CS = window.CS || {};
 
     /* 换一个切面。focus 是这次展开 / 收起的那个目录：新图画好后把它滚进图框里 */
     setCut: function (open, focus) {
-      var self = this, before = {}, st = CS.graph.state;
+      var self = this, before = {}, st = CS.graph.state, wasLanes = this.lanesMode();
       var seq = this._cutSeq = (this._cutSeq || 0) + 1;
       this._pending = open.slice();
       var was = { sel: st.sel, selEdge: st.selEdge, selFrame: st.selFrame, kind: {} };
@@ -739,18 +740,30 @@ window.CS = window.CS || {};
       this.data.graph.nodes.concat(this.data.graph.frames || []).forEach(function (n) { was.kind[n.id] = n.kind; });
       this.data.graph.nodes.forEach(function (n) { before[n.id] = 1; });
       document.getElementById('prog').textContent = '重新汇总…';
-      // 分列是重画完再异步取数画的：画好之后由它自己滚到新节点、闪一下（CS.graph 的 reveal / flash 只管模块图）
-      if (this.lanesMode()) CS.lanes.afterCut = { focus: focus, before: before };
       this._w = CS.graph.boxWidth();
-      return CS.ds.graph(open, this._w).then(function (d) {
+      return (this._cutP = CS.ds.graph(open, this._w).then(function (d) {
         if (seq !== self._cutSeq) return false;   // 连着点了几次：只认最后一次，先发出的请求晚回来也不能盖掉它
         self._pending = null;
         self.data = d;
         CS.panel.setData(d);
         self.header(d);
         st.sel = st.selEdge = st.selFrame = null;
-        self.redraw();
-        self.keepSelection(was);
+        // 换了个 run，分列 / 模块图换了一种：选中的东西在新图上没法认，清掉。分列里什么都没选着时也照旧清掉详情（请求路径之类）
+        var same = wasLanes === self.lanesMode(), lanes = self.lanesMode();
+        var keep = same && (!lanes || !!(CS.lanes.sel || CS.lanes.selFrame));
+        // 分列是重画完再异步取数画的：画好之后由它自己滚到新节点、闪一下、接着选画好那一刻选着的（CS.lanes.restoreSel；
+        // CS.graph 的 reveal / flash、keepSelection 只管模块图）。在这里（只认最后一次改切面之后）才交给它：先发的那次晚画好也拿不到
+        if (lanes) CS.lanes.afterCut = { focus: focus, before: before, kind: was.kind };
+        if (lanes && keep) {                        // 接着选着：模块图的状态也写上，取数的这几秒里 Esc、点空白处照样能取消
+          st.selEdge = CS.lanes.sel || null;
+          st.selFrame = CS.lanes.selFrame ? CS.lanes.selFrame.slice(CS.lanes.selFrame.lastIndexOf('|') + 1) : null;
+        }
+        self.redraw(keep);
+        self.cutBar();
+        if (self.lanesMode()) return true;          // 分列画好了自己收尾（lanes.afterCutDrawn），也是它清掉「重新汇总…」
+        CS.lanes.afterCut = null;
+        document.getElementById('prog').textContent = '';
+        if (same) self.keepSelection(was); else CS.graph.clear();
         if (focus) {
           CS.graph.reveal(focus);
           // 用键盘点的 ＋ / − 随着重画没了，焦点会掉回 body：交给刚展开的框（它的 −）或刚收回的节点
@@ -759,14 +772,13 @@ window.CS = window.CS || {};
         }
         // 新出现的节点闪一下，好看出展开出来的是哪些
         CS.graph.flash(d.graph.nodes.filter(function (n) { return !before[n.id]; }).map(function (n) { return n.id; }));
-        self.cutBar();
         return true;
       }).catch(function (e) {
         if (seq !== self._cutSeq) return false;
         self._pending = null;
         document.getElementById('prog').textContent = e.message;
         return false;
-      });
+      }));
     },
 
     /* 展开 / 收起不取消选中。选中的节点还在就还选它（详情重画：它的邻居可能变了）；
@@ -793,6 +805,7 @@ window.CS = window.CS || {};
        选中装着它的框；hot 视图里没跑到的，先退出 hot 视图。选中后滚到屏幕中间、闪一下。
        返回最后选中的节点（选中的是框或什么都没选时返回 null） */
     revealNode: function (id, kind) {
+      if (this.lanesMode()) return this.revealLane(id, kind);
       var self = this, st = CS.graph.state;
       function drawn(x) { return !!CS.graph.nodes[x]; }
       function frames() { return (CS.graph.G && CS.graph.G.frames) || []; }
@@ -823,7 +836,7 @@ window.CS = window.CS || {};
       function finish() {
         var h = self.homeOf(id, kind);
         // hot 视图里没画它，但完整的图上有：它这次没跑到——退出 hot 视图再找
-        if ((!h || !drawn(h)) && st.onlyHot && self.homeOf(id, kind, self.data.graph)) { exitHot(); h = self.homeOf(id, kind); }
+        if ((!h || !drawn(h)) && st.onlyHot && !self.lanesMode() && self.homeOf(id, kind, self.data.graph)) { exitHot(); h = self.homeOf(id, kind); }
         if (h && drawn(h)) return show(h);
         var f = frameOf(id);
         return f ? showFrame(f, '它在图上没有节点（没有类、函数，也没有 import 关系——比如空的 __init__.py）') : null;
@@ -839,6 +852,52 @@ window.CS = window.CS || {};
       return CS.ds.reveal(id, this.curOpen()).then(function (r) {
         return self.setCut(r.open, id).then(function (done) { return done ? finish() : null; });
       }).catch(function () { return finish(); });
+    },
+
+    /* 分列里把一个模块找出来并选中：落在哪个节点上就选中那个节点的第一份；被收在某个目录里时先展开到它（serve 算要展开哪些），
+       等分列画好再选。分列只画这一段里跑到的：哪条线程都没调到它就说一声。不碰「只看跑到的」（分列里没有这个开关） */
+    revealLane: function (id, kind) {
+      var self = this;
+      // 分列还在取数 / 改切面还在路上：等画好了再在新图上找（不然找的是旧图、或者还什么都没画）。
+      // 等的时候换成了模块图（静态图、没录时序事件的 run）：照模块图找
+      return CS.lanes.settled().then(function () { return self.lanesMode() ? self._revealLane(id, kind) : self.revealNode(id, kind); });
+    },
+    _revealLane: function (id, kind) {
+      var self = this;
+      function home() {
+        var g = CS.lanes.asGraph();
+        if (self.data.open.indexOf(id) >= 0)        // 已经展开了的目录：它底下的第一个节点
+          return (g.nodes.filter(function (n) { return CS.ids.within(n.id, id); })[0] || {}).id || null;
+        return self.homeOf(id, kind, g);
+      }
+      function done() {
+        if (!self.lanesMode()) return self.revealNode(id, kind);
+        if (!CS.lanes.ready) { CS.viewer.toast('按线程分列没画出来'); return null; }
+        var h = home();
+        if (h) return CS.lanes.reveal(h);
+        var pid = CS.lanes.foldedHome(id, kind);    // 只在收起的进程里：展开那个进程再选
+        if (pid != null) { CS.lanes.fold(pid, false); h = home(); if (h) return CS.lanes.reveal(h); }
+        CS.viewer.toast('这一段里哪条线程都没调到它');
+        return null;
+      }
+      if (home() === id || this.data.open.indexOf(id) >= 0) return Promise.resolve(done());
+      return CS.ds.reveal(id, this.curOpen()).then(function (r) {
+        if (!self.lanesMode()) return self.revealNode(id, kind);
+        var cur = self.curOpen().slice().sort().join(','), want = (r.open || []).slice().sort().join(',');
+        if (want === cur) return done();
+        return self.setCut(r.open, id).then(function (ok) { return ok ? CS.lanes.settled().then(done) : null; });
+      }).catch(function () { return done(); });
+    },
+
+    /* 详情里点了节点名 / 边上的次数：分列里选中同一列里的那一份（边、节点）；模块图照旧 */
+    goNode: function (id) {
+      if (this.lanesMode()) CS.lanes.pickNode(id, CS.lanes.selLane());
+      else CS.graph.pick(id);
+    },
+    goEdge: function (a, b) {
+      if (!this.lanesMode()) return CS.graph.pickEdge(a, b);
+      var E = CS.lanes.byKey['e:' + CS.lanes.selLane() + '|' + a + '|' + b];
+      if (E) CS.lanes.open(E); else CS.panel.showEdge(a, b);
     },
 
     keepSelection: function (was) {
@@ -867,27 +926,34 @@ window.CS = window.CS || {};
     /* 叠着录了时序事件的 run：运行时的图一律按进程 · 线程分列（lanes.js；用户 10-01 定的，不要合成一张图的功能） */
     lanesMode: function () { return !!(this.data && this.data.hot && this.runHasEvents()); },
 
-    /* 画中间那张图：分列（lanesMode）或模块图 */
-    drawMain: function () {
+    /* 画中间那张图：分列（lanesMode）或模块图。keep：改切面来的，分列不清详情面板（画好后 lanes.restoreSel 接着选） */
+    drawMain: function (keep) {
       var d = this.data, s = CS.graph.state, lanes = this.lanesMode();
       document.body.classList.toggle('lanesmode', lanes);
       // 分列也把当前 run 的叠加交给 CS.graph.hot：详情面板、搜索、代码窗口、开关都按它取运行时的次数
-      if (lanes) { CS.graph.hot = d.hot; CS.graph.clear(); CS.lanes.show(); return; }
-      CS.lanePick.leave();                            // 离开分列：撤掉 #g 上点线的监听、提示、单子
+      if (lanes) { CS.graph.hot = d.hot; if (!keep) CS.graph.clear(); CS.lanes.show(); return; }
+      CS.lanes.cancel();                              // 离开分列：还在路上的分列取数回来也不画，撤掉 #g 上点线的监听、提示、单子
+      CS.lanePick.leave();
       CS.lanes.picker = null;
       CS.graph.draw(document.getElementById('g'), s.onlyHot && d.graphHot ? d.graphHot : d.graph, d.hot,
                     { rtOnly: d.runtimeOnlyEdges });
     },
 
     /* 分列画好了（取数是异步的）：开关上的条数、时间顺序的名次按它重数 */
-    lanesDrawn: function () { this.edgeChips(); this.controls(); },
+    lanesDrawn: function () {
+      // 「叠加 run …」「重新汇总…」：分列是这时才画好（后面还有一次改切面在路上的话留着）
+      if (!this._pending) document.getElementById('prog').textContent = '';
+      this.lanesChanged();
+    },
+    /* 分列重画了（取数画好，或者收起 / 展开一个进程）：开关上的条数、时间顺序的名次、搜索的高亮按它重来 */
+    lanesChanged: function () { this.edgeChips(); this.controls(); if (CS.search) CS.search.reapply(); },
 
     /* 开关变了：重新上色（分列或模块图） */
     repaint: function () { if (this.lanesMode()) CS.lanes.paint(); else CS.graph.paint(); },
 
-    redraw: function () {
+    redraw: function (keep) {
       CS.graph.phaseMarks = this.phaseMarks();
-      this.drawMain();
+      this.drawMain(keep);
       this.applyTimes();
       // 重画会重建所有节点：图例上边的条数按这张图重数，搜索栏里还有字就把高亮重新套上
       this.edgeChips();

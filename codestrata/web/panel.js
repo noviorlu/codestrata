@@ -195,8 +195,9 @@ window.CS = window.CS || {};
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
         + '<span>函数（含方法）<b>' + (v.funcs || 0) + '</b></span></div>'
         + this._cutRow(id, v)
-        + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
-        + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false)
+        // 分列里这一块换成这条线程里这一份的（CS.laneDetail.node）
+        + '<div id="nbslot">' + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
+        + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
         + this._docs(id)
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
@@ -542,7 +543,7 @@ window.CS = window.CS || {};
     _wireDet: function (pkg) {
       var self = this;
       [].forEach.call(det.querySelectorAll('[data-go]'), function (b) {
-        b.onclick = function () { CS.graph.pick(b.dataset.go); };
+        b.onclick = function () { CS.app.goNode(b.dataset.go); };
       });
       [].forEach.call(det.querySelectorAll('[data-sym]'), function (b) {
         b.onclick = function () { self.showSource(b.dataset.pkg, b.dataset.sym); };
@@ -557,7 +558,7 @@ window.CS = window.CS || {};
         b.onclick = function () { CS.ds.openEditor(b.dataset.open, b.dataset.line); };
       });
       [].forEach.call(det.querySelectorAll('[data-edge]'), function (b) {
-        b.onclick = function () { var ab = b.dataset.edge.split('|'); CS.graph.pickEdge(ab[0], ab[1]); };
+        b.onclick = function () { var ab = b.dataset.edge.split('|'); CS.app.goEdge(ab[0], ab[1]); };
       });
       [].forEach.call(det.querySelectorAll('[data-cut]'), function (b) {
         b.onclick = function () { CS.app[b.dataset.cut](pkg); };

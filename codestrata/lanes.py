@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -39,13 +40,17 @@ def thread_group(name: str) -> str:
 
 
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None) -> dict:
-    """{"phase", "window": [起, 止], "scope", "lanes": [列], "links": [连线]}。列按进程启动的先后排，进程里主线程在前。
+    """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线]}。
+    列按进程启动的先后排，进程里主线程在前。
     列：{"id": "pid:线程名", "pid", "proc": 进程名, "thread": 归一之后的线程名, "names": 合进来的原名（最多 6 个）,
          "n_threads", "first", "last", "entry": 入口节点,
-         "nodes": {节点: {"n": 被调次数, "first"}},
+         "nodes": {节点: {"n": 被调次数, "first", "handoff": 这一列里它只是交接的地方（这一段里这条线程没调到它）}},
          "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first", "last"}],
          "external": 只跑仓库外的代码、因为是交接的一头才有这一列（没有节点）,
-         "start": {"n": 知道是谁起的线程数, "t": 最早起的时刻, "lane": 起它的列, "daemon": 其中守护线程数} 或 None（不知道谁起的：
+         "idle": 跑过仓库代码、这一段里没有调用、因为是交接的一头才有这一列（只放交接的那个节点；起 / 收不算它）,
+         "proc_main": 这一列代表整个子进程（fork / exec / waitpid 接在它上面：主线程，或者从非主线程 fork 的子进程里唯一的线程）,
+         "start": {"n": 知道是谁起的线程数, "t": 最早起的时刻, "lane": 起它的列（这一段里没跑的线程也写，那一列不在 lanes 里）,
+                   "daemon": 其中守护线程数, "out": 段外的是 before / after} 或 None（不知道谁起的：
                   程序的主线程、hook 装上之前起的）,
          "stop": {"joined": 被 join / waitpid 等到的个数, "t": 最晚那一次的时刻, "lane": 等它的列,
                   "exited": 自己跑完、没人等的个数, "running": 到录制结束还没跑完的个数（子进程是不知道有没有退出）} 或 None}
@@ -55,9 +60,11 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                       "xa" / "xb": 那一头经仓库外的代码, "da" / "db": 定义 {f, l, k}, "n", "first"}]
            （次数最多的 8 对）, "n_pairs"}
     ——同样两头（列和节点）、同一种的合成一条，n 是几次；from / to 的 t 是最早的一次，first / last 是首末时刻（join 是等到的时刻，
-    其余是起点那头的）；fn 是那一头的函数（span 的被调方；放 / 取发生在仓库外的代码里时是这条线程入口的仓库函数，ext 为真），
+    其余是起点那头的）；fn 是那一头的函数（span 的被调方；放 / 取发生在仓库外的代码里时是那一刻这条线程栈底的仓库函数——
+    线程名写着的 target，或者那一刻还没返回的深度 0 调用的调用方——ext 为真，认不出是 None），
     line 是那个函数里起线程、放 / 取、发 / 收、join 的那一行（录制之后文件改过的，跟着函数挪；被起 / 被回收的那一头是 0：
     那一头是线程的入口函数）。text(文件, 行) 给的话，pairs 里带上那一行的代码。
+    "out"：整条连线的首末时刻都在这一段之外（before / after），起 / 收的线程在这一段里跑过、起 / 收本身在段外。
     还有 "truncated": [时序事件录到了上限的进程]。没有时序事件、没有这个阶段的时刻抛 LookupError"""
     ix = _seq.span_index(rd)
     segs, win, end = _seq.window_segments(run, rd, phase)
@@ -109,7 +116,10 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     lanes: dict[str, dict] = {}
     rows_of: dict[int, list] = {}
     tid_lane: dict[tuple, str] = {}
-    roots: dict[str, tuple] = {}                 # 列 → (最早的深度 0 的 span 的开始, 它的调用方函数)：线程的入口，不限这一段
+    # (pid, tid) → {调用方键下标: [最早开始, 最晚结束]}：深度 0 的调用的调用方是这条线程最底下的仓库函数，它至少在这段时间里在栈上
+    # （不限这一段）。交接发生在仓库外的代码里（不在任何 span 里）时，按它认那一刻在跑的是哪个仓库函数
+    held: dict[tuple, dict] = {}
+    first_in: dict[tuple, int] = {}              # (pid, tid) → 这一段里第一次调用的时刻（入口在这一段之前就开始了的，按这一刻认入口）
     for pid in dict.fromkeys(c["pid"] for c in ix["chunks"]):
         rows = rows_of[pid] = _seq.pid_rows(rd, pid)
         tnames = threads.get(str(pid)) or {}
@@ -123,20 +133,24 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             tname = thread_group(raw)
             lid = f"{pid}:{tname}"
             tid_lane[(pid, r[2])] = lid
-            if r[3] == 0 and (lid not in roots or r[0] < roots[lid][0]):
-                roots[lid] = (r[0], r[4])
+            if r[3] == 0:
+                hk = held.setdefault((pid, r[2]), {}).setdefault(r[4], [r[0], r[0]])
+                hk[0] = min(hk[0], r[0])
+                hk[1] = max(hk[1], r[0] + r[1] if r[1] >= 0 else math.inf)
             if not got:
                 continue
             n, first, last = got
+            first_in[(pid, r[2])] = min(first_in.get((pid, r[2]), first), first)
             na, nb, defining, only = nodes_of(r[4], r[5])
             if na is None or nb is None or defining:
                 continue
             L = lanes.get(lid)
             if L is None:
                 L = lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": tname,
-                                  "names": set(), "tids": set(), "first": first, "last": last, "entry": None,
+                                  "names": set(), "tids": set(), "ran": set(), "first": first, "last": last, "entry": None,
                                   "entry_fn": None, "entry_t": None, "nodes": {}, "edges": {}}
             L["tids"].add(r[2])
+            L["ran"].add(r[2])
             L["names"].add(raw)
             L["first"], L["last"] = min(L["first"], first), max(L["last"], last)
             if r[3] == 0 and (L["entry_t"] is None or first < L["entry_t"]):
@@ -157,30 +171,80 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                     e["only"] += n * only
                     e["first"], e["last"] = min(e["first"], first), max(e["last"], last)
 
+    def root_at(pid: int, tid: int, t: int | None) -> int | None:
+        """t 那一刻这条线程最底下的仓库函数（键下标）：正好一个对得上就是它，一个都没有或几个都对得上是 None"""
+        if t is None:
+            return None
+        ks = [k for k, (a, b) in (held.get((pid, tid)) or {}).items() if a <= t <= b]
+        return ks[0] if len(ks) == 1 else None
+
+    # 阶段 / 时间段里，入口调用在这一段之前就开始了、一直没返回的线程：这一段里它没有深度 0 的调用，入口按那个还在跑的调用补上
+    for L in lanes.values():
+        if L["entry"] is not None:
+            continue
+        for tid in sorted(L["tids"]):
+            k = root_at(L["pid"], tid, first_in.get((L["pid"], tid), lo))
+            nd = node(k) if k is not None else None
+            if nd is not None:
+                L["entry"], L["entry_fn"] = nd, fn_of(k)
+                L["nodes"].setdefault(nd, {"n": 0, "first": L["first"]})
+                break
+
+    def named_target(pid: int, tid: int) -> tuple[bool, int | None]:
+        """线程名写着 target（Thread-3 (x)）时：(True, x 那个仓库函数的键下标；x 在仓库外就是 None)；没写是 (False, None)。
+        x 在仓库里时它从线程起来到结束一直在栈底，这种线程任何时刻最底下的仓库函数都是它"""
+        m = _TARGET.match((threads.get(str(pid)) or {}).get(str(tid)) or "")
+        if not m:
+            return False, None
+        for k in held.get((pid, tid)) or {}:
+            f = fn_of(k)
+            if f and f.rsplit("#", 1)[-1].rsplit(".", 1)[-1] == m.group(1):
+                return True, k
+        return True, None
+
     def end_of(pid: int, tid: int, row: int, t: int | None, line: int = 0, create: bool = False) -> dict | None:
-        """一条连线的一头：哪一列、哪个节点（span 的被调方；不在任何 span 里就是这一列的入口）、哪一行。只跑仓库外代码的线程
-        （vLLM 收发 ZMQ 的线程）没有列：create（交接的两头）时给它一列空的（external），交接链才不断"""
+        """一条连线的一头：哪一列、哪个节点（span 的被调方；不在任何 span 里就是那一刻在跑的仓库函数）、哪一行。
+        create（交接的两头）：这一段里没有列的线程也给它一列，交接链才不断——只跑仓库外代码的线程（vLLM 收发 ZMQ 的线程）
+        是空的一列（external）；跑过仓库代码、只是这一段里没有调用的（交接按放 / 发的时刻算进来，取的那头还没开始调用）
+        是 idle 的一列，放上交接的那个节点（标 handoff）。起 / 收只连这一段里跑过的线程（ran）：idle 的不算（这一段里它没有调用，
+        卡在放 / 取里）；只跑仓库外代码的线程能看到的活动就是交接，它这一头的放 / 取在这一段里就算"""
         lid = tid_lane.get((pid, tid))
         raw = (threads.get(str(pid)) or {}).get(str(tid)) or f"线程 {tid}"
         if lid is None:
             lid = tid_lane[(pid, tid)] = f"{pid}:{thread_group(raw)}"
-        if lid not in lanes:
+        new = lid not in lanes
+        if new:
             if not create or t is None:
                 return None
+            idle = (pid, tid) in held                # 这条线程跑过仓库代码（深度 0 的调用都记在 held 里）
             lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": lid.partition(":")[2],
-                          "names": set(), "tids": {tid}, "first": t, "last": t, "entry": None, "entry_fn": None,
-                          "entry_t": None, "nodes": {}, "edges": {}, "external": True}
+                          "names": set(), "tids": set(), "ran": set(), "first": t, "last": t, "entry": None, "entry_fn": None,
+                          "entry_t": None, "nodes": {}, "edges": {}, ("idle" if idle else "external"): True}
         L = lanes[lid]
-        if create and L.get("external") and t is not None:
+        inw = t is not None and any(a <= t <= b for a, b in segs)
+        # 交接的这一头不在这一段里的线程不算进这一列（列头的 ×N、原名、首末时刻），除非这一列就是为它建的
+        if create and t is not None and tid not in L["ran"] and (inw or new):
             L["tids"].add(tid)
             L["names"].add(raw)
             L["first"], L["last"] = min(L["first"], t), max(L["last"], t)
+            if inw and L.get("external"):
+                L["ran"].add(tid)
         rows = rows_of.get(pid) or []
         r = rows[row] if 0 <= row < len(rows) else None
-        nd = node(r[5]) if r else None
-        # 不在任何 span 里（放 / 取发生在仓库外的代码里，比如 vLLM 引擎循环取请求）：记这条线程入口的那个仓库函数，标 ext
-        fn = fn_of(r[5]) if r else lanes[lid]["entry_fn"] or (fn_of(roots[lid][1]) if lid in roots else None)
-        return {"lane": lid, "node": nd or lanes[lid]["entry"], "fn": fn, "ext": r is None,
+        if r is not None:
+            nd, fn = node(r[5]) or lanes[lid]["entry"], fn_of(r[5])
+        else:
+            # 不在任何 span 里（放 / 取发生在仓库外的代码里，比如 vLLM 引擎循环取请求）：那一刻这条线程最底下在跑的仓库函数
+            # （线程名写着的 target，或者 root_at）；没有在跑的（vLLM 自己的收发循环）就是仓库外的代码，接在列头上
+            k = named_target(pid, tid)[1]
+            if k is None:                            # target 在仓库外（asyncio.run 之类）：按那一刻还没返回的深度 0 调用认
+                k = root_at(pid, tid, t)
+            nd, fn = (node(k), fn_of(k)) if k is not None else (None, None)
+        if create and nd is not None and not L.get("external"):
+            # 交接的那个节点这一列里没有（这条线程这一段里没调到它，交接却在这一段里）：放上去，连线接在节点上而不是列头上；
+            # 标 handoff：它在这一列里只是交接的地方，不是调了谁
+            L["nodes"].setdefault(nd, {"n": 0, "first": t if t is not None else L["first"], "handoff": True})
+        return {"lane": lid, "node": nd, "fn": fn, "ext": r is None,
                 "t": t if t is not None else (r[0] if r else None), "line": line_of(r[5], line) if r else 0}
 
     def end_via(pid: int, tid: int, row: int, t: int | None, line: int) -> dict | None:
@@ -225,7 +289,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
 
     # 先连交接：只跑仓库外代码的线程的列（external）是这时候建的，之后起它、回收它的连线才接得上
     for h in ix.get("handoffs") or []:
-        t = h["to"][3]
+        t = h["from"][3] if h["from"][3] is not None else h["to"][3]   # 按放 / 发的时刻算在不在这一段里（用户 10-01 定），和连线上写的时刻一致
         if not any(x <= t <= y for x, y in segs):
             continue
         a, b = end_of(*h["from"][:4], line=_at(h["from"], 4), create=True), end_of(*h["to"][:4], line=_at(h["to"], 4), create=True)
@@ -235,60 +299,118 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     starts: dict[str, list] = {}                 # 列 → [(起的时刻, 起它的列, 守护)]：每列的 start 摘要
     stops: dict[str, list] = {}                  # 列 → [(结束 / 等到的时刻, 等它的列 或 None, 状态)]：stop 摘要
 
+    def ran_lane(lid: str | None) -> bool:
+        return lid in lanes and bool(lanes[lid]["ran"])
+
+    proc_main: set = set()                       # 代表整个子进程的列（fork / exec / waitpid 接在它上面）
+
     def main_of(pid: int) -> str | None:
-        """子进程的主线程那一列（没有叫 MainThread 的就取最早有调用的那一列）"""
-        return min((lid for (p, _), lid in tid_lane.items() if p == pid and lid in lanes),
-                   key=lambda lid: (lanes[lid]["thread"] != "MainThread", bool(lanes[lid].get("external")), lanes[lid]["first"]),
-                   default=None)
+        """子进程的主线程那一列；这一段里主线程没跑仓库代码就没有（不拿别的线程顶替：exec / waitpid 说的是整个进程）。
+        从非主线程 fork 的子进程里没有 MainThread：唯一的那条线程沿用父进程里那条线程的名字（Python 把它当成主线程），
+        号最小的就是它（fork 之后先有它，hook 起别的线程之前先记下当前线程）"""
+        lid = f"{pid}:MainThread"
+        if ran_lane(lid):
+            return lid
+        tn = threads.get(str(pid)) or {}
+        if not tn or any(thread_group(x) == "MainThread" for x in tn.values()):
+            return None
+        t0 = min(tn, key=int)
+        lid = tid_lane.get((pid, int(t0))) or f"{pid}:{thread_group(tn[t0])}"
+        return lid if ran_lane(lid) else None
+
+    ext_first: dict[tuple, float] = {}           # (pid, tid) → 最早一次在仓库外的代码里交接（不在任何 span 里）的时刻
+    for h in ix.get("handoffs") or []:
+        for sd in (h["from"], h["to"]):
+            if sd[2] < 0 and sd[3] is not None:
+                ext_first[(sd[0], sd[1])] = min(ext_first.get((sd[0], sd[1]), math.inf), sd[3])
+
+    def target_of(pid: int, tid: int) -> int | None:
+        """线程的入口函数（Thread 的 target）：这条线程最早的深度 0 调用的调用方。线程名写着 target（Thread-3 (x)）的按名字认，
+        对不上就是仓库外的代码；名字里没写的，在那之前已经在仓库外的代码里交接过，入口就是仓库外的代码（vLLM 的收发线程）。返回 None"""
+        named, k = named_target(pid, tid)
+        if named:                                # 线程名写着 target：按名字认（target 里第一件事就是 q.get() 也认得出）
+            return k
+        hs = held.get((pid, tid)) or {}
+        if not hs:
+            return None
+        k, (a, _) = min(hs.items(), key=lambda kv: kv[1][0])
+        return None if ext_first.get((pid, tid), math.inf) < a else k
+
+    def entry_end(e: dict | None, pid: int, tid: int) -> dict | None:
+        """被起 / 被回收的那一头：这条线程的入口函数（target_of）；入口在仓库外的代码里就接在列头上"""
+        if e is None:
+            return None
+        k = target_of(pid, tid)
+        e["fn"], e["node"] = (fn_of(k), node(k) or e["node"]) if k is not None else (None, None)
+        return e
 
     for pid, by_tid in tfrom.items():
         for tid, x in by_tid.items():
             ftid, frow = x[0], x[1]
             fln, ft, dmn = (x[2], x[3], x[4]) if len(x) > 4 else (0, None, False)
             lid = tid_lane.get((int(pid), int(tid)))
-            a, b = end_of(int(pid), ftid, frow, ft, fln), _lane_start(lanes, lid)
-            if b and int(tid) in lanes[lid]["tids"]:
-                starts.setdefault(lid, []).append((ft, a["lane"] if a else None, dmn))
+            # 只算这一段里跑过的线程（用户 10-01：选了阶段时起 / 收只算这一段里跑过的线程，段外的时刻照写、标段前 / 段后）
+            if lid not in lanes or int(tid) not in lanes[lid]["ran"]:
+                continue
+            a, b = end_of(int(pid), ftid, frow, ft, fln), entry_end(_lane_start(lanes, lid), int(pid), int(tid))
+            # 起它的线程这一段里没跑（没有列）：摘要里照样写是哪条线程
+            starts.setdefault(lid, []).append((ft, a["lane"] if a else tid_lane.get((int(pid), ftid)), dmn))
             if a and b and a["lane"] != b["lane"]:
                 link("spawn", "thread", a, b)
     for pid, by_tid in tend.items():
         for tid, e in by_tid.items():
             lid = tid_lane.get((int(pid), int(tid)))
-            if lid not in lanes or int(tid) not in lanes[lid]["tids"]:
+            if lid not in lanes or int(tid) not in lanes[lid]["ran"]:
                 continue
             j = e.get("by")
             b = end_via(int(pid), j[0], j[1], j[3], j[2]) if j else None
-            stops.setdefault(lid, []).append((j[3] if j else e.get("t"), b["lane"] if b else None,
+            stops.setdefault(lid, []).append((j[3] if j else e.get("t"), b["lane"] if b else tid_lane.get((int(pid), j[0])) if j else None,
                                               "joined" if j else "exited" if e.get("t") is not None else "running"))
-            a = _lane_end(lanes, lid, e.get("t"))
+            a = entry_end(_lane_end(lanes, lid, e.get("t")), int(pid), int(tid))
             if a and b and a["lane"] != b["lane"]:
                 link("join", "join", a, b, t=j[3])
     pstart: dict[int, int] = {}                  # 进程映像最早的起点：fork 出来的子进程就是在这一刻起的（B 行没有时刻）
     for p in ix.get("procs") or []:
         pstart[p["pid"]] = min(pstart.get(p["pid"], p["t0_us"]), p["t0_us"])
     for s in ix.get("spawns") or []:
-        a = end_of(s["pid"], s["tid"], s["row"], s.get("t_us"), s.get("line", 0))
+        # fork 没有记时刻：用子进程映像的起点（不用调 fork 的那个 span 的开始——它可能早得多），连线和列头的「起」是同一刻
+        tf = s.get("t_us", pstart.get(s["child"]))
+        a = end_of(s["pid"], s["tid"], s["row"], tf, s.get("line", 0))
         main = main_of(s["child"])
+        if main:
+            proc_main.add(main)
         b = _lane_start(lanes, main)
         if b:
-            starts.setdefault(main, []).append((s.get("t_us", pstart.get(s["child"])), a["lane"] if a else None, False))
+            starts.setdefault(main, []).append((tf, a["lane"] if a else tid_lane.get((s["pid"], s["tid"])), False))
         if a and b:
-            link("spawn", s["how"], a, b)
+            link("spawn", s["how"], a, b, t=tf)
     reaped = set()
     for s in ix.get("reaps") or []:
         main = main_of(s["child"])
         if main is None or main in reaped:
             continue
+        proc_main.add(main)
         reaped.add(main)
         b = end_of(s["pid"], s["tid"], s["row"], s["t_us"], s["line"])
-        stops.setdefault(main, []).append((s["t_us"], b["lane"] if b else None, "joined"))
+        stops.setdefault(main, []).append((s["t_us"], b["lane"] if b else tid_lane.get((s["pid"], s["tid"])), "joined"))
         a = _lane_end(lanes, main, None)
         if a and b:
             link("join", "wait", a, b, t=s["t_us"])
     for lid in starts:                           # 知道是谁起的子进程、没看到谁等它退出：不知道
-        if lanes[lid]["thread"] == "MainThread" and lid not in stops:
+        if lid in proc_main and lid not in stops:
             stops[lid] = [(None, None, "running")]
+    def out_of(t: int | None, late: bool) -> str | None:
+        """t 在不在这一段里：在任何一个时间片里是 None；之前 / 之后是 before / after；落在阶段的两个时间片之间的，
+        起算 before（之后的那一片里才跑）、收算 after（之前的那一片里跑过）"""
+        if t is None or any(a <= t <= b for a, b in segs):
+            return None
+        return "before" if t < lo else "after" if t > hi else "after" if late else "before"
+
     links = list(agg.values())
+    for x in links:                              # 整条都在段外（起 / 收的线程在这一段里跑过，起 / 收本身在段外）：画淡
+        late = x["kind"] == "join"
+        o1, o2 = out_of(x["first"], late), out_of(x["last"], late)
+        x["out"] = o1 if o1 == o2 else None
     for x in links:
         prs = sorted(x["pairs"].items(), key=lambda kv: (-kv[1][0], kv[1][1] if kv[1][1] is not None else 0))
         x["n_pairs"] = len(prs)
@@ -304,7 +426,13 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     out = []
     for L in lanes.values():
         L["start"], L["stop"] = _start_sum(starts.get(L["id"])), _stop_sum(stops.get(L["id"]))
+        for sm, late in ((L["start"], False), (L["stop"], True)):
+            if sm is not None:
+                sm["out"] = out_of(sm["t"], late)
         L["n_threads"] = len(L.pop("tids"))
+        L.pop("ran")
+        if L["id"] in proc_main:
+            L["proc_main"] = True
         L["names"] = sorted(L["names"])[:6]
         L.pop("entry_t")
         L.pop("entry_fn")
@@ -316,7 +444,8 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     rank = _order(out, links, pstart)
     out.sort(key=lambda L: (pstart.get(L["pid"], L["first"]), L["pid"], rank[L["id"]]))
     links.sort(key=lambda x: (x["from"]["t"] if x["from"]["t"] is not None else 0))
-    return {"phase": phase, "window": [lo, hi], "scope": ix.get("scope") or "cross", "truncated": ix.get("truncated") or [],
+    return {"phase": phase, "window": [lo, hi], "segs": [list(s) for s in segs], "scope": ix.get("scope") or "cross",
+            "truncated": ix.get("truncated") or [],
             "lanes": out, "links": links}
 
 

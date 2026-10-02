@@ -19,6 +19,7 @@ export default async function (t) {
   // 拖左把手往右：变成 loop 的后半段（前半段刚切阶段、还没有调用：切阶段时触发的进程会停 0.1 s）
   await page.drag(sel.l + 2, sel.y, sel.l + sel.w * 0.5);
   ok(await page.wait(`/@t=\\d+-\\d+(&|$)/.test(decodeURIComponent(location.hash)) && !!CS.app.data.hotMeta.window`, 15000), '拖左把手：地址变成 @t=起-止 ' + await hash(page));
+  ok(await page.wait(`document.getElementById('prog').textContent === ''`, 15000), '画好了：「叠加 run …」清掉');
   s = await st(page);
   const tl = await page.ev(`CS.app.data.hotMeta.timeline.find(x => x[0] === 'loop')`);
   ok(s.win[1] === tl[2] && s.win[0] > tl[1], '终点不变、起点往后 ' + JSON.stringify([s.win, tl]));
@@ -45,6 +46,7 @@ export default async function (t) {
   // 滚轮缩放、「全程」
   await page.click('.tph[data-ph="loop"]');
   ok(await waitRun(page, fx.a + '@loop'), '点 loop 按钮：回到 loop');
+  ok(await page.wait(`document.getElementById('prog').textContent === ''`, 15000), '换阶段画好了：「叠加 run …」清掉');
   const bw0 = (await page.rect('.tseg[data-seg="loop"]')).w, bar = await page.rect('.tbar');
   for (let i = 0; i < 4; i++) { await page.wheel(bar.x, bar.y, 300); await sleep(60); }
   ok((await page.rect('.tseg[data-seg="loop"]')).w < bw0 * 0.8, '滚轮往下：缩小（loop 色段变窄）');

@@ -86,6 +86,38 @@ export default async function (t) {
   ok(nb.hi > 0 && nb.dim > 0 && nb.nd > 0 && nb.bad.length === 0 && nb.sel.length === 1 && nb.sel[0] === r[4] + '|' + r[2] && nb.otherCopies === 0,
      '选中节点：只有点的这一份选中，这一列里碰到它的 ' + nb.hi + ' 条边 / 连线高亮、另一头的节点照常，别的（包括别的列里的副本）淡下去（'
      + nb.dim + ' 条线、' + nb.nd + ' 个节点）' + JSON.stringify(nb.bad));
+  // 详情里的调用 / 被调用 / 连线只列这一份的（用户 10-01）：就是图上高亮的那些
+  const dk = JSON.parse(await page.ev(`JSON.stringify({
+    got: [...new Set([...document.querySelectorAll('#nbslot [data-key]')].map(b => b.dataset.key))].sort(),
+    hi: CS.lanes.edges.concat(CS.lanes.links).filter(E => E.p.classList.contains('hi')).map(E => E.key).sort() })`));
+  ok(dk.got.length > 0 && JSON.stringify(dk.got) === JSON.stringify(dk.hi), '详情里列的就是高亮的 ' + dk.got.length + ' 条 ' + JSON.stringify(dk));
+  // 主线程里的 truth.py：「调用 →」里有 callee.py，次数是这一列里那条边的；点连线那一行选中那条连线，点名字选中这一列里的 callee.py
+  const real = async sel => { await page.ev(`document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: 'center' })`); await sleep(150); await page.click(sel); await sleep(200); };
+  const tl = await page.ev(`CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py' && /:MainThread$/.test(x.lane)).lane`);
+  await page.key('Escape', 'Escape', 27);
+  await click(page, JSON.parse(await page.ev(`JSON.stringify((() => { const x = CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py' && x.lane === ${JSON.stringify(tl)});
+    CS.graph.showEl(x.g); const b = x.g.querySelector('rect').getBoundingClientRect(); return { x: b.left + 12, y: b.top + b.height / 2 }; })())`)));
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + tl + '|fakesvc/truth.py')} && !!document.querySelector('#nbslot .dep')`, 5000), '点主线程里的 truth.py');
+  const cr = JSON.parse(await page.ev(`JSON.stringify((() => {
+    const kv = [...document.querySelectorAll('#nbslot .kv')].find(k => k.firstElementChild.textContent === '调用 →');
+    const c = kv && kv.querySelector('[data-node="fakesvc/callee.py"]'), E = CS.lanes.byKey[${JSON.stringify('e:' + tl + '|fakesvc/truth.py|fakesvc/callee.py')}];
+    return { lane: c && c.dataset.lane, txt: c && c.nextElementSibling.textContent, n: E && E.e.n }; })())`));
+  ok(cr.lane === tl && cr.n > 0 && cr.txt.startsWith(cr.n + ' 次'), '「调用 →」里有 callee.py，次数是这一列里的 ' + JSON.stringify(cr));
+  const lk = await page.ev(`(document.querySelector('#nbslot [data-key^="l:"]') || {}).dataset.key`);
+  ok(!!lk, '主线程的 truth.py 有连线那一行');
+  await real(`#nbslot [data-key="${lk}"]`);
+  ok(await page.wait(`CS.lanes.sel === '${lk}' && document.querySelectorAll('#g .ln-link.sel').length === 1
+                      && document.getElementById('dtitle').textContent.includes(CS.lanes.fmt.VIA[CS.lanes.byKey['${lk}'].k.via] || CS.lanes.byKey['${lk}'].k.via)`, 5000),
+     '点连线那一行：选中那条连线，详情讲它');
+  ok(await page.ev(`[...document.querySelectorAll('#det [data-node]')].every(b => CS.lanes.pos[b.dataset.lane + '|' + b.dataset.node])`),
+     '连线详情里能点的节点名都画着');
+  await page.key('Escape', 'Escape', 27);
+  await page.ev(`CS.lanes.pickNode('fakesvc/truth.py', ${JSON.stringify(tl)})`);
+  await real(`#nbslot [data-node="fakesvc/callee.py"]`);
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + tl + '|fakesvc/callee.py')}
+                      && [...document.querySelectorAll('#g .ln-nd.sel')].map(g => g.dataset.lane + '|' + g.dataset.id).join() === ${JSON.stringify(tl + '|fakesvc/callee.py')}
+                      && document.getElementById('det').dataset.pkg === 'fakesvc/callee.py'`, 5000), '点名字：选中这一列里的 callee.py');
+  await page.key('Escape', 'Escape', 27);
 
   // 排线：每条线的路径都不一样；每一条线沿路径取点，离鼠标最近的就是它（点下去选中它）的地方占大多数，没有一条点不到
   const sp0 = JSON.parse(await page.ev(`JSON.stringify((() => {
@@ -129,6 +161,14 @@ export default async function (t) {
   await click(page, ep);
   ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(ep.key)} && /callee/.test(document.getElementById('dtitle').textContent)
                       && document.querySelector('#g .ln-e.sel')`, 5000), '点列里的边：它选中（变色）、详情讲这条边');
+  // 边的详情里点一头的名字：选中这一列里的那一份，边不再选中；再点那条边是选中它（不是取消）
+  const el0 = await page.ev(`CS.lanes.byKey[${JSON.stringify(ep.key)}].lane.id`);
+  await real(`#det [data-go="fakesvc/callee.py"]`);
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + el0 + '|fakesvc/callee.py')} && !document.querySelector('#g .ln-e.sel')
+                      && [...document.querySelectorAll('#g .ln-nd.sel')].map(g => g.dataset.lane + '|' + g.dataset.id).join() === ${JSON.stringify(el0 + '|fakesvc/callee.py')}
+                      && document.getElementById('det').dataset.pkg === 'fakesvc/callee.py'`, 5000), '边的详情里点 callee.py：选中这一列里的那一份');
+  await click(page, await at(page, `CS.lanes.byKey[${JSON.stringify(ep.key)}]`, 0.5));
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(ep.key)} && !!document.querySelector('#g .ln-e.sel')`, 3000), '再点那条边：选中它');
   await click(page, ep);
   ok(await page.wait(`!CS.lanes.sel && !document.querySelector('#g .ln-e.sel')`, 3000), '再点一次：取消选中');
 
@@ -225,6 +265,95 @@ export default async function (t) {
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
   ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0`, 3000), '再展开');
+  // 选着主线程里的 truth.py，收起一个子进程：还选着它、详情还讲它；收起主线程所在的进程：取消选中、详情清掉
+  const mainLane = await page.ev(`CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py' && /:MainThread$/.test(x.lane)).lane`);
+  const kidPid = await page.ev(`CS.lanes.L.lanes.find(l => l.pid !== CS.lanes.L.lanes[0].pid && l.thread === 'MainThread').pid`);
+  const mainPid = await page.ev(`CS.lanes.L.lanes[0].pid`);
+  await page.ev(`CS.lanes.pickNode('fakesvc/truth.py', ${JSON.stringify(mainLane)})`);
+  await page.ev(`document.getElementById('tree').dataset.mark = 'kept'`);    // 详情里的文件树不该重画（筛选、打开的源码都在里面）
+  await page.ev(`CS.lanes.fold(${kidPid}, true)`);
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + mainLane + '|fakesvc/truth.py')} && document.getElementById('det').dataset.pkg === 'fakesvc/truth.py'
+                      && document.querySelectorAll('#g .ln-nd.sel').length === 1 && document.getElementById('tree').dataset.mark === 'kept'`, 3000),
+     '收起别的进程：还选着这一份，文件树不重画');
+  // 连到收起的进程的那条连线：那一头的节点不能点，写明是进程收起了
+  const fk = await page.ev(`CS.lanes.links.find(E => E.k.kind === 'spawn' && E.k.via === 'fork' && CS.lanes.L.lanes.some(l => l.id === E.k.to.lane && l.pid === ${kidPid})).key`);
+  await page.ev(`CS.lanes.open(CS.lanes.byKey[${JSON.stringify(fk)}])`);
+  const fd = JSON.parse(await page.ev(`JSON.stringify({ txt: document.getElementById('det').textContent,
+    nodes: [...document.querySelectorAll('#det [data-node]')].map(b => b.dataset.lane) })`));
+  ok(/这个进程收起了，展开后能点/.test(fd.txt) && !fd.nodes.some(l => l.startsWith(kidPid + ':')),
+     '连线一头在收起的进程里：不能点，写明进程收起了 ' + JSON.stringify(fd.nodes));
+  await page.ev(`CS.lanes.fold(${kidPid}, false)`);
+  await page.ev(`CS.lanes.pickNode('fakesvc/truth.py', ${JSON.stringify(mainLane)})`);
+  await page.ev(`CS.lanes.fold(${mainPid}, true)`);
+  ok(await page.wait(`!CS.lanes.sel && !document.getElementById('det').dataset.pkg && !document.querySelector('#g .ln-nd.sel')`, 3000),
+     '收起选着的那一份所在的进程：取消选中、详情清掉');
+  await page.ev(`CS.lanes.fold(${mainPid}, false)`);
+
+  // 搜索：命中的节点每一份都描出来；回车选中它的第一份、开详情，不说「没跑到」、不碰「只看跑到的」
+  await page.key('Escape', 'Escape', 27);
+  const tgt = 'fakesvc/callee.py', hot0 = await page.ev(`CS.graph.state.onlyHot`);
+  const copies = await page.ev(`CS.lanes.nodes.filter(x => x.id === '${tgt}').length`);
+  await page.ev(`(() => { const i = document.getElementById('sq'); i.value = ''; i.focus(); })()`);
+  await page.type('callee');
+  ok(await page.wait(`!!document.querySelector('#sbar .sr') && document.querySelectorAll('#g .ln-nd.match').length > 0`, 5000), '搜 callee：有结果，图上有描出来的');
+  const m = JSON.parse(await page.ev(`JSON.stringify([...document.querySelectorAll('#g .ln-nd.match')].map(g => g.dataset.id))`));
+  ok(copies > 0 && m.length === copies && m.every(id => id === tgt), `${tgt} 的 ${copies} 份都描出来、别的不描 ` + JSON.stringify(m));
+  await page.key('Enter', 'Enter', 13);
+  const first = await page.ev(`CS.lanes.nodes.find(x => x.id === '${tgt}').lane`);
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + first + '|' + tgt)} && document.getElementById('drawer').classList.contains('open')
+                      && document.getElementById('det').dataset.pkg === '${tgt}'`, 5000), '回车：选中第一份、详情讲它');
+  ok(await page.ev(`!/没跑到|没调到/.test((document.getElementById('gtoast') || {}).textContent || '') && CS.graph.state.onlyHot === ${hot0}`),
+     '不说没跑到，「只看跑到的」不动');
+  await page.key('Escape', 'Escape', 27);
+  // 搜函数：选中它所在的节点，详情里展开到它（不开代码窗口）。先取消选中，详情里没有 callee.py 的文件树
+  await page.ev(`CS.graph.clear()`);
+  ok(await page.wait(`!CS.lanes.sel && document.getElementById('det').dataset.pkg !== '${tgt}'`, 3000), '先取消选中');
+  await page.ev(`(() => { const i = document.getElementById('sq'); i.value = ''; i.focus(); })()`);
+  await page.type('child_work');
+  ok(await page.wait(`!!document.querySelector('#sbar .sr')`, 5000), '搜 child_work：有结果');
+  await page.key('Enter', 'Enter', 13);
+  ok(await page.wait(`(CS.lanes.sel || '').endsWith('|${tgt}') && !!document.querySelector('#det .tr.hit [data-tsym$="child_work"]')`, 8000),
+     '搜函数：选中 callee.py，详情里展开到 child_work、标出来');
+  await sleep(500);
+  ok(await page.ev(`document.getElementById('viewer').hidden`), '代码窗口没开');
+  await page.key('Escape', 'Escape', 27);
+  await page.ev(`CS.search.clear()`);
+  ok(await page.wait(`document.querySelectorAll('#g .ln-nd.match').length === 0`, 3000), '清掉搜索：描的撤掉');
+
+  // 时间段：起 / 收只算这一段里跑过的线程；起在段前的连线淡一点、标「段前」，时间顺序不给它排名次（用户 10-01）
+  await page.goto(base + '#run=' + fx.a);
+  ok(await waitRun(page, fx.a), '回到整个 run A');
+  const req = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
+    return { last: E.k.last, end: CS.app.data.hotMeta.end_us }; })())`));
+  const win = (req.last + 1) + '-' + req.end;
+  await page.goto(base + '#run=' + fx.a + '@t=' + win);
+  ok(await waitRun(page, fx.a + '@t=' + win), '时间段从起 req-3 之后 1 µs 开始 ' + win);
+  const rq = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
+    const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'req');
+    return { out: E && E.k.out, n: E && E.k.n, cls: E && E.p.classList.contains('out'), tip: E && E.tip.textContent,
+             life: col ? [...col.querySelectorAll('.ln-life')].map(x => x.textContent) : null }; })())`));
+  ok(rq.out === 'before' && rq.n === 1 && rq.cls && /开始之前/.test(rq.tip) && /第一次在 −[\d.]+ s（段前）/.test(rq.tip)
+     && rq.life && /−[\d.]+ s（段前）/.test(rq.life[0]),
+     '这一段里只有 req-3 在跑：起它的连线 ×1、标段前、画淡，时刻写成 −x s（段前） ' + JSON.stringify(rq));
+  // consumer 刚开始取的那 2 µs：起它在段前、收它在段后，列头两个时刻各自标出来；起它、收它的主线程这一段里没跑，照样写是它
+  const cf = await page.ev(`CS.lanes.L.lanes.find(l => l.thread === 'consumer').first`);
+  const cw = (cf - 1) + '-' + (cf + 1);
+  await page.goto(base + '#run=' + fx.a + '@t=' + cw);
+  ok(await waitRun(page, fx.a + '@t=' + cw), '时间段：consumer 开始取的那一刻 ' + cw);
+  const cl = JSON.parse(await page.ev(`JSON.stringify((() => {
+    const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'consumer');
+    return { life: [...col.querySelectorAll('.ln-life')].map(x => x.textContent), tip: col.querySelector('title').textContent,
+             main: CS.lanes.L.lanes.some(l => l.thread === 'MainThread' && l.pid === CS.lanes.L.lanes.find(x => x.thread === 'consumer').pid) }; })())`));
+  ok(/^▶ 起 −[\d.]+ s（段前）$/.test(cl.life[0]) && /^■ 收 \+[\d.]+ s（段后）$/.test(cl.life[1]) && /由 MainThread/.test(cl.tip)
+     && (cl.main || /MainThread（这一段里没跑）/.test(cl.tip)), '起在段前、收在段后，各自标出来 ' + JSON.stringify(cl));
+
+  // 一段里一个调用都没有（run 结束很久之后的 1 µs；时间从 run 开始算）：不留一张白图，说清楚为什么空、怎么办；「叠加 run …」清掉
+  const empty = '100000000000-100000000001';
+  await page.goto(base + '#run=' + fx.a + '@t=' + empty);
+  ok(await waitRun(page, fx.a + '@t=' + empty), '时间段 ' + empty + '（run 结束之后）');
+  ok(await page.wait(`CS.lanes.ready && document.querySelectorAll('#g .ln-nd').length === 0
+                      && /没调到仓库里的代码/.test((document.querySelector('#g .ln-empty') || {}).textContent || '')
+                      && document.getElementById('prog').textContent === ''`, 15000), '空的一段：图上写着这一段里没调到仓库里的代码');
 
   // 切面：节点角上的 ＋（能展开的）/ −（展开出来的，收起到上一级），和模块图一样；所有列一起变，新出来的节点闪一下。
   // 在有几层目录的 cx 仓库上测（truth 只有一层）
@@ -246,10 +375,20 @@ export default async function (t) {
       const b = [...x.g.querySelectorAll('.xp')].find(b => b.querySelector('text').textContent === '${s}').getBoundingClientRect();
       return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
   };
+  // 先选中这一份：收起之后接着选装着它的那个节点（同一列），详情讲它
+  const nodeAt = async (id, lane) => JSON.parse(await page.ev(`JSON.stringify((() => {
+    const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(id)} && x.lane === ${JSON.stringify(lane)});
+    CS.graph.showEl(x.g); const b = x.g.querySelector('rect').getBoundingClientRect(); return { x: b.left + 12, y: b.top + b.height / 2 }; })())`));
+  await click(page, await nodeAt(kid.id, kid.lane));
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.id)}`, 3000), '选中 ' + kid.id);
   await click(page, await btn(kid.id, kid.lane, '−'));
   ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
                       && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.parent)}) && !CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)})`, 15000),
      '点 −：收起到 ' + kid.parent + '，所有列里 ' + kid.id + ' 都合回去了');
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)} && document.getElementById('det').dataset.pkg === ${JSON.stringify(kid.parent)}
+                      && [...document.querySelectorAll('#g .ln-nd.sel')].map(g => g.dataset.lane + '|' + g.dataset.id).join() === ${JSON.stringify(kid.lane + '|' + kid.parent)}`, 3000),
+     '收起之后接着选装着它的 ' + kid.parent + '（同一列），详情讲它');
+  ok(await page.wait(`document.getElementById('prog').textContent === ''`, 3000), '画好了：「重新汇总…」清掉');
   ok(await page.ev(`CS.lanes.nodes.filter(x => x.id === ${JSON.stringify(kid.parent)}).every(x => x.g.classList.contains('fresh'))`),
      '收回来的节点闪一下');
   const back = await page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(kid.parent)}); return x.lane; })()`);
@@ -258,12 +397,95 @@ export default async function (t) {
   ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
                       && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)}) && !CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.parent)})`, 15000),
      '点 ＋：' + kid.parent + ' 又展开了');
+  ok(await page.wait(`document.getElementById('det').dataset.pkg === ${JSON.stringify(kid.parent)} && document.getElementById('dtitle').textContent !== '详情'
+                      && /收起/.test(document.querySelector('#det .cutrow').textContent) && !document.querySelector('#nbslot [data-key]')
+                      && document.getElementById('prog').textContent === ''`, 3000),
+     '选中的那一份被展开了：详情照旧讲 ' + kid.parent + '、换成「收起」');
+  // 选中一条和 kid.parent 不相干的边，再收起 kid.parent：还选着它，详情不变
+  const ek = await page.ev(`(CS.lanes.edges.find(E => E.show && ![E.e.a, E.e.b].some(x => x.startsWith(${JSON.stringify(kid.parent)}))) || {}).key`);
+  ok(!!ek, '有一条和 ' + kid.parent + ' 不相干的边 ' + ek);
+  await click(page, await at(page, `CS.lanes.byKey[${JSON.stringify(ek)}]`, 0.5));
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(ek)}`, 3000), '选中它');
+  const et = await page.ev(`document.getElementById('dtitle').textContent`);
+  await page.ev(`CS.app.collapseFrame(${JSON.stringify(kid.parent)})`);
+  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && CS.lanes.sel === ${JSON.stringify(ek)}
+                      && !!document.querySelector('#g .ln-e.sel') && document.getElementById('dtitle').textContent === ${JSON.stringify(et)}`, 15000),
+     '收起 ' + kid.parent + '：还选着那条边，详情不变');
+  await page.key('Escape', 'Escape', 27);
+  await page.ev(`CS.app.expand(${JSON.stringify(kid.parent)})`);
+  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)})`, 15000),
+     '再展开回来');
   ok(await page.ev(`CS.lanes.nodes.filter(x => x.id === ${JSON.stringify(kid.id)}).every(x => x.g.classList.contains('fresh'))`),
      '展开出来的节点闪一下');
+  // 详情栏关上了：改切面之后照样接着选，但不去打开它
+  await page.ev(`CS.lanes.pickNode(${JSON.stringify(kid.id)}, ${JSON.stringify(kid.lane)})`);
+  await page.ev(`CS.app.drawer(false)`);
+  await page.ev(`CS.app.collapseFrame(${JSON.stringify(kid.parent)})`);
+  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
+                      && CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)}`, 15000)
+     && !(await page.ev(`document.getElementById('drawer').classList.contains('open')`)), '详情栏关着：接着选，不打开它');
+  await page.ev(`CS.app.drawer(true)`);
+  // 详情里点「展开」：选着的这一份被展开了，详情照旧讲它；再点「收起」：又选回它
+  await page.ev(`document.querySelector('#det [data-cut="expand"]').click()`);
+  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && !CS.app._pending
+                      && document.getElementById('det').dataset.pkg === ${JSON.stringify(kid.parent)} && /收起/.test(document.querySelector('#det .cutrow').textContent)
+                      && CS.lanes.selFrame === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)}`, 15000), '详情里点展开：详情照旧讲它、换成收起');
+  await page.ev(`document.querySelector('#det .cutrow button').click()`);
+  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
+                      && CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)}`, 15000), '再点收起：又选回这一份');
+  // 改切面还在路上时选搜索结果：等新图画好了再在新图上找、选中
+  await page.ev(`CS.app.expand(${JSON.stringify(kid.parent)}); CS.app.revealNode(${JSON.stringify(kid.id)}, 'unit')`);
+  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && !CS.app._pending
+                      && (CS.lanes.sel || '').endsWith(${JSON.stringify('|' + kid.id)})`, 15000), '改切面还在路上时搜索：画好之后在新图上选中');
   // 名字：分列里没有框，目录带 /、本层文件写成「目录/ 本层」，同名的目录和本层分得出
   const labs = JSON.parse(await page.ev(`JSON.stringify(CS.lanes.nodes.map(x => [CS.app.data.pkgs[x.id].kind, x.g.querySelector('.nl').textContent]))`));
   ok(labs.some(l => l[0] === 'dir') && labs.every(l => l[0] === 'dir' ? l[1].endsWith('/') : l[0] === 'residual' ? l[1].endsWith('/ 本层') : !l[1].endsWith('/')),
      '目录带 /、本层写「/ 本层」 ' + JSON.stringify(labs));
+  // 搜一个收着的模块：展开到它，画好后选中它的第一份
+  await page.ev(`CS.app.setCut(['cx/'])`);
+  ok(await page.wait(`JSON.stringify(CS.app.data.open) === '["cx/"]' && CS.lanes.ready && CS.lanes.nodes.some(x => x.id === 'cx/ops/')`, 15000), '收回到 cx/ 这一层');
+  await page.ev(`(() => { const i = document.getElementById('sq'); i.value = ''; i.focus(); })()`);
+  await page.type('ops.kernels.k');
+  ok(await page.wait(`!!document.querySelector('#sbar .sr') && document.querySelectorAll('#g .ln-nd.match').length > 0`, 5000), '搜 ops.kernels.k：装着它的 cx/ops/ 描出来');
+  await page.key('Enter', 'Enter', 13);
+  ok(await page.wait(`CS.app.data.open.includes('cx/ops/kernels/') && CS.lanes.ready && (CS.lanes.sel || '').endsWith('|cx/ops/kernels/k.py')`, 15000),
+     '回车：展开到 cx/ops/kernels/k.py 并选中它');
+  await page.key('Escape', 'Escape', 27);
+  await page.ev(`CS.search.clear()`);
+
+  await page.goto(base + '#run=' + fx.a);
+  ok(await waitRun(page, fx.a), '回到 run A');
+  // 取数慢的时候：进度一直在，收起进程不清掉它；Esc 照样取消选中（画好之后不再选回来）
+  await page.ev(`(() => { const orig = CS.ds.lanes; window.__lanes = orig;
+    CS.ds.lanes = function (o) { const p = orig.call(CS.ds, o); return new Promise(r => setTimeout(() => r(p), 1200)); }; })()`);
+  await page.ev(`CS.lanes.pickNode('fakesvc/truth.py', CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py').lane)`);
+  await page.ev(`CS.app.selectRun(${JSON.stringify(fx.a)}, 'loop')`);
+  ok(await page.wait(`!CS.app._pending && /叠加/.test(document.getElementById('prog').textContent)`, 5000), '换阶段：取数的时候写着叠加…');
+  await page.ev(`CS.lanes.fold(CS.lanes.L.lanes[CS.lanes.L.lanes.length - 1].pid, true)`);
+  ok(await page.ev(`/叠加/.test(document.getElementById('prog').textContent)`), '取数的时候收起一个进程：进度还在');
+  await page.ev(`document.body.focus()`);
+  await page.key('Escape', 'Escape', 27);
+  ok(await page.wait(`!CS.lanes.sel`, 2000), '取数的时候 Esc：取消选中');
+  ok(await page.wait(`CS.lanes.ready && document.getElementById('prog').textContent === ''`, 10000) && await page.ev(`!CS.lanes.sel`),
+     '画好了：进度清掉，没有再选回来');
+  // 取数失败：写明失败，旧图的模型丢掉（详情、搜索不会去选看不见的东西）
+  await page.ev(`CS.lanes.pickNode('fakesvc/truth.py', CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py').lane)`);
+  await page.ev(`CS.ds.lanes = function () { return Promise.reject(new Error('测试里故意的')); }`);
+  await page.ev(`CS.app.selectRun(${JSON.stringify(fx.a)})`);
+  ok(await page.wait(`/读取失败/.test((document.querySelector('#g .ln-err') || {}).textContent || '') && !CS.lanes.nodes.length && !CS.lanes.sel
+                      && !document.getElementById('det').dataset.pkg`, 10000), '取数失败：写明失败，旧图的模型和选中都丢掉');
+  await page.ev(`CS.ds.lanes = window.__lanes`);
+
+  // 分列还在取数时换成静态图：分列取回来也不画到模块图上
+  await page.goto(base + '#run=' + fx.a);
+  ok(await waitRun(page, fx.a), '回到 run A');
+  await page.ev(`(() => { const orig = CS.ds.lanes; window.__lanes = orig;
+    CS.ds.lanes = function (o) { const p = orig.call(CS.ds, o); return new Promise(r => setTimeout(() => r(p), 800)); }; })()`);
+  await page.ev(`CS.app.selectRun(${JSON.stringify(fx.a)}, 'loop').then(() => CS.app.selectRun(''))`);
+  await sleep(1800);
+  ok(await page.ev(`!document.body.classList.contains('lanesmode') && CS.graph.G.nodes.length > 0 && !!document.querySelector('#g .nd:not(.ln-nd)')
+                    && !document.querySelector('#g .ln-nd')`), '换成静态图：晚回来的分列不画');
+  await page.ev(`CS.ds.lanes = window.__lanes`);
 
   // 没录时序事件的 run：一张模块图
   await page.goto(fx.base3 + '#run=' + fx.dynold);

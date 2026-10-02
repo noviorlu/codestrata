@@ -1113,8 +1113,11 @@ def test_events_truth():
         return x[0], keys["threads"][str(x[0])][str(x[1])], rows[x[0]][x[2]]["b"] if x[2] >= 0 else None
     hs = {(h["via"], side(h["from"]), side(h["to"])) for h in idx["handoffs"]}
     want_q = ("queue", (main_pid, "MainThread", k(C, "put_job")), None)
-    got_q = [h for h in hs if h[:2] == want_q[:2]]
-    assert len(got_q) == 1 and got_q[0][2][1:] == ("consumer", k(C, "take_job")), (hs, idx["handoffs"])
+    # 还有交给 in_getter、交给 asyncio.run 里的 a_getter 的：它们直接 q.get()，取的那头不在任何 span 里（None）
+    got_q = sorted(h[2][1:] for h in hs if h[:2] == want_q[:2])
+    assert len(got_q) == 3 and ("consumer", k(C, "take_job")) in got_q and \
+        any(n.endswith("(in_getter)") and b is None for n, b in got_q) and \
+        any(n.endswith("(run)") and b is None for n, b in got_q), (hs, idx["handoffs"])
     # 两头都带着那一行：put_job 里 q.put 的那一行、take_job 里 q.get 的那一行；ZMQ 是 send_multipart / recv_multipart 那一行
     lines = {(h["via"], h["from"][4], h["to"][4]) for h in idx["handoffs"]}
     assert ("queue", at(C, "put_job", "q.put("), at(C, "take_job", "return q.get(")) in lines, lines
@@ -2393,6 +2396,14 @@ def test_trace_only_notes():
     assert sorted(ui_source.runtime_lines(idx2, "nt/app.py", hot2)) == [ln("make().run()") + 2, ln("return work(1)") + 2]
 
 
+def keys_of(idx, rd, r):
+    """span 行 → (调用方, 被调方) 的函数级节点名（file#Qual）"""
+    from codestrata import lanes
+    ks = lanes._seq.span_index(rd)["keys"]
+    lab = lanes._labeler(idx)
+    return lab(ks[r[4]]), lab(ks[r[5]])
+
+
 def test_lanes():
     """运行时按进程 · 线程分列（lanes.build）：一列一类线程（名字归一之后同名的合成一列），列里是这条线程调到的节点和边；
     列之间：谁起了谁（Thread.start、fork、subprocess）、谁把数据交给谁（queue、zmq）、谁回收了谁（join、waitpid）连到对的列和节点上，
@@ -2457,17 +2468,98 @@ def test_lanes():
         assert [(p_["a"], p_["b"], p_["tb"], p_["la"]) for p_ in j["pairs"]] == [(None if nm == "stdlib-put" else
                 f"fakesvc/truth.py#in_{nm if nm == 'consumer' else 'thread'}", f"fakesvc/truth.py#{fn}", "t.join()", 0)], j
     waits = [x for x in js.values() if x["via"] == "wait"]
-    assert len(waits) >= 3 and all(by[x["from"]["lane"]]["pid"] != main["pid"] and x["to"]["lane"] == main["id"] for x in waits), js
-    assert {x["pairs"][0]["tb"] for x in waits} == {"os.waitpid(pid, 0)"}, waits    # subprocess 起的 python -c pass 不跑仓库代码，没有列
+    launch = f"{main['pid']}:in_launch"           # 在非主线程里 fork 的子进程是那条线程 waitpid 的
+    assert len(waits) >= 4 and all(by[x["from"]["lane"]]["pid"] != main["pid"] and x["to"]["lane"] in (main["id"], launch)
+                                   for x in waits), js
+    # subprocess 起的 python -c pass 不跑仓库代码，没有列。in_launch 是线程的 target、自己直接 waitpid（不在任何 span 里，不知道是哪一行）：
+    # target 一直在栈底，那一头写它、标经仓库外的代码
+    assert {x["pairs"][0]["tb"] for x in waits if x["to"]["lane"] == main["id"]} == {"os.waitpid(pid, 0)"}, waits
+    lw = next(x for x in waits if x["to"]["lane"] == launch)
+    assert (lw["to"]["fn"], lw["to"]["node"], lw["pairs"][0]["xb"]) == ("fakesvc/truth.py#in_launch", T, True), lw
     # 起止摘要：worker ×2 都是主线程起、主线程收；守护线程一个跑完没人收、一个到最后还在跑；fork 出来的子进程被 waitpid 收了
     w = by[f"{main['pid']}:worker"]
-    assert w["start"] == {"n": 2, "t": w["start"]["t"], "lane": main["id"], "daemon": 0} and w["start"]["t"] is not None, w["start"]
+    assert w["start"] == {"n": 2, "t": w["start"]["t"], "lane": main["id"], "daemon": 0, "out": None} and w["start"]["t"] is not None, w["start"]
     assert w["stop"]["joined"] == 2 and w["stop"]["lane"] == main["id"] and not w["stop"]["exited"] + w["stop"]["running"], w["stop"]
-    assert by[f"{main['pid']}:bg-done"]["stop"] == {"joined": 0, "t": None, "lane": None, "exited": 1, "running": 0}
+    assert by[f"{main['pid']}:bg-done"]["stop"] == {"joined": 0, "t": None, "lane": None, "exited": 1, "running": 0, "out": None}
     assert by[f"{main['pid']}:bg-stuck"]["stop"]["running"] == 1 and by[f"{main['pid']}:bg-stuck"]["start"]["daemon"] == 1
     kid = by[forks[0][3]]
     assert kid["start"]["lane"] == main["id"] and kid["stop"]["joined"] == 1 and kid["stop"]["lane"] == main["id"], kid
     assert main["start"] is None and main["stop"] is None, main
+    # exec / waitpid 说的是整个进程：只接子进程的 MainThread 那一列；从非主线程 fork 的子进程没有 MainThread，
+    # 唯一的线程沿用父进程那条线程的名字（in_launch），就接它
+    ends = [(x["via"], by[x["to" if x["kind"] == "spawn" else "from"]["lane"]]) for x in L["links"] if x["via"] in ("exec", "fork", "wait")]
+    assert all(c["thread"] == "MainThread" or (c["thread"] == "in_launch" and c["pid"] != main["pid"]) for _, c in ends), \
+        [(v, c["id"]) for v, c in ends]
+    lk = next(c for v, c in ends if v == "fork" and c["thread"] == "in_launch")
+    assert lk["start"]["lane"] == launch and lk["stop"]["joined"] == 1 and lk["stop"]["lane"] == launch, lk
+    assert any(x["kind"] == "spawn" and x["via"] == "fork" and x["from"]["lane"] == launch and x["to"]["lane"] == lk["id"]
+               for x in L["links"]), [(x["via"], x["from"]["lane"], x["to"]["lane"]) for x in L["links"]]
+    # 线程名写着 target（Thread-N (in_getter)）的，target 里第一件事就是 q.get()（不在 span 里）也认得出入口
+    gl = next(x for x in L["lanes"] if x["thread"] == "in_getter")
+    gs = next(x for x in L["links"] if x["kind"] == "spawn" and x["to"]["lane"] == gl["id"])
+    assert gs["to"]["fn"] == "fakesvc/truth.py#in_getter" and gs["to"]["node"] == T, gs["to"]
+    # target 在仓库外（asyncio.run）：被起的那头是仓库外的代码；交接直接发生在协程 a_getter 里（不在 span 里），按那一刻还没返回的
+    # 深度 0 调用的调用方认出是 a_getter，标经仓库外的代码
+    rl = next(x for x in L["lanes"] if x["thread"] == "run" and x["pid"] == main["pid"])
+    rs = next(x for x in L["links"] if x["kind"] == "spawn" and x["to"]["lane"] == rl["id"])
+    rh = next(x for x in L["links"] if x["kind"] == "handoff" and x["to"]["lane"] == rl["id"])
+    assert rs["to"]["fn"] is None and (rh["to"]["fn"], rh["to"]["node"], rh["pairs"][0]["xb"]) == ("fakesvc/truth.py#a_getter", T, True), (rs, rh)
+
+    # 时间段：只算这一段里跑过的线程（用户 10-01）。s_threads2 先后起 req-0…3，从 req-2 开始的时间段里 req 那一列只有 2 条线程，
+    # 起它们的连线也是 ×2，段外的起 / 收标 before / after
+    import gzip as _gz
+    req = sorted(r[0] for pid_ in {main["pid"]} for r in lanes._seq.pid_rows(rd, pid_)
+                 if keys_of(idx, rd, r) == ("fakesvc/truth.py#in_thread", "fakesvc/callee.py#slow"))
+    end_us = max(x["last"] for x in L["lanes"] if x["last"] is not None) + 1
+    L2 = lanes.build(idx, rd, run, f"t={req[2] - 1}-{end_us}", hot, sorted(idx["dirs"]))
+    by2 = {x["id"]: x for x in L2["lanes"]}
+    r2 = by2[f"{main['pid']}:req"]
+    sp2 = next(x for x in L2["links"] if x["kind"] == "spawn" and x["to"]["lane"] == r2["id"])
+    assert r2["n_threads"] == 2 and sp2["n"] == 2 and r2["start"]["n"] == 2, (r2, sp2)
+    # req-2 在段前起、req-3 在段里起：列头写最早的那次（段前）；连线有一次在段里，不算整条在段外
+    assert r2["start"]["out"] == "before" and sp2["out"] is None and r2["stop"]["out"] is None, (r2, sp2)
+    # 只有 req-3 在跑的那一小段：起它在段前、收它在段后；主线程这一段里没跑（没有列），摘要里照样写是它起的、它收的
+    L5 = lanes.build(idx, rd, run, f"t={req[3] - 1}-{req[3] + 1}", hot, sorted(idx["dirs"]))
+    r5 = next(x for x in L5["lanes"] if x["id"] == r2["id"])
+    assert (r5["n_threads"], r5["start"]["out"], r5["start"]["lane"], r5["stop"]["out"], r5["stop"]["lane"]) == \
+        (1, "before", main["id"], "after", main["id"]), r5
+    # s_queue 里 consumer 刚开始取、主线程开始放的那一段：两条线程都跑了；起 consumer 在段前、收它在段后，整条连线标出来
+    mrows = lanes._seq.pid_rows(rd, main["pid"])
+    ck = next(r for r in mrows if keys_of(idx, rd, r) == ("fakesvc/truth.py#in_consumer", "fakesvc/callee.py#take_job"))
+    pk = next(r for r in mrows if keys_of(idx, rd, r) == ("fakesvc/truth.py#s_queue", "fakesvc/callee.py#put_job"))
+    L7 = lanes.build(idx, rd, run, f"t={ck[0] - 1}-{pk[0] + 1}", hot, sorted(idx["dirs"]))
+    c7 = next(x for x in L7["lanes"] if x["id"] == cons["id"])
+    sp7 = next(x for x in L7["links"] if x["kind"] == "spawn" and x["to"]["lane"] == c7["id"])
+    jn7 = next(x for x in L7["links"] if x["kind"] == "join" and x["from"]["lane"] == c7["id"])
+    assert (sp7["out"], jn7["out"], c7["start"]["out"], c7["stop"]["out"]) == ("before", "after", "before", "after"), (c7, sp7, jn7)
+    # 交接按放 / 发的时刻算在不在这一段里：put 在段前、get 在段里的那次不算
+    L3 = lanes.build(idx, rd, run, f"t={q['first'] + 1}-{end_us}", hot, sorted(idx["dirs"]))
+    assert all(x["first"] >= L3["window"][0] for x in L3["links"] if x["kind"] == "handoff"), \
+        [(x["via"], x["first"]) for x in L3["links"] if x["kind"] == "handoff"]
+    # 入口调用在段前就开始了、一直没返回的线程（主线程最外层的那次调用）：这一段里没有它的深度 0 调用，入口照样补上
+    mtid = next(r[2] for r in mrows if r[3] == 0)
+    lo4 = max(r[0] for r in mrows if r[3] == 0 and r[2] == mtid) + 1   # main() 开始之后：这一段里主线程没有深度 0 的调用
+    L4 = lanes.build(idx, rd, run, f"t={lo4}-{end_us}", hot, sorted(idx["dirs"]))
+    m4 = next(x for x in L4["lanes"] if x["thread"] == "MainThread" and x["pid"] == main["pid"])
+    assert not any(r[3] == 0 and r[2] == mtid and r[0] >= lo4 for r in mrows)
+    assert m4["entry"] == T and m4["entry"] in m4["nodes"], m4
+    # 交接按放的时刻算进来、取的那头（consumer）这一段里还没有调用（take_job 在段前就开始了）：给它一列（idle），放上 take_job
+    # 所在的节点，连线接在节点上；它不算这一段里跑过的线程，不连起 / 收、列头不写起 / 收
+    L6 = lanes.build(idx, rd, run, f"t={ck[0] + 1}-{q['first'] + 1}", hot, sorted(idx["dirs"]))
+    c6 = next(x for x in L6["lanes"] if x["id"] == cons["id"])
+    assert c6.get("idle") and not c6.get("external") and c6["nodes"].get(C, {}).get("handoff") and c6["n_threads"] == 1 \
+        and c6["start"] is None and c6["stop"] is None, c6
+    assert any(x["kind"] == "handoff" and x["to"]["lane"] == c6["id"] and x["to"]["node"] == C for x in L6["links"]), L6["links"]
+    assert not any(x["kind"] in ("spawn", "join") and c6["id"] in (x["from"]["lane"], x["to"]["lane"]) for x in L6["links"]), L6["links"]
+    # fork 的子进程，主线程卡在一次长调用里、后台线程 bg-loop 在跑的那一段：这一段里主线程没有调用（没有列），
+    # fork / waitpid 不拿后台线程顶替；bg-loop 是子进程的主线程起的（段前）
+    kpid = next(int(p_) for p_, ts in lanes._seq.span_index(rd)["threads"].items() if "bg-loop" in ts.values())
+    sr = next(r for r in lanes._seq.pid_rows(rd, kpid) if keys_of(idx, rd, r) == ("fakesvc/truth.py#s_fork_bg", "fakesvc/callee.py#slow"))
+    L8 = lanes.build(idx, rd, run, f"t={sr[0] + 1}-{sr[0] + 40000}", hot, sorted(idx["dirs"]))
+    bg = next(x for x in L8["lanes"] if x["id"] == f"{kpid}:bg-loop")
+    assert f"{kpid}:MainThread" not in {x["id"] for x in L8["lanes"]} and not bg.get("proc_main"), bg
+    assert not any(x["via"] in ("fork", "exec", "wait") and bg["id"] in (x["from"]["lane"], x["to"]["lane"]) for x in L8["links"]), L8["links"]
+    assert bg["start"]["lane"] == f"{kpid}:MainThread" and bg["start"]["out"] == "before", bg["start"]
 
 
 _PA = {

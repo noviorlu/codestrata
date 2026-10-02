@@ -129,13 +129,23 @@
   线程的起和收（用户 10-01：「每一个 thread 应该都有一个地方 launch 一个地方 recycle，类似于 sequence 的 start 和 end 一样高亮」）：
   起线程、回收线程的节点照阶段起点 / 终点的样子描绿 / 红、写「▶ 起 / ■ 收」，列头写起 / 收的时刻；谁回收了谁是第四种连线（红色细虚线）。
   起线程和交接的连线要标出两边的代码（用户 10-01）：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
+  选中节点只算点的那一份（用户 10-01：「选择engine就应该只highlight这个thread的engine」）；节点详情的调用 / 被调用 / 连线也只列这一份的（用户 10-01 定），
+  详情里点名字选中同一列里的那一份。选了阶段 / 时间段（用户 10-01 定）：起 / 收只算这一段里跑过的线程，段外的时刻照写、标「段前 / 段后」；
+  交接按放 / 发的时刻算进这一段；「这一段里跑过」= 有调用，或者它那一头的交接在这一段里，取的那头没有调用的线程给一列 idle 的（只放交接的节点）。
+  每个时刻各自标段前 / 段后（阶段的两个时间片之间的：起算段前、收算段后），整条连线都在段外才画淡。
+  连线一头发生在仓库外的代码里时，写那一刻这条线程最底下在跑的仓库函数：线程名写着 target（Thread-N (x)）的就是 x（target 一直在栈底），
+  否则按 depth 0 的调用方的起止时间认，认不出就是仓库外的代码；被起的一头同理，名字里没写 target 的取最早的 depth 0 调用方，
+  它之前已经在仓库外收发过的不算。fork 的时刻用子进程映像的起点（不用调 fork 的那个 span 的开始）；从非主线程 fork 的子进程没有 MainThread，
+  接它唯一的那条线程。
 - 为什么：多进程、多线程的服务（vLLM：主线程、orchestrator、每个 stage 的收请求 / 主循环 / 输出 / 收发 chunk 的线程）合在一张图上
   看不出谁交给谁；请求路径按线程分节、只展开主线程，交接散在几节里。用户的原话是「有几个 thread 就把那个 thread call 到的 module duplicate
   对应的 thread 数量然后平行和主 thread 放置，这样我们就能够很清晰的看到 thread 和 thread 之间的 collaboration」。
   共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条（外部评审量的），按同一高度对齐就看得出。
 - 放弃的方案（设计说明里比过）：泳道时间线（Perfetto 那种，自己做工作量最大）、按时间合并的一张表（看不出重叠）、顺序图（箭头没有录的话只能按时刻猜）。
-- 在哪：`lanes.py`（`build`、`thread_group`、`_order`、连线的 `pairs`）、`serve.py` 的 `/api/lanes`、`web/lanes.js`（`draw`、`linkRoute`、`paint`）、`web/lanedetail.js`（`link`）、
-  `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`。
+- 在哪：`lanes.py`（`build` 里的 `held` / `root_at` / `named_target` / `target_of` / `out_of`、`thread_group`、`_order`、连线的 `pairs`、`out`）、
+  `serve.py` 的 `/api/lanes`、`web/lanes.js`（`draw`、`paint`、`touching`、`snapshot` / `restoreSel`、`fold`、`settled`、`reveal`、`highlight`）、
+  `web/lanedetail.js`（`link`、`node`、`marks`）、
+  `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`、`revealLane`、`goNode` / `goEdge`。
   测试 `test_lanes`、`tests/web/specs/lanes.mjs`。
 
 ### 叠了 run 默认只看跑到的

@@ -20,6 +20,7 @@ export default async function (t) {
   // ops/ 的 ＋：展开成框，框里是它的孩子
   await clickXp(`#g .nd[data-id="cx/ops/"] .xp`, `#g .nd[data-id="cx/ops/"]`);
   ok(await page.wait(`CS.app.data.open.indexOf('cx/ops/') >= 0 && !!CS.graph.frames['cx/ops/']`), '点 ＋：ops/ 展开成框');
+  ok(await page.wait(`document.getElementById('prog').textContent === ''`, 3000), '画好了：「重新汇总…」清掉');
   nodes = await drawnNodes(page);
   ok(nodes.includes('cx/ops/util.py') && nodes.includes('cx/ops/kernels/') && !nodes.includes('cx/ops/'),
      '框里是 util 和 kernels/ ' + JSON.stringify(nodes));

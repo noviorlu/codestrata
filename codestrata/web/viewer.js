@@ -205,6 +205,7 @@ window.CS = window.CS || {};
       };
       codeEl.onscroll = function () { self._syncOutline(); };
       this._wireClose();
+      this._pin = null;                                // 上一个文件的 focus 不算
       if (line) {
         var k = -1; for (var i2 = 0; i2 < syms.length; i2++) if (syms[i2].l === line) { k = i2; break; }
         this.focus(line, k >= 0 ? rangeOf(syms, k, fv.n_lines) : line);
@@ -404,12 +405,20 @@ window.CS = window.CS || {};
         var el = document.getElementById('vL' + i); if (el) el.classList.add('focus');
       }
       codeEl.scrollTop = Math.max(0, (a - 4) * LH);
+      // 大纲跟着标出来的这一行走：靠近文件末尾时滚不到让它落在第 4 行（scrollTop 被夹住），只按滚动位置算会算到上面去。
+      // 夹住了的，之后窗口变宽 / 变高又夹了一次（关掉引用栏、横向滚动条没了）也还算刚跳过来
+      this._pin = { line: a, top: codeEl.scrollTop, clamped: codeEl.scrollTop < Math.max(0, (a - 4) * LH) - 1 };
       this._syncOutline();
     },
 
+    /* 大纲里高亮看着的这一处所在的符号：刚跳过来（focus）时是标出来的那一行；之后按滚动位置算——
+       看到的第一行往下 3 行（focus 把那一行放在第 4 行）。LH 带小数、scrollTop 是整数：四舍五入，不取整 */
     _syncOutline: function () {
       if (!outlineEl || !syms.length) return;
-      var top = Math.floor(codeEl.scrollTop / LH) + 3, k = -1;
+      var p = this._pin, k = -1, st = codeEl.scrollTop, atEnd = st >= codeEl.scrollHeight - codeEl.clientHeight - 1;
+      var keep = p && (Math.abs(st - p.top) < 1 || (p.clamped && atEnd));
+      if (p && !keep) this._pin = p = null;          // 用户滚过了：之后按滚动位置算（滚回底部也不再认它）
+      var top = keep ? p.line : Math.round(st / LH) + 4;
       for (var i = 0; i < syms.length; i++) { if (syms[i].l <= top) k = i; else break; }
       [].forEach.call(outlineEl.querySelectorAll('.osym.act'), function (x) { x.classList.remove('act'); });
       if (k >= 0) {

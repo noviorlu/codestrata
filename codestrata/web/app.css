@@ -395,6 +395,9 @@ details.esites summary{cursor:pointer;color:var(--muted)}
   border:1px solid var(--line);border-radius:0 999px 999px 0;color:var(--muted)}
 .dep .eb2.warm{color:var(--hot);border-color:var(--hot)}
 .dep .eb2:hover,.dep .eb2:focus-visible{color:var(--sel);border-color:var(--sel)}
+/* 分列节点详情里的连线一行：另一头是哪一列；这一列没画它（或者是仓库外的代码）的名字不能点 */
+.dep>.hint{align-self:center;margin-right:5px;font-size:11px}
+.chip.off{cursor:default;color:var(--muted)}
 .checked{font-size:11.5px;color:var(--cool);margin:0 0 8px}
 .fl.lang-doc{background:var(--cool-bg);color:var(--cool)}
 /* ---- 详情面板的文件树：根目录 → 子目录（缩进）→ 文件 → 类 / 函数 → 方法 ---- */
@@ -655,6 +658,9 @@ body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{dis
 .ln-ltxt{font:600 9.5px/1 ui-monospace,monospace;stroke:var(--card);stroke-width:3px;paint-order:stroke}
 .ln-ltxt.handoff{fill:var(--cool)}.ln-ltxt.spawn{fill:var(--pstart)}.ln-ltxt.join{fill:var(--pend)}
 .ln-life{font:600 9.5px/1 ui-monospace,monospace}.ln-life.start{fill:var(--pstart)}.ln-life.end{fill:var(--pend)}
+/* 段外的起 / 收（选了阶段 / 时间段时，这一段里跑过的线程是在段前起的、段后收的）：淡一点 */
+.ln-link.out{opacity:.4;stroke-dasharray:2 4}.ln-life.out,.ln-mark.out{opacity:.55}
+.ln-link.out.hover,.ln-link.out.sel,.ln-link.out.hi{opacity:1}
 .ln-mark{cursor:pointer}
 /* 选中连线时两头标的那一行代码 */
 .ln-code{cursor:pointer}
@@ -665,6 +671,7 @@ body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{dis
 .ln-twin{stroke:var(--sel);stroke-width:1.4;stroke-dasharray:2 3}
 .ln-nd.twin rect{stroke:var(--sel);stroke-width:2.2}
 .ln-err{font:12px system-ui,sans-serif;fill:var(--pend)}
+.ln-empty{font:13px system-ui,sans-serif;fill:var(--muted)}
 .ln-ltxt{cursor:pointer}
 /* 分列里的线没有命中区：离鼠标最近的那条加粗（.hover），图上换成手形；提示、叠着几条时的小单子（lanepick.js） */
 #g.ln-over{cursor:pointer}

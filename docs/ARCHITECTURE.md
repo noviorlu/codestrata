@@ -81,12 +81,12 @@ flowchart LR
 |---|---:|---|
 | `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 624 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
-| `scan.py` | 696 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
+| `__main__.py` | 645 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
+| `scan.py` | 715 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1703 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file`，走完把构造时跑到的方法（`ctor_methods`）交给 `on_end` |
 | `xtypes.py` | 217 | xref 的类型推断：只推构造和类型标注写明的（标注的形状、容器取出来的元素、`TypeResolver` 按第一遍记的线索推属性和返回值的类型）；名字指向哪仍由 xref 解析 |
 | `graph.py` | 226 | graph 的 scan 记录：把 xref 交来的调用整理成函数之间的调用和定不下被调方的调用处、构造过的类跑到的方法，写 graph.json；语法触发的特殊方法（`syntax_facts`） |
-| `align.py` | 478 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
+| `align.py` | 526 | scan-trace alignment：把 run 的 trace 记录放到当前 index 的节点上（`remap`、`key_mapper`、`to_package_graph`、`node_labeler`、`defining`），按调用行和 scan 记录比（`classify`、`judge`、`ctor_classes`），按切面合起来（`scan_edges_on_cut`、`hot_on_cut`），按名字接线的地方（`wiring`） |
 | `cut.py` | 396 | 节点 id 的写法（按路径）和显示名；目录树切面：哪些目录展开、单元落在哪个节点、默认切面 |
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 1007 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
@@ -95,33 +95,33 @@ flowchart LR
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 399 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
 | `seq.py` | 442 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
-| `path.py` | 318 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
-| `lanes.py` | 427 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
+| `path.py` | 311 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
+| `lanes.py` | 556 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
 | `ui/graphview.py` | 136 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`） |
 | `ui/edge.py` | 107 | 边详情（`/api/edge`）：两端底下函数之间的调用——trace 的函数对（调用行、和 scan 比的说明、按名字接线的地方）和代码里写了、这次没录到的 |
-| `ui/source.py` | 276 | 代码窗口：整个文件、符号片段、大纲、Ctrl+点击的跳转和引用、index 落后几个文件；叠着 run 时只有 trace 的调用行（`runtime_lines`）；graph 节点的定义在哪（`node_def`） |
+| `ui/source.py` | 266 | 代码窗口：整个文件、符号片段、大纲、Ctrl+点击的跳转和引用、index 落后几个文件；叠着 run 时只有 trace 的调用行（`runtime_lines`）；graph 节点的定义在哪（`node_def`） |
 | `ui/search.py` | 33 | 搜索栏的名字表、让一个模块在图上露出来 |
 | `highlight.py` | 185 | Pygments 服务端高亮（Python / Triton / C++ / CUDA）和大纲 |
-| `serve.py` | 442 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
+| `serve.py` | 464 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
 | `projects.py` | 203 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 33 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
-| `web/ds.js` | 59 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 932 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/ds.js` | 63 | 数据源层：fetch serve 的 `api/*` |
+| `web/app.js` | 1022 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 686 | SVG 绘图（纯函数式），边的配色约定 |
-| `web/panel.js` | 612 | 详情面板：节点的事实和源码，边上实际调了哪些函数（可按先后排） |
-| `web/viewer.js` | 446 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
+| `web/panel.js` | 616 | 详情面板：节点的事实和源码，边上实际调了哪些函数（可按先后排） |
+| `web/viewer.js` | 455 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
-| `web/search.js` | 339 | 搜索栏：模块、文件、类 / 函数 |
+| `web/search.js` | 341 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/lanes.js` | 606 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；起 / 收的标记、选中高亮、标签、选中连线时两头标出那一行代码；缩放拖动借 graph.js 的图框 |
+| `web/lanes.js` | 837 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点沿用「只看跑到的」那张图的高度、悬停连副本、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
 | `web/laneroute.js` | 489 | 分列的排线（纯函数）：节点放在哪、每条线怎么走——轨带里的横轨、列两侧和缝里的竖轨，按交叉最少排先后（ELK 式），往右的走上面、往左的走下面；放不下就推层、加宽；`picker` 找离一点最近的线 |
-| `web/lanepick.js` | 129 | 分列里点线：离鼠标最近的那条加粗、出提示，点了选中它；一样近的弹单子挑；换视图 / 重画前撤掉 |
-| `web/lanedetail.js` | 101 | 分列的详情栏：点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
-| `web/path.js` | 86 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
+| `web/lanepick.js` | 130 | 分列里点线：离鼠标最近的那条加粗、出提示，点了选中它；一样近的弹单子挑；换视图 / 重画前撤掉 |
+| `web/lanedetail.js` | 149 | 分列的详情栏：节点这一份的调用 / 被调用 / 连线（只算这条线程）、点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
+| `web/path.js` | 99 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 

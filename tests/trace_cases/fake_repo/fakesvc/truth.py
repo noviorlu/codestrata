@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
 from fakesvc import callee
 
@@ -74,14 +75,75 @@ def s_spawn():                # exec 出来的子进程（subprocess）：父进
     subprocess.run([sys.executable, "-c", "pass"], check=True)
 
 
+def in_launch():              # 在非主线程里 fork：子进程里唯一的线程沿用这条线程的名字（Thread-N (in_launch)），没有 MainThread
+    callee.slow(0.001)        # 这条线程先跑一下仓库代码，它才有一列
+    pid = os.fork()
+    if pid == 0:
+        callee.child_work()
+        os._exit(0)
+    os.waitpid(pid, 0)
+
+
+def s_fork_thread():
+    t = threading.Thread(target=in_launch)
+    t.start()
+    t.join()
+
+
 def in_consumer(q):           # 另一个线程从队列里取：主线程 put 的那个对象交到这里
     return callee.take_job(q)
+
+
+def in_getter(q):             # target 里第一件事就是 q.get()（不在任何 span 里）：入口照样按线程名认出是 in_getter
+    job = q.get()
+    callee.slow(0.001)
+    return job
+
+
+def s_queue_root():
+    q = queue.Queue()
+    t = threading.Thread(target=in_getter, args=(q,))
+    t.start()
+    callee.put_job(q, {"job": 2})
+    t.join()
+
+
+async def a_getter(q):        # 线程的 target 在仓库外（asyncio.run）：栈底的仓库函数是这个协程，交接直接发生在它里面（不在 span 里）
+    callee.slow(0.001)
+    job = q.get()
+    callee.slow(0.001)
+    return job
+
+
+def s_queue_async_root():
+    q = queue.Queue()
+    t = threading.Thread(target=asyncio.run, args=(a_getter(q),))
+    t.start()
+    callee.put_job(q, {"job": 3})
+    t.join()
+
+
+def in_bg():
+    for _ in range(20):
+        callee.one()
+        time.sleep(0.002)
+
+
+def s_fork_bg():              # fork 的子进程：主线程卡在一次长的仓库调用里、后台线程在跑——那一段里主线程没有调用，
+    pid = os.fork()           # fork / waitpid 不拿后台线程顶替
+    if pid == 0:
+        threading.Thread(target=in_bg, name="bg-loop", daemon=True).start()
+        callee.slow(0.05)
+        os._exit(0)
+    os.waitpid(pid, 0)
 
 
 def s_queue():                # 进程内的队列交接：主线程 put、consumer 线程 get
     q = queue.Queue()
     t = threading.Thread(target=in_consumer, args=(q,), name="consumer")
     t.start()
+    while not q.not_empty._waiters:   # 等 consumer 卡在 take_job 的 q.get() 里再放（测试按这个先后取时间段）
+        time.sleep(0.0005)
     callee.put_job(q, {"job": 1})
     t.join()
 
@@ -201,7 +263,11 @@ def main():
     s_fork()
     s_exec()
     s_spawn()
+    s_fork_thread()
+    s_fork_bg()
     s_queue()
+    s_queue_root()
+    s_queue_async_root()
     s_queue_ext()
     s_zmq()
     s_daemon()
