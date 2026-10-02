@@ -2,7 +2,7 @@
 // 列里是这条线程调到的节点；鼠标停在节点上连上它在别的列里的副本；每条线各有各的接点和轨道，点哪条按离鼠标最近的算，
 // 悬停的提示和会选中的是同一条，叠着几条时弹单子挑；列之间的连线能点，
 // 详情里是两头的代码，选中时两头的节点下面标出那一行；起线程 / 回收线程的节点描绿 / 红、列头写起 / 收；「这次跑了」管列里的边；
-// 进程能收起；没录时序事件的 run 照旧是一张图
+// 进程能收起；没录时序事件的 run 照旧是一张图（每列各自的切面在 lanecut.mjs）
 import { sleep, waitRun } from '../lib.mjs';
 
 /* 一条边 / 连线（CS.lanes 里的 E）上点下去会选中它的一点（屏幕坐标）：先滚到看得见，从 f 处开始沿路径找离鼠标最近的就是它
@@ -355,103 +355,7 @@ export default async function (t) {
                       && /没调到仓库里的代码/.test((document.querySelector('#g .ln-empty') || {}).textContent || '')
                       && document.getElementById('prog').textContent === ''`, 15000), '空的一段：图上写着这一段里没调到仓库里的代码');
 
-  // 切面：节点角上的 ＋（能展开的）/ −（展开出来的，收起到上一级），和模块图一样；所有列一起变，新出来的节点闪一下。
-  // 在有几层目录的 cx 仓库上测（truth 只有一层）
-  await page.goto(fx.base2 + '#run=' + fx.cutrun);
-  ok(await waitRun(page, fx.cutrun), '叠上 cx 仓库录的 run（分列）');
-  const xpOf = s => `[...document.querySelectorAll('#g .ln-nd')].filter(g => [...g.querySelectorAll('.xp text')].some(t => t.textContent === '${s}'))`;
-  const c0 = JSON.parse(await page.ev(`JSON.stringify((() => { const P = CS.app.data.pkgs; return {
-    plus: ${xpOf('+')}.length, wantPlus: CS.lanes.nodes.filter(x => (P[x.id] || {}).expandable).length,
-    minus: ${xpOf('−')}.length, wantMinus: CS.lanes.nodes.filter(x => (P[x.id] || {}).collapsible).length }; })())`));
-  ok(c0.plus === c0.wantPlus && c0.minus === c0.wantMinus && c0.minus > 0,
-     '节点角上有 ＋ / −：' + JSON.stringify(c0));
-  const kid = JSON.parse(await page.ev(`JSON.stringify((() => { const P = CS.app.data.pkgs;
-    const x = CS.lanes.nodes.find(x => (P[x.id] || {}).collapsible); return { id: x.id, lane: x.lane, parent: P[x.id].parent }; })())`));
-  const btn = async (id, lane, s) => {
-    await page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(id)} && x.lane === ${JSON.stringify(lane)});
-      CS.graph.showEl(x.g); })()`);
-    await sleep(150);
-    return page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(id)} && x.lane === ${JSON.stringify(lane)});
-      const b = [...x.g.querySelectorAll('.xp')].find(b => b.querySelector('text').textContent === '${s}').getBoundingClientRect();
-      return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
-  };
-  // 先选中这一份：收起之后接着选装着它的那个节点（同一列），详情讲它
-  const nodeAt = async (id, lane) => JSON.parse(await page.ev(`JSON.stringify((() => {
-    const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(id)} && x.lane === ${JSON.stringify(lane)});
-    CS.graph.showEl(x.g); const b = x.g.querySelector('rect').getBoundingClientRect(); return { x: b.left + 12, y: b.top + b.height / 2 }; })())`));
-  await click(page, await nodeAt(kid.id, kid.lane));
-  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.id)}`, 3000), '选中 ' + kid.id);
-  await click(page, await btn(kid.id, kid.lane, '−'));
-  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
-                      && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.parent)}) && !CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)})`, 15000),
-     '点 −：收起到 ' + kid.parent + '，所有列里 ' + kid.id + ' 都合回去了');
-  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)} && document.getElementById('det').dataset.pkg === ${JSON.stringify(kid.parent)}
-                      && [...document.querySelectorAll('#g .ln-nd.sel')].map(g => g.dataset.lane + '|' + g.dataset.id).join() === ${JSON.stringify(kid.lane + '|' + kid.parent)}`, 3000),
-     '收起之后接着选装着它的 ' + kid.parent + '（同一列），详情讲它');
-  ok(await page.wait(`document.getElementById('prog').textContent === ''`, 3000), '画好了：「重新汇总…」清掉');
-  ok(await page.ev(`CS.lanes.nodes.filter(x => x.id === ${JSON.stringify(kid.parent)}).every(x => x.g.classList.contains('fresh'))`),
-     '收回来的节点闪一下');
-  const back = await page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(kid.parent)}); return x.lane; })()`);
-  await sleep(300);
-  await click(page, await btn(kid.parent, back, '+'));
-  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
-                      && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)}) && !CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.parent)})`, 15000),
-     '点 ＋：' + kid.parent + ' 又展开了');
-  ok(await page.wait(`document.getElementById('det').dataset.pkg === ${JSON.stringify(kid.parent)} && document.getElementById('dtitle').textContent !== '详情'
-                      && /收起/.test(document.querySelector('#det .cutrow').textContent) && !document.querySelector('#nbslot [data-key]')
-                      && document.getElementById('prog').textContent === ''`, 3000),
-     '选中的那一份被展开了：详情照旧讲 ' + kid.parent + '、换成「收起」');
-  // 选中一条和 kid.parent 不相干的边，再收起 kid.parent：还选着它，详情不变
-  const ek = await page.ev(`(CS.lanes.edges.find(E => E.show && ![E.e.a, E.e.b].some(x => x.startsWith(${JSON.stringify(kid.parent)}))) || {}).key`);
-  ok(!!ek, '有一条和 ' + kid.parent + ' 不相干的边 ' + ek);
-  await click(page, await at(page, `CS.lanes.byKey[${JSON.stringify(ek)}]`, 0.5));
-  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(ek)}`, 3000), '选中它');
-  const et = await page.ev(`document.getElementById('dtitle').textContent`);
-  await page.ev(`CS.app.collapseFrame(${JSON.stringify(kid.parent)})`);
-  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && CS.lanes.sel === ${JSON.stringify(ek)}
-                      && !!document.querySelector('#g .ln-e.sel') && document.getElementById('dtitle').textContent === ${JSON.stringify(et)}`, 15000),
-     '收起 ' + kid.parent + '：还选着那条边，详情不变');
-  await page.key('Escape', 'Escape', 27);
-  await page.ev(`CS.app.expand(${JSON.stringify(kid.parent)})`);
-  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)})`, 15000),
-     '再展开回来');
-  ok(await page.ev(`CS.lanes.nodes.filter(x => x.id === ${JSON.stringify(kid.id)}).every(x => x.g.classList.contains('fresh'))`),
-     '展开出来的节点闪一下');
-  // 详情栏关上了：改切面之后照样接着选，但不去打开它
-  await page.ev(`CS.lanes.pickNode(${JSON.stringify(kid.id)}, ${JSON.stringify(kid.lane)})`);
-  await page.ev(`CS.app.drawer(false)`);
-  await page.ev(`CS.app.collapseFrame(${JSON.stringify(kid.parent)})`);
-  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
-                      && CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)}`, 15000)
-     && !(await page.ev(`document.getElementById('drawer').classList.contains('open')`)), '详情栏关着：接着选，不打开它');
-  await page.ev(`CS.app.drawer(true)`);
-  // 详情里点「展开」：选着的这一份被展开了，详情照旧讲它；再点「收起」：又选回它
-  await page.ev(`document.querySelector('#det [data-cut="expand"]').click()`);
-  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && !CS.app._pending
-                      && document.getElementById('det').dataset.pkg === ${JSON.stringify(kid.parent)} && /收起/.test(document.querySelector('#det .cutrow').textContent)
-                      && CS.lanes.selFrame === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)}`, 15000), '详情里点展开：详情照旧讲它、换成收起');
-  await page.ev(`document.querySelector('#det .cutrow button').click()`);
-  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
-                      && CS.lanes.sel === ${JSON.stringify('n:' + kid.lane + '|' + kid.parent)}`, 15000), '再点收起：又选回这一份');
-  // 改切面还在路上时选搜索结果：等新图画好了再在新图上找、选中
-  await page.ev(`CS.app.expand(${JSON.stringify(kid.parent)}); CS.app.revealNode(${JSON.stringify(kid.id)}, 'unit')`);
-  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready && !CS.app._pending
-                      && (CS.lanes.sel || '').endsWith(${JSON.stringify('|' + kid.id)})`, 15000), '改切面还在路上时搜索：画好之后在新图上选中');
-  // 名字：分列里没有框，目录带 /、本层文件写成「目录/ 本层」，同名的目录和本层分得出
-  const labs = JSON.parse(await page.ev(`JSON.stringify(CS.lanes.nodes.map(x => [CS.app.data.pkgs[x.id].kind, x.g.querySelector('.nl').textContent]))`));
-  ok(labs.some(l => l[0] === 'dir') && labs.every(l => l[0] === 'dir' ? l[1].endsWith('/') : l[0] === 'residual' ? l[1].endsWith('/ 本层') : !l[1].endsWith('/')),
-     '目录带 /、本层写「/ 本层」 ' + JSON.stringify(labs));
-  // 搜一个收着的模块：展开到它，画好后选中它的第一份
-  await page.ev(`CS.app.setCut(['cx/'])`);
-  ok(await page.wait(`JSON.stringify(CS.app.data.open) === '["cx/"]' && CS.lanes.ready && CS.lanes.nodes.some(x => x.id === 'cx/ops/')`, 15000), '收回到 cx/ 这一层');
-  await page.ev(`(() => { const i = document.getElementById('sq'); i.value = ''; i.focus(); })()`);
-  await page.type('ops.kernels.k');
-  ok(await page.wait(`!!document.querySelector('#sbar .sr') && document.querySelectorAll('#g .ln-nd.match').length > 0`, 5000), '搜 ops.kernels.k：装着它的 cx/ops/ 描出来');
-  await page.key('Enter', 'Enter', 13);
-  ok(await page.wait(`CS.app.data.open.includes('cx/ops/kernels/') && CS.lanes.ready && (CS.lanes.sel || '').endsWith('|cx/ops/kernels/k.py')`, 15000),
-     '回车：展开到 cx/ops/kernels/k.py 并选中它');
-  await page.key('Escape', 'Escape', 27);
-  await page.ev(`CS.search.clear()`);
+  // 切面（每列各自的、展开的目录画框）在 lanecut.mjs 里测
 
   await page.goto(base + '#run=' + fx.a);
   ok(await waitRun(page, fx.a), '回到 run A');

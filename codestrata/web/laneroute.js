@@ -13,16 +13,28 @@
  *  - 先排竖轨（列两侧、列之间的缝），再按竖轨和接点的真实横坐标排轨带；接点按轨道的先后排（往左拐的在左、往右拐的在右，
  *    近的在里），排完再排一遍轨带，来回两次；
  *  - 轨带放不下就把下面的层整体往下推（所有列一起推，同一个节点在各列里还是同一高度），有空余高度的轨带把轨道间距放宽到 14。
+ * 展开的目录画成框（每列各有各的切面，用户 10-02）：列里横着怎么排、框占哪一段是 lanepack.js 的 pack 排的；这里
+ *  - 框也挡路：竖着走的（列两侧的竖轨、S 形）不穿过和两头无关的框，两侧的竖轨离框至少 6；横着在轨带里走的可以穿过框；
+ *    S 形进 b 所在的框时要穿过框头，离框头的 − 不到 8 就改走列的侧边；
+ *  - 两层之间从上往下：上一层节点的底 → 下带 → 在上一层结束的框底 → 在这一层开始的框头 → 上带 → 起 / 收标记 → 节点的顶；
+ *    嵌套的框在同一行开始 / 结束时框头一层层往下错开、框底一层层往上收（同模块图 layout.py）。
+ *    同一个 y 的几个子行（展开的目录里的）之间中间可能什么都没有，也至少留 ROWGAP，S 形落得下去、不擦过旁边高一些的节点；
+ *  - 接在列头上的连线竖着下来要穿过这一列第一行就开始的框的框头：列的中间离框头的 − 不到 8 就把接线处往右挪过 −。
+ *    已知的毛病：从框外 S 形进框里第一行的节点、接在列头上的连线，会从框头底下穿过（框头画在线上面，同模块图）。
  * 选线（picker）：点哪条按离鼠标最近的那条算，不靠 SVG 命中区谁叠在上面。 */
 (function (root) {
   'use strict';
+  var LP = root.CS.lanePack;                         // 先加载 lanepack.js（框的几何常量和 pack 都在那里）
   var TS = 10,      // 轨带里横轨的最小间距（ELK 的默认值）；有空余高度时放宽到 TSMAX
       TSMAX = 14,
       VS = 8,       // 列两侧、列之间的缝里竖轨的间距
       RAD = 5,      // 拐角的圆角
       ARROW = 3,    // 箭头停在节点外面几个像素
       PMAX = 16, PMIN = 8,   // 节点一条边上接点的间距（不小于箭头宽；接点太多时再挤，但不出节点的边）
-      FMAX = 4;     // 节点侧面最多出几条
+      PSPAN = 0.96, // 一条边上的接点最多铺开节点宽的这么多（离节点的边至少 2%）
+      FMAX = 4,     // 节点侧面最多出几条
+      ROWGAP = 24,  // 上下相邻两行的节点之间至少空这么多（同一个 y 的子行也撑开）；基础图上相邻两行至少隔 70 − 44 = 26，不受影响
+      FH = LP.FH, FB = LP.FB, BTN = LP.BTN, CLEAR = LP.CLEAR;
 
   /* 一条轨带（或一条竖的通道）里各段的先后（ELK 的 OrthogonalRoutingGenerator）。segs：[{lo, hi, conns: [{p, s, pk}]}]，
      lo..hi 是沿通道方向的范围，conns 是两头拐出去的地方：p 是位置，s = -1 拐向低的一侧、+1 拐向高的一侧（横轨带的低侧是上面）。
@@ -90,6 +102,10 @@
 
   function r1(v) { return Math.round(v * 10) / 10; }
 
+  /* 宽 w 的一条边上挂 n 个接点时相邻两个隔多远；fan：最外面的接点离边的中点多远 */
+  function pitchOf(n, w) { return n > 1 ? Math.min(Math.max(PMIN, Math.min(PMAX, w * 0.88 / (n - 1))), w * PSPAN / (n - 1)) : 0; }
+  function fan(n, w) { return n > 1 ? pitchOf(n, w) * (n - 1) / 2 : 0; }
+
   /* 折线 → 带圆角的 path；pts 是选线用的折线（圆角处差不到 2 像素） */
   function poly(pts) {
     var P = [];
@@ -126,50 +142,57 @@
   }
 
   /* S：{NW, GAP, PAD, MINW, EXTW, FOLDW, headY, top,
-         layers: [各层中心的基准纵坐标，递增], layerOf: {节点: 层号}, nodeH: {节点: 高},
-         cols: [{fold, external, lanes: [列 id], rows: {层号: [节点（从左到右）]}, gap: 这一列左边的缝的基础宽}],
+         layers: [各层中心的基准纵坐标，不减；一个目录在一列里展开后的几个子行纵坐标一样], layerOf: {节点: 层号}, nodeH: {节点: 高},
+         cols: [{fold, external, lanes: [列 id], rows: {层号: [节点（输入的左右顺序）]}, gap: 这一列左边的缝的基础宽,
+                 frames: {fid: {parent: fid | null, minw: 框至少多宽（装得下框头）}}（这一列画的框）, frameOf: {节点: 最里层的 fid | null}}],
          edges: [{key, lane, a, b}]（列里的边）, links: [{key, from: {lane, node}, to: {lane, node}}]（列之间）,
          reserve: {"列|节点": 节点上方要留的高（「▶ 起 / ■ 收」）}, gapEnd: 最右边的缝}
-     → {W, H, cols: [{x, w}], pos: {"列|节点": {cx, cy, w, h}}, heads: [列头接线处 {cx, cy, w, h, head}],
-        paths: {key: {d, pts, low}}, layerY: [...], tracks: {ch: [各轨带几条横轨], side, gut}} */
+     → {W, H, cols: [{x, w}], pos: {"列|节点": {cx, cy, w, h}}, heads: [列头接线处 {cx（列的中间，压着第一行框头的 − 时挪开）, cy, w, h, head}],
+        paths: {key: {d, pts, low}}, layerY: [...], tracks: {ch: [各轨带几条横轨], side, gut},
+        fpos: {"列|fid": {x, y, w, h, head: {x, y, w, h}（框头）, btn: {x, y}（框头 − 的中心）}}（没收起的列里每个有节点的框）}
+     收起的进程、只跑仓库外代码的列照旧：不排节点、不画框 */
   function route(S) {
     var nL = S.layers.length, nC = S.cols.length, colOf = {};
-    // 1. 列的基础宽、节点在列里的相对位置（列两侧的竖轨、列之间的缝还没算）
+    // 1. 列的基础宽、节点和框在列里的相对位置（lanepack 排的；列两侧的竖轨、列之间的缝还没算）。之后的 rows 是按横坐标排好的
     var C = S.cols.map(function (c, ci) {
       c.lanes.forEach(function (l) { colOf[l] = ci; });
-      var base = S.MINW, rel = {};
-      if (c.fold) base = S.FOLDW;
-      else if (c.external) base = S.EXTW;
-      else {
-        var most = 0;
-        Object.keys(c.rows).forEach(function (k) { most = Math.max(most, c.rows[k].length); });
-        base = Math.max(S.MINW, most * (S.NW + S.GAP) - S.GAP + 2 * S.PAD);
-        Object.keys(c.rows).forEach(function (k) {
-          var ids = c.rows[k], span = ids.length * (S.NW + S.GAP) - S.GAP, x0 = (base - span) / 2;
-          ids.forEach(function (id, i) { rel[id] = x0 + i * (S.NW + S.GAP) + S.NW / 2; });
-        });
-      }
-      return { c: c, base: base, rel: rel };
+      var P = c.fold || c.external ? { base: c.fold ? S.FOLDW : S.EXTW, rel: {}, rows: {}, frel: {}, span: {}, parent: {}, home: {} }
+                                   : LP.pack(c, S);
+      P.c = c;
+      return P;
     });
     var ax = [], x = 0;                              // 粗略的横坐标：先排接点、挑侧边、排竖轨用；竖轨排完换成最后的（第 4 步）
     C.forEach(function (c, ci) { x += S.cols[ci].gap; ax[ci] = x; x += c.base; });
     function axNode(lane, id) { var ci = colOf[lane]; return ax[ci] + C[ci].rel[id]; }
     function axGut(g) { return g < nC ? ax[g] - S.cols[g].gap / 2 : ax[nC - 1] + C[nC - 1].base + (S.gapEnd || 8) / 2; }
-    function freeRow(ci, l, L) {                    // 第 l 行里列边到最靠边的节点之间空着多宽
-      var ids = (C[ci].c.rows || {})[l];
-      if (!ids || !ids.length) return C[ci].base;
-      var xs = ids.map(function (id) { return C[ci].rel[id]; });
-      return L ? Math.min.apply(null, xs) - S.NW / 2 : C[ci].base - Math.max.apply(null, xs) - S.NW / 2;
+    // 1b. 挡路的：用轨带的编号当纵坐标，第 l 行的节点占 (2l, 2l+1)；框占 (2lo − ½, 2hi + 1½)——框头在轨带 2lo − 1 和 2lo 之间，
+    //     框底在 2hi + 1 和 2hi + 2 之间。occ：轨带 b0..b1（不含两头）这一段里挡着的 [{x0, x1, id | f}]（离列左边），except 里的框不算
+    C.forEach(function (c) {
+      var ob = c.ob = [];
+      Object.keys(c.rows).forEach(function (k) {
+        c.rows[k].forEach(function (id) { ob.push({ b0: 2 * k, b1: 2 * k + 1, x0: c.rel[id] - S.NW / 2, x1: c.rel[id] + S.NW / 2, id: id }); });
+      });
+      Object.keys(c.frel).forEach(function (f) {
+        ob.push({ b0: 2 * c.span[f][0] - 0.5, b1: 2 * c.span[f][1] + 1.5, x0: c.frel[f][0], x1: c.frel[f][1], f: f });
+      });
+    });
+    function occ(ci, b0, b1, except) {
+      return C[ci].ob.filter(function (o) { return o.b0 < b1 && b0 < o.b1 && !(o.f != null && except && except[o.f]); });
     }
-    function spanFree(ci, lo, hi, L) {              // 竖轨从轨带 lo 到 hi 经过的那几行里最窄的空
-      var f = Infinity;
-      for (var l = 0; l < nL; l++) if (lo - 0.5 <= 2 * l && 2 * l + 1 <= hi + 0.5) f = Math.min(f, freeRow(ci, l, L));
+    function inside(ci, id) {                        // 装着这个节点的框（这一列里）：{fid: 1}
+      var c = C[ci], s = {};
+      for (var f = c.home[id]; f != null; f = c.parent[f]) s[f] = 1;
+      return s;
+    }
+    function spanFree(ci, lo, hi, L) {              // 竖轨从轨带 lo 到 hi：列边到最近的节点 / 框之间空着多宽（框也算，装着两头的也算）
+      var f = C[ci].base;
+      occ(ci, lo, hi).forEach(function (o) { f = Math.min(f, L ? o.x0 : C[ci].base - o.x1); });
       return f;
     }
     var maxh = [];
     C.forEach(function (c) {
-      Object.keys(c.c.rows || {}).forEach(function (k) {
-        c.c.rows[k].forEach(function (id) { var li = S.layerOf[id]; maxh[li] = Math.max(maxh[li] || 0, S.nodeH[id] || 34); });
+      Object.keys(c.rows).forEach(function (k) {
+        c.rows[k].forEach(function (id) { var li = S.layerOf[id]; maxh[li] = Math.max(maxh[li] || 0, S.nodeH[id] || 34); });
       });
     });
     for (var li = 0; li < nL; li++) maxh[li] = maxh[li] || 34;
@@ -181,28 +204,48 @@
     function port(pk, key, end, other) { var p = { key: key, end: end, other: other, pk: pk }; (ports[pk] = ports[pk] || []).push(p); return p; }
     function hseg(ch, e1, e2, key) { var h = { ch: ch, e: [e1, e2], key: key }; H.push(h); if (e1.port) e1.port.h = h; if (e2.port) e2.port.h = h; return h; }
     function vseg(bag, k, c1, c2, key) { var v = { lo: Math.min(c1, c2), hi: Math.max(c1, c2), key: key, bag: k }; (bag[k] = bag[k] || []).push(v); return v; }
-    function clear(ci, i, j, xa, xb) {               // 第 i 层和第 j 层之间（不含两头）这一列里没有节点挡着 xa..xb
-      var lo = Math.min(xa, xb) - S.NW / 2 - 6, hi = Math.max(xa, xb) + S.NW / 2 + 6, rows = C[ci].c.rows || {};
-      for (var k = i + 1; k < j; k++)
-        if ((rows[k] || []).some(function (id) { var x1 = ax[ci] + C[ci].rel[id]; return x1 > lo && x1 < hi; })) return false;
-      return true;
-    }
+    // 列里的边挂在哪条节点边上（往下的从 a 的底边出来，同层、往上的从顶边；都从顶边进 b）；列之间的连线两头接在哪（第 2 步后面用）。
+    // 先都算出来：每条节点边上一共几个接点（nPk）要在定 S 形还是走侧边之前知道
+    var ES = [], nPk = {};
     (S.edges || []).forEach(function (e) {
       var ci = colOf[e.lane];
       if (ci == null || C[ci].rel[e.a] == null || C[ci].rel[e.b] == null) return;
-      var i = S.layerOf[e.a], j = S.layerOf[e.b], ka = e.lane + '|' + e.a, kb = e.lane + '|' + e.b;
+      var i = S.layerOf[e.a], j = S.layerOf[e.b];
+      ES.push({ e: e, ci: ci, i: i, j: j, pka: npk(e.lane, e.a, j > i ? 'b' : 't'), pkb: npk(e.lane, e.b, 't') });
+    });
+    var LS = (S.links || []).map(linkEnds);
+    ES.forEach(function (d) { nPk[d.pka] = (nPk[d.pka] || 0) + 1; nPk[d.pkb] = (nPk[d.pkb] || 0) + 1; });
+    LS.forEach(function (k) { if (k) [k.A, k.B].forEach(function (X) { if (X.head == null) nPk[X.pk] = (nPk[X.pk] || 0) + 1; }); });
+    /* 从 a（第 i 层）S 形落进 b（第 j 层，j > i）行不行：中间那几层没有节点挡着、没有和两头都无关的框挡着（框头、框底也算）；
+       b 所在、a 不在的框在两层之间开始时，S 形要穿过它的框头：两头的接点最多铺到哪（按那条节点边上一共几个接点算），
+       离框头的 − 不到 CLEAR（再留 1）就不行 */
+    function clear(d) {
+      var c = C[d.ci], a = d.e.a, b = d.e.b, xa = c.rel[a], xb = c.rel[b], A = inside(d.ci, a), B = inside(d.ci, b), ex = {}, f;
+      var lo = Math.min(xa, xb) - S.NW / 2 - 6, hi = Math.max(xa, xb) + S.NW / 2 + 6;
+      for (f in A) ex[f] = 1;
+      for (f in B) ex[f] = 1;
+      if (occ(d.ci, 2 * d.i + 1, 2 * d.j, ex).some(function (o) { return o.x1 > lo && o.x0 < hi; })) return false;
+      var ha = fan(nPk[d.pka], S.NW), hb = fan(nPk[d.pkb], S.NW);
+      var p0 = Math.min(xa - ha, xb - hb), p1 = Math.max(xa + ha, xb + hb);
+      return !Object.keys(B).some(function (g) {
+        var bx = c.frel[g][0] + BTN;
+        return !A[g] && c.span[g][0] > d.i && p0 < bx + CLEAR + 1 && p1 > bx - CLEAR - 1;
+      });
+    }
+    ES.forEach(function (d) {
+      var e = d.e, ci = d.ci, i = d.i, j = d.j, ka = e.lane + '|' + e.a, kb = e.lane + '|' + e.b;
       var xa = axNode(e.lane, e.a), xb = axNode(e.lane, e.b);
-      if (j === i + 1 || (j > i + 1 && clear(ci, i, j, xa, xb))) {
+      if (j > i && clear(d)) {
         plan[e.key] = { type: 'adj', a: ka, b: kb };
-        port(npk(e.lane, e.a, 'b'), e.key, 0, xb); port(npk(e.lane, e.b, 't'), e.key, 1, xa);
+        port(d.pka, e.key, 0, xb); port(d.pkb, e.key, 1, xa);
       } else if (j === i) {
-        var pa = port(npk(e.lane, e.a, 't'), e.key, 0, xb), pb = port(npk(e.lane, e.b, 't'), e.key, 1, xa);
+        var pa = port(d.pka, e.key, 0, xb), pb = port(d.pkb, e.key, 1, xa);
         plan[e.key] = { type: 'same', a: ka, b: kb, h: hseg(2 * i, { port: pa }, { port: pb }, e.key) };
       } else {
         var down = j > i;
         var q = { type: 'side', key: e.key, a: ka, b: kb, ida: e.a, idb: e.b, ci: ci, i: i, j: j, down: down,
                   c1: down ? 2 * i + 1 : 2 * i, c2: 2 * j, xa: xa, xb: xb };
-        q.pa = port(npk(e.lane, e.a, down ? 'b' : 't'), e.key, 0, ax[ci]); q.pb = port(npk(e.lane, e.b, 't'), e.key, 1, ax[ci]);
+        q.pa = port(d.pka, e.key, 0, ax[ci]); q.pb = port(d.pkb, e.key, 1, ax[ci]);
         plan[e.key] = q; sideEdges.push(q);
       }
     });
@@ -227,7 +270,12 @@
         });
     });
     function unport(p) { var P = ports[p.pk], k = P.indexOf(p); if (k >= 0) P.splice(k, 1); if (!P.length) delete ports[p.pk]; }
-    function outer(ci, l, id, L) { var r = C[ci].c.rows[l]; return r && (L ? r[0] : r[r.length - 1]) === id; }
+    function outer(ci, l, id, L) {                   // 这一行里往 L 那一侧再没有别的节点、别的框（装着它的框不算：从它的侧面出来穿过去）
+      var x0 = C[ci].rel[id] - S.NW / 2, x1 = C[ci].rel[id] + S.NW / 2;
+      return !occ(ci, 2 * l + 0.25, 2 * l + 0.75, inside(ci, id)).some(function (o) {
+        return o.id !== id && (L ? o.x0 < x0 - 0.5 : o.x1 > x1 + 0.5);
+      });
+    }
     sideEdges.forEach(function (q) {
       var L = q.L, fa = q.a + '|' + (L ? 'l' : 'r');
       if (outer(q.ci, q.i, q.ida, L) && (faces[fa] || []).length < FMAX) {     // a 是这一行最靠这一侧的：从它的侧面出来
@@ -250,11 +298,16 @@
       if (A.head != null) return;
       A.low = low; A.ch = 2 * A.li + (low ? 1 : 0); A.pk = npk(A.lane, A.id, low ? 'b' : 't');
     }
-    (S.links || []).forEach(function (k) {
+    function linkEnds(k) {                           // 连线的两头 {A, B}；收起的同一个进程里的不画（null）
       var A = endOf(k.from), B = endOf(k.to);
-      if (!A || !B || (A.head != null && A.head === B.head)) return;   // 收起的同一个进程里的
+      if (!A || !B || (A.head != null && A.head === B.head)) return null;
       var low = A.head == null && B.head == null && B.x < A.x;          // 往左的走下面
       under(A, low); under(B, low);
+      return { A: A, B: B };
+    }
+    (S.links || []).forEach(function (k, n) {
+      if (!LS[n]) return;
+      var A = LS[n].A, B = LS[n].B;
       if (A.ch === B.ch) {
         var pa = port(A.pk, k.key, 0, B.x), pb = port(B.pk, k.key, 1, A.x);
         plan[k.key] = { type: 'link1', A: A, B: B, h: hseg(A.ch, { port: pa }, { port: pb }, k.key) };
@@ -271,12 +324,20 @@
     var off = {};
     function pkX(pk) {
       var m = pkAt[pk];
-      var ci = +pk.slice(5);                        // 列头：竖轨排完之后是最后的列中间
-      return m ? axNode(m.lane, m.id) : colX && colX.length ? colX[ci] + colW[ci] / 2 : ax[ci] + C[ci].base / 2;
+      return m ? axNode(m.lane, m.id) : headX(+pk.slice(5));
+    }
+    /* 列头接线处的横坐标：列的中间（竖轨排完之后是最后的列中间）。竖着下来要穿过这一列第一行就开始的框的框头：
+       接点铺开后离哪个框头的 − 不到 CLEAR（再留 1）就挪到那个 − 的右边（从左往右挪，挪过的不会再碰上；框比两头的接点宽，挪不出列） */
+    function headX(ci) {
+      var c = C[ci], x = colX && colX.length ? colX[ci] + colW[ci] / 2 - ax[ci] : c.base / 2;
+      var h = fan((ports['head|' + ci] || []).length, Math.min(c.base - 10, S.NW));
+      Object.keys(c.frel).filter(function (f) { return c.span[f][0] === 0; })
+        .map(function (f) { return c.frel[f][0] + BTN; }).sort(function (p, q) { return p - q; })
+        .forEach(function (bx) { if (x - h < bx + CLEAR + 1 && x + h > bx - CLEAR - 1) x = bx + CLEAR + 1 + h; });
+      return ax[ci] + x;
     }
     function place(pk, P) {
-      var n = P.length, w = pkAt[pk] ? S.NW : Math.min(C[+pk.slice(5)].base - 10, S.NW);
-      var sp = n > 1 ? Math.min(Math.max(PMIN, Math.min(PMAX, w * 0.88 / (n - 1))), w * 0.96 / (n - 1)) : 0;
+      var n = P.length, w = pkAt[pk] ? S.NW : Math.min(C[+pk.slice(5)].base - 10, S.NW), sp = pitchOf(n, w);
       P.forEach(function (p, i) { off[p.key + '|' + p.end] = -sp * (n - 1) / 2 + sp * i; });
     }
     Object.keys(ports).forEach(function (pk) {
@@ -366,19 +427,31 @@
     var reserve = [];
     C.forEach(function (c) {
       c.c.lanes.forEach(function (lane) {
-        Object.keys(c.c.rows || {}).forEach(function (k) {
-          c.c.rows[k].forEach(function (id) {
+        Object.keys(c.rows).forEach(function (k) {
+          c.rows[k].forEach(function (id) {
             var l = S.layerOf[id];
             reserve[l] = Math.max(reserve[l] || 0, (S.reserve || {})[lane + '|' + id] || 0);
           });
         });
       });
     });
+    // 框头、框底：外面有几层框和它在同一行开始（sd）/ 结束（ed）就往里错开几层；每一行要叠几层（hs / fs）所有列一起算
+    var hs = [], fs = [];
+    C.forEach(function (c) {
+      c.sd = {}; c.ed = {};
+      Object.keys(c.frel).forEach(function (f) {
+        var lo = c.span[f][0], hi = c.span[f][1], d = 0, e = 0;
+        for (var p = c.parent[f]; p != null; p = c.parent[p]) { d += c.span[p][0] === lo ? 1 : 0; e += c.span[p][1] === hi ? 1 : 0; }
+        c.sd[f] = d; c.ed[f] = e;
+        hs[lo] = Math.max(hs[lo] || 0, d + 1); fs[hi] = Math.max(fs[hi] || 0, e + 1);
+      });
+    });
     function band(b) { return nCh[b] ? 6 + nCh[b] * TS + 4 : 0; }    // 一条轨带要的高
     var layerY = [], shift = 0, pitch = [];
     for (var c = 0; c < nL; c++) {
       reserve[c] = reserve[c] || 0;
-      var need = reserve[c] + 6 + band(2 * c) + (c > 0 ? band(2 * c - 1) : 0);
+      var need = Math.max(c > 0 ? ROWGAP : 0, reserve[c] + 6 + band(2 * c) + (c > 0 ? band(2 * c - 1) : 0)
+        + FH * (hs[c] || 0) + (hs[c] ? 4 : 0) + (c > 0 ? FB * (fs[c - 1] || 0) : 0));
       var have = c === 0 ? (S.top - maxh[0] / 2) - (S.headY + 6) : (S.layers[c] - S.layers[c - 1]) - maxh[c] / 2 - maxh[c - 1] / 2;
       shift += Math.max(0, need - have);
       layerY[c] = S.top + (S.layers[c] - S.layers[0]) + shift;
@@ -388,7 +461,7 @@
     // 7. 坐标、路径
     var pos = {}, heads = [];
     C.forEach(function (c, ci2) {
-      heads[ci2] = { cx: colX[ci2] + colW[ci2] / 2, cy: S.headY, w: Math.min(colW[ci2] - 8, S.NW), h: 8, head: true };
+      heads[ci2] = { cx: headX(ci2), cy: S.headY, w: Math.min(colW[ci2] - 8, S.NW), h: 8, head: true };
       if (c.c.fold) return;
       Object.keys(c.rel).forEach(function (id) {
         var p = { cx: area[ci2] + c.rel[id], cy: layerY[S.layerOf[id]], w: S.NW, h: S.nodeH[id] || 34 };
@@ -435,9 +508,22 @@
       }
       paths[key] = r;
     });
-    var lastY = layerY.length ? layerY[nL - 1] + maxh[nL - 1] / 2 + band(2 * nL - 1) : S.top;
+    // 框：框头压在这一行的上带上面（嵌套的往下错开），框底挂在最后一行的下带下面（嵌套的往上收）
+    function ext(b) { return nCh[b] ? 6 + nCh[b] * (pitch[b] || TS) + 4 : 0; }    // 一条轨带实际占的高
+    var fpos = {};
+    C.forEach(function (c, ci2) {
+      if (c.c.fold) return;
+      Object.keys(c.frel).forEach(function (f) {
+        var lo = c.span[f][0], hi = c.span[f][1], fx = area[ci2] + c.frel[f][0], fw = c.frel[f][1] - c.frel[f][0];
+        var y0 = layerY[lo] - maxh[lo] / 2 - reserve[lo] - ext(2 * lo) - 2 - FH * (hs[lo] - c.sd[f]);
+        var y1 = layerY[hi] + maxh[hi] / 2 + ext(2 * hi + 1) + 2 + FB * (fs[hi] - c.ed[f]);
+        var p = { x: fx, y: y0, w: fw, h: y1 - y0, head: { x: fx, y: y0, w: fw, h: FH }, btn: { x: fx + BTN, y: y0 + FH / 2 } };
+        c.c.lanes.forEach(function (lane) { fpos[lane + '|' + f] = p; });
+      });
+    });
+    var lastY = layerY.length ? layerY[nL - 1] + maxh[nL - 1] / 2 + band(2 * nL - 1) + FB * (fs[nL - 1] || 0) : S.top;
     return { W: W, H: lastY + 60, cols: colX.map(function (x0, i) { return { x: x0, w: colW[i] }; }), pos: pos, heads: heads,
-             paths: paths, layerY: layerY, tracks: { ch: nCh, side: nSide, gut: nGut } };
+             paths: paths, layerY: layerY, tracks: { ch: nCh, side: nSide, gut: nGut }, fpos: fpos };
   }
 
   /* 选线：paths 的折线 → near(x, y, r)：离 (x, y) 不超过 r 的线，按距离从近到远 [{key, d}]（一样近的短的在前） */
@@ -485,5 +571,6 @@
   }
 
   var CS = root.CS = root.CS || {};
-  CS.laneRoute = { route: route, picker: picker, order: order };
+  CS.laneRoute = { route: route, picker: picker, order: order,      // 框的常量就是 lanepack 的（画框头、留地方时用）
+                   FH: FH, FB: FB, FPAD: LP.FPAD, PGAP: LP.PGAP };
 })(typeof window !== 'undefined' ? window : globalThis);

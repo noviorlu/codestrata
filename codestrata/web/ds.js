@@ -39,8 +39,10 @@ window.CS = window.CS || {};
     // 请求路径：当前 run（选的阶段）里每个进程、每个线程按第一次调用排的函数级调用树
     path: function () { return j('api/path?run=' + encodeURIComponent(this.run)); },
     // 按进程 · 线程分列：当前 run（选的阶段）、当前切面上每列的节点和边、列之间的连线（lanes.py）
-    lanes: function (open) {
-      return j('api/lanes?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
+    /* open：共用的切面；cuts：各列单独的切面 [{lanes, open}]（lanecut.js） */
+    lanes: function (open, cuts) {
+      return j('api/lanes?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : '')
+               + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : ''));
     },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
     // 叠着 run 时带上它：代码窗口里标出「代码里看不出、这次运行调到了谁」的那几行

@@ -7,7 +7,11 @@
     GET  /api/seq/edges?run=&open=   切面上每条边在 run 选的阶段里第一次 / 最后一次被调用的时刻和次数
                                   （模块图的「时间顺序」上色）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
-    GET  /api/lanes?run=&open=    按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py）
+    GET  /api/lanes?run=&open=&cuts=
+                                  按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
+                                  加上节点信息、框、名字、子层（ui/lanesview.py）。open 是共用的切面，
+                                  cuts（JSON [{"lanes": [列 id…], "open": [目录…]}…]）是各列自己的切面。
+                                  每列的 names 是图上的名字 {id: 字}，合进来的线程原名在 thread_names
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
@@ -45,6 +49,7 @@ from . import runs as _runs
 from . import seq as _seq
 from .ui import edge as _edge
 from .ui import graphview as _graphview
+from .ui import lanesview as _lanesview
 from .ui import load as _load
 from .ui import search as _search
 from .ui import source as _source
@@ -225,21 +230,29 @@ class Handler(BaseHandler):
             return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 
     def _lanes(self, q: dict):
-        """/api/lanes：按进程 · 线程分列（lanes.build）。run 必填，@阶段（或 @t=）决定时间段，open 是切面"""
+        """/api/lanes：按进程 · 线程分列（lanes.build + lanesview.decorate）。run 必填，@阶段（或 @t=）决定时间段，
+        open 是共用的切面，cuts 是各列自己的切面"""
         ref = (q.get("run") or [""])[0].strip()
         if not ref:
             return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
         raw = (q.get("open") or [None])[0]
         open_ = None if raw is None else sorted(_cut.norm_open(self.idx, [o for o in raw.split(",") if o]))
         try:
+            cuts = _lanesview.parse_cuts(self.idx, (q.get("cuts") or [None])[0])
+        except ValueError as e:
+            return self._json({"error": str(e)}, 400)
+        run = None
+        try:
             run, rd, phase = _runs.resolve(self.repo, ref)
             hot = self._hot(q)[0]
-            return self._json(_lanes.build(self.idx, rd, run, phase, hot, open_,
-                                           text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160]))
+            L = _lanes.build(self.idx, rd, run, phase, hot, open_, cuts=cuts,
+                             text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160])
+            return self._json(_lanesview.decorate(self.idx, hot, L, open_))
         except (SystemExit, LookupError) as e:
             return self._json({"error": str(e)}, 404)
         except (OSError, ValueError) as e:
-            return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
+            # 还没认出是哪个 run 就出错（读 runs 目录失败）：没有 run id 可写
+            return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
 
     def _seq(self, path: str, q: dict):
         """/api/seq/edges：模块图「时间顺序」上色要的数据。run 必填（run id 或 case 名，@阶段决定时间窗）。"""
