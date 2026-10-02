@@ -7,6 +7,8 @@
  * join / waitpid 等到它结束）。起线程、回收线程的那个节点像阶段的起点 / 终点那样描成绿 / 红、上面写「▶ 起 …」「■ 收 …」；
  * 列头写这一列的线程什么时候起、什么时候收（或者没人收）。选中一条连线，两头的节点下面标出那一行代码（起线程、放 / 取、
  * 发 / 收、join 的那一行），详情里列出每一对的代码（lanedetail.js），点了在代码窗口里看那一行。
+ * 切面照样能改（和模块图一样）：能展开的节点左上角一个 ＋，展开出来的节点右上角一个 −（收起到上一级）；分列里没法把一个目录的
+ * 子节点框在一起（各列里它们未必挨着），所以收起放在每个子节点上。展开 / 收起是全局的：所有列一起变。
  * 「边」那一行的开关照样管用：这次跑了 / 其中代码里看不出管列里的边，时间顺序把列里的边和交接连线放在一起、
  * 跨线程按第一次发生的先后排名上色、标序号。点节点、点列里的边：和模块图一样开详情；点列之间的连线：详情里列出
  * 两头各是哪个函数、几次、什么时候。缩放、拖动沿用 graph.js 的图框。 */
@@ -75,6 +77,7 @@ window.CS = window.CS || {};
         if (tok !== self._tok) return;
         self.data = L;
         self.draw(svg, L, d.graphHot || d.graph, d.names || {});
+        self.afterCutDrawn();
         self.ready = ref;                          // 画好了的是哪个 run（@阶段）
         if (CS.app.lanesDrawn) CS.app.lanesDrawn();
       }).catch(function (e) {
@@ -88,7 +91,7 @@ window.CS = window.CS || {};
     },
 
     draw: function (svg, L, G, names) {
-      var self = this, w0 = (L.window || [0])[0];
+      var self = this, w0 = (L.window || [0])[0], pkgs = (CS.app.data && CS.app.data.pkgs) || {};
       CS.lanePick.leave();                            // 上一次画的提示、手形、单子、监听都撤掉
       svg.textContent = '';
       this.names = names; this.sel = null;
@@ -222,7 +225,9 @@ window.CS = window.CS || {};
             var g = el('g', { class: 'nd warm ln-nd', tabindex: '0', role: 'button', 'data-id': id, 'data-lane': ln.id });
             g.appendChild(el('rect', { x: cx - NW / 2, y: cy - h / 2, width: NW, height: h }));
             var t = el('text', { x: cx, y: cy - 3, class: 'nl', 'text-anchor': 'middle' });
-            var nm = names[id] || id; t.textContent = nm.length > 18 ? nm.slice(0, 17) + '…' : nm; g.appendChild(t);
+            // 名字和模块图框外的写法一样：目录带 /，本层文件写成「目录/ 本层」——分列里没有框，同名的目录和本层要分得出
+            var kd = (pkgs[id] || {}).kind, nm = (names[id] || id) + (kd === 'dir' ? '/' : kd === 'residual' ? '/ 本层' : '');
+            t.textContent = nm.length > 18 ? nm.slice(0, 17) + '…' : nm; g.appendChild(t);
             var s = el('text', { x: cx, y: cy + 9, class: 'ns', 'text-anchor': 'middle' });
             s.textContent = info.n ? '被调 ' + fmtN(info.n) + ' 次' : '只往外调'; g.appendChild(s);
             var tp = el('title', {});
@@ -234,6 +239,13 @@ window.CS = window.CS || {};
             var pick = function (ev) { ev.stopPropagation(); self.pickNode(id, ln.id); };
             g.onclick = pick;
             g.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(ev); } };
+            var pk = pkgs[id] || {};
+            if (pk.expandable)                        // 和模块图同一个 ＋ / −（graph.js 的 .xp）
+              g.appendChild(self.cutBtn(cx - NW / 2 + 1, cy - h / 2 + 1, '+', '展开 ' + nm + '：换成它的 ' + pk.fanout + ' 个子模块（所有列一起）',
+                                        function () { CS.app.expand(id); }));
+            if (pk.collapsible && pk.parent)
+              g.appendChild(self.cutBtn(cx + NW / 2 - 1, cy - h / 2 + 1, '−', '收起到 ' + (names[pk.parent] || pk.parent)
+                                        + '：连同它的兄弟节点合回一个（所有列一起）', function () { CS.app.collapse(id); }));
             ng.appendChild(g);
             self.nodes.push({ id: id, lane: ln.id, g: g });
           });
@@ -371,6 +383,37 @@ window.CS = window.CS || {};
       CS.graph.wireBox(svg.parentNode);
       CS.graph.fit();
       this.paint();
+    },
+
+    /* 节点角上的 ＋ / − 按钮（改切面） */
+    cutBtn: function (x, y, sign, tip, go) {
+      var b = el('g', { class: 'xp', role: 'button', tabindex: '0', 'aria-label': tip });
+      b.appendChild(el('circle', { cx: x, cy: y, r: 7 }));
+      var t = el('text', { x: x, y: y + 3.5, 'text-anchor': 'middle' });
+      t.textContent = sign; b.appendChild(t);
+      var tt = el('title', {}); tt.textContent = tip; b.appendChild(tt);
+      var run = function (ev) { ev.preventDefault(); ev.stopPropagation(); go(); };
+      b.onclick = run;
+      b.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') run(ev); };
+      return b;
+    },
+
+    /* 刚改过切面（app.setCut 记下 afterCut）：画好之后把新出来的节点滚进图框、闪一下；用键盘点的 ＋ / − 随重画没了，
+       焦点交给第一个新节点（收起时是收回来的那个节点） */
+    afterCutDrawn: function () {
+      var a = this.afterCut;
+      this.afterCut = null;
+      if (!a) return;
+      var fresh = this.nodes.filter(function (x) { return !a.before[x.id]; });
+      var target = fresh[0] || this.nodes.filter(function (x) { return x.id === a.focus; })[0];
+      fresh.forEach(function (x) {
+        x.g.classList.add('fresh');
+        setTimeout(function () { x.g.classList.remove('fresh'); }, 1600);
+      });
+      if (!target) return;
+      CS.graph.showEl(target.g);
+      var ae = document.activeElement;
+      if (!ae || ae === document.body || !document.contains(ae)) target.g.focus({ preventScroll: true });
     },
 
     /* 屏幕上的一点附近的线（看得见的），按离它的距离从近到远 [{E, d（屏幕像素）}]（lanepick.js） */

@@ -739,6 +739,8 @@ window.CS = window.CS || {};
       this.data.graph.nodes.concat(this.data.graph.frames || []).forEach(function (n) { was.kind[n.id] = n.kind; });
       this.data.graph.nodes.forEach(function (n) { before[n.id] = 1; });
       document.getElementById('prog').textContent = '重新汇总…';
+      // 分列是重画完再异步取数画的：画好之后由它自己滚到新节点、闪一下（CS.graph 的 reveal / flash 只管模块图）
+      if (this.lanesMode()) CS.lanes.afterCut = { focus: focus, before: before };
       this._w = CS.graph.boxWidth();
       return CS.ds.graph(open, this._w).then(function (d) {
         if (seq !== self._cutSeq) return false;   // 连着点了几次：只认最后一次，先发出的请求晚回来也不能盖掉它

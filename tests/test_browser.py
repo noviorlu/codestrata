@@ -105,6 +105,9 @@ def fixture() -> dict:
         (cut / rel).parent.mkdir(parents=True, exist_ok=True)
         (cut / rel).write_text(src)
     cs("scan", cut)
+    # 有几层目录的仓库上录一次时序事件：分列里节点角上的 ＋ / −（改切面）在它上面测
+    cs("trace", cut, "--case", "cutrun", "--events", "--", PY, "-c",
+       "from cx.app import run; from cx.big.sub.s import s; from cx.big.f00 import f00; run(); s(); f00()")
     srv2, base2 = _serve(cut)
     dyn = tmpdir("cs-browser-dyn-") / "dynrepo"
     for rel, src in _DYN.items():
@@ -123,7 +126,8 @@ def fixture() -> dict:
     srv3, base3 = _serve(dyn)
     _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"), dynn=_run_id(dyn, "dynne"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
-               a=_run_id(repo, "truth"), b=_run_id(repo, "offline"), an=_run_id(repo, "truthne"), bn=_run_id(repo, "offlinene"))
+               a=_run_id(repo, "truth"), b=_run_id(repo, "offline"), an=_run_id(repo, "truthne"), bn=_run_id(repo, "offlinene"),
+               cutrun=_run_id(cut, "cutrun"))
     fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))

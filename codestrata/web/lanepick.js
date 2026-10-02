@@ -10,7 +10,7 @@ window.CS = window.CS || {};
   var tip = null, svgEl = null, over = null, ties = [], timer = null, last = null, box = null;
 
   function esc(s) { return CS.lanes.fmt.esc(s); }
-  function own(t) { return t && t.closest && t.closest('.ln-nd, .tn, .ln-code, .ln-mark, .ln-proc'); }
+  function own(t) { return t && t.closest && t.closest('.ln-nd, .tn, .ln-code, .ln-mark, .ln-proc, .xp'); }
 
   /* 屏幕上的一点附近的线（看得见的），按离它的距离从近到远 [{E, d（屏幕像素）}] */
   function hitAt(lanes, cx, cy, r) {

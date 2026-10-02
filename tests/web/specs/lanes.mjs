@@ -226,6 +226,45 @@ export default async function (t) {
   await page.click('#g .ln-proc .ln-fold');
   ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0`, 3000), '再展开');
 
+  // 切面：节点角上的 ＋（能展开的）/ −（展开出来的，收起到上一级），和模块图一样；所有列一起变，新出来的节点闪一下。
+  // 在有几层目录的 cx 仓库上测（truth 只有一层）
+  await page.goto(fx.base2 + '#run=' + fx.cutrun);
+  ok(await waitRun(page, fx.cutrun), '叠上 cx 仓库录的 run（分列）');
+  const xpOf = s => `[...document.querySelectorAll('#g .ln-nd')].filter(g => [...g.querySelectorAll('.xp text')].some(t => t.textContent === '${s}'))`;
+  const c0 = JSON.parse(await page.ev(`JSON.stringify((() => { const P = CS.app.data.pkgs; return {
+    plus: ${xpOf('+')}.length, wantPlus: CS.lanes.nodes.filter(x => (P[x.id] || {}).expandable).length,
+    minus: ${xpOf('−')}.length, wantMinus: CS.lanes.nodes.filter(x => (P[x.id] || {}).collapsible).length }; })())`));
+  ok(c0.plus === c0.wantPlus && c0.minus === c0.wantMinus && c0.minus > 0,
+     '节点角上有 ＋ / −：' + JSON.stringify(c0));
+  const kid = JSON.parse(await page.ev(`JSON.stringify((() => { const P = CS.app.data.pkgs;
+    const x = CS.lanes.nodes.find(x => (P[x.id] || {}).collapsible); return { id: x.id, lane: x.lane, parent: P[x.id].parent }; })())`));
+  const btn = async (id, lane, s) => {
+    await page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(id)} && x.lane === ${JSON.stringify(lane)});
+      CS.graph.showEl(x.g); })()`);
+    await sleep(150);
+    return page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(id)} && x.lane === ${JSON.stringify(lane)});
+      const b = [...x.g.querySelectorAll('.xp')].find(b => b.querySelector('text').textContent === '${s}').getBoundingClientRect();
+      return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
+  };
+  await click(page, await btn(kid.id, kid.lane, '−'));
+  ok(await page.wait(`!CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
+                      && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.parent)}) && !CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)})`, 15000),
+     '点 −：收起到 ' + kid.parent + '，所有列里 ' + kid.id + ' 都合回去了');
+  ok(await page.ev(`CS.lanes.nodes.filter(x => x.id === ${JSON.stringify(kid.parent)}).every(x => x.g.classList.contains('fresh'))`),
+     '收回来的节点闪一下');
+  const back = await page.ev(`(() => { const x = CS.lanes.nodes.find(x => x.id === ${JSON.stringify(kid.parent)}); return x.lane; })()`);
+  await sleep(300);
+  await click(page, await btn(kid.parent, back, '+'));
+  ok(await page.wait(`CS.app.data.open.includes(${JSON.stringify(kid.parent)}) && CS.lanes.ready
+                      && CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.id)}) && !CS.lanes.nodes.some(x => x.id === ${JSON.stringify(kid.parent)})`, 15000),
+     '点 ＋：' + kid.parent + ' 又展开了');
+  ok(await page.ev(`CS.lanes.nodes.filter(x => x.id === ${JSON.stringify(kid.id)}).every(x => x.g.classList.contains('fresh'))`),
+     '展开出来的节点闪一下');
+  // 名字：分列里没有框，目录带 /、本层文件写成「目录/ 本层」，同名的目录和本层分得出
+  const labs = JSON.parse(await page.ev(`JSON.stringify(CS.lanes.nodes.map(x => [CS.app.data.pkgs[x.id].kind, x.g.querySelector('.nl').textContent]))`));
+  ok(labs.some(l => l[0] === 'dir') && labs.every(l => l[0] === 'dir' ? l[1].endsWith('/') : l[0] === 'residual' ? l[1].endsWith('/ 本层') : !l[1].endsWith('/')),
+     '目录带 /、本层写「/ 本层」 ' + JSON.stringify(labs));
+
   // 没录时序事件的 run：一张模块图
   await page.goto(fx.base3 + '#run=' + fx.dynold);
   ok(await waitRun(page, fx.dynold), '叠上没录时序事件的 run');
