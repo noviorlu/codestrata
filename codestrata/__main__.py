@@ -27,6 +27,7 @@ from . import runs as _runs
 from . import scan as _scan
 from .trace import analysis as _tana
 from .trace import driver as _tdrv
+from .trace import gpu as _tgpu
 from . import xref as _xref
 from .ui import load as _load
 
@@ -148,6 +149,15 @@ def cmd_trace(a) -> int:
             _scan.check_roots(a.roots)
         except ValueError as e:
             raise SystemExit(str(e)) from None
+    # --gpu：GPU 录制端要用本机的 CUDA 工具链现编（缓存）；录之前编好，编不过不留下失败的 run
+    gpu_lib = None
+    if a.gpu:
+        if not a.events:
+            raise SystemExit("--gpu 要时序事件（kernel 挂到发起它的那次调用上靠它），不能和 --no-events 一起用")
+        try:
+            gpu_lib = _tgpu.injection_lib(env)
+        except RuntimeError as e:
+            raise SystemExit(str(e)) from None
     # --attach 的相对路径和命令一样按执行目录算；那里没有再按当前目录
     attach = []
     for f in a.attach:
@@ -180,7 +190,7 @@ def cmd_trace(a) -> int:
         env["CODESTRATA_EV_MAX"] = os.environ["CODESTRATA_EV_MAX"]
     rd = _runs.new_run(repo, case=a.case, cmd=a.cmd, cwd=run_dir, env=env, tags=a.tag, note=a.note or "",
                        rec={"timeout": a.timeout, "stop_grace": a.stop_grace, "attach": attach,
-                            "events": bool(a.events), "roots": a.roots,
+                            "events": bool(a.events), "roots": a.roots, "gpu": bool(a.gpu),
                             "phase_at": [{k: t[k] for k in ("name", "func", "file", "qualname", "line")}
                                          for t in phase_at]},
                        invocation=getattr(a, "invocation", None),
@@ -188,6 +198,9 @@ def cmd_trace(a) -> int:
     # 时序事件（模块图「时间顺序」的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
     # 明确写 0：shell 里恰好 export 了 CODESTRATA_EVENTS=1 也不录——以命令行为准，重录命令才对得上
     env_run = {**env, "CODESTRATA_EVENTS": "1" if a.events else "0"}
+    if gpu_lib:                              # 和 CODESTRATA_EVENTS 一样是 codestrata 自己的，不记进 run 的 env
+        env_run[_tgpu.ENV] = str(gpu_lib)
+        print(f"[codestrata] GPU：录 kernel（CUPTI，{gpu_lib}）", file=sys.stderr)
     print(f"[codestrata] run {rd.name}（{rd.resolve()}）", file=sys.stderr)
     mono0 = _runs.read_json(rd / "run.json")["clock"]["mono0_ns"]
 
@@ -544,6 +557,9 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--note", default=None, help="给 run 写一句备注")
     t.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
+    t.add_argument("--gpu", action="store_true",
+                   help="同时录 GPU kernel（CUPTI）：每个 kernel 的起止、流，挂到发起它的那次调用上；要本机有带 CUPTI 的 "
+                        "CUDA 工具链（CUDA_HOME，或 nvcc 在 PATH 上）和 g++，要时序事件")
     t.add_argument("--events", action=argparse.BooleanOptionalAction, default=True,
                    help="同时记时序事件（每次调用的起止时刻、谁调的、线程之间谁交给谁；请求路径、时间顺序要它）。默认开，被录的 Python "
                         "低于 3.12 时自动没有；--no-events 关掉")

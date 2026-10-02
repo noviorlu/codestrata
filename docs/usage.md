@@ -222,6 +222,7 @@ codestrata trace [repo] --case NAME [选项…] -- 你平时跑它的命令
 - `--roots DIR…`：仓库代码在哪些目录（把安装包映射回仓库时用）；默认用 scan 时选的。
 - `--no-events`：不记时序事件（默认记，被录的 Python 要 3.12+），见[时间轴和时间顺序](#时间轴和时间顺序)。
 - `--phase NAME=FUNC`：切阶段，见[分阶段](#分阶段)。
+- `--gpu`：同时录 GPU kernel，见下面「GPU kernel」。
 
 ```bash
 codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag model=qwen \
@@ -229,6 +230,14 @@ codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag 
 ```
 
 录完会打印进程数、被调到的函数数、文件间调用边数、退出码、用时，以及映射到了多少个包和符号、调用最多的包，最后给出叠图的命令。
+
+### GPU kernel（`--gpu`）
+
+`--gpu` 让每个用 CUDA 的进程同时录下 GPU 上跑的每个 kernel：起止时刻、设备、流，和发起它的那次启动调用（`cudaLaunchKernel`、`cuLaunchKernel` 这类，在哪个线程、什么时候）。
+
+- **要什么**：本机有带 CUPTI 的 CUDA 工具链（`cupti.h`、`libcupti.so`；按 `--env CUDA_HOME=…`、环境里的 `CUDA_HOME` / `CUDA_PATH`、PATH 上 `nvcc` 所在的、`/usr/local/cuda*` 的顺序找）和 `g++`：录制端是一小段 C++，第一次用时现编、按源码哈希缓存在 `~/.cache/codestrata/cupti/`。要时序事件（不能和 `--no-events` 一起用）。
+- **怎么注入**：CUDA 运行时按环境变量 `CUDA_INJECTION64_PATH` 把录制端载进进程，不用改被录的程序，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的 kernel 都录得到。
+- **不录的**：fork 出来的子进程里的 kernel；kernel 内部（一个 kernel 里跑了哪些 device 函数）。
 
 ### 录真实部署：服务、多进程、安装包
 

@@ -57,7 +57,7 @@ events/raw.tar.gz 里永久保留）：
 via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配
 （发的时刻不晚于收的）。同一个线程里自己放自己取的不算交接。
 
-写出 events/spans/：keys.json {keys, threads}、index.json {chunks, truncated, scope, thread_from, spawns, thread_end, reaps, ...}、
+写出 events/spans/：keys.json {keys, threads, native}、index.json {chunks, truncated, scope, thread_from, spawns, thread_end, reaps, ...}、
 p<pid>-NNN.jsonl.gz（按 t0 排好，每块最多 10 万行）。
 """
 from __future__ import annotations
@@ -72,9 +72,9 @@ CHUNK = 100_000
 
 
 def parse(path: Path) -> dict:
-    """读一个 ev 日志：{pid, t0, ppid, keys: {id: key}, threads: {tid: 名}, ev: [(tag, t, tid, span, a, b)],
+    """读一个 ev 日志：{pid, t0, ppid, keys: {id: key}, threads: {tid: 名}, native: {tid: 系统线程号}, ev: [(tag, t, tid, span, a, b)],
     truncated}。坏行（进程被强杀时最后一行可能只写了一半）跳过。"""
-    out = {"pid": None, "t0": None, "ppid": None, "keys": {}, "threads": {}, "ev": [], "truncated": False,
+    out = {"pid": None, "t0": None, "ppid": None, "keys": {}, "threads": {}, "native": {}, "ev": [], "truncated": False,
            "scope": "cross", "from": {}, "spawns": [], "forked": None, "msgs": [], "exits": {}, "joins": {},
            "reaps": []}
     name = path.name                              # ev-<pid>-<t0>.log：没有 H 行时从文件名取
@@ -103,6 +103,9 @@ def parse(path: Path) -> dict:
                 elif ln.startswith("N "):
                     _, i, nm = ln.rstrip("\n").split(" ", 2)
                     out["threads"][int(i)] = nm
+                elif ln.startswith("U "):
+                    _, i, ntid = ln.split()
+                    out["native"][int(i)] = int(ntid)
                 elif ln.startswith("H "):
                     _, pid, t0, ppid = ln.split()
                     out["pid"], out["t0"], out["ppid"] = int(pid), int(t0), int(ppid)
@@ -223,6 +226,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
     keys: list[str] = []
     kidx: dict[str, int] = {}
     threads: dict[str, dict] = {}
+    native: dict[str, dict] = {}                  # pid → {线程号: 系统线程号}（U 行；GPU 录制按它找发起 kernel 的线程）
     procs: list[dict] = []
     per_pid: dict[int, list] = {}
     truncated: set[int] = set()
@@ -249,6 +253,8 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
         images.append((img, log["pid"], off, base,
                        {k: log[k] for k in ("ppid", "t0", "from", "spawns", "forked", "msgs", "exits", "joins", "reaps")}))
         threads.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["threads"].items()})
+        if log["native"]:
+            native.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["native"].items()})
         raw = pair(log)
         by_tid: dict[int, list] = {}
         for s in raw:
@@ -300,7 +306,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path) -> dict:
              "chunks": chunks, "procs": procs, "truncated": sorted(p for p in truncated if p),
              "thread_from": thread_from, "spawns": spawns, "thread_end": thread_end, "reaps": reaps, "handoffs": handoffs,
              "n_lines": n_lines, "n_spans": n_spans, "n_calls": n_calls}
-    (tmp / "keys.json").write_text(json.dumps({"keys": keys, "threads": threads}, ensure_ascii=False),
+    (tmp / "keys.json").write_text(json.dumps({"keys": keys, "threads": threads, "native": native}, ensure_ascii=False),
                                    encoding="utf-8")
     (tmp / "index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
     old = out_dir.with_name(out_dir.name + f".{os.getpid()}.old")

@@ -253,6 +253,7 @@
 | `PHASE` | case 脚本或 hook | 当前阶段。第一行是阶段名；hook 切的有第二行（切换那一刻的 monotonic 纳秒）。case 脚本 `echo serving > $CODESTRATA_OUT/PHASE` 就切过去 |
 | `PHASE-<阶段>.fired` | hook（`--phase`）或 driver（替 case 脚本建） | 这个阶段被切过的标记，内容一行 `hook <pid> <monotonic_ns>` 或 `sh <pid> <monotonic_ns>`。`O_EXCL` 建：每个阶段整个 run 只切一次。收尾和 merge 从它取阶段的精确时刻（`analysis.fired_phases`） |
 | `ev-<pid>-<t0ns>.log` | hook（录时序事件时） | 时序事件日志，收尾时打包进 `events/raw.tar.gz`（不进 parts.tar.gz），见 §6.1 |
+| `cu-<pid>-<t0ns>.log` | GPU 录制端（`trace --gpu`，`trace/cupti_inject.cpp`，CUDA 按 `CUDA_INJECTION64_PATH` 载进每个用 CUDA 的进程） | 文本，一行一条：`H <pid> <t0_ns>`；`K <起 ns> <止 ns> <设备> <流> <关联号>\t<原名>\t<还原后的名字>` 一个 kernel 在 GPU 上跑；`A <起 ns> <止 ns> <系统线程号> <关联号>\t<API 名>` 发起它的启动调用（只记名字里带 Launch 的运行时 / 驱动 API）；`D <数>` CUPTI 缓冲满了丢掉的记录。时刻是 `CLOCK_MONOTONIC` 纳秒（和 hook 同一根轴）。打进 parts.tar.gz |
 | `STOP` | driver | 升级到 SIGTERM 之前建（内容 `stop`）：各进程看到就立刻落一次盘。建过的话也会打进 parts.tar.gz，merge 不读它 |
 
 也认老的命名 `part-<pid>.json`、`part-<pid>@<n>-<阶段>.json`。
@@ -287,6 +288,7 @@
 H <pid> <t0_ns> <ppid>                      文件头（没有时从文件名取 pid 和 t0）
 M all                                       同文件的调用也记了（2026-10-01 起，紧跟在 H 后面；没有这一行的只记了跨文件的）
 N <tid> <线程名>                             线程登记：进程内的小整数 → 线程名
+U <tid> <系统线程号>                          这个线程的系统线程号（threading.get_native_id()）：GPU 录制端记的是系统线程号，按它对回线程（2026-10-02 起）
 K <id> <函数键>                              键登记：进程内的小整数 → rel:首行
 C <t_us> <tid> <span> <调用方 id> <被调方 id>   调用
 R <t_us> <tid> <span>                       返回，或异常展开
@@ -360,7 +362,7 @@ R 3784145 1 2
 | `n_spans` | int | span 行数（折叠后） | 同上 |
 | `n_calls` | int | 调用次数（`Σ rep`） | 同上 |
 
-**keys.json**：`{"keys": [函数键…], "threads": {"<pid>": {"<tid>": 线程名}}}`。`keys` 是整个 run 的全局键表，span 里的
+**keys.json**：`{"keys": [函数键…], "threads": {"<pid>": {"<tid>": 线程名}}, "native": {"<pid>": {"<tid>": 系统线程号}}}`（`native` 来自 U 行，老 run 没有）。`keys` 是整个 run 的全局键表，span 里的
 `a` / `b` 是它的下标；键的登记行丢了的指向 `"?"` 这一项（不会静默指到别的函数上）。同一个 pid 的多个映像，线程号接着编（exec 之后的
 线程号加上之前映像的最大线程号）。例：`{"keys": ["fakesvc/server.py:0", "fakesvc/work.py:0", "fakesvc/server.py:45", …], "threads": {"1633882": {"1": "MainThread"}}}`。
 

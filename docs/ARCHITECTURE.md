@@ -92,6 +92,8 @@ flowchart LR
 | `layout.py` | 637 | 依赖分层 + 横向排序 + 框，出坐标 |
 | `trace/hook.py` | 1007 | 注入被测进程的那段源码（`_SITECUSTOMIZE`）、`make_bootstrap`、和 driver 约定的环境变量名；不 import codestrata 的任何东西 |
 | `trace/driver.py` | 391 | 在外面跑命令（`run`）、三级停进程、扫 `/proc` 找残留（`leftovers`、`stop_leftovers`）；只支持 Linux |
+| `trace/gpu.py` | 73 | `trace --gpu`：找带 CUPTI 的 CUDA 工具链、用 g++ 现编 GPU 录制端（按哈希缓存），给出要注入的 `CUDA_INJECTION64_PATH` |
+| `trace/cupti_inject.cpp` | 152 | GPU 录制端（C++，CUDA 载进被录的进程）：CUPTI activity 记 kernel 和发起它的启动调用，写 `cu-*.log`；时刻用 CLOCK_MONOTONIC |
 | `trace/analysis.py` | 411 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
 | `runs.py` | 1010 | run 目录的建、收尾、迁移、解析、加载（`load`、`file_state`）、管理、复刻命令 |
 | `events.py` | 399 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
@@ -180,6 +182,7 @@ flowchart LR
 .venv/bin/python tests/test_runs.py      # 约 1.5–2 分钟
 .venv/bin/python tests/test_graph.py
 .venv/bin/python tests/test_native_scan.py   # 要 [native]，没装就跳过
+CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_gpu.py   # 没有 GPU 的部分自动跳过
 .venv/bin/python tests/test_app.py
 .venv/bin/python tests/test_package.py   # 要 uv
 .venv/bin/python tests/test_web.py       # 要 node
@@ -193,6 +196,7 @@ flowchart LR
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 只有 trace 的调用和它的说明 / 调用行、
   构造只算一次、老 run 和时间段的调用行、请求路径（`test_request_path`）、分层方向。
 - `test_native_scan.py`：C / C++ / CUDA 的扫描端（命名空间、类、重载、kernel、按名字对上 / 不连、启动、include、`__align__` 和 `#pragma`）和它装进 scan 的样子；没装 tree-sitter 时原生文件照旧挂成 aux。
+- `test_gpu.py`：GPU 录制（找工具链、hook 的系统线程号）；给了 `CODESTRATA_TEST_CUDA_PY`（装了 CUDA 版 torch 的 Python）时真录一个小程序，核对 kernel 和启动调用的关联号、线程号。
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。

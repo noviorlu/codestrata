@@ -184,6 +184,10 @@ if _root and _out:
         _tls.ev = (_gen[0], i)
         th = threading.current_thread()
         _ev.append("N %d %s" % (i, _clean(th.name)))
+        try:                                             # 系统线程号：GPU 录制端（CUPTI）按它记发起 kernel 的线程
+            _ev.append("U %d %d" % (i, threading.get_native_id()))
+        except Exception:
+            pass
         try:
             th._codestrata_tid = (_gen[0], i)            # join 它的那一方（_join）按这个认出是哪条线程
         except Exception:

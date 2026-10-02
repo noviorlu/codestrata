@@ -36,6 +36,7 @@ def test_wheel_ships_web():
     web = HERE.parent / "codestrata" / "web"
     missing = [f.name for f in web.iterdir() if f.is_file() and f"codestrata/web/{f.name}" not in names]
     assert not missing, f"wheel 里没有这些前端文件：{missing}"
+    assert "codestrata/trace/cupti_inject.cpp" in names, "wheel 里没有 GPU 录制端的源码（trace --gpu 现编要它）"
 
 
 def test_web_scripts_all_loaded():
