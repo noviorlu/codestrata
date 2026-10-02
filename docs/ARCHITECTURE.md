@@ -1,6 +1,6 @@
 # 架构
 
-代码怎么组织、数据怎么流，只写现状。行数是 2026-09-30 的 `wc -l`。
+代码怎么组织、数据怎么流，只写现状。行数是 2026-10-02 的 `wc -l`。
 
 ## 核心模型：graph
 
@@ -97,7 +97,7 @@ flowchart LR
 | `events.py` | 399 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
 | `seq.py` | 446 | span → 当前切面上每条边的首末调用时刻（「时间顺序」）、阶段区间、时间段计数（调用行按整个 run 的比例摊）、一段时间里每个进程 / 线程的调用（`phase_calls`，请求路径用）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
 | `path.py` | 311 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`） |
-| `lanes.py` | 595 | 运行时按进程 · 线程分列（P0）：每列这条线程调到的切面节点和边（每列可以有自己的切面，`cuts`）、调到的单元、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
+| `lanes.py` | 595 | 运行时按进程 · 线程分列：每列这条线程调到的切面节点和边（每列可以有自己的切面，`cuts`）、调到的单元、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的），列之间谁起了谁、谁回收了谁、谁把数据交给谁，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`） |
 | `ui/load.py` | 59 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`） |
 | `ui/graphview.py` | 172 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`）；框（`frame_tree`）、节点的符号 / 文件 / 文档（`node_details`）、短名（`short_names`）、切面上撞名的补父目录段（`cut_alias`）分列也用 |
 | `ui/lanesview.py` | 206 | 分列里和切面有关的数据（`/api/lanes` 在 `lanes.build` 上补的）：画出来的每个 id 的节点信息（同模块图的 pkgs / names / labels，加调用次数）、不在共用切面上的节点的符号 / 文件 / 文档、比共用切面细的节点挂在哪个节点的第几个子层（`place`）、每列的框和图上的名字；`?cuts=` 的解析（`parse_cuts`） |
@@ -163,11 +163,13 @@ flowchart LR
 ## 前端结构
 
 `codestrata/web/` 下是原样发布的静态文件，**没有构建步骤**：普通 `<script>`，每个文件是一个 IIFE，往 `window.CS`
-上挂一个对象（`CS.ids`、`CS.ds`、`CS.graph`、`CS.findbar`、`CS.viewer` / `CS.xref`、`CS.panel`、`CS.search`、`CS.timebar`、`CS.hl`、`CS.app`）。
+上挂一个对象（`CS.ids`、`CS.ds`、`CS.graph`、`CS.findbar`、`CS.viewer` / `CS.xref`、`CS.panel`、`CS.search`、`CS.timebar`、`CS.hl`、`CS.app`，
+分列再挂 `CS.lanePack`、`CS.laneRoute`、`CS.laneCut`、`CS.lanes`、`CS.lanePick`、`CS.laneDetail`）。
 节点 id 是路径，页面上显示的名字都来自数据（`names` 短名、`labels` 完整名、布局给的 `label`），不从 id 拆；判断 id 之间的关系只用 `CS.ids`。
 
 - **加载顺序**：`index.html` 末尾依次是 `hl.js`、`ids.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
-  `timebar.js`、`path.js`、`app.js`（`app.js` 最后启动）。`hl.js` 单独一个 `<script>`：它用了正则后行断言，老浏览器解析失败时只丢高亮。
+  `timebar.js`、`path.js`、`lanepack.js`、`laneroute.js`、`lanecut.js`、`lanes.js`、`lanepick.js`、`lanedetail.js`、`app.js`（`app.js` 最后启动）。
+  `hl.js` 单独一个 `<script>`：它用了正则后行断言，老浏览器解析失败时只丢高亮。
   `tests/test_package.py` 核对 web/ 下每个 .js 都有页面加载。
 - **数据源层 `ds.js`**：UI 只调 `CS.ds.*`，它 `fetch('api/…')`；地址都是相对的，经主菜单转发时页面在 `/v/<端口>/` 下。样式在 `app.css`。
 - 主菜单是另一套页面 `home.html` + `home.js` + `home.css`，不走 ds.js，直接 fetch 主菜单的 `/api/*`。
@@ -189,13 +191,14 @@ flowchart LR
 .venv/bin/python tests/payload_parity.py <旧提交> <仓库> [RUN …]   # 只在「行为不变」的重构时跑
 ```
 
-- `test_runs.py`（71 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
+- `test_runs.py`（76 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
   残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 只有 trace 的调用和它的说明 / 调用行、
-  构造只算一次、老 run 和时间段的调用行、请求路径（`test_request_path`）、分层方向。
+  构造只算一次、老 run 和时间段的调用行、请求路径（`test_request_path`）、分层方向、分列（`test_lanes`：起 / 收、谁把数据交给谁、时间段；
+  `test_lanes_percut`：每列各自的切面、`place`、框、名字，在一个有几层目录、两条线程的仓库上；`test_lanes_wrap`：同一层子模块多于 5 个折行）。
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
 - `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
-- `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签）。
+- `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签、分列的排线 `test_lane_route`、分列的摆放 `test_lane_pack`：框装得下、不越界、不压别的框，改一列不动别的列）。
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 - `bench/python_versions.py`：trace 在 3.10 / 3.11 / 3.12 上的开销（usage「实测数字」里那张表），不是回归测试。
@@ -205,9 +208,10 @@ flowchart LR
 - `payload_parity.py`：重构用的对拍工具，不是回归测试：拿某个旧提交和工作区的代码，对同一份索引和 run 各算一遍几个切面上的图、边详情、时间顺序，逐项比。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
-  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面、边上的调用、请求路径各一份）；数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run），
-  切面那份另用一个只 scan 的嵌套小仓库（展开 / 收起、本层文件、搜索定位），边上的调用另用一个录过两次的小仓库
-  （代码里看不出的虚线、构造、去掉调用行当老 run）。
+  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面、分列 `lanes.mjs`、分列里每列各自的切面和框 `lanecut.mjs`、边上的调用、请求路径各一份）；
+  数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run；录了时序事件的叠上去是按进程 · 线程分列，没录的叠上去是一张模块图），
+  切面和分列各自切面那两份另用一个只 scan / 又录了一次的嵌套小仓库（展开 / 收起、本层文件、搜索定位；分列那次录制起了一条线程 `side`、切了阶段 `two`，
+  测一列展开不动别的列），边上的调用另用一个录过两次的小仓库（代码里看不出的虚线、构造、去掉调用行当老 run）。
   要 node 22+ 和 Chrome / Chromium，没有就跳过；约 15 秒。
 
 ## 平台

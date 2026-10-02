@@ -141,7 +141,9 @@
   （「我需要类似于静态图里面的外边框include展开的所有内容」「而非现在直接换名字了」），名字照模块图在那一列的切面上的写法。
   一个节点在哪一行只看它自己：在共用切面的图上就照它的高度，比它细的排在装着它的那个节点那一层下面的子行里（子行按这一段里
   调到的单元自己分一次层），比它粗的取它装着的里面最高的一层——一列展开 / 收起，别的列的层和先后不变，最多被推开几个像素（用户 10-02 认可）。
-  没用「各列切面的并集」排高度：cx 仓库上实测一列展开 cx/ops/ 会让别的列的 cx/sansio/ 换一层、换先后。框的横排照搬模块图（layout.py）
+  没用「各列切面的并集」排高度：cx 仓库上实测一列展开 cx/ops/ 会让别的列的 cx/sansio/ 换一层、换先后。同一层子模块超过 5 个折成几行（同模块图），
+  名次按这一段里调到过的、同一深度的兄弟排（和哪一列画了哪几个无关，不然一列展开会把另一列的子模块挪到别的子行里）；整个 run 上展开一个有 40 个
+  子模块的目录，框从没封顶的 5714 px 变成 744 px。框的横排照搬模块图（layout.py）
   的轨道排法；排线把框当障碍（竖轨在框外、S 形不穿过不相干的框、不压框头的 −）。换阶段 / 时间段保留各列的展开，换 run 清掉、回到共用的切面；
   「恢复默认层级」清掉所有列单独的展开；详情里的展开 / 收起改选中那一份的列，搜索改调到它的第一列；时间顺序还是所有列一起排名次（用户 10-02 定）。
 - 为什么：多进程、多线程的服务（vLLM：主线程、orchestrator、每个 stage 的收请求 / 主循环 / 输出 / 收发 chunk 的线程）合在一张图上
@@ -153,9 +155,9 @@
   `serve.py` 的 `/api/lanes`、`ui/lanesview.py`（`decorate`：节点信息、子层、每列的名字和框）、`web/lanepack.js`（`keys`、`pack`）、
   `web/laneroute.js`（框当障碍、框头的高度）、`web/lanecut.js`（`CS.laneCut`：各列的切面、改了之后接着选）、
   `web/lanes.js`（`draw`、`drawFrames`、`paint`、`touching`、`snapshot`、`pickFrame`、`copies` / `twins`、`fold`、`settled`、`reveal`、`highlight`）、
-  `web/lanedetail.js`（`link`、`node`、`marks`）、
+  `web/lanedetail.js`（`link`、`node`、`marks`、`frame`）、
   `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`、`revealLane`、`goNode` / `goEdge`。
-  测试 `test_lanes`、`tests/web/specs/lanes.mjs`。
+  测试 `test_lanes`、`test_lanes_percut`、`test_lanes_wrap`、`test_lane_pack`、`tests/web/specs/lanes.mjs`、`tests/web/specs/lanecut.mjs`。
 
 ### 叠了 run 默认只看跑到的
 - 决定（2026-10-01 起只管没录时序事件的 run，录了的一律按线程分列）：选了一个 run 打开，默认是「只看跑到的」（单独排版的运行时图）；开关还在，用户自己关过之后换 run 不再替他打开。
