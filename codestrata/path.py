@@ -75,10 +75,13 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, m
             "rows_cut": cut, "scope": pc["scope"], "procs": out}
 
 
-def first_calls(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -> dict[str, int]:
-    """{"F|G": 这一段里第一次调用的时刻}（不分进程、线程）：边详情按先后排函数对用。没有时序事件抛 LookupError"""
+def first_calls(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, lane: str | None = None) -> dict[str, int]:
+    """{"F|G": 这一段里第一次调用的时刻}（不分进程、线程；给了 lane 就只算分列里这一列）：边详情按先后排函数对用。没有时序事件抛 LookupError"""
     out: dict[str, int] = {}
-    for _, _, _, f_, g, first, _, _ in _labeled(idx, _seq.phase_calls(rd, run, phase), hot):
+    keep = _lanes.in_lane(lane) if lane else None
+    for pid, _, tname, f_, g, first, _, _ in _labeled(idx, _seq.phase_calls(rd, run, phase), hot):
+        if keep is not None and not keep(pid, tname):
+            continue
         k = f"{f_}|{g}"
         if k not in out or first < out[k]:
             out[k] = first

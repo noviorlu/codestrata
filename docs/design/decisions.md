@@ -129,8 +129,10 @@
   线程的起和收（用户 10-01：「每一个 thread 应该都有一个地方 launch 一个地方 recycle，类似于 sequence 的 start 和 end 一样高亮」）：
   起线程、回收线程的节点照阶段起点 / 终点的样子描绿 / 红、写「▶ 起 / ■ 收」，列头写起 / 收的时刻；谁回收了谁是第四种连线（红色细虚线）。
   起线程和交接的连线要标出两边的代码（用户 10-01）：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
-  选中节点只算点的那一份（用户 10-01：「选择engine就应该只highlight这个thread的engine」）；节点详情的调用 / 被调用 / 连线也只列这一份的（用户 10-01 定），
-  详情里点名字选中同一列里的那一份。选了阶段 / 时间段（用户 10-01 定）：起 / 收只算这一段里跑过的线程，段外的时刻照写、标「段前 / 段后」；
+  选中节点只算点的那一份；整个详情也只讲这一份：顶上写明是哪个进程 · 哪条线程，次数、调用 / 被调用 / 连线、文件树和 kernel 表都只算这一列，
+  列里的边的详情同理（一列的叠加：`lanes.lane_counts` 从 `seq.phase_calls` 里挑出这一列的线程，和阶段的计数同样的形状，走同一个 `runs.overlay`；
+  span 不记调用行，调用行按这一段所有线程的比例摊，详情里写明）。分列里的次数都来自时序事件：线程入口被调的那一次、递归调用自己的不记，
+  比模块图（hook 的计数）少一些；没去补——分列图上画的次数本来就是时序事件的，详情和图上对得上更要紧。详情里点名字选中同一列里的那一份。选了阶段 / 时间段（用户 10-01 定）：起 / 收只算这一段里跑过的线程，段外的时刻照写、标「段前 / 段后」；
   交接按放 / 发的时刻算进这一段；「这一段里跑过」= 有调用，或者它那一头的交接在这一段里，取的那头没有调用的线程给一列 idle 的（只放交接的节点）。
   每个时刻各自标段前 / 段后（阶段的两个时间片之间的：起算段前、收算段后），整条连线都在段外才画淡。
   连线一头发生在仓库外的代码里时，写那一刻这条线程最底下在跑的仓库函数：线程名写着 target（Thread-N (x)）的就是 x（target 一直在栈底），
@@ -151,13 +153,13 @@
   对应的 thread 数量然后平行和主 thread 放置，这样我们就能够很清晰的看到 thread 和 thread 之间的 collaboration」。
   共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条（外部评审量的），按同一高度对齐就看得出。
 - 放弃的方案（设计说明里比过）：泳道时间线（Perfetto 那种，自己做工作量最大）、按时间合并的一张表（看不出重叠）、顺序图（箭头没有录的话只能按时刻猜）。
-- 在哪：`lanes.py`（`build` 里的 `held` / `root_at` / `named_target` / `target_of` / `out_of`、`thread_group`、`_order`、连线的 `pairs`、`out`）、
-  `serve.py` 的 `/api/lanes`、`ui/lanesview.py`（`decorate`：节点信息、子层、每列的名字和框）、`web/lanepack.js`（`keys`、`pack`）、
+- 在哪：`lanes.py`（`build` 里的 `held` / `root_at` / `named_target` / `target_of` / `out_of`、`thread_group`、`_order`、连线的 `pairs`、`out`；一列的叠加 `lane_counts`）、
+  `ui/load.py` 的 `load_lane`、`serve.py` 的 `/api/lanes`、`/api/lanehot`、`/api/edge?lane=`、`web/panel.js` 的 `asCopy`、`ui/lanesview.py`（`decorate`：节点信息、子层、每列的名字和框）、`web/lanepack.js`（`keys`、`pack`）、
   `web/laneroute.js`（框当障碍、框头的高度）、`web/lanecut.js`（`CS.laneCut`：各列的切面、改了之后接着选）、
   `web/lanes.js`（`draw`、`drawFrames`、`paint`、`touching`、`snapshot`、`pickFrame`、`copies` / `twins`、`fold`、`settled`、`reveal`、`highlight`）、
   `web/lanedetail.js`（`link`、`node`、`marks`、`frame`）、
   `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`、`revealLane`、`goNode` / `goEdge`。
-  测试 `test_lanes`、`test_lanes_percut`、`test_lanes_wrap`、`test_lane_pack`、`tests/web/specs/lanes.mjs`、`tests/web/specs/lanecut.mjs`。
+  测试 `test_lanes`、`test_lanes_percut`、`test_lanes_wrap`、`test_lane_counts`、`test_lane_pack`、`tests/web/specs/lanes.mjs`、`tests/web/specs/lanecut.mjs`。
 
 ### 叠了 run 默认只看跑到的
 - 决定（2026-10-01 起只管没录时序事件的 run，录了的一律按线程分列）：选了一个 run 打开，默认是「只看跑到的」（单独排版的运行时图）；开关还在，用户自己关过之后换 run 不再替他打开。

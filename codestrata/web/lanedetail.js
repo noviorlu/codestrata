@@ -20,14 +20,16 @@ window.CS = window.CS || {};
   }
 
   CS.laneDetail = {
-    /* 点了节点的一份：详情里的「调用 → / ← 被调用」换成这条线程里这一份的（用户 10-01：只列这条线程里这一份的），
-       代码里没写、这次跑了的单列，再列一头是它的连线。点名字选中这一列里的那个节点，点次数看那条边 / 连线。
-       面板的其余部分（文件树、源码）不分线程，照 panel.showPkg */
+    /* 点了节点的一份：整个详情只讲这条线程里的这一份（用户 10-01：只列这条线程里这一份的）——顶上写明是哪一列，
+       次数、文件树、kernel 表换成只算这一列的（panel.asCopy），「调用 → / ← 被调用」换成这一列里的边，
+       代码里没写、这次跑了的单列，再列一头是它的连线。点名字选中这一列里的那个节点，点次数看那条边 / 连线 */
     node: function (id, lane) {
       var lanes = CS.lanes, det = document.getElementById('det'), slot = document.getElementById('nbslot');
       if (!slot || det.dataset.pkg !== id) return;
       det.dataset.lane = lane;                      // 详情里的展开 / 收起只改这一列（panel 的按钮读它）
       var T = lanes.touching(lane, id), L = lanes.L;
+      var me = ((lanes.laneIx[lane] || {}).nodes || {})[id] || {};
+      CS.panel.asCopy(id, lane, { label: lanes.laneLabel(lane), n: me.n || 0, gpu: !!(lanes.laneIx[lane] || {}).gpu });
       function byN(a, b) { return b.n - a.n; }
       function edges(list, label, out) {
         if (!list.length) return '';
@@ -39,9 +41,7 @@ window.CS = window.CS || {};
       }
       var out = T.out.filter(function (E) { return !E.dashed; }), inn = T.inn.filter(function (E) { return !E.dashed; });
       var dout = T.out.filter(function (E) { return E.dashed; }), dinn = T.inn.filter(function (E) { return E.dashed; });
-      var L1 = L.lanes.filter(function (x) { return x.id === lane; })[0];
-      var h = '<p class="hint">下面只算 <b>' + esc(laneName(lane)) + '</b> ' + (L1 && L1.gpu ? '这个 GPU 流' : '这条线程') + '里的这一份</p>'
-        + edges(out, '调用 →', true) + edges(inn, '← 被调用', false)
+      var h = edges(out, '调用 →', true) + edges(inn, '← 被调用', false)
         + edges(dout, '代码里没写、这次跑了 →', true) + edges(dinn, '← 代码里没写、这次跑了', false);
       if (T.links.length) h += '<div class="kv"><span>连线</span>' + T.links.sort(byN).map(function (E) {
         var k = E.k, from = k.from.lane === lane && k.from.node === id, o = from ? k.to : k.from;

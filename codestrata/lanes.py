@@ -31,6 +31,7 @@ from . import seq as _seq
 
 _TARGET = re.compile(r"^Thread-\d+ \((.+)\)$")
 _NUMBERED = re.compile(r"^(.+?)[-_]\d+$")
+_GPU_LANE = re.compile(r"^GPU (-?\d+) · 流 (-?\d+)$")
 
 
 def thread_group(name: str) -> str:
@@ -41,6 +42,59 @@ def thread_group(name: str) -> str:
         return m.group(1)
     m = _NUMBERED.match(name)
     return m.group(1) if m else name
+
+
+def lane_counts(rd: Path, run: dict, phase: str | None, lane: str) -> dict:
+    """一列（build 里的列 id：`pid:线程名`，或 GPU 的 `pid:GPU 设备 · 流 流号`）在这一段里的调用，和 counts.json.gz 同样形状的
+    {funcs, func_edges, gpu_us?}（键是录制时的 文件:首行），交给 align.to_package_graph 就是只算这一列的叠加——分列里节点的详情、
+    列里的边的详情用它（用户 10-01：分列里节点详情只列这条线程里的这一份）。线程的列不含 GPU 的行（kernel 画在 GPU 的列里）；
+    GPU 的列只有那个设备 · 流上的 kernel，func_edges 是发起它的调用方 → kernel。没有时序事件、列 id 不对抛 LookupError"""
+    pid_s, _, name = lane.partition(":")
+    try:
+        pid = int(pid_s)
+    except ValueError:
+        raise LookupError(f"列写成 pid:线程名：{lane}") from None
+    pc = _seq.phase_calls(rd, run, phase)
+    keys = pc["keys"]
+    funcs: dict[str, int] = {}
+    edges: dict[str, int] = {}
+    gpu_us: dict[str, int] = {}
+
+    def add(a: int, b: int, n: int) -> str | None:
+        if not (0 <= a < len(keys) and 0 <= b < len(keys)):
+            return None
+        ka, kb = keys[a], keys[b]
+        funcs[kb] = funcs.get(kb, 0) + n
+        edges[f"{ka}|{kb}"] = edges.get(f"{ka}|{kb}", 0) + n
+        return kb
+
+    m = _GPU_LANE.match(name)
+    if m:
+        dev, stream = int(m.group(1)), int(m.group(2))
+        for (p, _, a, b, d, s), (_, _, n, us) in pc["gpu"].items():
+            if p == pid and d == dev and s == stream:
+                kb = add(a, b, n)
+                if kb is not None:
+                    gpu_us[kb] = gpu_us.get(kb, 0) + us
+    else:
+        tn = pc["threads"].get(str(pid)) or {}
+        on_gpu = {k[:4] for k in pc["gpu"]}
+        for k, (_, _, n) in pc["calls"].items():
+            p, tid, a, b = k
+            if p == pid and k not in on_gpu and thread_group(tn.get(str(tid)) or f"线程 {tid}") == name:
+                add(a, b, n)
+    out = {"funcs": funcs, "func_edges": edges}
+    if gpu_us:
+        out["gpu_us"] = gpu_us
+    return out
+
+
+def in_lane(lane: str):
+    """列 id → 判断一条线程在不在这一列里的函数 (pid, 线程名) → bool（GPU 的列没有线程，总是 False）"""
+    pid_s, _, name = lane.partition(":")
+    if _GPU_LANE.match(name):
+        return lambda pid, tname: False
+    return lambda pid, tname: str(pid) == pid_s and thread_group(tname) == name
 
 
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None,

@@ -2623,6 +2623,64 @@ _CX = {"cx/__init__.py": "",
                       "if __name__ == '__main__':\n    main()\n")}
 
 
+def test_lane_counts():
+    """分列里一列的叠加（lanes.lane_counts → ui.load.load_lane；/api/lanehot、/api/edge?lane=）：只算这一列里的调用——
+    所有列加起来正好是时序事件里的全部调用；一列里节点的次数和 lanes.build 画的一样；列里的边的详情只有这一列里的调用"""
+    from urllib.parse import quote
+    from codestrata import lanes, seq
+    repo = fresh()
+    cs("scan", repo)
+    cs("trace", repo, "--case", "truth", "--", PY, "-m", "fakesvc.truth",
+       env={"PYTHONPATH": str(HERE / "trace_cases" / "fakezmq")})
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "truth")
+    run, rd, phase = runs.resolve(repo, "truth")
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]))
+    T, C = "fakesvc/truth.py", "fakesvc/callee.py"
+    # 所有列（按时序事件里出现过的线程现算列 id，不只 build 画了的）加起来 == 全部调用
+    pc = seq.phase_calls(rd, run, None)
+    keys, tn = pc["keys"], pc["threads"]
+    ids = {f"{p}:{lanes.thread_group((tn.get(str(p)) or {}).get(str(t)) or f'线程 {t}')}" for p, t, _, _ in pc["calls"]}
+    got: dict = {}
+    want: dict = {}
+    for lid in ids:
+        for k, n in lanes.lane_counts(rd, run, None, lid)["funcs"].items():
+            got[k] = got.get(k, 0) + n
+    for (_, _, _, b), (_, _, n) in pc["calls"].items():
+        want[keys[b]] = want.get(keys[b], 0) + n
+    assert want and got == want, (got, want)
+    # 一列的叠加：节点上的次数和 build 画的一样（目录全部展开：节点就是文件）；只跑仓库外代码的列什么都没有
+    for x in L["lanes"]:
+        h = ui_load.load_lane(repo, idx, "truth", x["id"])
+        assert h["lane"] == x["id"] and h["run"] == run["id"], h
+        drawn = {nd: v["n"] for nd, v in x["nodes"].items() if v["n"]}
+        assert {u: n for u, n in h["packages"].items() if n} == drawn, (x["id"], h["packages"], drawn)
+    assert not ui_load.load_lane(repo, idx, "truth", next(x for x in L["lanes"] if x["thread"] == "stdlib-put")["id"])["packages"]
+    assert not ui_load.load_lane(repo, idx, "truth", "12345:nosuch")["packages"]   # 没有这一列：什么都没有
+    try:
+        ui_load.load_lane(repo, idx, "truth", "nolane")
+        raise AssertionError("列 id 写错了应该报错")
+    except LookupError as e:
+        assert "pid:线程名" in str(e), e
+    w = next(x for x in L["lanes"] if x["thread"] == "worker")
+    e = next(e for e in w["edges"] if e["a"] == T and e["b"] == C)
+    with served(repo) as get:
+        st, h = get(f"/api/lanehot?run=truth&lane={quote(w['id'])}")
+        assert st == 200 and h["lane"] == w["id"] and h["packages"] == {u: v["n"] for u, v in w["nodes"].items() if v["n"]}, (st, h)
+        assert set(h) == {"lane", "run", "packages", "symbols", "files", "kernels", "lines_approx"}, h.keys()
+        # 列里的边：只算这一列里的调用，和图上那条边的次数一样；不给 lane 是所有线程的（更多）
+        st, E = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=truth&lane={quote(w['id'])}")
+        assert st == 200 and E["lane"] == w["id"] and E["counts"]["calls"] == e["n"] > 0, (st, E.get("counts"), e)
+        st, A = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=truth")
+        assert st == 200 and "lane" not in A and A["counts"]["calls"] > E["counts"]["calls"], (A["counts"], E["counts"])
+        st, err = get("/api/lanehot?run=truth&lane=nolane")
+        assert st == 404 and "pid:线程名" in err["error"], (st, err)
+        st, err = get("/api/lanehot?run=truth")
+        assert st == 400, (st, err)
+        st, err = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=nosuch&lane={quote(w['id'])}")
+        assert st == 404, (st, err)
+
+
 def test_lanes_wrap():
     """一列里展开一个有很多子模块的目录：同一层的子模块每 5 个占一个子行（同模块图折行），不排成一长行；
     名次只看这一段里调到过的、同一深度的兄弟，按 id 排，和这一列画了哪几个无关"""

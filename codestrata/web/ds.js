@@ -48,9 +48,14 @@ window.CS = window.CS || {};
     // 叠着 run 时带上它：代码窗口里标出「代码里看不出、这次运行调到了谁」的那几行
     file: function (f) { return j('api/file?f=' + encodeURIComponent(f) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     outline: function (f) { return j('api/outline?f=' + encodeURIComponent(f)); },
-    edge: function (a, b) {
+    /* lane：分列里一列的边（只算这一列里的调用） */
+    edge: function (a, b, lane) {
       return j('api/edge?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b)
-               + (this.run ? '&run=' + encodeURIComponent(this.run) : ''));
+               + (this.run ? '&run=' + encodeURIComponent(this.run) : '') + (lane ? '&lane=' + encodeURIComponent(lane) : ''));
+    },
+    /* 分列里一列的叠加（只算这一列里的调用）：节点详情里这一份的次数、文件树、kernel 表 */
+    laneHot: function (lane) {
+      return j('api/lanehot?run=' + encodeURIComponent(this.run) + '&lane=' + encodeURIComponent(lane));
     },
     refs: function (t) { return j('api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     searchIndex: function () { return j('api/search-index'); },

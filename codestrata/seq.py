@@ -353,10 +353,12 @@ def _pairs_scan(spans: Path, ix: dict, iv: dict, lo: int, hi: int) -> dict:
 
 
 def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
-    """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的调用（请求路径用，见 path.py）：
+    """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的调用（请求路径、分列里一列的叠加用）：
     {"window": [起, 止], "span_us": 各段加起来多长, "keys": [键], "threads": {pid: {tid: 名字}}, "truncated": [pid],
-     "scope": "all" | "cross"（老 run 的时序事件只记了跨文件的调用）, "calls": {(pid, tid, a, b): [first, last, n]}}
+     "scope": "all" | "cross"（老 run 的时序事件只记了跨文件的调用）, "calls": {(pid, tid, a, b): [first, last, n]},
+     "gpu": {(pid, tid, a, b, 设备, 流): [first, last, n, GPU 上跑了多久 µs]}}
     ——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。折叠行按 calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点（同 _pairs）。
+    GPU 的行（trace --gpu 的 kernel，tid 是发起它的线程、a 是调用方、b 是 kernel）在 calls 里照样有（请求路径列它），gpu 里再按设备 · 流记一份。
     没有 span、没有这个阶段的时刻抛 LookupError，span 读不出来抛 OSError / ValueError"""
     spans = rd / "events" / "spans"
     ix = span_index(rd)
@@ -367,6 +369,7 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
     if hit is not None:
         return hit
     calls: dict = {}
+    gpu: dict = {}
     for c in ix["chunks"]:
         if all(c["t0_us"] > hi or c["t1_us"] < lo for lo, hi in segs):
             continue
@@ -383,9 +386,12 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
                     calls[k] = [f, last, n]
                 else:
                     e[0], e[1], e[2] = min(e[0], f), max(e[1], last), e[2] + n
+                if len(r) > 9:                   # GPU 的行（kernel）：时长是它在 GPU 上跑完为止，减去晚了的那段是 GPU 上跑的时间
+                    g = gpu.setdefault(k + tuple(r[9][:2]), [f, last, 0, 0])
+                    g[0], g[1], g[2], g[3] = min(g[0], f), max(g[1], last), g[2] + n, g[3] + max(0, r[1] - r[9][2])
     out = {"window": [segs[0][0], segs[-1][1]], "span_us": sum(b - a for a, b in segs), "keys": ix["keys"],
            "threads": ix["threads"], "truncated": ix.get("truncated") or [], "scope": ix.get("scope") or "cross",
-           "calls": calls}
+           "calls": calls, "gpu": gpu}
     _put(_CALLS, key, out, cap=8)
     return out
 

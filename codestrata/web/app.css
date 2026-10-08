@@ -641,6 +641,20 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 /* 按进程 · 线程分列（lanes.js）：分列时模块图那几个开关不管用，先藏起来 */
 /* 分列里没有「代码里写了、没跑到」的边，「只看跑到的」那张合起来的图也不用 */
 body.lanesmode [data-t="onlyhot"], body.lanesmode #edgechips [data-t="scan"]{display:none!important}
+/* 帮助、详情栏的说明：分列和模块图各一份 */
+.lanesonly{display:none}
+body.lanesmode p.lanesonly, body.lanesmode div.lanesonly, body.lanesmode ul.lanesonly, body.lanesmode h3.lanesonly{display:block}
+body.lanesmode li.lanesonly{display:list-item}
+body.lanesmode span.lanesonly{display:inline}
+body.lanesmode .lnlegend.lanesonly{display:inline-flex}
+body.lanesmode .graphonly{display:none}
+/* 分列里详情讲的是一列里的一份（节点、列里的边）：顶上写明是哪一列 */
+.copyhint{margin:2px 0 8px;padding:5px 9px;border-left:3px solid var(--cool);background:var(--cool-bg);border-radius:4px;
+  font-size:13px;color:var(--ink)}
+/* 工具栏上连线的图例（分列时） */
+.lnlegend{gap:10px;align-items:center;font-size:12px;color:var(--muted)}
+.lnlegend svg{vertical-align:middle;margin-right:3px}
+.lnlegend .k{white-space:nowrap}
 .ln-proc rect{fill:var(--sunk);stroke:var(--line)}
 .ln-pname{font:600 11px/1 system-ui,sans-serif;fill:var(--ink);cursor:pointer}
 .ln-fold{font:700 12px/1 system-ui,sans-serif;fill:var(--muted);cursor:pointer}

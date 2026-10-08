@@ -618,9 +618,17 @@ window.CS = window.CS || {};
     /* 选中一条边 / 连线、开详情（点了线，或者详情里点了它那一行） */
     open: function (E, quiet) {                       // quiet：改切面、收起进程之后接着选，不去打开用户关上的详情栏
       this.select(E.key);
-      if (E.kind === 'edge') { if (CS.graph.onPickEdge) CS.graph.onPickEdge(E.e.a, E.e.b); }
-      else CS.laneDetail.link(E.k);
+      if (E.kind === 'edge') {                         // 列里的边：详情只算这一列里的调用
+        CS.panel.showEdge(E.e.a, E.e.b, E.lane.id, this.laneLabel(E.lane.id));
+        CS.app.drawerTitle(null, E.e.a, E.e.b);
+      } else CS.laneDetail.link(E.k);
       if (!quiet) CS.app.drawer(true);
+    },
+
+    /* 列的全名：「进程 · 线程」，同名合了几条的写 ×N（详情里说「只算这一列」时用） */
+    laneLabel: function (id) {
+      var x = ((this.L && this.L.lanes) || []).filter(function (l) { return l.id === id; })[0];
+      return x ? x.proc + ' · ' + x.thread + (x.n_threads > 1 ? ' ×' + x.n_threads : '') : laneName(id);
     },
 
     /* 按开关上色、藏起来、排时间顺序（画完、开关变了时调） */

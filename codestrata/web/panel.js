@@ -165,15 +165,55 @@ window.CS = window.CS || {};
 
     reset: function () {
       this._detTok++;
+      this._copy = null;
       delete det.dataset.pkg; delete det.dataset.lane;
-      det.innerHTML = '<p class="hint"><b>怎么读：</b>每条泳道是一层，箭头尽量从上指向下：'
+      det.innerHTML = '<p class="hint graphonly"><b>怎么读：</b>每条泳道是一层，箭头尽量从上指向下：'
         + '越上面越靠入口、越下面越是被调用的叶子；节点大小编码文件数。图上的边只有调用。'
-        + '点节点看它调用谁、里面有什么符号；点箭头看这条边上是哪些函数在调用。</p>';
+        + '点节点看它调用谁、里面有什么符号；点箭头看这条边上是哪些函数在调用。</p>'
+        + '<p class="hint lanesonly"><b>怎么读：</b>一列是一个进程里的一类线程（同名的合成一列，×N 是几条），'
+        + '列里是这条线程调到的模块，同一个模块在几列里各有一份；节点上的次数只算这一列。列之间的线是线程、进程之间的关系：'
+        + '起线程 / 子进程、交接数据（队列、ZMQ）、回收、启动 GPU kernel（图例在工具栏）。'
+        + '点节点、列里的边，详情只讲这一列里的这一份；点列之间的线看两头是哪一行代码。</p>';
+    },
+
+    /* 节点详情里用的叠加：分列里选中的是一列里的一份时是只算这一列的（asCopy 取回来的），否则是整个阶段的 */
+    _hot: function () { return (this._copy && this._copy.hot) || D.hot || null; },
+
+    /* 分列里选中的是一列里的一份（lanedetail.node 在 showPkg 之后马上调）：顶上写明是哪一列；次数、文件树、kernel 表
+       都换成只算这一列的（/api/lanehot，取回来之前文件树先写「读取中」，不先画整个阶段的）。
+       info：{label: 「进程 · 线程」, n: 这一份被调的次数, gpu: 这一列是 GPU 流} */
+    asCopy: function (id, lane, info) {
+      var tok = this._detTok, self = this, v = (D.pkgs || {})[id] || {};
+      this._copy = { pkg: id, lane: lane, hot: null };
+      var h2 = det.querySelector('h2'), rt = det.querySelector('.rtc');
+      if (h2 && !det.querySelector('.copyhint')) {
+        h2.insertAdjacentHTML('afterend', '<p class="copyhint">只算 <b>' + esc(info.label) + '</b> '
+          + (info.gpu ? '这个 GPU 流里的这一份：下面的次数、kernel 表都只数这个流（别的流、别的进程各算各的）'
+                      : '这条线程里的这一份：下面的次数、调用 / 被调用、文件树都只数这一列（同一个模块在别的列里各有一份）') + '</p>');
+      }
+      if (rt) rt.textContent = '　这一份 ' + (info.n ? '被调 ' + info.n + ' 次' : '这一段里没被调（只往外调或只是交接的地方）');
+      var tree = document.getElementById('tree');
+      if (tree) tree.innerHTML = '<p class="hint">读取这一份的次数…</p>';
+      // 文件树按这一份的次数重画好了：搜索要等它画好再展开到某个函数（focusIn）
+      this._copy.ready = CS.ds.laneHot(lane).then(function (h) {
+        if (tok !== self._detTok || !self._copy || self._copy.lane !== lane) return;
+        self._copy.hot = h;
+        self._mountTree(id);
+        var ks = document.getElementById('kslot');
+        if (ks) ks.innerHTML = self._kernels(id, v);
+      }).catch(function (e) {
+        if (tok !== self._detTok) return;
+        self._copy = null;                          // 退回整个阶段的，写明
+        self._mountTree(id);
+        var t = document.getElementById('tree');
+        if (t) t.insertAdjacentHTML('afterbegin', '<p class="hint">这一份的次数读不出来（' + esc(e.message) + '），下面是整个阶段所有线程的</p>');
+      });
     },
 
     /* ---- 左：机器事实 ---- */
     showPkg: function (id, symKey) {
       this._detTok++;
+      this._copy = null;                          // 分列里讲一列里的一份：lanedetail.node 接着调 asCopy
       var v = (D.pkgs || {})[id] || {}, x = CS.graph.nb(id);
       // 代码里没写、这次运行才出现的调用（按名字加载、注册表、回调、self.model 这类）
       var dyn = { i: [], o: [] };
@@ -200,14 +240,14 @@ window.CS = window.CS || {};
           + '<div class="sub">trace --gpu 录到的、定义不在仓库里的 kernel（PyTorch、cuBLAS、Triton 生成的……）。'
           + '调用方是发起它时栈上最近的仓库函数</div>' + this._cutRow(id, v)
           + '<div id="nbslot">' + pills(x.i, '← 被调用', false) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
-          + this._kernels(id, v);
+          + '<div id="kslot">' + this._kernels(id, v) + '</div>';
         this._wireDet(id);
         return;
       }
       det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
         + '<div class="sub" title="按 import 算：(出 − 入) / (出 + 入)，+1 靠入口、−1 是叶子">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
         + '　import 出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
-        + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</div>'
+        + '<span class="rtc">' + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</span></div>'
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
@@ -216,7 +256,7 @@ window.CS = window.CS || {};
         // 分列里这一块换成这条线程里这一份的（CS.laneDetail.node）
         + '<div id="nbslot">' + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
         + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
-        + this._docs(id) + this._kernels(id, v)
+        + this._docs(id) + '<div id="kslot">' + this._kernels(id, v) + '</div>'
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
       this._wireDet(id);
@@ -247,7 +287,7 @@ window.CS = window.CS || {};
     /* 这个节点上的 GPU kernel（trace --gpu）：叠着的 run（阶段）里每种跑了几次、在 GPU 上一共跑了多久，按时间排。
        虚拟节点是 ?gpu#… 的那些，别的节点是定义在它的文件里的 */
     _kernels: function (id, v) {
-      var K = (D.hot && D.hot.kernels) || {}, files = {};
+      var K = (this._hot() || {}).kernels || {}, files = {};
       ((D.pkgFiles || {})[id] || []).forEach(function (f) { files[f] = 1; });
       var ks = Object.keys(K).filter(function (k) {
         var f = k.slice(0, k.indexOf('#'));
@@ -294,7 +334,7 @@ window.CS = window.CS || {};
       syms.forEach(function (x) { (byFile[x.f] = byFile[x.f] || []).push(x); });
       Object.keys(byFile).forEach(function (f) { byFile[f].sort(function (a, b) { return a.l - b.l; }); });
       // hot 视图里默认只看调用到的文件和函数：点进一个模块，先看到的就是这次真正跑了哪些函数
-      var hotF = (D.hot && D.hot.files) || {};
+      var hotF = (this._hot() || {}).files || {};
       var ran = files.some(function (f) { return hotF[f]; });
       var T = { id: id, files: files, byFile: byFile, pkg: id, onlyHot: ran };
       this._tree = T;
@@ -321,7 +361,7 @@ window.CS = window.CS || {};
     _renderTree: function (q) {
       var T = this._tree, box = document.getElementById('tree');
       if (!T || !box) return;
-      var hotF = (D.hot && D.hot.files) || {}, hotS = (D.hot && D.hot.symbols) || {}, loc = D.fileLoc || {};
+      var H = this._hot() || {}, hotF = H.files || {}, hotS = H.symbols || {}, loc = D.fileLoc || {};
       var match = function (f) {
         if (!q) return true;
         if (f.toLowerCase().indexOf(q) !== -1) return true;
@@ -420,9 +460,14 @@ window.CS = window.CS || {};
     /* 从搜索栏过来：在当前模块的文件树里展开到这个文件（给了 key 就再展开到这个类 / 函数，
        在它下面放源码片段），标出来。返回标出来的那一行，调用方决定要不要滚过去 */
     focusIn: function (rel, key, line) {
+      // 分列里讲的是一列里的一份、这一份的次数还在取：文件树取回来会重画，等它画好再展开
+      if (this._copy && !this._copy.hot && this._copy.ready) {
+        var me = this, c = this._copy;
+        return c.ready.then(function () { return me._copy === c || !me._copy ? me.focusIn(rel, key, line) : null; });
+      }
       var self = this, box = document.getElementById('tree'), n = null, T0 = this._tree;
       // 要去的文件 / 函数这次没跑到：「只看调用到的」会把它藏起来，先关掉
-      var hot0 = D.hot || {};
+      var hot0 = this._hot() || {};
       if (T0 && T0.onlyHot && box && (!(hot0.files || {})[rel] || (key && !(hot0.symbols || {})[key]))) {
         T0.onlyHot = false;
         var th = box.querySelector('.tree-hot'); if (th) th.setAttribute('aria-pressed', 'false');
@@ -466,7 +511,7 @@ window.CS = window.CS || {};
     _fillFile: function (n, q) {
       var T = this._tree, f = n.dataset.file, tc = n.querySelector('.tc'), self = this;
       var depth = +(n.querySelector('.tr').style.getPropertyValue('--d') || 0) + 1;
-      var hotS = (D.hot && D.hot.symbols) || {};
+      var hotS = (this._hot() || {}).symbols || {};
       n.dataset.filled = '1';
       var top = T.byFile[f] || [];
       var draw = function (all) {
@@ -547,7 +592,7 @@ window.CS = window.CS || {};
       CS.ds.source(key).then(function (s) {
         var L = s.lines || [], g = [];
         for (var i = 0; i < L.length; i++) g.push(s.line + i);
-        var hot = CS.graph.hot, h = (hot && hot.symbols[key]) || 0;
+        var hot = self._hot(), h = (hot && hot.symbols[key]) || 0;
         slot.innerHTML = '<div class="srcbox"><div class="srchead">'
           + '<span class="p"><span class="langtag lang-' + esc(s.lang) + '">' + esc(s.lang_label || '') + '</span> '
           + '<b>' + esc(s.name) + '</b>　' + esc(s.file + ':' + s.line)
@@ -614,20 +659,23 @@ window.CS = window.CS || {};
       });
     },
 
-    /* ---- 左：一条边承载了什么 ---- */
-    showEdge: function (a, b) {
+    /* ---- 左：一条边承载了什么 ----
+       lane：分列里一列里的边（只算这一列里的调用），label 是那一列「进程 · 线程」 */
+    showEdge: function (a, b, lane, label) {
+      this._copy = null;
       delete det.dataset.pkg; delete det.dataset.lane;
       det.innerHTML = '<h2>' + esc(short(a)) + '<span class="arr">→</span>' + esc(short(b)) + '</h2>'
         + '<div class="sub">' + esc(full(a)) + ' → ' + esc(full(b)) + '</div><p class="hint">读取中…</p>';
       var self = this, tok = ++this._detTok;
-      CS.ds.edge(a, b).then(function (E) {
+      CS.ds.edge(a, b, lane).then(function (E) {
         if (tok !== self._detTok) return;          // 这期间面板已经换了内容
+        E.laneLabel = label;
         self._renderEdge(E);
       }).catch(function (e) { if (tok === self._detTok) det.querySelector('.hint').textContent = '读取失败：' + e.message; });
     },
 
     _renderEdge: function (E) {
-      var c = E.counts, rt = E.has_runtime, self = this;
+      var c = E.counts, rt = E.has_runtime, self = this, inLane = !!E.lane;
       // 录了时序事件的 run：函数对可以按第一次调用的先后排（默认按次数）
       var byTime = E.has_first && this._edgeSort === 't';
       var shown = !byTime ? E : Object.assign({}, E, { calls: E.calls.slice().sort(function (p, q) {
@@ -645,14 +693,19 @@ window.CS = window.CS || {};
       function more(shown, all) {
         return all > shown ? '<p class="hint more">只列了前 ' + shown + ' 对，还有 ' + (all - shown) + ' 对（次数 / 调用处更少）</p>' : '';
       }
+      if (inLane)
+        h += '<p class="copyhint">只算 <b>' + esc(E.laneLabel || E.lane) + '</b> 这一列里的调用：同样两个模块之间的调用在别的列里各算各的</p>';
       if (E.lines_approx)
-        h += '<p class="hint">时间段的次数来自时序事件，不带调用行：每一行的次数是按整个 run 记的调用行比例摊的</p>';
-      h += rt ? (callCards(shown) || '<p class="hint">这次运行没有跨这条边的调用</p>') + more(E.calls.length, c.pairs)
+        h += '<p class="hint">' + (inLane ? '这一列的次数来自时序事件，不带调用行：每一行的次数是按这一段所有线程记的调用行比例摊的'
+                                         : '时间段的次数来自时序事件，不带调用行：每一行的次数是按整个 run 记的调用行比例摊的') + '</p>';
+      h += rt ? (callCards(shown) || '<p class="hint">' + (inLane ? '这一列里' : '这次运行') + '没有跨这条边的调用</p>') + more(E.calls.length, c.pairs)
               : scanCards(E.scan_only) + more(E.scan_only.length, c.scan_only);
       if (rt && E.scan_only.length)
-        h += '<details class="efold"><summary>代码里写了，这次没录到<span class="n">' + c.scan_only + '</span></summary>'
+        h += '<details class="efold"><summary>' + (inLane ? '代码里写了，这一列里没跑（别的列里可能跑了）' : '代码里写了，这次没录到')
+          + '<span class="n">' + c.scan_only + '</span></summary>'
           + scanCards(E.scan_only) + more(E.scan_only.length, c.scan_only) + '</details>';
       det.innerHTML = h;
+      if (inLane) det.dataset.lane = E.lane;
       this._wireDet(E.a);
       [].forEach.call(det.querySelectorAll('[data-sort]'), function (b) {
         b.onclick = function () { self._edgeSort = b.dataset.sort; self._renderEdge(E); };

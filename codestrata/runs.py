@@ -738,6 +738,24 @@ def procs_grouped(procs: list[dict]) -> list[dict]:
     return sorted(by.values(), key=lambda d: (-d["funcs"], -d["n"]))
 
 
+def read_detail(rd: Path) -> dict:
+    """run 的 detail.json；读不出来（老 run、文件坏了）是 {}"""
+    try:
+        return read_json(rd / "detail.json")
+    except (OSError, ValueError):
+        return {}
+
+
+def overlay(idx: dict, counts: dict, names: dict, fs: dict) -> tuple[dict, list]:
+    """一份计数（某个阶段的、时间段的、分列里一列的）放到当前的 index 上：(hot, 改过的文件里对不上的键)。
+    录制之后改过的文件（fs，见 file_state）按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上；
+    hot["keymap"] 是录制时的键 → 现在的（读 span 时用；不发给页面）"""
+    counts, unmatched = _align.remap(counts, names, fs, idx)
+    hot = _align.to_package_graph(counts, idx)
+    hot["keymap"] = _align.key_mapper(names, fs, idx)
+    return hot, unmatched
+
+
 def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | None]:
     """把一个 run（的某个阶段）映射到当前的 index 上：(hot, meta)。hot 和老的 trace 一样由
     align.to_package_graph 现算；meta 保留老的全部键（前端认它们），再加上 run 的信息。"""
@@ -757,15 +775,9 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
             raise SystemExit(str(e)) from None
         except (OSError, ValueError) as e:
             raise SystemExit(_seq.unreadable(e, run["id"])) from None
-    try:
-        detail = read_json(rd / "detail.json")
-    except (OSError, ValueError):
-        detail = {}
+    detail = read_detail(rd)
     fs = file_state(repo, idx, detail)
-    # 录制之后改过的文件：按 qualname 把键挪到函数现在的行号上，叠加才不会落到别的函数上
-    counts, unmatched = _align.remap(counts, names, fs, idx)
-    hot = _align.to_package_graph(counts, idx)
-    hot["keymap"] = _align.key_mapper(names, fs, idx)    # 录制时的键 → 现在的（「时间顺序」读 span 时用；不发给页面）
+    hot, unmatched = overlay(idx, counts, names, fs)
     hot["run"] = run["id"] + (f"@{phase}" if phase else "")     # 写明这份次数来自哪个 run（和阶段 / 时间段）
     hot["lines_approx"] = bool(win) and "func_lines" in counts     # 时间段：每行的次数是摊出来的
     script = None

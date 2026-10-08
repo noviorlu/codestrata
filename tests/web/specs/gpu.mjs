@@ -24,16 +24,17 @@ export default async function (t) {
 
   // 点虚拟节点：详情里没有文件 / 符号那些，只有 kernel 表
   await page.ev(`CS.lanes.nodes.filter(n => n.id === '?gpu')[0].g.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
-  await page.wait(`document.getElementById('det').dataset.pkg === '?gpu' && !!document.querySelector('#det .krow')`, 5000);
+  // kernel 表先按整个阶段画，这一份（这个流）的次数取回来再换
+  await page.wait(`document.getElementById('det').dataset.pkg === '?gpu' && CS.panel._copy && CS.panel._copy.hot && !!document.querySelector('#det .krow')`, 5000);
   const d = JSON.parse(await page.ev(`JSON.stringify({
     title: document.getElementById('dsub').textContent,
     rows: [...document.querySelectorAll('#det .krow')].map(r => r.innerText.replace(/\\s+/g, ' ')),
-    hint: (document.querySelector('#det .hint') || {}).textContent || '',
+    hint: (document.querySelector('#det .copyhint') || {}).textContent || '',
     tree: !!document.getElementById('tree')
   })`));
   ok(d.title === '仓库外的 GPU kernel（trace --gpu）', '抽屉标题下写它是什么，不写 0 个文件：' + d.title);
-  ok(d.rows.length === (nat ? 1 : 2) && d.rows.some(r => /^at::native::foo ×3 150 µs$/.test(r)), 'kernel 表：名字、次数、GPU 时间（3 × 50 µs）：' + d.rows);
-  ok(d.hint.indexOf('这个 GPU 流') !== -1, '分列里的提示说是 GPU 流，不说线程：' + d.hint);
+  ok(d.rows.length === (nat ? 1 : 2) && d.rows.some(r => /^at::native::foo ×3 150 µs$/.test(r)), 'kernel 表（只算这个流）：名字、次数、GPU 时间（3 × 50 µs）：' + d.rows);
+  ok(d.hint.indexOf('这个 GPU 流') !== -1 && d.hint.indexOf('GPU 0 · 流 7') !== -1, '分列里的提示说是哪个 GPU 流，不说线程：' + d.hint);
   ok(!d.tree, '没有文件树');
 
   // 仓库里的 kernel：放 .cu 的节点的详情里也列它（要 [native]）
