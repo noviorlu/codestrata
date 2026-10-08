@@ -9,7 +9,7 @@ codestrata 先静态扫描出一张模块之间的调用图（按 import 关系�
 <sub>vllm-omni 一次 MiniCPM 请求的 serving 阶段（开了「时间顺序」）：每个进程里每类线程一列，列里是这条线程调到的模块；列之间的线是交接数据（janus 队列、ZMQ、queue）、谁起了谁、谁回收了谁，序号是第一次发生的先后（蓝早、红晚）。</sub>
 
 > [!IMPORTANT]
-> 早期版本（0.1.0）。**Python 仓库**是全功能的；C / C++ / CUDA 文件装了 `[native]` 也能进静态图（函数、kernel、按名字近似地对上的调用），`trace --gpu` 把 GPU kernel 挂到发起它的 Python 调用上（要带 CUPTI 的 CUDA 工具链，只在 CUDA 13 上验收过）。
+> 早期版本（0.1.0）。**Python 仓库**是全功能的；C / C++ / CUDA 文件装了 `[native]` 也能进静态图（函数、kernel、按名字近似地对上的调用），`trace --gpu` 把 GPU kernel 挂到发起它的 Python 调用上（要带 CUPTI 的 CUDA 12+ 工具链，真录只在 CUDA 13 上验收过）。
 > **录制只支持 Linux**（别的系统上 `trace` 会直接说明并退出）；扫描、看图、查看别处录好的 run 在其他系统上也能用，但只在 Linux 上测过。
 > 要 Python ≥ 3.10，没有必需的第三方依赖；时序事件（请求路径、时间轴上的任意一段、「时间顺序」要用它，`trace` 默认录）要求**被录的程序**跑在 Python 3.12+ 上。录大框架也建议 3.12+：3.10 / 3.11 能录，但仓库外的代码也会变慢，可能慢一个数量级（见[已知限制](#已知限制)）。
 > 所有服务只监听 `127.0.0.1`，在远程机器上用要走 `ssh -L`。
@@ -160,7 +160,7 @@ Intel Core i9-14900KF、Ubuntu 24.04、Python 3.12.3；scan 只用一个核。
 - **重新 scan 之后要重启 serve**（新录的 run 不用重启）。
 - **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**，依赖它的程序在录制时行为可能不同。
 - **run 不能重建**：`.codestrata/runs/` 是唯一一份，删了就没了。
-- **自动测试大多在 CPU 上的假服务上跑**；GPU 录制只在一台 RTX 5090（CUDA 13）上验收过，录制端现在只能对着 CUDA 13 的 CUPTI 编。
+- **自动测试大多在 CPU 上的假服务上跑**；GPU 录制只在一台 RTX 5090（CUDA 13）上真录验收过，录制端对着 CUDA 12 和 13 的 CUPTI 头都编过。
 
 完整列表见 [docs/usage.md](docs/usage.md#已知限制)。
 

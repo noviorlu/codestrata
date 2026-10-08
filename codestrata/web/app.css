@@ -737,3 +737,5 @@ body.lanesmode .graphonly{display:none}
 .krow .kn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
 .krow .kc,.krow .kt{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .krow .kt{width:72px;text-align:right}
+/* 这种 kernel 是谁发起的（分列里 GPU 列的一份才有） */
+.krow.kcall{border-bottom:none;padding-left:14px}.krow.kcall .kn{color:var(--muted)}

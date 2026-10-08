@@ -486,6 +486,29 @@
 
 ## 前端
 
+### C / C++ / CUDA 进静态图：tree-sitter，名字按文本对（近似）
+- 决定：装了 `[native]` 时，tree-sitter 认 C / C++ / CUDA 的定义、调用、`kernel<<<…>>>` 启动和 `#include`：一个文件一个单元，函数、类、
+  `__global__` 成符号；调用和启动都画成静态（灰）边，按名字对上的在边详情里标「近似」，一个名字对上好几个定义的不连（宁可不连，也不连错）；
+  `#include` 只当排版权重，和 Python 的 import 一样。没装就照旧只扫 Python，原生文件挂成 aux。
+- 为什么：录下来的 GPU kernel 要有地方落（仓库里的 `.cu`），C 那边的调用链要能看；准确的名字解析（scip-clang）要 `compile_commands.json`，
+  Python 仓库里的 CUDA 代码多半是现场 nvcc 编的、没有它。
+- 放弃的方案：scip-clang（准档，以后再说）；Python 调进原生代码的那一跳（ctypes、pybind、`torch.ops`）、原生函数之间的运行时调用、kernel 内部，这一轮都不录。
+- 在哪：`native_scan.py`；`scan.py` 把原生单元装进索引；`graph.py` 的调用种类（启动是 7）。测试 `tests/test_native_scan.py`。
+
+### GPU kernel：自己的 CUPTI 注入库录，挂到发起它的 Python 调用上，图上写 GPU 时间
+- 决定：`trace --gpu` 用自己的 CUPTI 注入库（`CUDA_INJECTION64_PATH`；源码随包，录的时候用本机 CUDA 工具链现编、按源码哈希缓存）录每个 kernel 的
+  起止、设备、流和发起它的启动调用。整理时重放时序事件，在启动那一刻看这条线程真实的栈，最里层的被录到的函数是调用方，不经静态的 C 链补中间几跳。
+  仓库里定义的 kernel 落在定义它的文件上，仓库外的（PyTorch、cuBLAS、Triton 生成的）落到虚拟节点「GPU · 仓库外」。分列里每个设备 · 流一列；
+  节点、launch 连线、kernel 表都写次数和 GPU 时间，kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久。录制端按 `CUpti_ActivityKernel9`
+  读记录：用到的字段（起止、设备、流、关联号、名字）在 Kernel9–12 里位置一样，CUDA 12.0 起的头都有它。
+- 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里、花了多少 GPU 时间」。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
+  而且是外部工具或要改被录的程序；注入库不用改程序、不要 root，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的都录得到。
+  只写次数会看反：qwen 上 decode 的 kernel 17 次、GPU 上 318 ms，另一组 120 次只有 0.16 ms。
+- 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）。
+- 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（GPU 的列、节点和连线的 `gpu_us`，
+  `lane_counts` 的 `gpu_pairs`）、`ui/load.py` 的 `load_lane`（kernel 的调用方）、`web/panel.js` 的 `_kernels`、`web/lanes.js`、`web/lanedetail.js`。
+  测试 `tests/test_gpu.py`（手写的 GPU 日志、`test_gpu_time_in_lanes`、对着几个版本的 CUPTI 头编、有 GPU 时真录一个小程序）、`tests/web/specs/gpu.mjs`。
+
 ### 一套零构建的前端，数据只经 ds.js 从 serve 取；取数只在 ui/ 里做
 - 决定：前端是 `codestrata/web/` 下的普通 HTML/CSS/JS，零构建。UI 只调 `web/ds.js`，它 fetch 相对地址 `api/…`；数据一律由 `ui/` 下的模块从 graph（索引和叠上的 run）里取，serve 按请求给。
 - 为什么：地址写成相对的，页面在 `/` 下和主菜单转发的 `/v/<端口>/` 下都对。零构建：理由未记录。

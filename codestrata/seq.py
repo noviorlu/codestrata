@@ -214,6 +214,13 @@ def unreadable(e: Exception, run_id: str) -> str:
     return f"时序数据读不出来：{type(e).__name__}: {e}（可以 codestrata runs <repo> merge {run_id} 重建）"
 
 
+def gpu_ns(r: list) -> int:
+    """GPU 的行（kernel，第 10 列是 [设备, 流, 晚了多少 µs, 在 GPU 上跑了多少 ns]）在 GPU 上跑了多少纳秒。2026-10-08 之前整理的行
+    没有第 4 个：按「到跑完的时长 − 晚了多少」算，两个都是取整过的 µs，1 µs 上下的小 kernel 会差出不少"""
+    g = r[9]
+    return g[3] if len(g) > 3 else max(0, r[1] - g[2]) * 1000
+
+
 def calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = False) -> tuple[int, int, int] | None:
     """一行 span 里落在 [lo, hi]（open_hi：[lo, hi)）的调用：(次数, 第一次的开始, 最后一次的开始)，没有是 None。
     折叠行（rep 次连续的同级调用合成一行，只记了第一次的开始和整行的结束）按 rep 次调用均匀摊在
@@ -250,11 +257,11 @@ def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> 
             a, b, n = keys[r[4]], keys[r[5]], got[0]
             funcs[b] = funcs.get(b, 0) + n
             edges[f"{a}|{b}"] = edges.get(f"{a}|{b}", 0) + n
-            if len(r) > 9:                       # GPU 的行（kernel）：按发起的时刻算在不在这一段里，时长是它在 GPU 上跑完为止
-                gpu[b] = gpu.get(b, 0) + max(0, r[1] - r[9][2])
+            if len(r) > 9:                       # GPU 的行（kernel）：按发起的时刻算在不在这一段里，GPU 时间按纳秒加、最后换成 µs
+                gpu[b] = gpu.get(b, 0) + gpu_ns(r)
     out = {"funcs": funcs, "func_edges": edges}
     if gpu:
-        out["gpu_us"] = gpu
+        out["gpu_us"] = {k: round(ns / 1000) for k, ns in gpu.items()}
     if ref_lines is not None:
         out["func_lines"] = spread_lines(edges, ref_lines)
     return out
@@ -356,7 +363,7 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
     """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的调用（请求路径、分列里一列的叠加用）：
     {"window": [起, 止], "span_us": 各段加起来多长, "keys": [键], "threads": {pid: {tid: 名字}}, "truncated": [pid],
      "scope": "all" | "cross"（老 run 的时序事件只记了跨文件的调用）, "calls": {(pid, tid, a, b): [first, last, n]},
-     "gpu": {(pid, tid, a, b, 设备, 流): [first, last, n, GPU 上跑了多久 µs]}}
+     "gpu": {(pid, tid, a, b, 设备, 流): [first, last, n, GPU 上跑了多少 ns]}}
     ——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。折叠行按 calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点（同 _pairs）。
     GPU 的行（trace --gpu 的 kernel，tid 是发起它的线程、a 是调用方、b 是 kernel）在 calls 里照样有（请求路径列它），gpu 里再按设备 · 流记一份。
     没有 span、没有这个阶段的时刻抛 LookupError，span 读不出来抛 OSError / ValueError"""
@@ -386,9 +393,9 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
                     calls[k] = [f, last, n]
                 else:
                     e[0], e[1], e[2] = min(e[0], f), max(e[1], last), e[2] + n
-                if len(r) > 9:                   # GPU 的行（kernel）：时长是它在 GPU 上跑完为止，减去晚了的那段是 GPU 上跑的时间
+                if len(r) > 9:                   # GPU 的行（kernel）：GPU 上跑的时间按纳秒记（gpu_ns）
                     g = gpu.setdefault(k + tuple(r[9][:2]), [f, last, 0, 0])
-                    g[0], g[1], g[2], g[3] = min(g[0], f), max(g[1], last), g[2] + n, g[3] + max(0, r[1] - r[9][2])
+                    g[0], g[1], g[2], g[3] = min(g[0], f), max(g[1], last), g[2] + n, g[3] + gpu_ns(r)
     out = {"window": [segs[0][0], segs[-1][1]], "span_us": sum(b - a for a, b in segs), "keys": ix["keys"],
            "threads": ix["threads"], "truncated": ix.get("truncated") or [], "scope": ix.get("scope") or "cross",
            "calls": calls, "gpu": gpu}

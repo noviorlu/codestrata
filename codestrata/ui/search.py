@@ -30,4 +30,6 @@ def reveal(idx: dict, node: str, open_) -> list[str] | None:
     """让一个模块在图上露出来要展开哪些目录（在当前切面的基础上）。"""
     if not _cut.is_node(idx, node):
         return None
+    if _cut.is_virtual(node):                # 「GPU · 仓库外」不在任何目录里，跑到了就画着：切面不用动
+        return sorted(_cut.norm_open(idx, open_))
     return sorted(_cut.open_for(idx, _cut.norm_open(idx, open_), node))

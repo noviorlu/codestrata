@@ -38,6 +38,8 @@ window.CS = window.CS || {};
     return (s < 0 ? '−' : '+') + Math.abs(s).toFixed(3) + ' s';
   }
   function clip(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+  /* GPU 上跑了多久（微秒）→ 150 µs / 318 ms / 2.4 s */
+  function gpuT(us) { return us >= 1e6 ? (us / 1e6).toFixed(1) + ' s' : us >= 1000 ? (us / 1000).toFixed(us >= 1e4 ? 0 : 1) + ' ms' : Math.round(us) + ' µs'; }
   /* 列头的起 / 收两行：[{kind: start|end, text, title}] */
   /* 段外的时刻（选了阶段 / 时间段时，起 / 收、交接发生在这一段之外）：每个时刻按它自己在不在这一段里标段前 / 段后（用户 10-01）。
      L：/api/lanes 的结果（window、segs）；落在阶段的两个时间片之间的，late（收）算段后，否则算段前（同 lanes.py 的 out_of） */
@@ -78,7 +80,7 @@ window.CS = window.CS || {};
 
   CS.lanes = {
     // 详情栏（lanedetail.js）也用的写法和说法
-    fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, VIA: VIA, KIND: KIND, ENDS: ENDS },
+    fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, gpuT: gpuT, VIA: VIA, KIND: KIND, ENDS: ENDS },
     data: null, collapsed: {}, sel: null, edges: [], links: [], nodes: [], frames: [], fpos: {}, laneIx: {},
 
     /* 取数并画（app.drawMain 在叠着录了时序事件的 run 时调） */
@@ -363,9 +365,12 @@ window.CS = window.CS || {};
             var nm = self.label(id, ln.id);
             t.textContent = nm.length > 18 ? nm.slice(0, 17) + '…' : nm; g.appendChild(t);
             var s = el('text', { x: cx, y: cy + 9, class: 'ns', 'text-anchor': 'middle' });
-            s.textContent = info.n ? '被调 ' + fmtN(info.n) + ' 次' : info.handoff ? '只在这里交接' : '只往外调'; g.appendChild(s);
+            // GPU 的列：kernel 跑了几次、在 GPU 上一共跑了多久（次数多的不一定耗时多）
+            s.textContent = info.gpu_us != null ? fmtN(info.n) + ' 次 · ' + gpuT(info.gpu_us)
+              : info.n ? '被调 ' + fmtN(info.n) + ' 次' : info.handoff ? '只在这里交接' : '只往外调'; g.appendChild(s);
             var tp = el('title', {});
-            tp.textContent = id + '\n' + ln.thread + ' 里' + (info.n ? '被调了 ' + info.n + ' 次' : info.handoff
+            tp.textContent = id + '\n' + ln.thread + ' 里' + (info.gpu_us != null ? '跑了 ' + info.n + ' 次 kernel，GPU 上共 ' + gpuT(info.gpu_us)
+              : info.n ? '被调了 ' + info.n + ' 次' : info.handoff
               ? '这一段里没调到它，只是在这里放 / 取（交接在这一段里）' : '只当调用方')
               + '\n别的列里也有它的话，鼠标停在这里会连上；点了看详情';
             g.appendChild(tp);
@@ -494,7 +499,8 @@ window.CS = window.CS || {};
         E.tip = el('title', {}); E.tip.textContent = E.tipBase;
         lk.appendChild(E.halo); lk.appendChild(E.p);
         E.R = R; E.labCls = 'ln-ltxt ' + k.kind;
-        E.labTxt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '');
+        E.labTxt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '')
+          + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
         self.wire(E);
         self.links.push(E);
       });

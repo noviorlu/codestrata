@@ -1,6 +1,8 @@
 """测试共用的：跑 codestrata 命令、在临时目录里拷一份假仓库、不依赖 pytest 的用例运行器。"""
 from __future__ import annotations
 
+import gzip
+import json
 import os
 import shutil
 import subprocess
@@ -64,3 +66,60 @@ def run_tests(ns: dict, argv: list[str]) -> int:
             shutil.rmtree(t, ignore_errors=True)
     print("全部通过" if not bad else f"{bad} 个失败（临时目录留着：{' '.join(map(str, _TMP))}）")
     return 1 if bad else 0
+
+
+def run_id(repo, case):
+    base = repo / ".codestrata" / "runs"
+    hits = sorted(p.name for p in base.iterdir() if p.name.endswith("-" + case))
+    assert hits, f"没有 {case} 的 run"
+    return hits[-1]
+
+
+# runner 经 self.model.forward 调到的 Net 是按字符串加载的：这条调用代码里看不出（图上是橙虚线）
+DYN = {
+    "dyn/__init__.py": "",
+    "dyn/models/__init__.py": "",
+    "dyn/models/net.py": ("class Net:\n    def __init__(self):\n        self.k = 2\n\n"
+                          "    def forward(self, x):\n        return x * self.k\n\n\ndef helper():\n    return 0\n"),
+    "dyn/runner.py": ("from dyn.models import net\n\n\n"
+                      "class Runner:\n    def __init__(self, model):\n        self.model = model\n\n"
+                      "    def step(self):\n        return self.model.forward(1)\n\n"
+                      "    def warm(self):\n        return net.helper()\n"),
+    "dyn/main.py": ("import importlib\n\nfrom dyn.runner import Runner\n\n\n"
+                    "def build():\n    return getattr(importlib.import_module('dyn.models.net'), 'Net')()\n\n\n"
+                    "if __name__ == '__main__':\n    r = Runner(build())\n    for _ in range(3):\n        r.step()\n"),
+}
+
+
+def gpu_repo() -> tuple:
+    """DYN 加一个 .cu 文件，录一次（CPU），再手写一份 GPU 日志：Net.forward 里各启动一次仓库里的 k::scale 和仓库外的
+    at::native::foo（三次 step 各一次），runs merge 把它们挂上去。返回 (仓库, run id)"""
+    repo = tmpdir("cs-browser-gpu-") / "gpurepo"
+    # forward 睡 2 ms：手写的启动时刻放在它中间，离它的进 / 出都远（事件的时刻是微秒）
+    net = DYN["dyn/models/net.py"].replace("        return x * self.k\n", "        import time\n        time.sleep(0.002)\n        return x * self.k\n")
+    for rel, src in {**DYN, "dyn/models/net.py": net,
+                     "dyn/csrc/k.cu": "namespace k {\n__global__ void scale(float* x) { x[0] *= 2; }\n}\n"}.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "gpu", "--", PY, "-m", "dyn.main")
+    rid = run_id(repo, "gpu")
+    rd = repo / ".codestrata" / "runs" / rid
+    run = json.loads((rd / "run.json").read_text())
+    spans = rd / "events" / "spans"
+    keys = json.loads((spans / "keys.json").read_text())
+    chunk = json.loads((spans / "index.json").read_text())["chunks"][0]
+    rows = [json.loads(x) for x in gzip.decompress((spans / chunk["chunk"]).read_bytes()).splitlines()]
+    fwd = [r for r in rows if keys["keys"][r[5]] == "dyn/models/net.py:5"]
+    pid, mono0 = chunk["pid"], run["clock"]["mono0_ns"]
+    ntid = keys["native"][str(pid)][str(fwd[0][2])]
+    lines = [f"H {pid} {mono0}"]
+    for i, r in enumerate(fwd):
+        t = mono0 + (r[0] + max(r[1], 0) // 2) * 1000
+        for j, name in enumerate(("void k::scale(float*)", "void at::native::foo<float>(float*)")):
+            c = 10 * i + j + 1
+            lines += [f"A {t} {t + 1000} {ntid} {c}\tcudaLaunchKernel", f"K {t + 2000} {t + 52000} 0 7 {c}\t_Z\t{name}"]
+    (rd / "parts").mkdir(exist_ok=True)
+    (rd / "parts" / f"cu-{pid}-{mono0}.log").write_text("\n".join(lines) + "\n")
+    cs("runs", repo, "merge", rid)
+    return repo, rid

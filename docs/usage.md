@@ -239,11 +239,12 @@ codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag 
 
 `--gpu` 让每个用 CUDA 的进程同时录下 GPU 上跑的每个 kernel：起止时刻、设备、流，和发起它的那次启动调用（`cudaLaunchKernel`、`cuLaunchKernel` 这类，在哪个线程、什么时候）。
 
-- **要什么**：本机有带 CUPTI 的 CUDA 工具链（`cupti.h`、`libcupti.so`；按 `--env CUDA_HOME=…`、环境里的 `CUDA_HOME` / `CUDA_PATH`、PATH 上 `nvcc` 所在的、`/usr/local/cuda*` 的顺序找）和 `g++`：录制端是一小段 C++，第一次用时现编、按源码哈希缓存在 `~/.cache/codestrata/cupti/`。要时序事件（不能和 `--no-events` 一起用）。
+- **要什么**：本机有带 CUPTI 的 CUDA 工具链（`cupti.h`、`libcupti.so`；按 `--env CUDA_HOME=…`、环境里的 `CUDA_HOME` / `CUDA_PATH`、PATH 上 `nvcc` 所在的、`/usr/local/cuda*` 的顺序找）和 `g++`：录制端是一小段 C++，第一次用时现编、按源码哈希缓存在 `~/.cache/codestrata/cupti/`。CUPTI 要 CUDA 12.0 以上（12 和 13 的头都编过；真录只在 RTX 5090 + CUDA 13 上验收过）。要时序事件（不能和 `--no-events` 一起用）。
 - **怎么注入**：CUDA 运行时按环境变量 `CUDA_INJECTION64_PATH` 把录制端载进进程，不用改被录的程序，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的 kernel 都录得到。
 - **挂到谁身上**：一个 kernel 的调用方是发起它那一刻、那个线程真实的调用栈上最里层的、被录到的函数（比如 `Lib.launch` 启动了 `decode_kernel`）——整理时重放时序事件，在启动调用的那一刻看栈，挂起着的生成器 / 协程不算。被录到的是仓库目录下的代码，放在仓库里的 `.venv` 也在内，所以调用方可能是三方库的函数（比如 triton 的）。不经 C++ 的静态调用链去补中间几跳，也不知道是这个函数里的哪一行。这种边是只有 trace 的（橙色虚线），边详情里标「GPU kernel」。
 - **仓库里的 kernel 和仓库外的**：名字（去掉返回类型、模板参数、参数表）对得上扫描到的 `__global__` 的，落在定义它的文件上，和别的函数一样；对不上的（PyTorch、cuBLAS、Triton 生成的……）都落到一个虚拟节点「GPU · 仓库外」上，它只在叠着的 run 跑到了才画，放在图最下面一层。
-- **次数和 GPU 时间总是全的**：直接从 GPU 日志算，时序事件到了行数上限、整理失败都不影响。找不到发起它的调用的（启动它的线程上当时没有被录到的函数在跑、在时序事件截断之后发起的）照样算次数和 GPU 时间，只是没有调用边；`trace` 结束时和 `runs show` 会说有几次。
+- **在图上看**：分列里 kernel 按 GPU 设备 · 流各一列，节点上写跑了几次、GPU 上一共跑了多久（「17 次 · 318 ms」——次数多的不一定耗时多），从发起它的那一列连过来的线上也写次数和 GPU 时间；点 GPU 列里的节点，kernel 表按 GPU 时间列出每种 kernel，下面是谁发起的、各几次、各多久。
+- **按阶段看时次数和 GPU 时间是全的**：直接从 GPU 日志算，时序事件到了行数上限、整理失败都不影响。找不到发起它的调用的（启动它的线程上当时没有被录到的函数在跑、在时序事件截断之后发起的）照样算次数和 GPU 时间，只是没有调用边；`trace` 结束时和 `runs show` 会说有几次。**拖出来的时间段**和分列里的数（节点、连线、kernel 表）从时序事件算，只有挂上了发起它的调用的 kernel。GPU 时间都是按纳秒加起来最后换成 µs；2026-10-08 之前整理的 run 是一个个先取整再加的，1 µs 上下的小 kernel 加起来会差出三成，`codestrata runs <repo> merge <run>` 重新整理就按纳秒算。
 - **不录的**：fork 出来的子进程里的 kernel；kernel 内部（一个 kernel 里跑了哪些 device 函数）。
 
 ### 录真实部署：服务、多进程、安装包

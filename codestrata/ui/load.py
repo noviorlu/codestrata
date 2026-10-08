@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .. import align as _align
 from .. import cut as _cut
 from .. import lanes as _lanes
 from .. import runs as _runs
@@ -70,9 +71,19 @@ def load_lane(repo: Path, idx: dict, ref: str, lane: str) -> dict:
     win = _seq.parse_window(phase)
     base, names = _runs.load_counts(rd, None if win else phase, with_names=True)
     counts = _lanes.lane_counts(rd, run, phase, lane)
+    pairs = counts.pop("gpu_pairs", None)
     if base.get("func_lines") is not None:
         counts["func_lines"] = _seq.spread_lines(counts["func_edges"], base["func_lines"])
     hot, _ = _runs.overlay(idx, counts, names, _runs.file_state(repo, idx, _runs.read_detail(rd)))
+    if pairs:                                    # GPU 的列：每种 kernel 是谁发起的、各几次、各占多少 GPU 时间（多的在前）
+        label, km = _align.node_labeler(idx), hot["keymap"] or (lambda k: k)
+        for k, (n, us) in pairs.items():
+            ka, _, kb = k.partition("|")
+            x = hot["kernels"].get(label(km(kb)))
+            if x is not None:
+                x.setdefault("callers", []).append({"caller": label(km(ka)), "n": n, "gpu_us": us})
+        for x in hot["kernels"].values():
+            x.get("callers", []).sort(key=lambda c: (-c["gpu_us"], -c["n"], c["caller"]))
     hot["run"] = run["id"] + (f"@{phase}" if phase else "")
     hot["lane"] = lane
     hot["lines_approx"] = "func_lines" in counts

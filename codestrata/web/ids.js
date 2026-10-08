@@ -15,9 +15,9 @@ window.CS = window.CS || {};
     residual: function (d) { return d + '*'; },
     /* 单元所在的目录 */
     dirOf: function (unit) { var i = unit.lastIndexOf('/'); return i >= 0 ? unit.slice(0, i + 1) : ROOT; },
-    /* x（目录、本层文件、单元）在目录 d 的子树里（不含 d 自己） */
+    /* x（目录、本层文件、单元）在目录 d 的子树里（不含 d 自己）；虚拟节点（?gpu）不在任何目录里 */
     within: function (x, d) {
-      if (d === ROOT) return x !== d && (x === ROOT + '*' || x.indexOf('/') < 0);
+      if (d === ROOT) return x !== d && x.charAt(0) !== '?' && (x === ROOT + '*' || x.indexOf('/') < 0);
       return x !== d && x.indexOf(d) === 0;
     },
     /* 限定名的最后一段：Python 的 Cls.method、C++ / Rust 的 ns::Cls::method 都认 */

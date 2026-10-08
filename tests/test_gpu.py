@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
 
-from common import cs, run_tests, tmpdir  # noqa: E402
+from common import cs, gpu_repo, run_tests, tmpdir  # noqa: E402
 
 from codestrata import align, cut, events, kernels  # noqa: E402
 from codestrata.trace import gpu  # noqa: E402
@@ -133,7 +134,7 @@ def test_attach_kernels():
     by_callee = {keys[r[5]]: r for r in gpu_rows}
     inrepo, outside = by_callee["pkg/csrc/kern.cu:16"], by_callee["?gpu/at::native::foo:0"]
     assert keys[inrepo[4]] == "pkg/lib.py:3" and rows[inrepo[8]][5] == keys.index("pkg/lib.py:3"), inrepo
-    assert inrepo[0] == 30 and inrepo[1] == 15 and inrepo[9] == [0, 7, 10], inrepo     # 启动于 30µs，跑完在 45µs，晚了 10µs
+    assert inrepo[0] == 30 and inrepo[1] == 15 and inrepo[9] == [0, 7, 10, 5000], inrepo     # 启动于 30µs，跑完在 45µs，晚了 10µs，跑了 5000 ns
     assert keys[outside[4]] == "pkg/run.py:1" and outside[3] == rows[outside[8]][3] + 1, outside
     assert [r[0] for r in rows] == sorted(r[0] for r in rows)                             # 和 CPU 的行排在一起
     assert idx["n_calls"] == 2, idx["n_calls"]                                             # 只数 Python 的调用
@@ -144,6 +145,18 @@ def test_attach_kernels():
     c = g.counts()["start"]                                                                # 次数：找没找到调用方都算
     assert c["funcs"] == {"pkg/csrc/kern.cu:16": 1, "?gpu/at::native::foo:0": 2} and c["gpu_us"]["?gpu/at::native::foo:0"] == 6, c
     assert g.names["?gpu/at::native::foo:0"] == "at::native::foo"
+
+
+def test_gpu_time_in_nanoseconds():
+    """GPU 时间按纳秒加、最后才换成 µs：三个各跑 1.4 µs 的 kernel 是 4 µs（一个个先取整是 3，按「到跑完 − 晚了」的 µs 相减是 6）；
+    老的 GPU 行（第 10 列只有三项）照旧按 µs 相减"""
+    from codestrata import seq
+    k = lambda a: (1, 100, a, a + 1400, 0, 7, "?gpu/x:0", None)          # noqa: E731  (编号, pid, 开始, 结束 ns, 设备, 流, 键, 启动)
+    g = kernels.Gpu.__new__(kernels.Gpu)
+    g.kernels, g.base, g.phase_at = [k(1_000_600), k(2_000_600), k(3_000_600)], 0, lambda us: "start"
+    assert g.counts()["start"]["gpu_us"] == {"?gpu/x:0": 4} and g.kernel_table()["?gpu/x:0"]["gpu_us"] == 4, g.counts()
+    assert seq.gpu_ns([0, 12, 1, 0, 0, 0, 1, 0, -1, [0, 7, 10, 1400]]) == 1400
+    assert seq.gpu_ns([0, 12, 1, 0, 0, 0, 1, 0, -1, [0, 7, 10]]) == 2000                 # 老的行：(12 − 10) µs
 
 
 def test_caller_is_real_stack():
@@ -202,6 +215,49 @@ def test_virtual_gpu_node():
     assert align.node_def(idx, "?gpu#at::native::foo")["virtual"]
     assert cut.unit_of_rel(idx["files"], "?gpu/x") == cut.VIRTUAL_GPU and cut.unit_of_rel(idx["files"], "nope.py") is None
     assert cut.kind(idx, cut.VIRTUAL_GPU) == "virtual" and cut.parent_of(idx, cut.VIRTUAL_GPU) is None
+    assert not cut.within(cut.VIRTUAL_GPU, cut.ROOT_DIR) and cut.within("run.py", cut.ROOT_DIR)   # 不在根目录里（以前在，搜索定位会抛 KeyError）
+
+
+def test_gpu_time_in_lanes():
+    """分列里 GPU 的列：节点上有 GPU 时间，launch 连线上有次数和 GPU 时间（每对函数也有）；这一列的叠加里每种 kernel
+    带着是谁发起的、几次、GPU 上多久（手写的 GPU 日志：三次 forward 各启动 k::scale 和 at::native::foo，每个跑 50 µs）"""
+    from codestrata import lanes, runs
+    from codestrata.ui import load as ui_load
+    repo, rid = gpu_repo()
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, rid)
+    run, rd, phase = runs.resolve(repo, rid)
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]))
+    g = next(x for x in L["lanes"] if x.get("gpu"))
+    nodes = list(g["nodes"].values())
+    assert sum(v["n"] for v in nodes) == 6 and sum(v["gpu_us"] for v in nodes) == 300, g["nodes"]
+    ls = [x for x in L["links"] if x["kind"] == "launch"]
+    assert sum(x["n"] for x in ls) == 6 and sum(x["gpu_us"] for x in ls) == 300, ls
+    assert all(p["gpu_us"] == 50 * p["n"] for x in ls for p in x["pairs"]), [x["pairs"] for x in ls]
+    assert all("gpu_us" not in x for x in L["links"] if x["kind"] != "launch"), "只有 launch 连线带 GPU 时间"
+    h = ui_load.load_lane(repo, idx, rid, g["id"])
+    assert len(h["kernels"]) == 2 and all(v["callers"] == [{"caller": "dyn/models/net.py#Net.forward", "n": 3, "gpu_us": 150}]
+                                          for v in h["kernels"].values()), h["kernels"]
+    from codestrata.ui import search
+    assert search.reveal(idx, cut.VIRTUAL_GPU, []) == [], "「GPU · 仓库外」不用展开哪个目录"
+    main = next(x for x in L["lanes"] if x["thread"] == "MainThread")
+    assert not ui_load.load_lane(repo, idx, rid, main["id"])["kernels"], "线程的列不含 GPU 的行"
+
+
+def test_recorder_compiles_against_cupti_versions():
+    """GPU 录制端对着几个版本的 CUPTI 头都编得过（CUDA 12 的头最新的 kernel 记录是 Kernel9，13 的是 Kernel12；
+    写死 Kernel12 时 CUDA 12 编不过）：本机工具链的头，加上 CODESTRATA_TEST_CUPTI_INCLUDE（冒号分开的几个只有 CUPTI 头的目录，
+    比如 triton 带的 CUDA 12 的那份；cuda.h 取本机工具链的）"""
+    cxx = shutil.which("g++")
+    found = gpu.find_cuda()
+    extra = [p for p in os.environ.get("CODESTRATA_TEST_CUPTI_INCLUDE", "").split(":") if p]
+    if not cxx or (found is None and not extra):
+        print("  跳过：要 g++ 和 CUPTI 头（CUDA 工具链，或 CODESTRATA_TEST_CUPTI_INCLUDE）")
+        return
+    base = [f"-I{found[1]}"] if found else []
+    for inc in ([str(found[1])] if found else []) + extra:
+        r = subprocess.run([cxx, "-std=c++17", "-fsyntax-only", f"-I{inc}", *base, str(gpu.SRC)], capture_output=True, text=True)
+        assert r.returncode == 0, (inc, r.stderr[-1500:])
 
 
 def test_trace_gpu_toy():

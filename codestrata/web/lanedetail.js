@@ -4,7 +4,7 @@
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
-  var F = CS.lanes.fmt, esc = F.esc, short = F.short, laneName = F.laneName, whenW = F.whenW;
+  var F = CS.lanes.fmt, esc = F.esc, short = F.short, laneName = F.laneName, whenW = F.whenW, gpuT = F.gpuT;
   var VIA = F.VIA, KIND = F.KIND, ENDS = F.ENDS;
 
   /* 一头的节点名：这一列画着它就能点（选中这一列里的那一份）；进程收起了、或者这一段里这一列没画它，写明为什么点不了。
@@ -132,7 +132,13 @@ window.CS = window.CS || {};
           + (ln.n_threads > 1 ? ' ×' + ln.n_threads : '') + (ln.external ? '（只跑仓库外的代码）' : ln.idle ? '（这一段里没有调用）' : '')
           + (e.node ? '　' + nodeChip(e.node, e.lane) : '') + '</div>';
       }
-      function site(label, name, def, line, code, ext) {
+      /* 一头的那一行代码。没有行的：交接是不知道是哪一行；起 / 收的那一头是线程的入口函数；
+         启动 kernel 的发起那一头是发起它时栈上最近的仓库函数（经 PyTorch / 扩展转了几道，不知道是哪一行），另一头是 kernel */
+      function bare(end) {
+        return k.kind === 'handoff' ? '不知道是哪一行' : k.kind !== 'launch' ? '线程的入口函数'
+          : end === 'a' ? '发起它时栈上最近的仓库函数，不知道是哪一行' : 'GPU 上跑的 kernel';
+      }
+      function site(label, name, def, line, code, ext, end) {
         var h = '<div class="lk-site"><span class="lk-lab2">' + esc(label) + '</span>';
         if (!name) return h + '<span class="hint">仓库外的代码</span></div>';
         var at = line || (def ? def.l : 1);
@@ -140,18 +146,20 @@ window.CS = window.CS || {};
           + (line ? ' 第 ' + line + ' 行' : '') + '（点了在代码窗口里看）">' + esc(short(name)) + (line ? ':' + line : '') + '</button>'
           + (code ? '<code class="lk-code" data-f="' + esc(def && def.f) + '" data-l="' + at + '" title="点了在代码窗口里看这一行">'
                     + esc(code) + '</code>'
-             : line ? '' : '<span class="hint">（' + (k.kind === 'handoff' ? '不知道是哪一行' : '线程的入口函数') + '）</span>')
+             : line ? '' : '<span class="hint">（' + bare(end) + '）</span>')
           + (ext ? '<span class="hint">（经仓库外的代码，在它里面）</span>' : '') + '</div>';
       }
       var kind = KIND[k.kind] || k.kind;
       var h = '<p class="hint">' + kind + '：' + esc(VIA[k.via] || k.via) + '，<b>' + k.n + '</b> 次'
+        + (k.gpu_us != null ? '，GPU 上共 <b>' + gpuT(k.gpu_us) + '</b>' : '')
         + (k.first != null ? '；第一次 ' + whenW(k.first, L, late) + (k.last != null && k.last !== k.first ? '，最后 ' + whenW(k.last, L, late) : '') : '')
         + '（从这一段的开头算）' + (k.out ? '；<b>整条发生在这一段' + (k.out === 'before' ? '开始之前' : '结束之后') + '</b>（这一段里跑过的线程）' : '') + '</p>'
         + side(k.from, '从') + side(k.to, '到')
         + '<h3>两头的代码</h3><div class="lk-pairs">' + (k.pairs || []).map(function (p) {
           return '<div class="lk-pair"><div class="lk-meta"><span class="pn">×' + p.n + '</span>'
+            + (p.gpu_us != null ? '<span class="pn">GPU ' + gpuT(p.gpu_us) + '</span>' : '')
             + (p.first != null ? '<span class="ptime">' + whenW(p.first, L, late) + '</span>' : '') + '</div>'
-            + site(ends[0], p.a, p.da, p.la, p.ta, p.xa) + '<div class="arr">↓</div>' + site(ends[1], p.b, p.db, p.lb, p.tb, p.xb) + '</div>';
+            + site(ends[0], p.a, p.da, p.la, p.ta, p.xa, 'a') + '<div class="arr">↓</div>' + site(ends[1], p.b, p.db, p.lb, p.tb, p.xb, 'b') + '</div>';
         }).join('') + '</div>'
         + (k.n_pairs > (k.pairs || []).length ? '<p class="hint">还有 ' + (k.n_pairs - k.pairs.length) + ' 对（次数更少）</p>' : '')
         + (k.kind === 'handoff' ? '<p class="hint">配对：进程内的队列按「同一个队列里的同一个对象」，ZMQ 按消息内容的指纹；'

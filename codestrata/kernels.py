@@ -118,6 +118,11 @@ def _ph() -> dict:
     return {"funcs": {}, "func_edges": {}, "func_lines": {}, "gpu_us": {}}
 
 
+def run_ns(k: tuple) -> int:
+    """一个 kernel（cu 日志里的一条）在 GPU 上跑了多少纳秒"""
+    return max(0, k[3] - k[2])
+
+
 class Gpu:
     """一个 run 的全部 GPU 日志。kernels：[(编号, pid, 起 ns, 止 ns, 设备, 流, 键, 启动调用 (起 ns, 系统线程号) 或 None)]"""
 
@@ -146,13 +151,16 @@ class Gpu:
         return ((k[7][0] if k[7] else k[2]) - self.base) // 1000
 
     def counts(self) -> dict:
-        """{阶段: {funcs: {kernel 键: 次数}, gpu_us: {kernel 键: µs}}}：每个 kernel 都算，不管找没找到调用方"""
+        """{阶段: {funcs: {kernel 键: 次数}, gpu_us: {kernel 键: µs}}}：每个 kernel 都算，不管找没找到调用方。
+        GPU 时间按纳秒加起来最后才换成 µs（一个个先取整，1 µs 上下的小 kernel 会差出三成）"""
         out: dict[str, dict] = {}
         for k in self.kernels:
             ph = out.setdefault(self.phase_at(self._t_us(k)), {"funcs": {}, "gpu_us": {}})
             key = k[6]
             ph["funcs"][key] = ph["funcs"].get(key, 0) + 1
-            ph["gpu_us"][key] = ph["gpu_us"].get(key, 0) + max(0, (k[3] - k[2]) // 1000)
+            ph["gpu_us"][key] = ph["gpu_us"].get(key, 0) + run_ns(k)
+        for ph in out.values():
+            ph["gpu_us"] = {key: round(ns / 1000) for key, ns in ph["gpu_us"].items()}
         return out
 
     def probes(self) -> dict[int, list]:
@@ -165,7 +173,7 @@ class Gpu:
 
     def attach(self, found: dict, keys: list[str], kidx: dict) -> dict:
         """found：{编号: (调用方键, 线程号, 父 span 的号, 父 span 的深度)}（events.build 重放出来的）→ {pid: [GPU 的行]}。
-        行是 [发起时刻, 到跑完的时长, 线程号, 深度, 调用方键下标, kernel 键下标, 1, 0, 父 span 的号, [设备, 流, 晚了多少 µs]]，
+        行是 [发起时刻, 到跑完的时长, 线程号, 深度, 调用方键下标, kernel 键下标, 1, 0, 父 span 的号, [设备, 流, 晚了多少 µs, 在 GPU 上跑了多少 ns]]，
         keys / kidx 由这里往后加 kernel 的键。调用边按阶段记进 self.edges，调用行一律是 0（不知道是哪一行）"""
         self.found = found
         rows: dict[int, list] = {}
@@ -181,7 +189,7 @@ class Gpu:
             t = self._t_us(k)
             rows.setdefault(k[1], []).append(
                 [t, max(0, (k[3] - self.base) // 1000 - t), tid, depth + 1, kidx[caller], kidx[key], 1, 0, parent,
-                 [k[4], k[5], max(0, (k[2] - self.base) // 1000 - t)]])
+                 [k[4], k[5], max(0, (k[2] - self.base) // 1000 - t), run_ns(k)]])
             ph = self.edges.setdefault(self.phase_at(t), {"func_edges": {}, "func_lines": {}})
             pair = f"{caller}|{key}"
             ph["func_edges"][pair] = ph["func_edges"].get(pair, 0) + 1
@@ -191,7 +199,7 @@ class Gpu:
     def summary(self) -> dict:
         """run.json 的 gpu：{n_kernels, n_names, gpu_us, unattached（没找到调用方的，只算次数）, dropped, procs}"""
         return {"n_kernels": len(self.kernels), "n_names": len({k[6] for k in self.kernels}),
-                "gpu_us": sum(max(0, (k[3] - k[2]) // 1000) for k in self.kernels),
+                "gpu_us": round(sum(run_ns(k) for k in self.kernels) / 1000),
                 "unattached": len(self.kernels) - len(self.found), "dropped": self.dropped,
                 "procs": sorted({k[1] for k in self.kernels})}
 
@@ -201,5 +209,7 @@ class Gpu:
         for k in self.kernels:
             x = out.setdefault(k[6], {"n": 0, "gpu_us": 0})
             x["n"] += 1
-            x["gpu_us"] += max(0, (k[3] - k[2]) // 1000)
+            x["gpu_us"] += run_ns(k)
+        for x in out.values():
+            x["gpu_us"] = round(x["gpu_us"] / 1000)
         return out

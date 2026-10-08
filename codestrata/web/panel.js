@@ -97,7 +97,8 @@ window.CS = window.CS || {};
       var more = lines.filter(function (x) { return x.l && x !== first; }).map(function (x) {
         return jump(x, ':' + x.l + (x.n ? ' ×' + x.n : '')); }).join('');
       var notes = {}, unk = 0;
-      (P.lines || []).forEach(function (x) { if (x.note) notes[noteText(x.note)] = 1; if (!x.l) unk += x.n; });
+      // GPU kernel 的启动本来就没有调用行（发起它的是栈上最近的仓库函数），不算「不知道是哪一行」
+      (P.lines || []).forEach(function (x) { if (x.note) notes[noteText(x.note)] = 1; if (!x.l && !(x.note && x.note.k === 'gpu')) unk += x.n; });
       if (!P.lines && P.note) notes[noteText(P.note)] = 1;
       var gpu = (P.lines || []).some(function (x) { return x.note && x.note.k === 'gpu'; });
       var tag = gpu ? '<span class="dtag" title="GPU 上跑的 kernel（trace --gpu 录的），Python 代码里本来就不会直接写">GPU kernel</span>'
@@ -297,11 +298,16 @@ window.CS = window.CS || {};
       ks.sort(function (a, b) { return K[b].gpu_us - K[a].gpu_us; });
       var ms = function (us) { return us >= 1000 ? (us / 1000).toFixed(1) + ' ms' : us + ' µs'; };
       var tot = ks.reduce(function (s, k) { return s + K[k].gpu_us; }, 0);
+      // 分列里的 GPU 列（只算这个流）还知道每种 kernel 是谁发起的：每个调用方一行，按 GPU 时间排
       return '<div class="kv"><span>GPU kernel <b>' + ks.length + '</b> 种</span><span>GPU 上共 <b>' + ms(tot) + '</b></span></div>'
         + '<div class="ktab">' + ks.map(function (k) {
           var q = k.slice(k.indexOf('#') + 1);
           return '<div class="krow" title="' + esc(q) + '"><span class="kn">' + esc(q) + '</span><span class="kc">×' + K[k].n
-            + '</span><span class="kt">' + ms(K[k].gpu_us) + '</span></div>';
+            + '</span><span class="kt">' + ms(K[k].gpu_us) + '</span></div>'
+            + (K[k].callers || []).map(function (c) {
+              return '<div class="krow kcall" title="' + esc(c.caller) + ' 发起的"><span class="kn">← ' + esc(symLabel(c.caller)) + '</span>'
+                + '<span class="kc">×' + c.n + '</span><span class="kt">' + ms(c.gpu_us) + '</span></div>';
+            }).join('');
         }).join('') + '</div>';
     },
 
