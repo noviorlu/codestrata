@@ -24,7 +24,7 @@ ROOT = HERE.parent
 _DUMP = r'''
 import json, sys
 from pathlib import Path
-from codestrata import runs, seq
+from codestrata import runs
 try:                                    # 界面取数拆成 ui/ 之后
     from codestrata.ui import edge as E, graphview as G, load as L
 except ImportError:                     # 之前都在 payload.py 里
@@ -50,10 +50,11 @@ for ref in [None] + refs:
         out[f"{ref}|{name}|edges"] = {f"{a}|{b}": E.edge_detail(repo, idx, a, b, hot) for a, b in pairs}
     if ref:
         run, rd, phase = runs.resolve(repo, ref)
-        try:
-            out[f"{ref}|seq"] = seq.edge_times(idx, rd, run, open_=None, phase=phase)
+        try:                                             # 分列（模块图的时间顺序 2026-10-08 去掉了）
+            from codestrata import lanes
+            out[f"{ref}|lanes"] = lanes.build(idx, rd, run, phase, hot, None)
         except Exception as e:
-            out[f"{ref}|seq"] = {"error": type(e).__name__ + ": " + str(e)}
+            out[f"{ref}|lanes"] = {"error": type(e).__name__ + ": " + str(e)}
 out["__src__"] = __import__("codestrata").__file__          # 确认导入的是哪一份代码
 json.dump(out, sys.stdout, sort_keys=True, ensure_ascii=False, default=list)
 '''
@@ -117,7 +118,7 @@ def main(argv: list[str]) -> int:
     _diff(old, new, "", diffs, 40)
     n_edges = sum(len(v) for k, v in new.items() if k.endswith("|edges"))
     print(f"对比了 {sum(1 for k in new if k.endswith('|graph'))} 张图、{n_edges} 条边的详情、"
-          f"{sum(1 for k in new if k.endswith('|seq'))} 份时间顺序")
+          f"{sum(1 for k in new if k.endswith('|lanes'))} 份分列")
     if not diffs:
         print("逐项一致")
         return 0

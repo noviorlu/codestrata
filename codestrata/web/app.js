@@ -55,12 +55,6 @@ window.CS = window.CS || {};
         }
         if (window.MutationObserver)
           new MutationObserver(retint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-        // 开关（这次跑了 / 代码里看不出 / 只看跑到的）改了看得见的边：时间顺序重排名次，开关上的数跟着变
-        CS.graph.onTimed = function (n) {
-          if (self.lanesMode()) return;               // 分列自己数（CS.lanes.timed），模块图那套在分列下数出来的是 0
-          var c = document.querySelector('#edgechips [data-t=timeorder] .n');
-          if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
-        };
         CS.graph.onSelectFrame = function (f) {
           var t = document.getElementById('dtitle'); if (t) { t.textContent = CS.panel.full(f); t.title = f; }
           var s = document.getElementById('dsub'); if (s) s.textContent = '已在图上展开成框（框头的 − 收起）';
@@ -430,41 +424,12 @@ window.CS = window.CS || {};
       return !!(this.data && this.data.hot) && this.runHasEvents();
     },
 
-    /* 时间顺序上色要的数据：当前 run（阶段）、当前切面上每条边第一次 / 最后一次被调用的时刻。
-       开关关着就把颜色撤掉；同一个 run + 切面取过的直接用；取回来时已经换了 run / 切面的丢掉 */
+    /* 时间顺序只在分列里有（叠着录了时序事件的 run 一律分列）：时刻在 /api/lanes 里已经有了，开关一变重新上色；
+       模块图上（没叠 run、没录时序事件）没有这个开关 */
     applyTimes: function () {
-      var s = CS.graph.state, self = this;
-      if (this.lanesMode()) {                     // 分列：时刻在 /api/lanes 里已经有了，不另取
-        CS.lanes.paint(); this.edgeChips(); this.controls();
-        return;
-      }
-      if (!s.timeOrder || !this.canTimeOrder()) {
-        if (CS.graph.times) CS.graph.setTimes(null);
-        if (s.timeOrder && !this.canTimeOrder()) s.timeOrder = false;
-        this.edgeChips(); this.controls();
-        return;
-      }
-      var open = this.data.open || [], key = CS.ds.run + '|' + open.join(',');
-      if (this._times && this._times.key === key) {
-        this._timesLoading = null;
-        CS.graph.setTimes(this._times.data); this.edgeChips(); this.controls();
-        return;
-      }
-      // 取回来之前不上色（不拿上一个 run / 切面的时间画新图），开关上显示「…」
-      this._timesLoading = key;
-      CS.graph.setTimes(null); this.edgeChips(); this.controls();
-      CS.ds.seqEdges(open).then(function (d) {
-        if (self._timesLoading !== key) return;            // 这期间又换了 run / 切面（那边已经另取）
-        self._timesLoading = null;
-        if (CS.ds.run + '|' + (self.data.open || []).join(',') !== key || !s.timeOrder) return self.applyTimes();
-        self._times = { key: key, data: d };
-        CS.graph.setTimes(d); self.edgeChips(); self.controls();
-      }, function (e) {
-        if (self._timesLoading !== key) return;
-        self._timesLoading = null;
-        s.timeOrder = false; CS.graph.setTimes(null); self.edgeChips(); self.controls();
-        if (CS.viewer) CS.viewer.toast('时间顺序：' + e.message);      // 浮层提示：进度栏一会儿就被别的消息换掉
-      });
+      if (this.lanesMode()) CS.lanes.paint();
+      else if (CS.graph.state.timeOrder) CS.graph.state.timeOrder = false;
+      this.edgeChips(); this.controls();
     },
 
     /* 当前阶段从哪个函数开始、到哪个函数（下一个阶段的起点）结束：{start, end}，各是 phase_at 里的一项
@@ -689,7 +654,7 @@ window.CS = window.CS || {};
                    + (c.dyn ? '其中 ' + c.dyn + ' 条跑到的全是代码里看不出的，画虚线，后一个开关单独管它们' : ''), true]);
         if (c.dyn) defs.push(['dyn', 'e dyn warm', '其中代码里看不出', c.dyn, DYN_TIP + (s.hot === false ? '。要先开「这次跑了」' : ''), true]);
         if (this.canTimeOrder())
-          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : (this.lanesMode() ? CS.lanes.timed : CS.graph.timed) || 0) : '',
+          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this.lanesMode() ? CS.lanes.timed : 0) || 0 : '',
                      '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
                      + '换阶段、展开收起都会按新的时间窗重算', true]);
       }

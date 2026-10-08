@@ -24,7 +24,7 @@ window.CS = window.CS || {};
   function laneName(id) { return id.slice(id.indexOf(':') + 1); }
   // TOP：图框左上角浮着缩放按钮，进程头、列头往下让一点
   // HEAD：列头（线程名、仓库外的代码、起 / 收两行）的底
-  var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72, REPEAT = 5;
+  var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72;
   var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue',
               thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）',
               join: 'join 等它结束', wait: 'waitpid 等子进程退出', cuda: '启动 GPU kernel' };
@@ -654,10 +654,10 @@ window.CS = window.CS || {};
       var list = tm ? this.edges.concat(this.links.filter(function (E) { return E.k.kind === 'handoff'; }))
         .filter(function (E) { return E.show && E.first != null && E.first >= w[0] && E.first <= w[1]; }) : [];
       list.sort(function (p, q) { return p.first - q.first || (p.last || 0) - (q.last || 0) || (p.key < q.key ? -1 : 1); });
-      var n = list.length, span = Math.max(1, w[1] - w[0]);
+      var n = list.length;
       this.edges.concat(this.links).forEach(function (E) { E._t = null; });
       list.forEach(function (E, i) {
-        E._t = { k: i, n: n, repeat: E.n >= REPEAT && (E.last - E.first) > span / 2 };
+        E._t = { k: i, n: n, repeat: !!(E.kind === 'edge' ? E.e.repeat : E.k.repeat) };   // 反复调用：后端按 seq.is_repeat 算好的
       });
       function sec(us) { return when(us, w[0]); }
       this.edges.concat(this.links).forEach(function (E) {

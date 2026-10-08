@@ -1,20 +1,18 @@
-"""一个 run 的时序事件（events.py 整理好的 span）→ 当前切面上每条边什么时候被调用：模块图的「时间顺序」上色。
+"""一个 run 的时序事件（events.py 整理好的 span）→ 一段时间（阶段、拖出来的时间段、整个 run）里每个进程、每条线程的调用表。
 
-span 记的是「文件:首行号 → 文件:首行号」的调用（老 run 只有跨文件的），带开始时刻、时长、进程、父 span。这里：
+span 记的是「文件:首行号 → 文件:首行号」的调用（老 run 只有跨文件的），带开始时刻、时长、进程、线程、父 span。这里：
 
-  1. 把整个 run 的 span 解压、读一遍（_pairs），按阶段聚合成 (调用方键, 被调方键) → 第一次 / 最后一次 /
-     次数 / 每个进程里的首末——大 run 上解压读一遍要两秒多，所以换切面、换阶段都不再读。
-  2. 两端经 rel → 单元 → 切面节点（cut.view 的 node_of）映射（edge_times）；两端落在同一个节点的
-     （节点内部的调用）、import / 类体这种定义时的执行（模块图也不把它算作调用，align.defining）、
-     落不到 index 里的都不算。
+  1. phase_calls：把这一段里的 span 解压、读一遍，聚合成 (进程, 线程, 调用方键, 被调方键) → 第一次 / 最后一次 / 次数 /
+     深度 0 的最早一次（GPU 的行另按设备 · 流记一份）；按 (run, 时间段) 缓存。分列（lanes.build、一列的叠加）、请求路径的老做法、
+     边详情按先后排、时间段的计数（window_counts）都从这张表取——改切面、换一列展开不再读 span。
+  2. run_rows：整个 run 读一遍就有的、和时间段无关的（有 span 的线程、每条线程最底下的仓库函数、按下标取一行的被调方和开始时刻）；按 run 缓存。
+  3. cut_map：键 → 切面上的节点（一个 (idx, 切面) 算一次）。
+请求路径的调用上下文树要每一行的父 span，那一处（path._contexts）自己逐行读。
 
 时间一律是相对 run 起点（run.json 的 clock.mono0_ns）的微秒，和阶段的 t_us 同一根轴。
-早先这里还有一张时序图（生命线 + 消息，按时间窗分屏、折叠循环）；模块图上的「时间顺序」
-把先后画在同一张图上之后就去掉了。
 """
 from __future__ import annotations
 
-import bisect
 import gzip
 import json
 import math
@@ -148,13 +146,16 @@ class _Map:
         return _cut.unit_of_rel(self.files, key.rpartition(":")[0])
 
 
-# ---------------------------------------------------------------- 每条边的时间
+# ---------------------------------------------------------------- 阶段、时间段
 
-_PAIRS: "OrderedDict[tuple, dict]" = OrderedDict()    # (spans 目录, index mtime, 阶段划分) → _pairs 的结果（最近 8 个；拖出来的每个时间段各占一个）
-_EDGES: "OrderedDict[tuple, tuple]" = OrderedDict()   # (_PAIRS 的键, id(idx), 切面, 阶段) → (idx, edge_times 的结果)
 _CALLS: "OrderedDict[tuple, dict]" = OrderedDict()   # (spans 目录, index mtime, 时间段) → phase_calls 的结果（最近 8 个）
-_BUSY: dict[tuple, threading.Lock] = {}               # 正在算的 _PAIRS 键：同时来的同一个请求等着用一份结果
 REPEAT_MIN = 5                                        # 「反复调用」至少要调这么多次（2 次、每个进程一次的不算）
+
+
+def is_repeat(n: int, first: int, last: int, span_us: int) -> bool:
+    """「反复调用」（轮询、每个 token 都走一遍）：至少 REPEAT_MIN 次，而且第一次到最后一次隔了这一段（各个时间片加起来）的一半以上。
+    请求路径的 ↻、分列里时间顺序的 ↻ 都按它"""
+    return n >= REPEAT_MIN and last - first > span_us / 2
 
 
 def _phase_log(run: dict) -> list[tuple[str, int]]:
@@ -236,29 +237,25 @@ def calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = False
     return i1 - i0 + 1, t + round(i0 * step), t + round(i1 * step)
 
 
-def window_counts(rd: Path, t0: int, t1: int, ref_lines: dict | None = None) -> dict:
-    """时间段里的调用（折叠行按 calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges}
-    （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。老 run 的时序事件只记了跨文件的调用：那种 run 上
-    同一个文件里的调用这里没有，函数的次数会比按阶段看的少（前端注明）。span 读不出来时抛 OSError / ValueError。
-    ref_lines：整个 run 的调用行（counts.json.gz 的 func_lines）。span 不记调用行，给了的话每对的次数按它在整个 run
-    里各行的比例摊到行上（spread_lines），也返回 func_lines，和 scan 比的时候才和按阶段看一样按行比"""
+def window_counts(rd: Path, run: dict, t0: int, t1: int, ref_lines: dict | None = None) -> dict:
+    """时间段里的调用（折叠行按 calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges, gpu_us?}
+    （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。从 phase_calls 那张表加起来（和分列、请求路径同一份）。
+    老 run 的时序事件只记了跨文件的调用：那种 run 上同一个文件里的调用这里没有，函数的次数会比按阶段看的少（前端注明）。
+    span 读不出来时抛 OSError / ValueError。ref_lines：整个 run 的调用行（counts.json.gz 的 func_lines）。span 不记调用行，
+    给了的话每对的次数按它在整个 run 里各行的比例摊到行上（spread_lines），也返回 func_lines，和 scan 比的时候才和按阶段看一样按行比"""
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）：只能按阶段看，不能选时间段")
-    ix = _index(spans)
-    keys, funcs, edges, gpu = ix["keys"], {}, {}, {}
-    for c in ix["chunks"]:
-        if c["t0_us"] > t1 or c["t1_us"] < t0:
-            continue
-        for r in _chunk(spans, c["chunk"]):
-            got = calls_in(r[0], r[1], r[6], t0, t1)
-            if got is None or not (0 <= r[4] < len(keys) and 0 <= r[5] < len(keys)):
-                continue
-            a, b, n = keys[r[4]], keys[r[5]], got[0]
-            funcs[b] = funcs.get(b, 0) + n
-            edges[f"{a}|{b}"] = edges.get(f"{a}|{b}", 0) + n
-            if len(r) > 9:                       # GPU 的行（kernel）：按发起的时刻算在不在这一段里，GPU 时间按纳秒加、最后换成 µs
-                gpu[b] = gpu.get(b, 0) + gpu_ns(r)
+    pc = phase_calls(rd, run, f"t={t0}-{t1}")
+    keys, funcs, edges, gpu = pc["keys"], {}, {}, {}
+    ok = lambda a, b: 0 <= a < len(keys) and 0 <= b < len(keys)    # noqa: E731
+    for (_, _, a, b), (_, _, n, _) in pc["calls"].items():
+        if ok(a, b):
+            funcs[keys[b]] = funcs.get(keys[b], 0) + n
+            edges[f"{keys[a]}|{keys[b]}"] = edges.get(f"{keys[a]}|{keys[b]}", 0) + n
+    for (_, _, a, b, _, _), (_, _, _, ns) in pc["gpu"].items():   # GPU 的行（kernel）：按发起的时刻算在不在这一段里，按纳秒加、最后换成 µs
+        if ok(a, b):
+            gpu[keys[b]] = gpu.get(keys[b], 0) + ns
     out = {"funcs": funcs, "func_edges": edges}
     if gpu:
         out["gpu_us"] = {k: round(ns / 1000) for k, ns in gpu.items()}
@@ -290,81 +287,50 @@ def spread_lines(edges: dict, ref_lines: dict) -> dict:
     return out
 
 
-def _pairs(spans: Path, run: dict, window: tuple[int, int] | None = None) -> tuple[tuple, dict]:
-    """把整个 run 的 span 解压、读一遍：每个阶段（None 是整个 run）里，(调用方键, 被调方键) →
-    [first, last, n, {pid: [first, last]}]。归到切面的节点是后一步（edge_times，很便宜）——换切面、换阶段
-    都不用再解压（158 万条 span 的 run 解一遍要两秒多）。同时来的同一个请求只算一次。
-    折叠过的 span（rep 次连续的同级调用合成一行）按 calls_in 均匀摊到它盖住的时间上，跨了阶段的分到各个阶段。
-    window（时间轴拖出来的时间段）：只读和它重叠的块、只算在它里面的调用，结果只有 None 一张表"""
-    ix = _index(spans)
-    end = run_end(run, spans.parent.parent) or 0
-    iv = phase_intervals(run, end) if window is None else {None: [window]}
-    key = (str(spans), (spans / "index.json").stat().st_mtime_ns,
-           tuple((n, tuple(v)) for n, v in sorted(iv.items(), key=lambda kv: (kv[0] is not None, kv[0] or ""))))
+_ROWS: "OrderedDict[tuple, dict]" = OrderedDict()    # (spans 目录, index mtime) → run_rows 的结果（最近 4 个）
+
+
+def run_rows(rd: Path) -> dict:
+    """整个 run 的 span 读一遍就有的、和阶段 / 时间段无关的东西（分列用；按 run 缓存，换阶段、改切面都不再读）：
+    {"tids": {pid: {tid, …}}（有 span 的线程），
+     "held": {(pid, tid): {调用方键下标: [最早开始, 最晚结束]}}——深度 0 的调用的调用方是这条线程最底下的仓库函数，它至少在这段时间里
+             在栈上（没返回的结束是 inf）；交接发生在仓库外的代码里时，按它认那一刻在跑的是哪个仓库函数,
+     "rows": {pid: ([被调方键下标…], [开始…])}——按下标取一行 span 的被调方和开始时刻（交接、起线程、子进程记的是 span 下标）}"""
+    spans = rd / "events" / "spans"
+    ix = span_index(rd)
+    key = (str(spans), (spans / "index.json").stat().st_mtime_ns)
     with _LOCK:
-        hit = _PAIRS.get(key)
-        busy = hit is None and _BUSY.setdefault(key, threading.Lock())
+        hit = _ROWS.get(key)
     if hit is not None:
-        return key, hit
-    with busy:
-        with _LOCK:
-            hit = _PAIRS.get(key)
-        if hit is not None:
-            return key, hit
-        try:
-            out = _pairs_scan(spans, ix, iv, *(window or (0, end)))
-            _put(_PAIRS, key, out, cap=8)          # 先放进缓存再撤掉「正在算」：中间来的请求不会再解一遍
-        finally:
-            with _LOCK:
-                _BUSY.pop(key, None)
-        return key, out
-
-
-def _pairs_scan(spans: Path, ix: dict, iv: dict, lo: int, hi: int) -> dict:
-    """_pairs 真正读 span 的那一遍：[lo, hi] 里的调用。阶段的各段左闭右开（切阶段那一刻的调用归新阶段），
-    最后一段闭到 run 的终点；一行折叠的调用跨了几段就按 calls_in 分到几段"""
-    segs = sorted((t0, t1, name) for name, v in iv.items() if name is not None for t0, t1 in v)
-    starts = [x[0] for x in segs]
-    agg: dict = {name: {} for name in iv}
-
-    def add(d, k, got, pid):
-        n, t, last = got
-        e = d.get(k)
-        if e is None:
-            d[k] = [t, last, n, {pid: [t, last]}]
-            return
-        e[0], e[1], e[2] = min(e[0], t), max(e[1], last), e[2] + n
-        q = e[3].get(pid)
-        if q is None:
-            e[3][pid] = [t, last]
-        else:
-            q[0], q[1] = min(q[0], t), max(q[1], last)
+        return hit
+    tids: dict[int, set] = {}
+    held: dict[tuple, dict] = {}
+    rows: dict[int, tuple] = {}
     for c in ix["chunks"]:
-        if c["t0_us"] > hi or c["t1_us"] < lo:
-            continue
         pid = c["pid"]
+        bs, ts = rows.setdefault(pid, ([], []))
+        ti = tids.setdefault(pid, set())
         for r in _chunk(spans, c["chunk"]):
-            t, dur, rep, k = r[0], r[1], r[6], (r[4], r[5])
-            got = calls_in(t, dur, rep, lo, hi)
-            if got is None:
-                continue
-            add(agg[None], k, got, pid)
-            end = t + max(dur, 0) if rep > 1 else t
-            i = max(0, bisect.bisect_right(starts, t) - 1)
-            while i < len(segs) and segs[i][0] <= end:
-                g = calls_in(t, dur, rep, segs[i][0], segs[i][1], open_hi=i + 1 < len(segs))
-                if g:
-                    add(agg[segs[i][2]], k, g, pid)
-                i += 1
-    return {"iv": iv, "agg": agg, "keys": ix["keys"], "truncated": ix.get("truncated") or []}
+            bs.append(r[5])
+            ts.append(r[0])
+            ti.add(r[2])
+            if r[3] == 0:
+                hk = held.setdefault((pid, r[2]), {}).setdefault(r[4], [r[0], r[0]])
+                hk[0] = min(hk[0], r[0])
+                hk[1] = max(hk[1], r[0] + r[1] if r[1] >= 0 else math.inf)
+    out = {"tids": tids, "held": held, "rows": rows}
+    _put(_ROWS, key, out, cap=4)
+    return out
 
 
 def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
     """一个阶段（None 是整个 run，「t=起-止」是时间段）里每个进程、每个线程的调用（请求路径、分列里一列的叠加用）：
     {"window": [起, 止], "span_us": 各段加起来多长, "keys": [键], "threads": {pid: {tid: 名字}}, "truncated": [pid],
-     "scope": "all" | "cross"（老 run 的时序事件只记了跨文件的调用）, "calls": {(pid, tid, a, b): [first, last, n]},
+     "scope": "all" | "cross"（老 run 的时序事件只记了跨文件的调用）, "calls": {(pid, tid, a, b): [first, last, n, first0]},
      "gpu": {(pid, tid, a, b, 设备, 流): [first, last, n, GPU 上跑了多少 ns]}}
-    ——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。折叠行按 calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点（同 _pairs）。
+    ——a、b 是 keys 的下标，时刻是微秒、相对 run 起点。折叠行按 calls_in 摊开；阶段的各段左闭右开，最后一段闭到 run 的终点。
+    first0 是这一段里深度 0（线程最底下）的这对调用最早的一次：(时刻, 行的先后) 或 None——分列按它认一列的入口，一样早的取先读到的那一行。
+    这张表按 (run, 时间段) 缓存：分列里改切面、换一列展开都从它取，不再读 span。
     GPU 的行（trace --gpu 的 kernel，tid 是发起它的线程、a 是调用方、b 是 kernel）在 calls 里照样有（请求路径列它），gpu 里再按设备 · 流记一份。
     没有 span、没有这个阶段的时刻抛 LookupError，span 读不出来抛 OSError / ValueError"""
     spans = rd / "events" / "spans"
@@ -377,11 +343,13 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
         return hit
     calls: dict = {}
     gpu: dict = {}
+    order = 0
     for c in ix["chunks"]:
         if all(c["t0_us"] > hi or c["t1_us"] < lo for lo, hi in segs):
             continue
         pid = c["pid"]
         for r in _chunk(spans, c["chunk"]):
+            order += 1
             for lo, hi in segs:
                 got = calls_in(r[0], r[1], r[6], lo, hi, open_hi=not win and hi < end)
                 if got is None:
@@ -390,9 +358,11 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
                 k = (pid, r[2], r[4], r[5])
                 e = calls.get(k)
                 if e is None:
-                    calls[k] = [f, last, n]
+                    e = calls[k] = [f, last, n, None]
                 else:
                     e[0], e[1], e[2] = min(e[0], f), max(e[1], last), e[2] + n
+                if r[3] == 0 and (e[3] is None or (f, order) < e[3]):
+                    e[3] = (f, order)
                 if len(r) > 9:                   # GPU 的行（kernel）：GPU 上跑的时间按纳秒记（gpu_ns）
                     g = gpu.setdefault(k + tuple(r[9][:2]), [f, last, 0, 0])
                     g[0], g[1], g[2], g[3] = min(g[0], f), max(g[1], last), g[2] + n, g[3] + gpu_ns(r)
@@ -400,64 +370,4 @@ def phase_calls(rd: Path, run: dict, phase: str | None) -> dict:
            "threads": ix["threads"], "truncated": ix.get("truncated") or [], "scope": ix.get("scope") or "cross",
            "calls": calls, "gpu": gpu}
     _put(_CALLS, key, out, cap=8)
-    return out
-
-
-def edge_times(idx: dict, rd: Path, run: dict, *, open_, phase: str | None = None, keymap=None,
-               redirect: dict | None = None) -> dict:
-    """切面上每条节点间的边在一个阶段（None 是整个 run）里什么时候被调用：
-    {"window": [起, 止], "intervals": [(起, 止)…], "span_us": 各段加起来多长,
-     "edges": {"a|b": {first, last, n, spread, repeat}}, "truncated"}（微秒，相对 run 起点）。
-    模块图的「时间顺序」按 first 排名上色：控制流第一次走到这条边的时刻，讲一条调用链时的先后就是它。
-    spread 是同一个进程里第一次到最后一次隔了多久（取各进程里最长的）；repeat（反复调用）要至少 REPEAT_MIN 次、
-    而且 spread 超过这段时间的一半——每个进程各调一次的、只调两次的都不算。
-    两端落在同一个节点的（节点内部的调用）、import / 类体这种定义时的执行、落不到 index 里的都不算。
-    keymap：录制时的键 → 现在的（align.key_mapper；录制之后改过的文件里函数挪了位置），没给就原样用。
-    redirect：同一个 run（阶段、时间段）的 hot["redirect"]（trace 的键对 → 类）——构造 C(…) 跑到的 __init__ 这类，
-    模块图上算在 F→C 上（align.classify），这里也算到 C 的文件上，时刻才落在图上画着的那条边上"""
-    spans = rd / "events" / "spans"
-    if not (spans / "index.json").is_file():
-        raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）")
-    win = parse_window(phase)
-    pkey, P = _pairs(spans, run, win)
-    if win:
-        phase = None                                   # 时间段：只有一张表（_pairs 的 window）
-    elif phase not in P["iv"]:
-        raise LookupError(f"这个 run 里没有阶段 {phase} 的时刻：不知道它从什么时候开始，没法按时间排")
-    key = (pkey, id(idx), None if open_ is None else ",".join(sorted(open_)), phase, keymap is not None,
-           bool(redirect))
-    with _LOCK:
-        hit = _EDGES.get(key)
-    if hit is not None and hit[0] is idx:              # 连 idx 一起存：id 不会被重新扫出来的 index 复用
-        return hit[1]
-    keys, m = P["keys"], cut_map(idx, open_)
-    edges: dict[str, dict] = {}
-    pids: dict[str, dict] = {}
-    for (a, b), (first, last, n, per) in P["agg"][phase].items():
-        ka, kb = keys[a] if 0 <= a < len(keys) else "?", keys[b] if 0 <= b < len(keys) else "?"
-        if keymap is not None:
-            ka, kb = keymap(ka), keymap(kb)
-        na = m.of(ka)[0]
-        to = redirect.get(f"{ka}|{kb}") if redirect else None
-        nb, defining = (m.file_node(m.syms[to]["f"]), False) if to else m.of(kb)
-        if na is None or nb is None or na == nb or defining:
-            continue
-        k = f"{na}|{nb}"
-        e = edges.get(k)
-        if e is None:
-            edges[k], pids[k] = {"first": first, "last": last, "n": n}, {}
-        else:
-            e["first"], e["last"], e["n"] = min(e["first"], first), max(e["last"], last), e["n"] + n
-        for pid, (f, l) in per.items():
-            q = pids[k].get(pid)
-            pids[k][pid] = [f, l] if q is None else [min(q[0], f), max(q[1], l)]
-    segs = P["iv"][phase]
-    span = sum(t1 - t0 for t0, t1 in segs)
-    for k, e in edges.items():
-        # 反复调用：够多次，而且同一个进程里从头到尾隔了这段时间的一半以上（轮询、每个 token 走一遍）
-        e["spread"] = max(l - f for f, l in pids[k].values())
-        e["repeat"] = e["n"] >= REPEAT_MIN and e["spread"] > span / 2
-    out = {"window": [segs[0][0], segs[-1][1]], "intervals": segs, "span_us": span,
-           "edges": edges, "truncated": P["truncated"]}
-    _put(_EDGES, key, (idx, out))
     return out

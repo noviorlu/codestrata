@@ -770,7 +770,7 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
     counts, names = load_counts(rd, None if win else phase, with_names=True)
     if win:                                      # 时间段：次数按这段时间里的时序事件现算（只有跨文件的调用）；
         try:                                     # 调用行按整个 run 记的比例摊（span 不记调用行）
-            counts = _seq.window_counts(rd, *win, ref_lines=counts.get("func_lines"))
+            counts = _seq.window_counts(rd, run, *win, ref_lines=counts.get("func_lines"))
         except LookupError as e:
             raise SystemExit(str(e)) from None
         except (OSError, ValueError) as e:

@@ -4,8 +4,6 @@
     GET  /<asset>                 前端静态资源（app.css、*.js）
     GET  /api/app                 {home}：从主菜单（codestrata app）打开时主菜单的地址，页面上放回去的链接
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
-    GET  /api/seq/edges?run=&open=   切面上每条边在 run 选的阶段里第一次 / 最后一次被调用的时刻和次数
-                                  （模块图的「时间顺序」上色）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
     GET  /api/lanes?run=&open=&cuts=
                                   按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
@@ -299,31 +297,6 @@ class Handler(BaseHandler):
             # 还没认出是哪个 run 就出错（读 runs 目录失败）：没有 run id 可写
             return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
 
-    def _seq(self, path: str, q: dict):
-        """/api/seq/edges：模块图「时间顺序」上色要的数据。run 必填（run id 或 case 名，@阶段决定时间窗）。"""
-        ref = (q.get("run") or [""])[0].strip()
-        if not ref:
-            return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
-        try:
-            run, rd, phase = _runs.resolve(self.repo, ref)
-        except SystemExit as e:
-            return self._json({"error": str(e)}, 404)
-        raw = (q.get("open") or [None])[0]
-        open_ = None if raw is None else [o for o in raw.split(",") if o]
-        open_ = sorted(_cut.norm_open(self.idx, open_))
-        try:
-            hot = self._hot(q)[0]                  # 带着录制时的键 → 现在的键（改过的文件里函数挪了位置）
-        except LookupError as e:
-            return self._json({"error": str(e)}, 404)
-        try:
-            return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase,
-                                              keymap=(hot or {}).get("keymap"), redirect=(hot or {}).get("redirect")))
-        except (LookupError, FileNotFoundError) as e:
-            return self._json({"error": str(e) if isinstance(e, LookupError)
-                               else "这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12），或者 span 没整理好（runs merge 重来）"}, 404)
-        except (OSError, ValueError) as e:            # span 文件坏了：说清楚，不让连接直接断
-            return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
-
     def _runs(self) -> dict:
         """/api/runs：下拉列表要的摘要，新的在前。「录制后改过几个文件」要读 detail.json 和当前
         index 比，按 (run id, detail 的 mtime) 缓存。"""
@@ -373,9 +346,6 @@ class Handler(BaseHandler):
                 return self._json(self._runs())
             except SystemExit as e:                  # runs/ 是软链、指向的盘没挂上
                 return self._json({"error": str(e)}, 503)
-
-        if path == "/api/seq/edges":
-            return self._seq(path, q)
 
         if path == "/api/path":
             return self._path(q)

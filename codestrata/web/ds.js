@@ -32,10 +32,6 @@ window.CS = window.CS || {};
     runs: function () { return j('api/runs'); },
     // 从主菜单（codestrata app）打开的：主菜单的地址（页面上放回去的链接）；直接 serve 的是 null
     home: function () { return j('api/app').then(function (r) { return r.home; }); },
-    // 切面上每条边在当前 run（选的阶段）里第一次 / 最后一次被调用的时刻和次数：「时间顺序」上色
-    seqEdges: function (open) {
-      return j('api/seq/edges?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : ''));
-    },
     // 请求路径：当前 run（选的阶段）里每个进程、每个线程按第一次调用排的函数级调用树
     path: function () { return j('api/path?run=' + encodeURIComponent(this.run)); },
     // 按进程 · 线程分列：当前 run（选的阶段）、当前切面上每列的节点和边、列之间的连线（lanes.py）

@@ -450,23 +450,24 @@
   没盯的：`queue.SimpleQueue`（C 写的，包不了）、线程池的 `submit`、共享内存、裸管道和 socket——stage1 到 stage2 走的共享内存通道两边都是仓库里的同一个模块，靠「共用同一个模块」那种连线连上。
 - 在哪：`trace/hook.py` 的 `_queue_patch`、`_fp`、`_zdata`、`_zsend`、`_zmq_sync`、`_zmq_async`、`_OnImport`；`events.py` 的 `_handoffs`。
   测试 `test_events_truth`（`trace_cases/fakezmq` 是照 pyzmq 的样子写的假 pyzmq：send_multipart 逐帧调 send、ROUTER 的身份帧；场景照 vLLM 的收发方式）。
-### 调用的先后画在模块图的边上，按名次上色
-- 决定：录了事件的 run 在 serve 里多一个「时间顺序」开关：看得见的、跑到的边按第一次被调用的先后排名 1…N，按名次在三个色标之间插值上色、标序号。
-  同一个进程里第一次到最后一次隔了超过阶段总长一半、而且至少 5 次的，序号后加 ↻。
+### 调用的先后画在分列的边和交接线上，按名次上色
+- 决定：分列里有一个「时间顺序」开关：看得见的列里的边和交接线放在一起，按第一次发生的先后排名 1…N（跨线程），按名次在三个色标之间插值上色、标序号。
+  至少 5 次、而且第一次到最后一次隔了这一段（各个时间片加起来）的一半以上的，序号后加 ↻（`seq.is_repeat`，请求路径的 ↻ 用同一个判法）。
+  录了时序事件的 run 一律分列，所以模块图上没有这个开关（模块图那一套 2026-10-08 删了）。
 - 为什么：讲一条调用链时的先后直接画在同一张图上，跟着切面、阶段一起变。按名次不按时刻：模型加载这种长时段会把按时刻插值的颜色都挤到一头。
-  ↻ 的判据按同一进程算：几个 worker 各初始化一次、隔得再远也不算反复；轮询、每个 token 都走一遍的路径才算，它的序号只说明从什么时候开始。
-- 放弃的方案：单独一张时序图（生命线 + 消息，M5 做过，已整个删掉）；按时刻插值上色。
-- 在哪：`seq.py` 的 `edge_times`、`REPEAT_MIN`；`serve.py` 的 `Handler._seq`（`/api/seq/edges`）；`web/graph.js` 的 `_rankTimes`、`timeColor`、`_paintOrder`；`web/app.js` 的 `applyTimes`。
+  ↻ 是轮询、每个 token 都走一遍的路径，它的序号只说明从什么时候开始。
+- 放弃的方案：单独一张时序图（生命线 + 消息，M5 做过，已整个删掉）；按时刻插值上色；模块图上的时间顺序（录了事件就是分列，走不到）。
+- 在哪：`seq.py` 的 `is_repeat`、`REPEAT_MIN`；`lanes.py`（列里的边、交接线的 `repeat`）；`web/lanes.js` 的 `paint`、`timeColor`、`badges`；`web/app.js` 的 `applyTimes`。
 
 ### 合成一行的连续调用，按次数均匀摊在它盖住的时间上
 - 决定：第一级折叠只记第一次的开始和整行的结束；按阶段、按时间段计数时，把 rep 次调用均匀摊在 [开始, 结束] 上，没返回的整行算在开始。
 - 为什么：一行能盖住几十秒（vllm-omni 的轮询，一行 3852 次、从 68 s 到 112 s），整行算在开始那一刻，一秒的时间段里会多出几千次、之后几十秒一次都没有。
   均匀是近似：只知道总数和首尾。
 - 放弃的方案：整行算在开始时刻。
-- 在哪：`seq.py` 的 `_calls_in`（`_pairs` 和 `window_counts` 共用）；测试 `test_calls_in_and_run_end`。
+- 在哪：`seq.py` 的 `calls_in`（`phase_calls` 用它）；测试 `test_calls_in_and_run_end`。
 
 ### 任意时间段写成 `@t=起-止`，和阶段名放在同一个位置
-- 决定：时间轴上拖出的一段时间写成 REF 的 `@t=起-止`（微秒），CLI 的 `--hot`、serve 的缓存键、页面地址都照走；次数由 `seq.window_counts` 按这段时间里的 span 现算，
+- 决定：时间轴上拖出的一段时间写成 REF 的 `@t=起-止`（微秒），CLI 的 `--hot`、serve 的缓存键、页面地址都照走；次数由 `seq.window_counts` 从这段时间的调用表（`seq.phase_calls`）加起来，
   形状和 counts.json.gz 一样，后面的 `remap`、`to_package_graph` 不分两种。拖到和整个 run 或某个阶段差不到 4 像素就当成它。
   时间轴终点取最后一条 span 的结束、最后一次切阶段、run 的时长三者最大的。
 - 为什么：不另开通道。counts.json.gz 是按阶段切的，分不出任意一段时间，带时刻的只有时序事件。吸附：拖回原样不会凭空多出一个时间段。
@@ -474,13 +475,18 @@
 - 放弃的方案：阶段之外另设时间窗参数。理由未另外记录。
 - 在哪：`runs.py` 的 `resolve`、`load`；`seq.py` 的 `parse_window`、`window_counts`、`run_end`、`phase_segments`；`web/timebar.js` 的 `snap`。
 
-### span 读一遍，按切面归很多次
-- 决定：`_pairs` 把整个 run 的 span 解压读一遍，按阶段聚合成「键对 → 首次 / 末次 / 次数」，缓存 8 份；`edge_times` 再把键对经 rel → 单元 → 当前切面节点归一遍。
-  「键 → 符号」和「是不是定义」与模块图共用 `analysis.sym_locs`、`analysis.defining`。同一个请求同时来只算一次（按键加锁）。
-- 为什么：解压、读 span 是贵的一步，归到节点很便宜。记录的数字（没复测）：158 万条 span 的 sympy run 第一次 2.2 s，之后换阶段 9 ms、每个新切面约 30 ms。
-  共用判断，整个 run 上每条边的次数和 hot 图逐条相等（`test_seq_edge_times`）。
-- 放弃的方案：每次请求按时间窗重读块（时序图时代的 16 块 LRU）。
-- 在哪：`seq.py` 的 `_pairs`、`_pairs_scan`、`_Map`、`edge_times`、`_PAIRS`、`_BUSY`。
+### 每条线程的调用表读一遍、缓存，按切面归很多次
+- 决定：`seq.phase_calls` 把一段时间（阶段、时间段、整个 run）里的 span 读一遍，聚合成（进程, 线程, 调用方键, 被调方键）→ 首次 / 末次 / 次数 /
+  深度 0 的最早一次（GPU 的行另按设备 · 流记），按 (run, 时间段) 缓存 8 份；`seq.run_rows` 存整个 run 的、和时间段无关的（有 span 的线程、
+  每条线程最底下的仓库函数、按下标取一行的被调方和开始），按 run 缓存。分列（`lanes.build`、一列的叠加）、时间段的计数（`window_counts`）、
+  边详情按先后排（`path.first_calls`）、老 run 的请求路径都从这两份取：改切面、换一列展开只把表里的键对归到节点上。「键 → 符号」和「是不是定义」
+  与模块图共用 `align.sym_locs`、`align.defining`。请求路径的调用上下文树要每一行的父 span，那一处（`path._contexts`）自己逐行读。
+- 为什么：解压、读 span 是贵的一步，归到节点便宜。vllm-omni 的 MiniCPM run（23.5 万行 span）上分列改一列切面从约 0.7 s 降到 0.04 s，
+  qwen 的 GPU run 的 decode 从约 1.2 s 降到几乎不花时间（2026-10-08 实测）。以前分列、请求路径、时间段、模块图的时间顺序四处各读各算，
+  「第一次调用」「反复调用」的口径已经分叉。共用一张表，各列加起来和原始 span、和 hot 图逐条相等（`test_lanes_match_spans_and_hot`）。
+- 放弃的方案：每次请求按时间窗重读块（时序图时代的 16 块 LRU）；按阶段一次把整个 run 读成一张不分线程的表（`_pairs`，跟着模块图的时间顺序一起删了）。
+- 在哪：`seq.py` 的 `phase_calls`、`run_rows`、`window_counts`、`cut_map`；`lanes.py` 的 `build`、`lane_counts`；`path.py` 的 `first_calls`、`_contexts`。
+  测试 `test_lanes_match_spans_and_hot`、`test_lane_counts`、`test_calls_in_and_run_end`。
 
 ---
 
@@ -610,7 +616,7 @@
 - 决定：`trace` 不 import `runs`：`trace.driver.run` 只接收一个 parts 目录和一个 `after` 回调，收尾（打包、写 run.json）在 `run` 的 try/finally 里跑。`seq` 不 import `events`
   也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块。
 - 为什么：driver 的信号处理器要一直装到收尾做完，收尾中途按 Ctrl+C 才不会留下半截的 run——所以用回调而不是返回后再收尾。写 run、删 run 的代码全在 `runs` 里，
-  审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.edge_times`；代价是 spans/ 的格式两边各认一份（`test_seq_edge_times` 兜底）。
+  审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.phase_calls`；代价是 spans/ 的格式两边各认一份（`test_lanes_match_spans_and_hot` 兜底）。
   原来的 `payload.py` 是 god module，2026-09-30 拆成了 `align.py`（两边的比较）和 `ui/` 下几个按页面区域分的模块；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
 - 放弃的方案：`driver.run` 返回后由调用方收尾。
 - 在哪：`trace/driver.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import。

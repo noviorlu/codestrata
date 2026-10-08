@@ -359,7 +359,7 @@ R 3784145 1 2
 | `scope` | str | `"all"`：每次调用都有 span；`"cross"`：只有跨文件的（老 run，没有这个字段也是）；`"mixed"`：几个进程不一样（录到一半换了 codestrata） | `seq.phase_calls` → `path`（老 run 才按计数补同文件的那一跳） |
 | `chunks` | [{pid, chunk, t0_us, t1_us, n}] | 每块 span 文件：属于哪个 pid、文件名、块里最早的开始、最晚的结束（`max(t0 + max(dur, 0))`）、行数。**块上没有 truncated 字段** | `seq`：按 `t0_us` / `t1_us` 跳过和时间段不重叠的块；`seq.run_end` 取所有块的 `t1_us` 最大值当时间轴终点的候选 |
 | `procs` | [{pid, ppid, t0_us, n_events, n_spans, truncated}] | 每个进程映像一条（同一 pid exec 前后是两条）；`n_events` 是 C/R/Y/S 行数；`truncated` 是这个映像到了行数上限 | `runs._build_events`（数进程） |
-| `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.edge_times` 原样带出 |
+| `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.phase_calls`、`lanes.build` 原样带出 |
 | `thread_from` | {"\<pid\>": {"\<tid\>": [起它的 tid, span 下标, 行, t_us, 守护]}} | 线程是谁起的（F 行）：在同一个进程的哪个线程、哪个 span 里、哪一行 `Thread.start`；span 下标是 `-1` 时不在任何 span 里（模块顶层、线程的入口函数），行 0 是不知道。没记到的线程（2026-10-01 之前的 run、主线程）没有；老的只有前两项 | `lanes`（谁起了谁） |
 | `thread_end` | {"\<pid\>": {"\<tid\>": {"t": t_us 或 null, "by": [join 它的 tid, span 下标, 行, t_us] 或 null}}} | 线程怎么结束的（X / J 行）：`t` 是 run 跑完的时刻（null：到录制结束还在跑），`by` 是第一次 join 等到它的那一处（null：没人 join）。只有 `thread_from` 里有的线程才有；老 run 没有这个字段 | `lanes`（谁回收了谁、列头的起 / 收） |
 | `reaps` | [{pid, tid, row, line, child, t_us}] | 子进程是谁收的（W 行）：waitpid 等到 `child` 退出的那一边。老 run 没有 | `lanes` |
@@ -417,10 +417,10 @@ R 3784145 1 2
   和 scan 比的结果和按阶段看的一样；每行的次数是约数（`hot.lines_approx`，页面上注明）。老 run 没有 `func_lines` 就不给。
 - **请求路径**（`seq.phase_calls` → `path.request_path`，`/api/path`、`codestrata path`）：一个阶段（或时间段）里每个（进程, 线程, 调用方键, 被调方键）
   的首末时刻和次数，落到 graph 的节点上排成调用树（见 decisions「请求路径」）。线程名来自 keys.json 的 `threads`，进程名来自 detail.json 的 `procs`（`title`、`argv`）。
-- **时间顺序**（`seq.edge_times`，`/api/seq/edges`）：一个阶段（或时间段）里，切面上每条节点间的边
-  `{first, last, n, spread, repeat}`。阶段的时间段来自 `phase_log`：各段左闭右开，最后一段闭到 run 的终点；
-  终点 = max(`duration_s`、最后一次切阶段、所有块的 `t1_us`)（`seq.run_end`）。`repeat` = 至少 5 次，且同一进程里第一次到最后一次
-  隔了这段时间的一半以上。两端落在同一个节点的、被调方是定义时的执行（模块顶层、类体）的、落不到 index 里的都不算。
+- **分列**（`seq.phase_calls` → `lanes.build`，`/api/lanes`）：同一张调用表按进程 · 线程分列、落到每列的切面上；列里的边带 `{first, last, n, only, repeat}`。
+  阶段的时间段来自 `phase_log`：各段左闭右开，最后一段闭到 run 的终点；终点 = max(`duration_s`、最后一次切阶段、所有块的 `t1_us`)（`seq.run_end`）。
+  `repeat` = 至少 5 次，且第一次到最后一次隔了这段时间（各段加起来）的一半以上（`seq.is_repeat`）。两端落在同一个节点的、被调方是定义时的执行
+  （模块顶层、类体）的、落不到 index 里的都不算。
 
 ## 7 run 的引用
 
@@ -428,7 +428,7 @@ R 3784145 1 2
 REF := (<完整 run id> | <case 名>) [ "@" <阶段名> | "@t=" <起 µs> "-" <止 µs> ]
 ```
 
-`runs.resolve` 解析，命令行（`--hot`、`runs show/merge/tag/note`）和页面（`/api/graph?run=`、`/api/seq/edges?run=`）通用：
+`runs.resolve` 解析，命令行（`--hot`、`runs show/merge/tag/note`）和页面（`/api/graph?run=`、`/api/lanes?run=`）通用：
 
 - 先当完整 id 找，找不到再当 case 名：取这个 case 最新一次 `ok` 的；没有就取最新的 `partial`（打印提示）；再没有就取最新的一次（不论状态）。
   「最新」按目录名倒序（id 以时间戳开头）。`runs rm` 只认完整 id。
