@@ -20,7 +20,7 @@
 | 时间 | 磁盘上的时刻都是**相对 run 起点的微秒**（字段名以 `_us` 结尾），起点是 run.json 的 `clock.mono0_ns`（Linux 的 `CLOCK_MONOTONIC`，全机共享，不同进程可以直接比；换机器、重启后不可比）。原始分片和日志里的 `t0` / `t` 是绝对的 monotonic 纳秒 |
 | 内容哈希 | `sha16` = `sha256(文件字节).hexdigest()[:16]`。录制端的 `file_shas`、scan 的 `file_sha`、存下文件的 `sha` 都是它，三边直接比 |
 | 写法 | JSON 一律 UTF-8。run.json、detail.json、counts.json.gz 先写 `<名字>.<pid>.tmp` 再 `os.replace`（`runs._write`），读的一方看不到写了一半的文件：`.json` 是缩进 1 的 JSON，`.json.gz` 是紧凑 JSON 再 gzip（mtime=0），命令行里不是 UTF-8 的字节写成 `\udcXX` 转义。`events/spans/` 是整个目录先写到临时目录再换上 |
-| 阶段名、case 名 | 都只能用 `[A-Za-z0-9._-]`（`runs.CASE_RE`、`trace.PHASE_NAME_RE`） |
+| 阶段名、case 名 | 都只能用 `[A-Za-z0-9._-]`（`runs.CASE_RE`、`trace.analysis.PHASE_NAME_RE`） |
 
 ## 1 目录布局
 
@@ -363,8 +363,8 @@ R 3784145 1 2
 | `thread_from` | {"\<pid\>": {"\<tid\>": [起它的 tid, span 下标, 行, t_us, 守护]}} | 线程是谁起的（F 行）：在同一个进程的哪个线程、哪个 span 里、哪一行 `Thread.start`；span 下标是 `-1` 时不在任何 span 里（模块顶层、线程的入口函数），行 0 是不知道。没记到的线程（2026-10-01 之前的 run、主线程）没有；老的只有前两项 | `lanes`（谁起了谁） |
 | `thread_end` | {"\<pid\>": {"\<tid\>": {"t": t_us 或 null, "by": [join 它的 tid, span 下标, 行, t_us] 或 null}}} | 线程怎么结束的（X / J 行）：`t` 是 run 跑完的时刻（null：到录制结束还在跑），`by` 是第一次 join 等到它的那一处（null：没人 join）。只有 `thread_from` 里有的线程才有；老 run 没有这个字段 | `lanes`（谁回收了谁、列头的起 / 收） |
 | `reaps` | [{pid, tid, row, line, child, t_us}] | 子进程是谁收的（W 行）：waitpid 等到 `child` 退出的那一边。老 run 没有 | `lanes` |
-| `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us, 行]`（老的没有行），`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （P0 的运行时模型） |
-| `spawns` | [{pid, tid, row, line, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` / `line` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里；`line` 0 是不知道，老 run 没有），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （P0 的运行时模型） |
+| `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us, 行]`（老的没有行），`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （分列用） |
+| `spawns` | [{pid, tid, row, line, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` / `line` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里；`line` 0 是不知道，老 run 没有），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （分列用） |
 | `n_lines` | int | 所有日志的 C/R/Y/S 行数 | run.json 的 `events` |
 | `n_spans` | int | span 行数（折叠后；含 GPU 的行） | 同上 |
 | `n_calls` | int | Python 的调用次数（`Σ rep`，不含 GPU 的行） | 同上 |

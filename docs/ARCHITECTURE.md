@@ -24,7 +24,7 @@ codestrata 围着一个 graph 转：
 
 ## 组成
 
-codestrata 是一个纯标准库的 Python 包（源码高亮用可选的 Pygments）加一套不需要构建的前端，分四部分：
+codestrata 是一个纯标准库的 Python 包（可选：源码高亮用 Pygments，C / C++ / CUDA 进图用 tree-sitter；`trace --gpu` 时用本机的 g++ 现编 CUPTI 录制端）加一套不需要构建的前端，分四部分：
 **静态扫描**（`scan`、`xref`：把仓库变成 `.codestrata/` 下可重建的索引）；**录制**（`trace`、`runs`、`events`：跑一条真实命令，
 存成 `.codestrata/runs/<id>/` 下不可重建的 run）；**组装与交付**（`ui/` 下几个模块从索引和叠上的 run 里取前端要的数据，`serve` 按请求给；
 `cut`、`layout`、`seq`、`highlight` 是零件）；**前端**（`codestrata/web/`）。
@@ -80,9 +80,9 @@ flowchart LR
 
 | 模块 | 行 | 职责 |
 |---|---:|---|
-| `__init__.py` | 8 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
+| `__init__.py` | 9 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 673 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
+| `__main__.py` | 684 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
 | `scan.py` | 763 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1703 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file`，走完把构造时跑到的方法（`ctor_methods`）交给 `on_end` |
 | `native_scan.py` | 250 | C / C++ / CUDA 的扫描端（tree-sitter，可选依赖 `[native]`）：每个原生文件一个单元，函数 / 类 / kernel 成符号，`#include` 当排版权重，调用和 `<<<…>>>` 启动按名字对上（近似：只有一个候选才连），交给 scan 装进同一份索引、经 `index["native_graph"]` 交给 `graph.Builder` |
@@ -188,7 +188,7 @@ flowchart LR
 ```bash
 .venv/bin/python tests/test_runs.py      # 约 1.5–2 分钟
 .venv/bin/python tests/test_graph.py
-.venv/bin/python tests/test_native_scan.py   # 要 [native]，没装就跳过
+.venv/bin/python tests/test_native_scan.py   # 要 [native]，没装就跳过：动了 C / C++ / CUDA 就在装了它的 Python 上再跑一遍
 CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_gpu.py   # 没有 GPU 的部分自动跳过
 .venv/bin/python tests/test_app.py
 .venv/bin/python tests/test_package.py   # 要 uv
@@ -208,7 +208,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 - `test_gpu.py`：GPU 录制（找工具链、hook 的系统线程号）、导入端（手写的日志：kernel 挂到哪个 span——按重放出来的真实的栈，折叠的连续调用、挂起的生成器、截断之后都测了；次数不靠时序事件；仓库里 / 外的键、虚拟节点的叠加和边的说明）；给了 `CODESTRATA_TEST_CUDA_PY`（装了 CUDA 版 torch 的 Python）时真录一个小程序，核对 kernel 和启动调用的关联号、线程号。
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
-- `test_package.py`：wheel 里带着 web/ 每个文件；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
+- `test_package.py`：wheel 里带着 web/ 每个文件；拿整个工作区（连 .gitignore 挡着的）打的 sdist / wheel 里只有包、README、LICENSE、pyproject 和完整的测试，没有 .gitignore 挡着的文件、`.codestrata/`、构建残留；wheel 装进一个干净的 venv 能跑 scan、trace、serve；公开文档里没有内部内容；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签、分列的排线 `test_lane_route`、分列的摆放 `test_lane_pack`：框装得下、不越界、不压别的框，改一列不动别的列）。
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
@@ -232,3 +232,18 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 scan / serve / runs 照常可用（`tests/test_platform.py` 模拟过）。录制为什么非 Linux 不可：hook 读 `/proc/self/stat|cmdline`（失败有退路）；
 driver 用 `/proc/<pid>/stat|status|environ|cmdline` 认进程、找残留（`proc_start`、`_alive`、`_ignores`、`leftovers`），没有 `/proc`
 时只停命令自己的进程组，setsid 出去的服务找不到；`os.killpg`、`start_new_session`、`os.register_at_fork`、`signal.SIGKILL` 在 Windows 上都没有。
+
+## 发布
+
+- 版本号在 `pyproject.toml` 的 `version`，README 开头写的版本跟着改。
+- 包里带什么只由 `pyproject.toml`（wheel：`codestrata*` 包和 `package-data` 里的前端、GPU 录制端的源码）和 `MANIFEST.in`（sdist：再加 README、LICENSE、
+  完整的测试）决定；工作区里 .gitignore 挡着的文件、`.codestrata/`、构建残留都不进——`tests/test_package.py` 拿整个工作区打一次包查。
+  发布时照样从干净的检出打，不从开发的工作区打：
+
+  ```bash
+  git worktree add /tmp/codestrata-release vX.Y.Z      # 合进 master、打了 tag 之后
+  cd /tmp/codestrata-release && uv build --out-dir dist    # dist/ 里是 sdist 和 wheel
+  ```
+
+- PyPI 上 `codestrata` 这个名字是别的项目的：现在只发 GitHub——tag 推上去，GitHub Release 上挂 dist/ 里的两个文件；
+  安装写 `pip install 'git+https://github.com/noviorlu/codestrata@vX.Y.Z'`（README 的快速上手、usage 的安装照这个写）。

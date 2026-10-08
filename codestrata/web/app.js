@@ -606,7 +606,7 @@ window.CS = window.CS || {};
 
     header: function (d) {
       var r = d.repo, self = this;
-      document.getElementById('h1').textContent = r.name + ' 架构';
+      document.getElementById('h1').textContent = r.name;
       this.homeLink();
       this.wireHelp();
       document.getElementById('lede').innerHTML =
@@ -1037,9 +1037,9 @@ window.CS = window.CS || {};
     footer: function (d) {
       var r = d.repo;
       document.getElementById('foot').innerHTML =
-        'codestrata · 结构由 <code>ast</code> 遍历 <code>' + esc((r.roots || []).join(', '))
-        + '</code> 得出（' + r.n_files + ' 文件，解析失败 ' + r.n_parse_errors + '）'
-        + (d.hot ? '；hot 部分来自 runtime hook' : '') + '。';
+        'codestrata · 静态的调用图扫描自 <code>' + esc((r.roots || []).join(', '))
+        + '</code>（' + r.n_files + ' 个文件，解析失败 ' + r.n_parse_errors + '）'
+        + (d.hot ? '；运行时的部分是 trace 录下的 run ' + esc(d.hot.run || '') : '') + '。';
     }
   };
   // 内联进宿主页面时脚本可能在 DOMContentLoaded 之后才跑，那时再监听就永远等不到

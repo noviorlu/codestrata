@@ -1,0 +1,6 @@
+# sdist 里带什么（wheel 只有 codestrata 包，见 pyproject.toml 的 packages / package-data）：
+# 包、README、LICENSE、pyproject，加上完整的测试——setuptools 默认只捡 tests/test_*.py，缺了 common.py 和
+# trace_cases/ 跑不起来。工作区里的内部文档（CLAUDE.md、docs/ 下的 STATUS / TODO / FINDINGS / log / archive / plans）、
+# .codestrata/、构建残留都不进（tests/test_package.py 拿整个工作区打一次包查）。
+graft tests
+global-exclude *.py[cod]

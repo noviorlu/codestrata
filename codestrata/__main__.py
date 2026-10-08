@@ -4,6 +4,7 @@
     codestrata app                               主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图
     codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
     codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
+    codestrata path  <repo> RUN                  请求路径：每个进程、每条线程按第一次调用排的函数级调用树
     codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
 
 RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
@@ -537,9 +538,19 @@ def cmd_app(a) -> int:
     return _app.main(port=a.port, open_browser=not a.no_browser, proxy=a.proxy)
 
 
+def _version() -> str:
+    """装好的包的版本（pyproject 的 version）；直接从源码树跑、没装过时是「源码」"""
+    from importlib import metadata
+    try:
+        return metadata.version("codestrata")
+    except metadata.PackageNotFoundError:
+        return "（源码，没装）"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="codestrata", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"codestrata {_version()}")
     sub = ap.add_subparsers(dest="which", required=True)   # 不能叫 cmd：
                                                        # trace 的位置参数也叫 cmd，会互相覆盖
 
@@ -610,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(fn=cmd_runs)
 
     v = sub.add_parser("serve", help="本地服务：图 + 源码 + 跳编辑器")
-    common(v)
+    common(v, "serve 用不到（读的是 scan 时的索引，换目录要重新 scan）；收下它只是为了和别的命令写法一样")
     v.add_argument("--port", type=int, default=8900)
     v.add_argument("--hot", default=None, metavar="RUN")
     v.add_argument("--home", default=None, help=argparse.SUPPRESS)   # 主菜单（codestrata app）起的：回主菜单的链接
