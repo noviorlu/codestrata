@@ -41,7 +41,7 @@ def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str]]:
     common.require_events(c)
     idx = common.index(c)
     r = c.res
-    hot, _ = _runs.load(c.repo, idx, r.text)
+    hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
     try:
         b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None)
     except LookupError as e:

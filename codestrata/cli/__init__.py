@@ -1,18 +1,17 @@
 """给 agent（和人）用的读命令：一张命令表，argparse 的注册、`guide` 的速查、`guide --json` 都从它来。
 
 每个命令一个模块，模块里有 NAME、EFFECT、DOES、USAGE、EXAMPLE、add_args(p)、run(a) -> out.Result。
-老命令（scan / trace / runs / serve / app / path）还在 __main__.py 里，表里只登记它们的 effect，供 guide 用。
+老命令（scan / trace / runs / serve / app）还在 __main__.py 里，表里只登记它们的 effect，供 guide 用。
 """
 from __future__ import annotations
 
-from . import guide, lanes, out, status
+from . import guide, lanes, out, path, runs, status  # noqa: F401  （runs：__main__.cmd_runs 用）
 
-COMMANDS = [status, lanes, guide]
+COMMANDS = [status, lanes, path, guide]
 
 # 老命令的 effect（§ 契约「effect」）：guide 和 --help 用
 OLD = [
-    {"name": "path", "effect": "read", "does": "函数级的请求路径：每个进程、每条线程的调用上下文树"},
-    {"name": "runs ls / show", "effect": "read", "does": "列出 run、看一个 run 的详情和复刻命令"},
+    {"name": "runs ls / show / wait", "effect": "read", "does": "列出 run、看一个 run 的详情和复刻命令（--json 带各阶段的微秒窗口）；等还在录的 run 录完"},
     {"name": "runs tag / untag / note / merge", "effect": "write", "does": "改 run 的标签、备注；从原始数据重算"},
     {"name": "runs rm", "effect": "delete", "does": "删 run（不能重建）"},
     {"name": "scan", "effect": "write", "does": "静态扫描，重写索引"},

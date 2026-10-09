@@ -306,29 +306,16 @@ class Handler(BaseHandler):
             rd = _runs.runs_dir(self.repo) / r["id"]
             changed = None
             try:
-                mt = (rd / "detail.json").stat().st_mtime_ns
-                key = (r["id"], mt)
+                key = (r["id"], (rd / "detail.json").stat().st_mtime_ns)
                 with Handler._lock:
                     changed = Handler._stale.get(key)
                 if changed is None:
-                    fs = _runs.file_state(self.repo, self.idx, _runs.read_json(rd / "detail.json"))
-                    changed = {"changed": sum(1 for v in fs.values() if v in ("changed", "gone")),
-                               "mismatch": sum(1 for v in fs.values() if v == "mismatch")}
+                    changed = _runs.stale_counts(self.repo, self.idx, rd)
                     with Handler._lock:
                         Handler._stale[key] = changed
             except (OSError, ValueError):
                 pass
-            sm = r.get("summary") or {}
-            ev = r.get("events")
-            out.append({"id": r["id"], "case": r.get("case"), "status": r.get("status_shown") or r.get("status"),
-                        "problems": r.get("problems") or [], "created": r.get("created"),
-                        "duration_s": r.get("duration_s"), "git": (r.get("git") or {}).get("commit"),
-                        "tags": r.get("tags") or [], "note": r.get("note") or "",
-                        "phases": [{"name": p["name"], "n_funcs": p.get("n_funcs")} for p in r.get("phases") or []],
-                        "n_procs_active": sm.get("n_procs_active"), "n_funcs": sm.get("n_funcs"),
-                        "events": bool(ev and not ev.get("error")), "events_error": bool(ev and ev.get("error")),
-                        "stale": changed,
-                        "loadable": (rd / "counts.json.gz").is_file(), "migrated": bool(r.get("migrated_from"))})
+            out.append(_runs.brief(r, rd, changed))
         return {"default": Handler.default_run, "runs": out}
 
     # ---- GET ----
@@ -486,7 +473,10 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | No
         n_runs = 0
     # index 落后多少：图和搜索用的是启动时的 index，落后了就说一声
     lag = _source.index_lag(repo)
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        raise SystemExit(f"端口 {port} 用不了（{e.strerror}）：换一个，codestrata serve --port N（--port 0 让系统挑）") from None
     port = srv.server_address[1]                 # --port 0：系统挑的端口
     ed = _editor()
     print(f"codestrata serve → http://127.0.0.1:{port}/")

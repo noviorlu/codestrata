@@ -621,15 +621,29 @@ def _cleanup_legacy(cs: Path, final: Path, old: Path, case: str) -> None:
 
 # ---------------------------------------------------------------- 读：列表、解析、加载
 
-def catalog(repo: Path) -> list[dict]:
-    """所有 run 的 run.json，新的在前。第一次调用时顺带迁移老文件。"""
+def legacy_files(repo: Path) -> list[Path]:
+    """还没迁进 runs/ 的老格式录制（.codestrata/trace-<case>.json）"""
+    return sorted((Path(repo) / ".codestrata").glob("trace-*.json"))
+
+
+def catalog(repo: Path, migrate_legacy: bool = True) -> list[dict]:
+    """所有 run 的 run.json，新的在前。第一次调用时顺带迁移老文件（会写盘）；
+    migrate_legacy=False 时真的只读：不迁移、runs/ 不在也不建（给 agent 的读命令用，老文件由它们提示）。"""
     repo = Path(repo)
-    key = str(repo.resolve())
-    if key not in _MIGRATED:
-        _MIGRATED.add(key)
-        migrate(repo)
+    if migrate_legacy:
+        key = str(repo.resolve())
+        if key not in _MIGRATED:
+            _MIGRATED.add(key)
+            migrate(repo)
+        base = runs_dir(repo)
+    else:
+        base = Path(repo) / ".codestrata" / "runs"
+        if not base.is_dir():
+            if base.is_symlink():
+                raise SystemExit(f"{base} 是软链，但指向的目录不在（{os.readlink(base)}）：盘没挂上？")
+            return []
     out = []
-    for d in sorted(runs_dir(repo).iterdir(), reverse=True):
+    for d in sorted(base.iterdir(), reverse=True):
         if d.name.startswith(".") or not (d / "run.json").is_file():
             continue
         try:
@@ -675,6 +689,28 @@ def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
         raise SystemExit(f"run {hit['id']} 里没有阶段 {phase!r}；有的是："
                          + ", ".join(p["name"] for p in hit.get("phases") or []))
     return hit, rd, phase or None
+
+
+def stale_counts(repo: Path, idx: dict, rd: Path) -> dict:
+    """录制之后改过几个文件：{changed: 改过或删了的, mismatch: 录制时安装包就和仓库不一致的}。读不出 detail.json 抛 OSError / ValueError"""
+    fs = file_state(repo, idx, read_json(rd / "detail.json"))
+    return {"changed": sum(1 for v in fs.values() if v in ("changed", "gone")),
+            "mismatch": sum(1 for v in fs.values() if v == "mismatch")}
+
+
+def brief(r: dict, rd: Path, stale: dict | None) -> dict:
+    """一个 run 的摘要（/api/runs 和 runs ls --json）；stale 是 stale_counts 的结果（算不出是 None）"""
+    sm = r.get("summary") or {}
+    ev = r.get("events")
+    return {"id": r["id"], "case": r.get("case"), "status": r.get("status_shown") or r.get("status"),
+            "problems": r.get("problems") or [], "created": r.get("created"),
+            "duration_s": r.get("duration_s"), "git": (r.get("git") or {}).get("commit"),
+            "tags": r.get("tags") or [], "note": r.get("note") or "",
+            "phases": [{"name": p["name"], "n_funcs": p.get("n_funcs")} for p in r.get("phases") or []],
+            "n_procs_active": sm.get("n_procs_active"), "n_funcs": sm.get("n_funcs"),
+            "events": bool(ev and not ev.get("error")), "events_error": bool(ev and ev.get("error")),
+            "stale": stale,
+            "loadable": (rd / "counts.json.gz").is_file(), "migrated": bool(r.get("migrated_from"))}
 
 
 def _sum(phases: dict) -> dict:
@@ -767,7 +803,11 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
     align.to_package_graph 现算；meta 保留老的全部键（前端认它们），再加上 run 的信息。"""
     if not ref:
         return None, None
-    run, rd, phase = resolve(repo, ref)
+    return load_run(repo, idx, *resolve(repo, ref))
+
+
+def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> tuple[dict, dict]:
+    """load 的后半：已经认出是哪个 run（和阶段 / 时间段）之后，映射到当前的 index 上"""
     if not (rd / "counts.json.gz").is_file():
         raise SystemExit(f"run {run['id']} 还没有计数：" + (
             "还在录制中" if _alive(run.get("driver")) else

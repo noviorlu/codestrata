@@ -2906,7 +2906,7 @@ def test_request_path():
     assert [(r["d"], r["fn"]) for r in ths[1]["rows"]] == [(0, f"{A}worker"), (1, f"{E}work")], ths[1]["rows"]
     assert all(r["t"] >= P["window"][0] for th in ths for r in th["rows"] if not r["before"])
     out = cs("path", repo, "pa@serve").stdout
-    assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
+    assert "== pa.app/MainThread  -m pa.app · pid " in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
     assert "（之前）  app.py:<module>" in out, out
     assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
     # 老 run：时序事件只记了跨文件的调用

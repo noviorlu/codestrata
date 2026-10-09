@@ -3,12 +3,12 @@
 先弄清在哪（read）
   codestrata status [REF]                     仓库、run 的状态、各阶段的时间；不给 REF 列最近的 run
   codestrata lanes  REF                       这段时间里有哪几列（进程 · 线程）和它们的稳定写法
-  codestrata path   [repo] RUN                请求路径：每个进程、每条线程按第一次调用排的函数级调用树
+  codestrata path   REF                       请求路径：每个进程、每条线程的函数级调用树（默认整棵树）
   codestrata guide                            给 agent 的一页速查（REF、引号、JSON 信封、错误码）
 录和管
   codestrata scan  [repo]                     静态扫描 → .codestrata/index.json（write）
   codestrata trace [repo] --case NAME -- CMD  跑一个 case，记录真实调用（record：每次都存成一个新的 run）
-  codestrata runs  [repo] ls|show|tag|untag|note|rm|merge   管理录下的 run
+  codestrata runs  [repo] ls|show|wait|tag|untag|note|rm|merge   管理录下的 run
   codestrata serve [repo] [--hot RUN]         本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器（start）
   codestrata app                              主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图（start）
 
@@ -22,6 +22,7 @@ REF = '页面地址' | RUN[@范围][/列,…]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -35,6 +36,7 @@ from . import compat as _compat
 from . import cut as _cut
 from . import graph as _graph
 from . import runs as _runs
+from . import seq as _seq
 from . import scan as _scan
 from .trace import analysis as _tana
 from .trace import driver as _tdrv
@@ -131,6 +133,33 @@ _TAG_RE = re.compile(r"^[A-Za-z0-9._:=/+-]+$")
 
 
 def cmd_trace(a) -> int:
+    if not a.json:
+        return _trace(a)[0]
+    # --json：被录程序的 stdout 和这里的摘要都转到 stderr，stdout 上只有一个结果信封
+    holder: dict = {}
+
+    def go(a):
+        with contextlib.redirect_stdout(sys.stderr):
+            holder["rc"], run = _trace(a, stdout=sys.stderr.fileno())
+        repo = Path(a.repo).resolve()
+        rd = _runs.runs_dir(repo) / run["id"]
+        end = _seq.run_end(run, rd)
+        phases = [{"name": n, "t0_us": x, "t1_us": y} for n, x, y in _seq.phase_segments(run, end)] if end else []
+        serving = any(p["name"] == "serving" for p in phases)
+        ref = run["id"] + ("@serving" if serving else "")
+        nxt = [_cli.out.step("read", "status", ref, repo=repo)]
+        if run.get("events") and not (run["events"] or {}).get("error"):
+            nxt.append(_cli.out.step("read", "lanes", ref, repo=repo))
+        return _cli.out.Result(data={"id": run["id"], "status": run["status"], "problems": run.get("problems") or [],
+                                     "returncode": run.get("returncode"), "duration_s": run.get("duration_s"),
+                                     "phases_us": phases, "events": run.get("events"), "gpu": run.get("gpu"),
+                                     "summary": run.get("summary"), "dir": str(rd.resolve())},
+                               text=[], repo=repo, ref={"text": ref, "slices_us": [], "lanes": []}, next=nxt)
+    rc = _cli.out.run("trace", go, a)
+    return rc or holder.get("rc", 0)
+
+
+def _trace(a, stdout=None) -> tuple[int, dict]:
     _compat.require_trace()                 # 不能录的系统上，在建 run 目录之前就停
     repo = Path(a.repo).resolve()
     if not a.cmd:
@@ -222,7 +251,7 @@ def cmd_trace(a) -> int:
                                   leftovers=info["leftovers"], attach=attach)
     tr, run = _tdrv.run(repo, a.cmd, rd / "parts", mono0_ns=mono0, timeout=a.timeout, pkgs=pkgs,
                          env_extra=env_run, stop_grace=a.stop_grace, after=after, phase_at=phase_at,
-                         cwd=run_dir)
+                         cwd=run_dir, stdout=stdout)
     detail = _runs.read_json(rd / "detail.json")
     sm = run["summary"]
     print(f"→ run {run['id']}：{_STATUS.get(run['status'], run['status'])}"
@@ -283,7 +312,7 @@ def cmd_trace(a) -> int:
         idx = _load_index(repo)
     except SystemExit:
         print("  （还没 scan，跑 codestrata scan 之后再 serve --hot 就能叠图）")
-        return 0 if run["status"] != "failed" else 1
+        return (0 if run["status"] != "failed" else 1), run
     hp = _align.to_package_graph(tr, idx)
     # 归不到具名函数的调用照样算在文件和模块上，只是没有函数名可挂——说清楚是什么，别写成「未映射」吓人；
     # 定义时的执行（模块顶层、类体）不是调用，哪儿都不算
@@ -299,8 +328,8 @@ def cmd_trace(a) -> int:
     if run["status"] != "failed":                 # 一个函数都没录到的，叠上去也是空的
         print(f"  叠到图上：codestrata serve {a.repo} --hot {run['id']}" + ("@serving" if serving else ""))
     if ev and not ev.get("error") and ev.get("n_calls"):
-        print(f"  请求路径：codestrata path {a.repo} {run['id']}" + ("@serving" if serving else ""))
-    return 0 if run["status"] != "failed" else 1
+        print(f"  请求路径：codestrata path -C {a.repo} {run['id']}" + ("@serving" if serving else ""))
+    return (0 if run["status"] != "failed" else 1), run
 
 
 def _ev_calls(ev: dict) -> str:
@@ -347,6 +376,8 @@ def cmd_runs(a) -> int:
         raise SystemExit(f"没有这个目录：{repo}")
     if not (repo / ".codestrata").is_dir():
         raise SystemExit(f"{repo} 下没有 .codestrata：还没 scan / trace 过？")
+    if a.verb == "wait" or getattr(a, "json", False):     # 给 agent 的：信封、错误码（cli/runs.py）
+        return _cli.out.run(f"runs {a.verb}", getattr(_cli.runs, a.verb), a)
     base = _runs.runs_dir(repo)
     if a.verb == "ls":
         runs = _runs.catalog(repo)
@@ -529,20 +560,6 @@ _FS = {"changed": "录制后改过", "mismatch": "录制时就和仓库不一致
        "outside": "不在 index 里", "unknown": "没存哈希"}
 
 
-def cmd_path(a) -> int:
-    from . import path as _path
-    repo = Path(a.repo).resolve()
-    idx = _load_index(repo)
-    run, rd, phase = _runs.resolve(repo, a.run)
-    hot, _ = _runs.load(repo, idx, a.run)
-    try:
-        p = _path.request_path(idx, rd, run, phase, hot, max_rows=None)
-    except LookupError as e:
-        raise SystemExit(str(e)) from None
-    print(json.dumps(p, ensure_ascii=False) if a.json else _path.format_text(p, a.depth))
-    return 0
-
-
 def cmd_serve(a) -> int:
     from . import serve as _serve
     return _serve.main(Path(a.repo).resolve(), port=a.port, hot=a.hot, home=a.home)
@@ -594,6 +611,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="停的时候发 SIGINT 之后等多久再发 SIGTERM（默认 90 秒）")
     t.add_argument("--tag", action="append", default=[], help="给 run 打标签，比如 model=Qwen2.5-Omni-7B（可重复）")
     t.add_argument("--note", default=None, help="给 run 写一句备注")
+    t.add_argument("--json", action="store_true",
+                   help="stdout 上只给一个结果信封（被录程序的输出和录制摘要都转到 stderr）")
     t.add_argument("--env", action="append", default=[], metavar="K=V",
                    help="给命令加一个环境变量（可重复）；会记进 run，重录命令里也有")
     t.add_argument("--gpu", action="store_true",
@@ -612,13 +631,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="-- 之后是要跑的命令")
     t.set_defaults(fn=cmd_trace)
 
-    r = sub.add_parser("runs", help="管理录下的 run（ls / show / tag / untag / note / rm / merge）")
+    r = sub.add_parser("runs", help="管理录下的 run（ls / show / wait / tag / untag / note / rm / merge）")
     r.add_argument("repo", metavar="[repo]", help="仓库目录；省掉就是当前目录（codestrata runs ls）")
     rv = r.add_subparsers(dest="verb", required=True)
     x = rv.add_parser("ls", help="列出所有 run，按 case 分组，新的在前")
     x.add_argument("--case", default=None)
+    x.add_argument("--json", action="store_true", help="打印 JSON 信封（各阶段的微秒窗口也在里面）")
     x = rv.add_parser("show", help="一个 run 的详情、文件相对当前代码的状态、复刻命令")
     x.add_argument("ref", metavar="RUN")
+    x.add_argument("--json", action="store_true", help="打印 JSON 信封")
+    x = rv.add_parser("wait", help="等还在录的 run 录完（read）")
+    x.add_argument("ref", metavar="RUN")
+    x.add_argument("--timeout", type=float, default=600, help="最多等几秒（默认 %(default)s），超时退出码 5")
+    x.add_argument("--json", action="store_true", help="打印 JSON 信封")
     x = rv.add_parser("tag", help="加标签")
     x.add_argument("ref", metavar="RUN")
     x.add_argument("tags", nargs="+")
@@ -643,13 +668,6 @@ def main(argv: list[str] | None = None) -> int:
                    help="页面打开时先叠哪个 run：完整的 run id 或 case 名（取它最新一次录完的），可加 @阶段；页面上随时能换")
     v.add_argument("--home", default=None, help=argparse.SUPPRESS)   # 主菜单（codestrata app）起的：回主菜单的链接
     v.set_defaults(fn=cmd_serve)
-
-    pa = sub.add_parser("path", help="请求路径：一个 run（阶段）里每个进程、每个线程按第一次调用排的函数级调用树")
-    pa.add_argument("repo", nargs="?", default=".", help="仓库目录；省掉就是当前目录")
-    pa.add_argument("run", metavar="RUN", help="run id 或 case 名，可加 @阶段 / @t=起-止（要录了 --events 的 run）")
-    pa.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
-    pa.add_argument("--json", action="store_true", help="打印 JSON（和 /api/path 一样）")
-    pa.set_defaults(fn=cmd_path)
 
     m = sub.add_parser("app", help="主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图（浏览器里）")
     m.add_argument("--port", type=int, default=8930, help="端口（默认 %(default)s）")

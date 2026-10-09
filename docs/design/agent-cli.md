@@ -89,7 +89,7 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`guide`、`path`、`runs ls / show` | 随便跑 |
+| read | `status`、`lanes`、`path`、`guide`、`runs ls / show / wait` | 随便跑 |
 | write | `scan`、`runs tag / untag / note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
 | start | `serve`、`app` | 先问用户（起常驻进程、占端口） |
@@ -99,6 +99,7 @@ RUN   := 完整 run id | case 名
 
 ### `codestrata status [REF] [-C 目录] [--json]`
 - 不给 REF：仓库、索引什么时候 scan 的（之后改过几个文件）、最近 5 个 run 和各自的状态。
+- 读命令真的只读：老格式的录制（`.codestrata/trace-*.json`）不迁移，只给警告 `legacy_runs`（`runs ls`、`serve`、`trace` 照旧会迁）。
 - 给 REF：run 的状态（ok / partial / failed / recording / 中断）、问题、有没有时序事件和 GPU、截断的进程；
   REF 规整成什么、落在哪几片微秒；各阶段的窗口。
 - `data`：`repo`、`found_by`（`C` / `page` / `run` / `cwd`）、`index`、`runs` 或 `run` + `phases`。
@@ -108,6 +109,20 @@ RUN   := 完整 run id | case 名
 - REF 里带了列选择器时只列选中的。默认最多 40 列。
 - 要求 run 录了时序事件（`no_events`）、录完了（`recording` / `interrupted_run`）。
 - `data.lanes[]`：`lane`、`id`、`pid`、`proc`、`proc_name`、`thread`、`thread_names`、`n_threads`、`kind`（busy / idle / external / gpu）、`n_nodes`、`first_us`、`last_us`。
+
+### `codestrata path REF [--depth N] [--limit N] [--json]`
+- 函数级的请求路径（每个进程、每条线程的调用上下文树）。默认打整棵树；REF 带了列、给了 `--limit` 或 `--json` 时截到 200 行（`more` 写一共几行）。
+- 节标题是列别名；`--json` 的 `data` 和页面的 `/api/path` 同形，每节多一个 `lane`。老写法 `path <repo> RUN` 也认。
+
+### `codestrata runs [repo] ls | show RUN | wait RUN`
+- `ls --json`：每个 run 的摘要（和页面的 `/api/runs` 同形）加 `phases_us`（各阶段的微秒窗口）、`end_us`。
+- `show --json`：`run`（run.json 原样）、`phases_us`、`procs`、`files`、`file_state`、`rerun`（复刻命令）、`dir`。
+- `wait RUN [--timeout 600]`：等还在录的 run 录完；超时报 `timeout`（退出码 5）。录制中断的，下一步给 `runs merge`（write）。
+
+### `codestrata trace … --json`
+- 被录程序的输出和录制摘要都转到 stderr，stdout 上只有一个信封：`data` 是 `id`、`status`、`problems`、`returncode`、`duration_s`、`phases_us`、`events`、`gpu`、`summary`、`dir`。
+- trace 是 record：可能占 GPU、跑很久。agent 要先问用户。
+- case 脚本写进 `PHASE` 的阶段名里 `[A-Za-z0-9._-]` 以外的字符换成 `_`（阶段名会出现在 REF 和地址栏里）。
 
 ### `codestrata guide [--skill] [--json]`
 - 一页速查（≤ 80 行）。`--skill` 打出 Claude Code skill 文件的内容（带 frontmatter），放不放进 `.claude/skills/` 由用户定。

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -98,7 +99,11 @@ def run(cmd: str, fn, a) -> int:
         if isinstance(e.code, int) or e.code is None:
             raise
         return fail(cmd, CodestrataError("internal", str(e.code)), as_json)
-    return emit(cmd, res, as_json)
+    try:
+        return emit(cmd, res, as_json)
+    except BrokenPipeError:                      # 接在 head 这类命令后面：读的一方先关了，不算错
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 def _dump(obj) -> None:

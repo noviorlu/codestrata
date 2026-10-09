@@ -57,7 +57,7 @@ def test_proc_aliases():
     assert a == {1: "end2end", 2: "stage0", 3: "stage1", 4: "stage2", 5: "python-5", 6: "python-6", 7: "cpuinfo"}, a
     rep = {1: "X_stage0_replica0_DP0", 2: "X_stage1_replica0_DP0", 3: "X_stage1_replica1_DP0"}
     assert laneid.proc_aliases(rep) == {1: "stage0", 2: "stage1_replica0", 3: "stage1_replica1"}
-    assert laneid.proc_aliases({9: "-m my.mod"}) == {9: "-m_my.mod"}
+    assert laneid.proc_aliases({9: "-m my.mod"}) == {9: "my.mod"}
 
 
 def test_lane_aliases_and_select():
@@ -250,6 +250,80 @@ def test_run_id_finds_repo():
     j = one_json(csc("status", rid, "--json", cwd="/", env={"XDG_CONFIG_HOME": str(cfg)}))
     assert j["ok"] and j["data"]["found_by"] == "run" and j["repo"] == str(repo), j
     assert all("-C" in n["cmd"] for n in j["next"]), j["next"]
+
+
+def test_path():
+    """path 收 REF：老写法 path <repo> RUN 照旧打整棵树；给了列只打那几列、默认截到 200 行；--limit 写「给了 N / 共 M」；
+    --json 是信封，每节带列别名；接在 head 后面不报 BrokenPipe"""
+    repo, rid = truth()
+    full = cs("path", repo, f"{rid}@work").stdout
+    assert "== " in full and "/MainThread" in full and "给了" not in full, full[:500]
+    j = one_json(cs("path", "-C", repo, f"{rid}@work", "--json"))
+    lanes = [th["lane"] for p in j["data"]["procs"] for th in p["threads"]]
+    assert j["ok"] and lanes and all("/" in x for x in lanes), lanes
+    main = next(x for x in lanes if x.endswith("/MainThread"))
+    j2 = one_json(cs("path", "-C", repo, f"{rid}@work/{main}", "--json"))
+    assert [th["lane"] for p in j2["data"]["procs"] for th in p["threads"]] == [main], j2["data"]["procs"]
+    r = cs("path", "-C", repo, f"{rid}@work", "--limit", "2")
+    assert "（给了 2 / 共 " in r.stdout and "--limit" in r.stdout, r.stdout
+    p = subprocess.run(f"{shlex.quote(PY)} -m codestrata path -C {shlex.quote(str(repo))} {rid}@work | head -1",
+                       shell=True, capture_output=True, text=True, cwd=HERE.parent)
+    assert "BrokenPipe" not in p.stderr and "Traceback" not in p.stderr, p.stderr
+
+
+def test_runs_json_and_wait():
+    """runs ls / show --json：信封，带各阶段的微秒窗口；runs wait 对录完的 run 立刻返回；写错名字退出码 3"""
+    repo, rid = truth()
+    j = one_json(cs("runs", repo, "ls", "--json"))
+    r0 = next(r for r in j["data"]["runs"] if r["id"] == rid)
+    assert j["ok"] and [p["name"] for p in r0["phases_us"]] == ["start", "work"] and r0["end_us"] > 0, r0
+    j = one_json(cs("runs", repo, "show", "truth", "--json"))
+    assert j["data"]["run"]["id"] == rid and j["data"]["rerun"] and j["data"]["phases_us"], j["data"].keys()
+    r = cs("runs", repo, "wait", "truth")
+    assert rid in r.stdout and "ok" in r.stdout, r.stdout
+    r = csc("runs", repo, "wait", "nope", "--json", cwd=HERE.parent)
+    assert r.returncode == 3 and one_json(r)["error"]["code"] == "run_not_found", r.stdout
+
+
+def test_trace_json_and_phase_names():
+    """trace --json：被录程序的输出和摘要都在 stderr，stdout 只有一个信封；case 脚本写来的阶段名里的怪字符换成 _"""
+    repo = fresh()
+    script = repo / "case.sh"
+    script.write_text(f'echo "a b/c" > "$CODESTRATA_OUT/PHASE"; sleep 0.3; {shlex.quote(PY)} -c '
+                      "\"print('child says hi'); from fakesvc import work; work.init_model()\"\n")
+    r = csc("trace", repo, "--case", "pj", "--json", "--", "bash", str(script), cwd=HERE.parent)
+    j = one_json(r)
+    assert r.returncode == 0 and j["ok"] and j["cmd"] == "trace" and "child says hi" in r.stderr, (r.stdout, r.stderr[-500:])
+    assert [p["name"] for p in j["data"]["phases_us"]] == ["start", "a_b_c"], j["data"]["phases_us"]
+    assert j["next"] and j["next"][0]["effect"] == "read"
+
+
+def test_read_commands_do_not_migrate():
+    """给 agent 的读命令真的只读：老格式的 trace-*.json 不迁移，只提示（runs ls 照旧会迁）"""
+    repo, rid = truth()
+    old = repo / ".codestrata" / "trace-legacy.json"
+    old.write_text("{}")
+    try:
+        j = one_json(cs("status", "-C", repo, "--json"))
+        assert any(w["code"] == "legacy_runs" for w in j["warnings"]) and old.exists(), j["warnings"]
+        one_json(cs("lanes", "-C", repo, f"{rid}@work", "--json"))
+        assert old.exists()
+    finally:
+        old.unlink()
+
+
+def test_serve_port_in_use():
+    """端口被占：一句人话，不是 traceback"""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen()
+    try:
+        repo, _ = truth()
+        r = csc("serve", repo, "--port", s.getsockname()[1], cwd=HERE.parent)
+        assert r.returncode == 1 and "用不了" in r.stderr and "Traceback" not in r.stderr, r.stderr
+    finally:
+        s.close()
 
 
 if __name__ == "__main__":

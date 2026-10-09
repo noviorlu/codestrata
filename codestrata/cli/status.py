@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
-from .. import runs as _runs
+from .. import ref as _ref
 from .. import seq as _seq
 from ..ui import source as _source
 from . import common, out
@@ -42,11 +42,8 @@ def run(a) -> out.Result:
     lines = [f"仓库  {repo}（{_HOW[c.how]}；{idx_text}）"]
 
     if c.res is None:                                  # 没给 REF：最近 5 个 run
-        try:
-            cat = _runs.catalog(repo)
-        except SystemExit as e:
-            cat = []
-            c.warnings.append({"code": "runs_unreadable", "msg": str(e)})
+        cat = _ref.catalog(repo)
+        c.warnings += _ref.legacy_warning(repo)
         data["runs"] = [_brief(r) for r in cat[:5]]
         data["n_runs"] = len(cat)
         if not cat:

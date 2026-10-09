@@ -187,19 +187,32 @@ def _secs(x: str) -> int:
     return round(float(x) * 1_000_000)
 
 
+def catalog(repo: Path) -> list[dict]:
+    """只读地列出 run（不迁移老文件、不建目录）"""
+    try:
+        return _runs.catalog(repo, migrate_legacy=False)
+    except SystemExit as e:                      # runs/ 是软链、盘没挂上
+        raise CodestrataError("internal", str(e)) from None
+
+
+def legacy_warning(repo: Path) -> list[dict]:
+    old = _runs.legacy_files(repo)
+    if not old:
+        return []
+    return [{"code": "legacy_runs", "msg": f"有 {len(old)} 个老格式的录制（.codestrata/trace-*.json）还没迁进 runs/，这里看不到；"
+                                           f"跑一次 codestrata runs {repo} ls（write：会迁移）"}]
+
+
 def resolve(repo: Path, ref: Ref) -> Resolved:
     if not ref.run:
         raise CodestrataError("need_view", "页面地址里没有 run（页面只开着静态图）；先在页面上选一个 run，或者直接写 RUN")
-    try:
-        cat = _runs.catalog(repo)
-    except SystemExit as e:                      # runs/ 是软链、盘没挂上
-        raise CodestrataError("internal", str(e)) from None
+    cat = catalog(repo)
     hit = _runs.pick(cat, ref.run)
     if hit is None:
         cases = sorted({r.get("case") for r in cat if r.get("case")})
         raise CodestrataError("run_not_found", f"{repo} 里没有叫 {ref.run!r} 的 run 或 case（不收 run id 前缀）",
                               candidates=cases)
-    warns: list[dict] = []
+    warns: list[dict] = legacy_warning(repo)
     if hit["id"] != ref.run and hit.get("status") != "ok":
         warns.append({"code": "partial", "msg": f"case {ref.run} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
                       "problems": hit.get("problems") or []})

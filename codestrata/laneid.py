@@ -25,7 +25,7 @@ def clean(s: str) -> str:
 
 
 def _base(name: str) -> str:
-    name = name.removeprefix("VLLM::")
+    name = name.removeprefix("VLLM::").removeprefix("-m ")
     for ext in (".py", ".pyw"):
         if name.endswith(ext) and len(name) > len(ext):
             name = name[: -len(ext)]
