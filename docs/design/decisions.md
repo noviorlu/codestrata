@@ -333,12 +333,13 @@
 - 在哪：`runs.py` 的 `new_run`、`catalog`、`_write`、`migrate`、`_migrate_locked`、`_cleanup_legacy`。
 
 ### REF 是「完整 id 或 case 名」；时序事件的问题不改 status
-- 决定：`runs.resolve` 先当完整 id 查，再当 case 名：取最新一次 ok 的，没有就最新的 partial（并提示），再没有取最新的任意一个；后面可加 `@阶段` 或 `@t=起-止`。
+- 决定：`runs.resolve` 先当完整 id 查，再当 case 名（`runs.pick`）：取最新一次 ok 的，没有就最新的 partial（并提示），再没有取最新的任意一个；后面可加 `@阶段` 或 `@t=起-止`。
   不支持 id 前缀。事件到了行数上限（`truncated`）或整理失败（`error`）只记在 events 摘要里，不加 problem。
+  给 agent 的命令（2026-10-09 起）在这上面多收三样：页面地址（地址栏里那串原样当 REF）、`阶段+起s-止s`、`/列选择器`；输出里只给规整过的完整 id。
 - 为什么：id 前缀和日期冲突。重录中途失败时 case 名不会被失败的那次抢走。计数是完整的，要是因为时序缺了一截降成 partial，拿 case 名解析时就会跳到更早的一次
-  （`test_events_cap` 用上限 1 录，断言仍是 ok）。
+  （`test_events_cap` 用上限 1 录，断言仍是 ok）。页面地址直接能用：用户把页面贴给 agent 时不用转写。
 - 放弃的方案：id 前缀、`case/tag`、`case/latest`。
-- 在哪：`runs.py` 的 `resolve`、`derive`、`_build_events`。
+- 在哪：`runs.py` 的 `pick`、`resolve`、`derive`、`_build_events`；`ref.py`（命令行的 REF）。
 
 ### 复刻命令存录制时原样的命令，而不是事后拼
 - 决定：`main()` 在解析参数之前把原样 argv（入口脚本取绝对路径）和当前目录记成 run.json 的 `invocation`，`cmd_trace` 另记白名单里的继承环境
@@ -568,6 +569,16 @@
 ---
 
 ## 工程
+
+### 给 agent 的读命令：一个 REF、先汇总、下一步写全、错误带码
+- 决定：读命令（`status`、`lanes`、`guide`，以后的切段、讲东西）都收同一个 REF，输出先汇总、默认有上限，末尾给能原样粘贴的下一步（shlex 加好引号）并标 effect；
+  `--json` 时 stdout 上只有一个信封；错误是稳定的英文码 + 中文说明 + 候选，退出码按类分（契约见 [agent-cli.md](agent-cli.md)）。
+  列用别名（`stage1/MainThread`），由 `laneid.py` 一处算。命令表只写一份（`cli/`），argparse、`guide`、`guide --json` 都从它来。
+- 为什么：使用方式是拿录下的运行路径去问 agent（见「不做模块讲解层」），命令行要让 agent 容易用。agent 拿不准时会自己拼命令、猜名字；
+  给全的 REF 和候选让它不用拼、不用猜。`#24` 这种不加引号会被 shell 当注释，所以输出里的命令一律加好引号。
+  页面地址当 RUN 时老的 `path` 会建议重录（MiniCPM 录一次 90 s GPU），新命令不再建议 record 类的下一步。
+- 放弃的方案：另起 HTTP / MCP 主入口（命令表留好生成的口子）；run id 前缀。
+- 在哪：`ref.py`、`laneid.py`、`errors.py`、`confdir.py`、`cli/`；`serve.py` 的 `/api/app`；测试 `tests/test_agentcli.py`。
 
 ### 读代码的功能冻结，只修 bug
 - 决定：代码窗口、Ctrl+点击跳转和引用列表的界面、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。

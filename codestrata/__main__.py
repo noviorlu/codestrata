@@ -1,15 +1,23 @@
-"""codestrata 命令行。
+"""codestrata —— 跑一次，看清这次运行在仓库里走了哪条路、按什么顺序。人和 agent 用同一套命令。
 
-    codestrata scan  [repo]                      静态扫描 → .codestrata/index.json
-    codestrata app                               主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图
-    codestrata serve [repo] [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
-    codestrata trace [repo] --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
-    codestrata path  [repo] RUN                  请求路径：每个进程、每条线程按第一次调用排的函数级调用树
-    codestrata runs  [repo] ls|show|tag|untag|note|rm|merge   管理录下的 run
+先弄清在哪（read）
+  codestrata status [REF]                     仓库、run 的状态、各阶段的时间；不给 REF 列最近的 run
+  codestrata lanes  REF                       这段时间里有哪几列（进程 · 线程）和它们的稳定写法
+  codestrata path   [repo] RUN                请求路径：每个进程、每条线程按第一次调用排的函数级调用树
+  codestrata guide                            给 agent 的一页速查（REF、引号、JSON 信封、错误码）
+录和管
+  codestrata scan  [repo]                     静态扫描 → .codestrata/index.json（write）
+  codestrata trace [repo] --case NAME -- CMD  跑一个 case，记录真实调用（record：每次都存成一个新的 run）
+  codestrata runs  [repo] ls|show|tag|untag|note|rm|merge   管理录下的 run
+  codestrata serve [repo] [--hot RUN]         本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器（start）
+  codestrata app                              主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图（start）
 
-repo 是被分析的仓库目录，省掉就是当前目录。
-RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
-后面可以加 @阶段（如 minicpmo-duplex@serving）。
+REF = '页面地址' | RUN[@范围][/列,…]
+  RUN   完整 run id 或 case 名（取它最新一次录完的）
+  范围  阶段名 | t=起-止（从 run 起点算的微秒）| 阶段+起s-止s（从阶段开头算的秒）
+  列    进程别名/线程（stage1/MainThread）；只写进程别名 = 这个进程的所有列
+  例    run_single_prompt@serving    20261001-170349-run_single_prompt@t=78024146-80491567/stage1
+页面地址、带 | 或 # 的东西、带 * 的列加单引号。repo 是被分析的仓库目录，省掉就是当前目录。
 """
 from __future__ import annotations
 
@@ -21,6 +29,7 @@ import sys
 from pathlib import Path
 
 from . import self_command
+from . import cli as _cli
 from . import align as _align
 from . import compat as _compat
 from . import cut as _cut
@@ -554,11 +563,12 @@ def _version() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="codestrata", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = _cli.out.Parser(prog="codestrata", description=__doc__,
+                         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"codestrata {_version()}")
     sub = ap.add_subparsers(dest="which", required=True)   # 不能叫 cmd：
                                                        # trace 的位置参数也叫 cmd，会互相覆盖
+    _cli.register(sub)
 
     def common(p, roots_help="要扫描的目录，相对仓库根（给了就照单全收；不给就自动探测，跳过 tests/examples 这类）"):
         p.add_argument("repo", nargs="?", default=".", help="仓库目录；省掉就是当前目录")
@@ -675,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
                 w in rv.choices and not (os.path.isdir(w) and nxt in rv.choices)
                 or not os.path.isdir(w) and nxt not in rv.choices):
             raw.insert(1, ".")
+    _cli.out.Parser.json_errors = "--json" in raw
+    _cli.out.Parser.json_cmd = raw[0] if raw and not raw[0].startswith("-") else None
     a = ap.parse_args(raw)
     if getattr(a, "roots", None):
         a.roots = _scan.clean_roots(a.roots)

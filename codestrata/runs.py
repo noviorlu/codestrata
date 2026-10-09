@@ -642,20 +642,26 @@ def catalog(repo: Path) -> list[dict]:
     return out
 
 
+def pick(runs: list[dict], name: str) -> dict | None:
+    """catalog 里按名字挑一个 run：先当完整 id；再当 case 名，取最新一次 ok 的，没有就最新的 partial，再没有取最新的任意一个"""
+    hit = next((r for r in runs if r["id"] == name), None)
+    if hit is None:
+        mine = [r for r in runs if r.get("case") == name]
+        hit = (next((r for r in mine if r.get("status") == "ok"), None)
+               or next((r for r in mine if r.get("status") == "partial"), None)
+               or (mine[0] if mine else None))
+    return hit
+
+
 def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
     """REF := <完整 run id> | <case>，后面可以加 @阶段，或者 @t=起-止（微秒，时间轴上拖出来的时间段，
     要录了时序事件）。只写 case 时取它最新的一次 ok 的；一次 ok 都没有就取最新的 partial（并提示）。"""
     ref, _, phase = (ref or "").partition("@")
     runs = catalog(repo)
-    hit = next((r for r in runs if r["id"] == ref), None)
-    if hit is None:
-        mine = [r for r in runs if r.get("case") == ref]
-        hit = (next((r for r in mine if r.get("status") == "ok"), None)
-               or next((r for r in mine if r.get("status") == "partial"), None)
-               or (mine[0] if mine else None))
-        if hit is not None and hit.get("status") != "ok":
-            print(f"[codestrata] case {ref} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
-                  file=sys.stderr)
+    hit = pick(runs, ref)
+    if hit is not None and hit["id"] != ref and hit.get("status") != "ok":
+        print(f"[codestrata] case {ref} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
+              file=sys.stderr)
     if hit is None:
         have = ", ".join(sorted({r.get('case') for r in runs})) or "（还没有）"
         raise SystemExit(f"没有叫 {ref!r} 的 run 或 case；有的 case：{have}\n"

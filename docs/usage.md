@@ -312,6 +312,8 @@ codestrata serve <repo> --hot demo@serving       # 只叠 serving 这一段（�
 
 `serve --hot`、`runs show` 都认这个写法。页面上选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、复制地址再打开都还是它。
 
+给 agent 用的读命令（`codestrata status`、`lanes`）还多收页面地址、`阶段+起s-止s` 和 `/列`（`stage1/MainThread`），见 `codestrata guide` 和 [design/agent-cli.md](design/agent-cli.md)。
+
 ### runs 命令
 
 ```bash

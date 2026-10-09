@@ -2,7 +2,8 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
-    GET  /api/app                 {home}：从主菜单（codestrata app）打开时主菜单的地址，页面上放回去的链接
+    GET  /api/app                 {home, repo, pid, port}：home 是从主菜单（codestrata app）打开时主菜单的地址（页面上放回去的链接）；
+                                  命令行拿页面地址当 REF 时问它是哪个仓库
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
     GET  /api/lanes?run=&open=&cuts=
@@ -338,8 +339,9 @@ class Handler(BaseHandler):
         q = urllib.parse.parse_qs(u.query, keep_blank_values=True)   # ?open= 是「什么都不展开」，不是缺省
         path = u.path
 
-        if path == "/api/app":
-            return self._json({"home": self.home})
+        if path == "/api/app":                       # 命令行按页面地址找仓库时也问它（ref.page_app）
+            return self._json({"home": self.home, "repo": str(self.repo), "pid": os.getpid(),
+                               "port": self.server.server_address[1]})
 
         if path == "/api/runs":
             try:
@@ -485,6 +487,7 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | No
     # index 落后多少：图和搜索用的是启动时的 index，落后了就说一声
     lag = _source.index_lag(repo)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    port = srv.server_address[1]                 # --port 0：系统挑的端口
     ed = _editor()
     print(f"codestrata serve → http://127.0.0.1:{port}/")
     print(f"  仓库   {repo}")

@@ -1,6 +1,7 @@
 """测试共用的：跑 codestrata 命令、在临时目录里拷一份假仓库、不依赖 pytest 的用例运行器。"""
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import os
@@ -123,3 +124,30 @@ def gpu_repo() -> tuple:
     (rd / "parts" / f"cu-{pid}-{mono0}.log").write_text("\n".join(lines) + "\n")
     cs("runs", repo, "merge", rid)
     return repo, rid
+
+
+@contextlib.contextmanager
+def served(repo: Path):
+    """在随机端口上起 serve：给出 get(路径) → (状态码, JSON)，get.base 是地址；用完按 pid 关掉"""
+    import socket
+    import urllib.request
+    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def get(path):
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("serve 没起来")
+    get.base = f"http://127.0.0.1:{port}"
+    try:
+        yield get
+    finally:
+        srv.kill()
+        srv.wait()
