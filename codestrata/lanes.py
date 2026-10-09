@@ -26,6 +26,7 @@ from pathlib import Path
 
 from . import align as _align
 from . import cut as _cut
+from . import laneid as _laneid
 from . import seq as _seq
 
 
@@ -42,6 +43,30 @@ def thread_group(name: str) -> str:
         return m.group(1)
     m = _NUMBERED.match(name)
     return m.group(1) if m else name
+
+
+def lane_id(pid: int, tname: str) -> str:
+    """线程的列 id（页面内部用）：pid:归一之后的线程名"""
+    return f"{pid}:{thread_group(tname)}"
+
+
+def gpu_lane_id(pid: int, dev, stream) -> str:
+    """GPU 的列 id：这个进程在这个设备 · 流上跑的 kernel"""
+    return f"{pid}:GPU {dev} · 流 {stream}"
+
+
+def run_aliases(rd: Path, extra: list[dict] = ()) -> dict[str, str]:
+    """整个 run 的列 id → 列别名（stage1/MainThread；写法见 laneid.py）。按整个 run 登记过的全部线程算一次，和时间段无关，
+    命令行、以后的页面都用它，撞名时加的 -2 才处处一样。extra 是 build 的结果里另有的列（GPU 的列）。没录时序事件抛 LookupError"""
+    ix = _seq.span_index(rd)
+    seen: dict[str, dict] = {}
+    for pid_s, ts in sorted(ix["threads"].items(), key=lambda kv: int(kv[0])):
+        for tid_s, name in sorted(ts.items(), key=lambda kv: int(kv[0])):
+            lid = lane_id(int(pid_s), name)
+            seen.setdefault(lid, {"id": lid, "pid": int(pid_s), "thread": thread_group(name)})
+    for ln in extra:
+        seen.setdefault(ln["id"], ln)
+    return _laneid.lane_aliases(list(seen.values()), _laneid.proc_aliases(proc_names(rd)))
 
 
 def lane_counts(rd: Path, run: dict, phase: str | None, lane: str) -> dict:
@@ -215,7 +240,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     for pid, tids in R["tids"].items():
         tnames = threads.get(str(pid)) or {}
         for tid in tids:
-            tid_lane[(pid, tid)] = f"{pid}:{thread_group(tnames.get(str(tid)) or f'线程 {tid}')}"
+            tid_lane[(pid, tid)] = lane_id(pid, tnames.get(str(tid)) or f"线程 {tid}")
     on_gpu = {k[:4] for k in T["gpu"]}           # GPU 的行（kernel）：不算进发起它的那条线程，最后单独成列（见下面）
     first_in: dict[tuple, int] = {}              # (pid, tid) → 这一段里第一次调用的时刻（入口在这一段之前就开始了的，按这一刻认入口）
     for (pid, tid, a, b), (first, last, n, first0) in T["calls"].items():
@@ -296,7 +321,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         lid = tid_lane.get((pid, tid))
         raw = (threads.get(str(pid)) or {}).get(str(tid)) or f"线程 {tid}"
         if lid is None:
-            lid = tid_lane[(pid, tid)] = f"{pid}:{thread_group(raw)}"
+            lid = tid_lane[(pid, tid)] = lane_id(pid, raw)
         new = lid not in lanes
         if new:
             if not create or t is None:
@@ -403,14 +428,14 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         """子进程的主线程那一列；这一段里主线程没跑仓库代码就没有（不拿别的线程顶替：exec / waitpid 说的是整个进程）。
         从非主线程 fork 的子进程里没有 MainThread：唯一的那条线程沿用父进程里那条线程的名字（Python 把它当成主线程），
         号最小的就是它（fork 之后先有它，hook 起别的线程之前先记下当前线程）"""
-        lid = f"{pid}:MainThread"
+        lid = lane_id(pid, "MainThread")
         if ran_lane(lid):
             return lid
         tn = threads.get(str(pid)) or {}
         if not tn or any(thread_group(x) == "MainThread" for x in tn.values()):
             return None
         t0 = min(tn, key=int)
-        lid = tid_lane.get((pid, int(t0))) or f"{pid}:{thread_group(tn[t0])}"
+        lid = tid_lane.get((pid, int(t0))) or lane_id(pid, tn[t0])
         return lid if ran_lane(lid) else None
 
     ext_first: dict[tuple, float] = {}           # (pid, tid) → 最早一次在仓库外的代码里交接（不在任何 span 里）的时刻
@@ -465,7 +490,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             if a and b and a["lane"] != b["lane"]:
                 link("join", "join", a, b, t=j[3])
     for (pid, tid, ka, kb, dev, stream), (first, last, n, us) in T["gpu"].items():   # us 这里是纳秒，出结果时换成 µs
-        lid = f"{pid}:GPU {dev} · 流 {stream}"
+        lid = gpu_lane_id(pid, dev, stream)
         nb = node(kb, lid)                       # kernel 落在 GPU 这一列的切面上，调用方落在发起它的那一列的切面上
         if nb is None:
             continue

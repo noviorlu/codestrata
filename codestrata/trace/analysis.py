@@ -23,6 +23,12 @@ from pathlib import Path
 PHASE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+def clean_phase(name: str) -> str:
+    """case 脚本写进 PHASE 的阶段名：[A-Za-z0-9._-] 以外的字符换成 _（阶段名会出现在 REF 和地址栏里）。
+    hook 的 _read_phase 里有一份同样的（hook 不 import codestrata）"""
+    return "".join(c if c.isascii() and (c.isalnum() or c in "._-") else "_" for c in name)
+
+
 def fired_phases(parts: Path, mono0_ns: int | None, files: dict[str, bytes] | None = None,
                  sh: bool = False) -> list[tuple]:
     """hook 按 --phase 切的阶段：parts/PHASE-<名字>.fired 里的「hook pid monotonic_ns」→

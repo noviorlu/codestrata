@@ -339,11 +339,13 @@ if _root and _out:
     _phase_file = os.path.join(_out, "PHASE")
     _stop_file = os.path.join(_out, "STOP")
     def _read_phase():
+        # 阶段名会出现在 REF 和地址栏里：[A-Za-z0-9._-] 以外的字符换成 _（同 analysis.clean_phase，driver 记 phase_log 也这么换）
         try:
             with open(_phase_file) as f:
-                return f.readline().strip() or "start"
+                name = f.readline().strip()
         except OSError:
             return "start"
+        return "".join(c if c.isascii() and (c.isalnum() or c in "._-") else "_" for c in name) or "start"
     _phase = [_read_phase()]
     _POLL = 0.05             # 落盘线程多久看一次 PHASE
     _PAUSE = 0.1             # --phase 切换之后触发的线程停这么久：别的进程（每 _POLL 看一次）先切过去

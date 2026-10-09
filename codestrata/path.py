@@ -31,7 +31,7 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, m
     行：{"d": 深度, "t": 第一次的时刻（微秒、相对 run 起点）, "fn": 节点, "def": {f, l}, "from": 调用方 或 null,
          "n": 这个线程里这对调用的次数（根、untimed 的是 null）, "rep": 反复调用, "untimed": 同一个文件里调过来的（没有时刻）,
          "line": {f, l, n, status, note} 或 null, "before": 这一段之前就在跑、这一段里没调过（调用上下文树里的祖先）}
-    ——line 是 hot 里这对函数次数最多的调用行（不分进程；老 run 是按名字猜的，带 guessed）。max_rows：最多给几行（None 不截）。
+    ——line 是 hot 里这对函数次数最多的调用行（不分进程；老 run 是按名字猜的，带 guessed）。max_rows：最多给几行（None 不截，见 trim）。
     没有时序事件、没有这个阶段的时刻抛 LookupError"""
     pc = _seq.phase_calls(rd, run, phase)
     calls = hot.get("calls") or {}
@@ -64,15 +64,28 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, m
         p["first"] = p["threads"][0]["first"]
         out.append(p)
     out.sort(key=lambda p: p["first"])
-    cut, left = 0, max_rows if max_rows is not None else float("inf")
-    for p in out:
+    return trim({"phase": phase, "window": pc["window"], "span_us": pc["span_us"], "truncated": pc["truncated"],
+                 "rows_cut": 0, "scope": pc["scope"], "procs": out}, max_rows)
+
+
+def trim(path: dict, max_rows: int | None, keep=None, max_depth: int | None = None, per_thread: int | None = None) -> dict:
+    """只留 keep(pid, 线程名) 说要的节（None 是全部）、只留深度不超过 max_depth 的行，再截：每节最多 per_thread 行、
+    一共最多 max_rows 行（None 不截）。截掉的行数加进 rows_cut（max_depth 去掉的不算：那是要求不打的）。原地改、返回它"""
+    if keep is not None:
+        for p in path["procs"]:
+            p["threads"] = [th for th in p["threads"] if keep(p["pid"], th["name"])]
+        path["procs"] = [p for p in path["procs"] if p["threads"]]
+    left = max_rows if max_rows is not None else float("inf")
+    for p in path["procs"]:
         for th in p["threads"]:
-            if len(th["rows"]) > left:
-                cut += len(th["rows"]) - left
-                th["rows"] = th["rows"][:int(left)]
+            if max_depth is not None:
+                th["rows"] = [r for r in th["rows"] if r["d"] <= max_depth]
+            cap = min(left, per_thread if per_thread is not None else float("inf"))
+            if len(th["rows"]) > cap:
+                path["rows_cut"] += len(th["rows"]) - cap
+                th["rows"] = th["rows"][:int(cap)]
             left -= len(th["rows"])
-    return {"phase": phase, "window": pc["window"], "span_us": pc["span_us"], "truncated": pc["truncated"],
-            "rows_cut": cut, "scope": pc["scope"], "procs": out}
+    return path
 
 
 def first_calls(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, lane: str | None = None) -> dict[str, int]:
@@ -277,15 +290,21 @@ def _line(calls: dict, f_: str, g: str) -> dict | None:
     return {"l": g0, "n": None, "status": x.get("status"), "note": x.get("note"), "guessed": True} if g0 else None
 
 
-def format_text(path: dict, max_depth: int | None = None) -> str:
-    """命令行打印：一个线程一节，缩进是调用的层次；+秒数是相对这一段开头的第一次调用"""
+def format_text(path: dict, max_depth: int | None = None, lane_of=None) -> str:
+    """命令行打印：一个线程一节，缩进是调用的层次；+秒数是相对这一段开头的第一次调用。
+    lane_of(pid, 线程名) 给的话，节标题用它（列的稳定写法 stage1/MainThread），进程名放在后面"""
     t0 = path["window"][0]
-    out = [f"请求路径{'（阶段 ' + path['phase'] + '）' if path['phase'] else ''}："
-           f"{t0 / 1e6:.2f}–{path['window'][1] / 1e6:.2f} s。↻ 是反复调用，[看不出] 是代码里看不出会调到它"
+    ph = path["phase"]
+    where = ("时间段 " if ph.startswith("t=") else "阶段 ") + ph if ph else "整个 run"
+    out = [f"请求路径（{where}：t={t0}-{path['window'][1]}，{t0 / 1e6:.2f}–{path['window'][1] / 1e6:.2f} s）。"
+           f"+秒是第一次调用的时刻，从这一段开头（t={t0}）算；×N 是这条线程里调了几次；「← 文件:行」是调用写在哪一行"
+           f"（经仓库外的代码调进来的，是最近的仓库内的那一行）；（之前）是这一段之前就在跑的上层；↻ 是反复调用；[看不出] 是代码里看不出会调到它"
            + ("；这个 run 的时序事件只记了跨文件的调用，（同文件）是同一个文件里调过来的、没有时刻" if path.get("scope") != "all" else "")]
     for p in path["procs"]:
         for th in p["threads"]:
-            out.append(f"\n== {p['name']}（pid {p['pid']}）· {th['name']}" + (f"（{th['n']} 个线程）" if th["n"] > 1 else ""))
+            many = f"（{th['n']} 个线程）" if th["n"] > 1 else ""
+            out.append(f"\n== {lane_of(p['pid'], th['name'])}{many}  {p['name']} · pid {p['pid']} · {th['name']}" if lane_of else
+                       f"\n== {p['name']}（pid {p['pid']}）· {th['name']}{many}")
             for r in th["rows"]:
                 if max_depth is not None and r["d"] > max_depth:
                     continue
@@ -297,7 +316,9 @@ def format_text(path: dict, max_depth: int | None = None) -> str:
                 n = f"  ×{r['n']}" if r["n"] else ""
                 when = "（之前）" if r.get("before") else f"+{(r['t'] - t0) / 1e6:.3f}s"
                 out.append(f"{'  ' * r['d']}{when}  {_short(r['fn'])}{n}{tags}{where}")
-    if path["rows_cut"]:
+            if th.get("cut"):                        # 按列截过（命令行的 --limit）
+                out.append(f"  …这一列还有 {th['cut']} 行")
+    if path["rows_cut"] and not any(th.get("cut") for p in path["procs"] for th in p["threads"]):
         out.append(f"\n（还有 {path['rows_cut']} 行没列出）")
     if path["truncated"]:
         out.append(f"⚠ 进程 {', '.join(map(str, path['truncated']))} 的时序事件录到了上限，之后的调用不在这里")

@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import contextlib
 import gzip
 import json
 import os
@@ -19,7 +18,7 @@ import tarfile
 import time
 from pathlib import Path
 
-from common import FAKE, HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
+from common import FAKE, HERE, PY, cs, fresh, run_tests, served, tmpdir  # noqa: E402
 
 from codestrata import align, cut, runs  # noqa: E402
 from codestrata.ui import edge as ui_edge, graphview as ui_graphview, load as ui_load, source as ui_source  # noqa: E402
@@ -61,33 +60,6 @@ def wait_phase(repo: Path, name: str, timeout: float = 60) -> Path:
 
 def by_argv(detail: dict, needle: str) -> list[dict]:
     return [p for p in detail["procs"] if needle in " ".join(p["argv"] or [])]
-
-
-@contextlib.contextmanager
-def served(repo: Path):
-    """在随机端口上起 serve：给出 get(路径) → (状态码, JSON)，get.base 是地址；用完按 pid 关掉"""
-    import socket
-    import urllib.request
-    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
-    srv = subprocess.Popen([PY, "-m", "codestrata", "serve", str(repo), "--port", str(port)], cwd=HERE.parent,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def get(path):
-        for _ in range(50):
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
-                    return r.status, json.loads(r.read())
-            except urllib.error.HTTPError as e:
-                return e.code, json.loads(e.read())
-            except OSError:
-                time.sleep(0.1)
-        raise AssertionError("serve 没起来")
-    get.base = f"http://127.0.0.1:{port}"
-    try:
-        yield get
-    finally:
-        srv.kill()
-        srv.wait()
 
 
 # ---------------------------------------------------------------- 用例
@@ -791,7 +763,9 @@ def test_migrate_legacy():
     idx = ui_load.load_index(repo)
     want = ui_load.load_hot(repo, idx, run["id"])[0]
     runs._MIGRATED.clear()
-    procs = [subprocess.Popen([PY, "-m", "codestrata", "runs", str(repo), "ls"], cwd=HERE.parent,
+    # 几个进程同时读 run 列表（serve、trace 开头都会迁移；runs ls 是只读的，不迁）
+    code = f"import sys; sys.path.insert(0, {str(HERE.parent)!r}); from codestrata import runs; runs.catalog({str(repo)!r})"
+    procs = [subprocess.Popen([PY, "-c", code], cwd=HERE.parent,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
     outs = [p.communicate(timeout=60) for p in procs]
     assert all(p.returncode == 0 for p in procs), outs
@@ -2387,7 +2361,7 @@ def test_trace_only_notes():
     assert old["nt/base.py#Base.run|nt/base.py#Sub.step"]["note"] == {"k": "override", "w": "nt/base.py#Base.step"}
     assert ui_source.runtime_lines(idx, "nt/app.py", {"calls": old}) == {}
     # 时间段（整个 run）：调用行按整个 run 的比例摊，跨文件的调用分类和次数都和按阶段看一样
-    full = f"{runs.resolve(repo, 'nt')[0]['id']}@t=0-{meta['end_us'] + 1}"
+    full = f"{runs.resolve(repo, 'nt')[0]['id']}@t=0-{meta['end_us']}"      # 时间段两头都含：到终点就是整个 run
     wh, _ = ui_load.load_hot(repo, idx, full)
     assert wh["lines_approx"] and not hot["lines_approx"]
     cross = {k: (x["n"], x["only"]) for k, x in C.items() if x["a"] != x["b"]}
@@ -2934,7 +2908,7 @@ def test_request_path():
     assert [(r["d"], r["fn"]) for r in ths[1]["rows"]] == [(0, f"{A}worker"), (1, f"{E}work")], ths[1]["rows"]
     assert all(r["t"] >= P["window"][0] for th in ths for r in th["rows"] if not r["before"])
     out = cs("path", repo, "pa@serve").stdout
-    assert "== -m pa.app" in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
+    assert "== pa.app/MainThread  -m pa.app · pid " in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
     assert "（之前）  app.py:<module>" in out, out
     assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
     # 老 run：时序事件只记了跨文件的调用

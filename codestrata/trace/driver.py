@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from .analysis import PHASE_NAME_RE, fired_phases, merge, merge_phase_log
+from .analysis import PHASE_NAME_RE, clean_phase, fired_phases, merge, merge_phase_log
 from .hook import ENV_CASE_DIRS, ENV_OUT, ENV_PKGS, ENV_ROOT, make_bootstrap
 
 # ---------------------------------------------------------------- 驱动的一侧
@@ -250,9 +250,10 @@ def misplaced_paths(cmd: list[str], run_dir: Path, here: Path) -> list[str]:
 def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         timeout: float | None = None, pkgs: dict[str, str] | None = None,
         env_extra: dict[str, str] | None = None, stop_grace: float = 90.0, after=None,
-        phase_at: list[dict] | None = None, cwd: Path | None = None):
+        phase_at: list[dict] | None = None, cwd: Path | None = None, stdout=None):
     """在 hook 下跑一条命令，合并各进程的分片。返回 after(trace, 录制信息) 的结果
     （没给 after 就返回 (trace, 录制信息)）。cwd 是命令的执行目录，默认仓库根目录 root。
+    stdout 是命令的标准输出接到哪（Popen 的 stdout；trace --json 时接到 stderr，stdout 只留结果）。
 
     cmd 就是你平时怎么跑那个 case，比如
         ["python", "examples/online_serving/minicpmo/realtime_duplex_demo.py", "--input-wav", "..."]
@@ -324,7 +325,8 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
             lines = phase_file.read_text().splitlines()
         except OSError:
             return
-        ph = (lines[0].strip() if lines else "") or "start"
+        # 阶段名会出现在 REF 和地址栏里：case 脚本写来的名字里 [A-Za-z0-9._-] 以外的字符换成 _（hook 记计数时同样换）
+        ph = clean_phase(lines[0].strip()) if lines and lines[0].strip() else "start"
         if ph != phase_times[-1][0]:
             src = "hook" if len(lines) > 1 else "sh"
             phase_times.append((ph, us(), src))
@@ -341,7 +343,7 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
         stop, rc, t_start = "exit", None, time.monotonic()
         left: list[dict] = []
         try:
-            proc = subprocess.Popen(cmd, cwd=str(cwd or root), env=env, start_new_session=True)
+            proc = subprocess.Popen(cmd, cwd=str(cwd or root), env=env, start_new_session=True, stdout=stdout)
         except OSError as e:
             _say(f"[codestrata] 命令起不来（在 {cwd or root} 执行）：{e}")
             proc = None

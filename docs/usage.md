@@ -271,7 +271,7 @@ codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag 
 一次运行往往是「加载 → 处理请求 → 退出」。切成**阶段**之后可以只看其中一段，启动时的初始化不会混进来。两种办法，可以一起用：
 
 1. **按函数切**：`--phase 名字=函数`。哪个进程第一次进入这个函数，就在那一刻切到这个阶段；别的进程 50 ms 内跟上，触发的线程停 0.1 s 等它们。不用改被录的脚本，「一条阻塞的 python 命令」也能分出加载 / 推理 / 关闭。函数写成 `模块:qualname`（查静态索引，继承来的方法也认，`Omni.close` 会认成 `OmniBase.close`），或 `文件路径:qualname`（不在索引里的文件也行，比如 examples/ 下的入口）。
-2. **在 case 脚本里写**：往 `$CODESTRATA_OUT/PHASE` 写一个阶段名。适合服务类的 case：健康检查通过后写 `serving`。
+2. **在 case 脚本里写**：往 `$CODESTRATA_OUT/PHASE` 写一个阶段名。适合服务类的 case：健康检查通过后写 `serving`。阶段名里字母、数字和 `. _ -` 以外的字符记成 `_`。
 
 第一次切之前的那段叫 `start`。用 `--phase` 切时，每个阶段整个 run 只切一次：同一个函数不能反复切，也切不回早先的阶段；case 脚本写 PHASE 可以切回早先的阶段（时间条上这个阶段就有几段）。
 
@@ -312,6 +312,8 @@ codestrata serve <repo> --hot demo@serving       # 只叠 serving 这一段（�
 
 `serve --hot`、`runs show` 都认这个写法。页面上选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、复制地址再打开都还是它。
 
+给 agent 用的读命令（`codestrata status`、`lanes`）还多收页面地址、`阶段+起s-止s` 和 `/列`（`stage1/MainThread`），见 `codestrata guide` 和 [design/agent-cli.md](design/agent-cli.md)。
+
 ### runs 命令
 
 ```bash
@@ -327,7 +329,7 @@ codestrata runs [repo] merge RUN              # 从原始数据重算计数和�
 ### 存储
 
 - `runs/` 可以是软链（比如指到大盘）。**`.codestrata/` 里除了 `runs/` 都能随时删掉重建**；`runs/` 删了就没了。
-- 老版本的 `trace-<case>.json` 第一次被读到时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）。
+- 老版本的 `trace-<case>.json` 在 `serve` 起来、`trace`、`runs` 的写动作时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）；只读的命令（`status`、`runs ls` 这些）不迁，只提示。
 
 ### 复刻
 
@@ -372,13 +374,14 @@ CLI 的 `trace` 和主菜单的录制表单都默认录事件（2026-10-01 起�
 - **一行一个函数，缩进是调用的层次**：每一行挂在调用它的那一次调用下面（调用上下文树：同一个函数被几个地方调过，就在几处各出现一次；同一条调用链上的多次调用合成一行），同一层按第一次被调用的先后排。这一段之前就在跑的上层（引擎循环、请求处理的协程）也列出来当上下文，时刻写「之前」。行上写着第一次被调用的时刻（从这一段的开头算）、这个线程里调了几次、调用写在调用方的哪一行（`← omni.py:160`，点了看那一行）、代码里看不出会调到它的标出来（悬停看 scan 在那一行看到了什么）。点函数名看它的定义，点 ▾ 收起它下面那几层。
 - **↻** 是反复调用（轮询、每个 token 都走一遍）。**根**是线程的入口；经仓库外的代码调进来的（vLLM 的引擎循环 `run_busy_loop` 调 scheduler）挂在最近的仓库内函数下面，那一跳标「代码里看不出」。模块顶层写成 `文件名:<module>`。
 - 2026-10-01 之前录的 run（span 没有父亲）照老做法：一个函数挂在第一次调用它的那个调用方下面（同一个函数被别处调的那几次就挂不上了），只有跨文件的调用有时刻，同一个文件里调过来的挂到同文件的调用方下面、标「同文件」。`runs merge` 从原始日志重建 span 之后有父亲，但同文件的调用还是没有。
-- 跟着选的阶段、时间段变。要录了时序事件的 run（3.12+ 默认录）；没录的 run 上按钮照样在，点开说明为什么看不了。页面上最多列 4000 行，命令行打全部。
+- 跟着选的阶段、时间段变。要录了时序事件的 run（3.12+ 默认录）；没录的 run 上按钮照样在，点开说明为什么看不了。页面上最多列 4000 行，命令行默认打全部（只看几列、`--limit`、`--json` 时每列截到 60 行）。命令行的节标题是列的写法（`stage1/MainThread`），后面是进程名、pid、线程原名。
 - 边详情里也能按第一次调用的先后排函数对（「排序：按先后」），默认按次数。
 
 ```bash
-codestrata path <repo> <RUN>@serving            # 打出整棵树（RUN 的写法见「管理 run」）
-codestrata path <repo> <RUN>@serving --depth 2  # 只看前三层
-codestrata path <repo> <RUN>@serving --json     # 和 /api/path 一样的 JSON
+codestrata path <RUN>@serving                     # 打出整棵树（RUN 的写法见「管理 run」；不在仓库里时加 -C <repo>）
+codestrata path <RUN>@serving --depth 2           # 只看前三层
+codestrata path <RUN>@serving/stage1/MainThread   # 只看一列（列的写法和 codestrata lanes 打的一样），每列截到 60 行（--limit N 改）
+codestrata path <RUN>@serving --json              # JSON 信封，data 和 /api/path 一样、每节多一个 lane
 ```
 
 ---
@@ -447,17 +450,21 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 | `scan [repo]` | 静态扫描 + 交叉引用，打印默认切面上每个节点的架构高度 | `--roots DIR…` 扫哪些目录（不给就沿用上次的、第一次扫才自动探测；不带目录是重新自动探测；`--roots .` 取根目录直接放着的脚本）<br>`--depth auto\|N` 默认切面<br>`--expand DIR` 在默认切面上额外展开，可重复 |
 | `--version` | 打印装好的版本（报问题时带上） | |
 | `app` | 浏览器主菜单 | `--port`（默认 8930）<br>`--no-browser`<br>`--proxy` |
-| `serve [repo]` | 本地网页 | `--port`（默认 8900）<br>`--hot RUN` 页面打开时先叠哪个 run<br>`--roots`（收但不起作用）<br>隐藏参数 `--home` 给主菜单用 |
-| `trace [repo] --case NAME [...] -- CMD` | 跑一次命令、录下真实调用（子进程一起录），存成新的 run | `--case`（必填）<br>`--cwd DIR`<br>`--timeout S`<br>`--stop-grace S`（默认 90）<br>`--tag T`、`--note TEXT`<br>`--env K=V`（可重复）<br>`--attach FILE`<br>`--no-events`<br>`--gpu` 同时录 GPU kernel（见 [GPU kernel](#gpu-kernel--gpu)）<br>`--phase NAME=FUNC`（可重复）<br>`--roots` |
-| `runs [repo] ls [--case C]` | 按 case 分组列出 run | |
-| `runs [repo] show RUN` | 一个 run 的详情和复刻命令 | |
+| `serve [repo]` | 本地网页 | `--port`（默认 8900；`--port 0` 让系统挑，打印实际的端口）<br>`--hot RUN` 页面打开时先叠哪个 run<br>`--roots`（收但不起作用）<br>隐藏参数 `--home` 给主菜单用 |
+| `trace [repo] --case NAME [...] -- CMD` | 跑一次命令、录下真实调用（子进程一起录），存成新的 run | `--case`（必填）<br>`--cwd DIR`<br>`--timeout S`<br>`--stop-grace S`（默认 90）<br>`--tag T`、`--note TEXT`<br>`--env K=V`（可重复）<br>`--attach FILE`<br>`--no-events`<br>`--gpu` 同时录 GPU kernel（见 [GPU kernel](#gpu-kernel--gpu)）<br>`--phase NAME=FUNC`（可重复）<br>`--roots`<br>`--json` stdout 上只给结果信封，被录程序的输出转到 stderr |
+| `runs [repo] ls [--case C]` | 按 case 分组列出 run（每个动作也收 `-C 仓库`；ls / show / wait 只读，不迁移老格式的录制） | `--json` 信封（带各阶段的微秒窗口） |
+| `runs [repo] show RUN` | 一个 run 的详情和复刻命令（RUN 也可以是页面地址、带范围） | `--json` |
+| `runs [repo] wait RUN` | 等还在录的 run 录完（给 case 名时等它最新的那一次） | `--timeout S`（默认 600，超时退出码 4）<br>`--json` |
 | `runs [repo] tag\|untag RUN T…` | 加 / 去标签 | |
 | `runs [repo] note RUN TEXT` | 写备注（覆盖） | |
 | `runs [repo] rm RUN_ID…` | 删 run（只认完整 id） | `--yes`、`--events-only` |
 | `runs [repo] merge RUN` | 从原始数据重算计数和时序 | |
-| `path [repo] RUN[@阶段]` | 打出请求路径：每个进程、每个线程的函数级调用上下文树（要录了时序事件的 run） | `--depth N` 只打前几层<br>`--json` |
+| `path REF` | 打出请求路径：每个进程、每个线程的函数级调用上下文树（要录了时序事件的 run）；老写法 `path <repo> RUN` 也认 | `-C 仓库`<br>`--depth N` 只打前几层<br>`--limit N`<br>`--json` 信封 |
+| `status [REF]` | 仓库、run 的状态、各阶段的时刻；不给 REF 列最近 5 个 run | `-C 仓库`、`--json` |
+| `lanes REF` | 这段时间里有哪几列（进程 · 线程）和它们的稳定写法 | `-C 仓库`、`--limit N`、`--json` |
+| `guide` | 给 agent 的一页速查 | `--skill`、`--json` |
 
-RUN 的写法见[管理 run](#管理-run)。
+RUN 的写法见[管理 run](#管理-run)；REF 是 RUN 再加列、也可以是页面地址，见 [design/agent-cli.md](design/agent-cli.md)。
 
 ---
 
@@ -480,7 +487,7 @@ scan、serve、trace 不往 `~/.config` 写东西。
 - **trace 报 `ModuleNotFoundError`，run 显示 `失败（一个函数都没录到）`。** 命令用的是 PATH 上的 `python`，被分析的仓库得在那里 import 得到：先 `pip install -e .`。注意这时 trace 最后仍会打印「叠到图上：codestrata serve . --hot …」，别被误导。失败的 run 会留在 `runs ls` 里，用 `codestrata runs . rm <完整 run id> --yes` 删掉。
 - **`codestrata trace --case x python demo.py` 报 `--cwd 不是一个目录：None`。** 忘了 `--`：没有它，`python` 被当成了仓库参数。写成 `codestrata trace --case x -- python demo.py`。（报错信息本身有误导，是个小 bug。）
 - **命令里的相对路径找不到。** 命令在仓库根目录执行，不在当前目录；脚本在当前目录就加 `--cwd .`。
-- **serve 报 `OSError: [Errno 98] Address already in use`。** 8900 被占了，加 `--port N` 换一个。别用 `--port 0`：它会打印 `http://127.0.0.1:0/`，而不是实际拿到的端口。（app 遇到同样的情况会好好提示换端口。）
+- **serve 说端口用不了。** 8900 被占了，加 `--port N` 换一个，或者 `--port 0` 让系统挑一个空的（打印的就是实际的端口）。
 - **serve 说没有 index.json。** 先 `codestrata scan`。
 - **重新 scan 了，页面没变。** 重启 serve。
 - **页面上没有「时间顺序」、时间条拖不动、请求路径看不了。** 这个 run 没录事件：重录时别加 `--no-events`，并确认被录的 Python 是 3.12+。
@@ -577,7 +584,7 @@ scan、serve、trace 不往 `~/.config` 写东西。
 | 中 | **`--gpu` 只到「哪个 Python 函数发起了哪个 kernel」**：不知道是那个函数里的哪一行，中间经过的 C++ / PyTorch 不展开，kernel 里面跑了什么不录；fork 出来的子进程不录；自动测试里真录 GPU 的那条要手动给 `CODESTRATA_TEST_CUDA_PY`。 |
 | 中 | **安全模型：** serve 没有鉴权，自定义头只挡浏览器里别的网页，挡不住本机进程；app 有口令；`--proxy` 让图页面和主菜单同源，少了一层隔离。 |
 | 中 | **`serve` 的 `--roots` 不起作用。** |
-| 低 | 端口被占时 serve 直接抛异常；`serve --port 0` 打印的不是实际端口；忘了 `--` 时报错有误导。 |
+| 低 | 忘了 `--` 时报错有误导。 |
 | 低 | Host 检查要求带端口号，所以 `--port 80` 用不了。 |
 | 低 | 主菜单被 SIGKILL 时，它起的任务和 serve 会留下来，没人收。 |
 | 低 | 栈深超过 2000 时砍半，极深递归下调用方可能不准；只包了 `os.execv` / `os.execve`。 |

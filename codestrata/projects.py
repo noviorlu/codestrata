@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 
+from .confdir import config_dir  # noqa: F401  （app.py 从这里取）
 from .ui import load as _load
 from .ui import source as _source
 from . import runs as _runs
@@ -19,11 +20,6 @@ from . import scan as _scan
 
 MAX_DIRS = 500          # 一个目录里列出来的子目录上限（再多就是 node_modules 这种，不是要找的仓库）
 MAX_RUNS = 20           # 项目卡片上列出来的 run 个数
-
-
-def config_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "codestrata"
 
 
 class Registry:

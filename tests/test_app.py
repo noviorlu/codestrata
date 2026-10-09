@@ -460,7 +460,8 @@ def test_app_http():
         st, direct, _ = c.req("POST", "/api/open", {"repo": str(raw)})
         assert st == 200 and direct["url"].startswith("http://127.0.0.1:"), direct
         vport = int(direct["url"].rsplit(":", 1)[1].strip("/"))
-        assert _get_json(vport, "/api/app") == {"home": f"http://127.0.0.1:{port}/"}
+        info = _get_json(vport, "/api/app")
+        assert info["home"] == f"http://127.0.0.1:{port}/" and info["repo"] == str(raw) and info["port"] == vport, info
         assert c.req("GET", f"/v/{vport}/", header=False)[0] == 404
         # --proxy：经主菜单转发（ssh -L 只转主菜单一个端口）：页面、接口都能用；要口令；只转发给这里起的图服务
         a.proxy = True
@@ -470,7 +471,7 @@ def test_app_http():
         assert st == 200 and "ds.js" in page, (st, page[:200])
         st, graph, r = c.req("GET", o["url"] + "api/graph?w=900", header=False)
         assert st == 200 and graph["graph"]["nodes"] and r.getheader("Content-Type").startswith("application/json")
-        assert c.req("GET", o["url"] + "api/app")[1] == {"home": f"http://127.0.0.1:{port}/"}
+        assert c.req("GET", o["url"] + "api/app")[1]["home"] == f"http://127.0.0.1:{port}/"
         st, _, r = c.req("GET", o["url"][:-1], header=False)
         assert st == 301 and r.getheader("Location") == o["url"]
         assert anon.req("GET", o["url"], header=False)[0] == 403
@@ -534,7 +535,8 @@ def test_serve_guard_and_home():
         while not _listening(port):
             assert time.time() < end and p.poll() is None, "serve 没起来"
             time.sleep(0.2)
-        assert _get_json(port, "/api/app") == {"home": None}
+        info = _get_json(port, "/api/app")          # 命令行拿页面地址当 REF 时靠它找仓库
+        assert info["home"] is None and info["repo"] == str(repo) and info["port"] == port and info["pid"] == p.pid, info
         assert _status(port, "GET", "/", host="evil.example:80") == 403
         assert _status(port, "PUT", "/api/notes/_overview", body=b"[1]") == 501       # serve 是只读的：不接受写
         # 开编辑器：没带 X-Codestrata 头（别的网页用 <img src> 发的 GET 就是这样）一律 403。
@@ -610,9 +612,9 @@ def test_cli_runs_without_repo():
     assert rid in at(repo, "runs", "ls").stdout
     r = at(repo, "runs", "show", rid)
     assert r.returncode == 0 and r.stdout.startswith(f"run {rid}"), r.stdout + r.stderr
-    # 当前目录不是仓库：说是哪个目录下没有 .codestrata，不是 argparse 的「缺 verb」
+    # 当前目录不是仓库：说从哪个目录往上没找到用过 codestrata 的仓库（repo_unknown），不是 argparse 的「缺 verb」
     r = at(top, "runs", "ls")
-    assert r.returncode != 0 and f"{top.resolve()} 下没有 .codestrata" in r.stderr and "verb" not in r.stderr, r.stderr
+    assert r.returncode == 3 and f"从 {top.resolve()} 往上没找到用过 codestrata 的仓库" in r.stderr and "verb" not in r.stderr, r.stderr
     r = at(repo, "runs")                      # 只敲 runs：缺的是动作，不说仓库也是必填的
     assert r.returncode != 0 and "required: verb" in r.stderr, r.stderr
     # 敲错的动作报的是这个动作不认识，不是把它当成仓库、再说缺动作；不存在的仓库后面跟着动作的，照旧说没有这个仓库

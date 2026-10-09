@@ -38,7 +38,9 @@ from . import align as _align
 from . import compat as _compat
 from . import events as _events
 from . import kernels as _kernels
+from . import ref as _ref
 from . import seq as _seq
+from .errors import CodestrataError
 from .trace import analysis as _tana
 from .trace import driver as _tdrv
 
@@ -621,15 +623,29 @@ def _cleanup_legacy(cs: Path, final: Path, old: Path, case: str) -> None:
 
 # ---------------------------------------------------------------- 读：列表、解析、加载
 
-def catalog(repo: Path) -> list[dict]:
-    """所有 run 的 run.json，新的在前。第一次调用时顺带迁移老文件。"""
+def legacy_files(repo: Path) -> list[Path]:
+    """还没迁进 runs/ 的老格式录制（.codestrata/trace-<case>.json）"""
+    return sorted((Path(repo) / ".codestrata").glob("trace-*.json"))
+
+
+def catalog(repo: Path, migrate_legacy: bool = True) -> list[dict]:
+    """所有 run 的 run.json，新的在前。第一次调用时顺带迁移老文件（会写盘）；
+    migrate_legacy=False 时真的只读：不迁移、runs/ 不在也不建（给 agent 的读命令用，老文件由它们提示）。"""
     repo = Path(repo)
-    key = str(repo.resolve())
-    if key not in _MIGRATED:
-        _MIGRATED.add(key)
-        migrate(repo)
+    if migrate_legacy:
+        key = str(repo.resolve())
+        if key not in _MIGRATED:
+            _MIGRATED.add(key)
+            migrate(repo)
+        base = runs_dir(repo)
+    else:
+        base = Path(repo) / ".codestrata" / "runs"
+        if not base.is_dir():
+            if base.is_symlink():
+                raise SystemExit(f"{base} 是软链，但指向的目录不在（{os.readlink(base)}）：盘没挂上？")
+            return []
     out = []
-    for d in sorted(runs_dir(repo).iterdir(), reverse=True):
+    for d in sorted(base.iterdir(), reverse=True):
         if d.name.startswith(".") or not (d / "run.json").is_file():
             continue
         try:
@@ -642,33 +658,70 @@ def catalog(repo: Path) -> list[dict]:
     return out
 
 
-def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
-    """REF := <完整 run id> | <case>，后面可以加 @阶段，或者 @t=起-止（微秒，时间轴上拖出来的时间段，
-    要录了时序事件）。只写 case 时取它最新的一次 ok 的；一次 ok 都没有就取最新的 partial（并提示）。"""
-    ref, _, phase = (ref or "").partition("@")
-    runs = catalog(repo)
-    hit = next((r for r in runs if r["id"] == ref), None)
+def pick(runs: list[dict], name: str) -> dict | None:
+    """catalog 里按名字挑一个 run：先当完整 id；再当 case 名，取最新一次 ok 的，没有就最新的 partial，再没有取最新的任意一个"""
+    hit = next((r for r in runs if r["id"] == name), None)
     if hit is None:
-        mine = [r for r in runs if r.get("case") == ref]
+        mine = [r for r in runs if r.get("case") == name]
         hit = (next((r for r in mine if r.get("status") == "ok"), None)
                or next((r for r in mine if r.get("status") == "partial"), None)
                or (mine[0] if mine else None))
-        if hit is not None and hit.get("status") != "ok":
-            print(f"[codestrata] case {ref} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
-                  file=sys.stderr)
+    return hit
+
+
+def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
+    """RUN[@范围]（写法见 ref.py，和命令行同一套）→ (run.json, run 目录, 交给老接口的 phase：阶段名、t=起-止 或 None)。
+    只写 case 时取它最新的一次 ok 的；一次 ok 都没有就取最新的 partial（并提示）。页面、serve --hot、老命令走这里，
+    出错是 SystemExit（说明 + 候选）；给 agent 的命令走 locate.resolve（错误码）"""
+    name, at, rest = (ref or "").partition("@")
+    runs = catalog(repo)
+    hit = pick(runs, name)
+    if hit is not None and hit["id"] != name and hit.get("status") != "ok":
+        print(f"[codestrata] case {name} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
+              file=sys.stderr)
     if hit is None:
         have = ", ".join(sorted({r.get('case') for r in runs})) or "（还没有）"
-        raise SystemExit(f"没有叫 {ref!r} 的 run 或 case；有的 case：{have}\n"
-                         f"  录一个：codestrata trace <repo> --case {ref or 'NAME'} -- <命令>")
+        raise SystemExit(f"没有叫 {name!r} 的 run 或 case；有的 case：{have}"
+                         + (f"\n  录一个：codestrata trace <repo> --case {name} -- <命令>" if CASE_RE.match(name) else ""))
     rd = runs_dir(repo) / hit["id"]
+    if not at:
+        return hit, rd, None
     try:
-        win = _seq.parse_window(phase)
-    except ValueError as e:
-        raise SystemExit(str(e)) from None
-    if phase and not win and phase not in {p["name"] for p in hit.get("phases") or []}:
-        raise SystemExit(f"run {hit['id']} 里没有阶段 {phase!r}；有的是："
-                         + ", ".join(p["name"] for p in hit.get("phases") or []))
-    return hit, rd, phase or None
+        rng, lanes = _ref.split_range(hit, rest)
+        if lanes:
+            raise SystemExit(f"这里不收 /列：{ref}")
+        phase, _ = _ref.parse_range(hit, rng, _seq.run_end(hit, rd), bounds=False)   # 页面收超出终点的时间段
+    except CodestrataError as e:
+        raise SystemExit(e.msg + ("；可以写：" + "、".join(e.candidates[:6]) if e.candidates else "")) from None
+    return hit, rd, phase
+
+
+def stale_counts(repo: Path, idx: dict, rd: Path) -> dict:
+    """录制之后改过几个文件：{changed: 改过或删了的, mismatch: 录制时安装包就和仓库不一致的}。读不出 detail.json 抛 OSError / ValueError"""
+    fs = file_state(repo, idx, read_json(rd / "detail.json"))
+    return {"changed": sum(1 for v in fs.values() if v in ("changed", "gone")),
+            "mismatch": sum(1 for v in fs.values() if v == "mismatch")}
+
+
+def state(r: dict) -> str:
+    """run 的状态，给机器读的：ok / partial / failed / recording（还在录）/ interrupted（录制的进程没了，可以 runs merge）"""
+    st = r.get("status") or "?"
+    return "interrupted" if st == "recording" and not _alive(r.get("driver")) else st
+
+
+def brief(r: dict, rd: Path, stale: dict | None) -> dict:
+    """一个 run 的摘要（/api/runs 和 runs ls --json）；stale 是 stale_counts 的结果（算不出是 None）"""
+    sm = r.get("summary") or {}
+    ev = r.get("events")
+    return {"id": r["id"], "case": r.get("case"), "status": r.get("status_shown") or r.get("status"),
+            "problems": r.get("problems") or [], "created": r.get("created"),
+            "duration_s": r.get("duration_s"), "git": (r.get("git") or {}).get("commit"),
+            "tags": r.get("tags") or [], "note": r.get("note") or "",
+            "phases": [{"name": p["name"], "n_funcs": p.get("n_funcs")} for p in r.get("phases") or []],
+            "n_procs_active": sm.get("n_procs_active"), "n_funcs": sm.get("n_funcs"),
+            "events": bool(ev and not ev.get("error")), "events_error": bool(ev and ev.get("error")),
+            "stale": stale,
+            "loadable": (rd / "counts.json.gz").is_file(), "migrated": bool(r.get("migrated_from"))}
 
 
 def _sum(phases: dict) -> dict:
@@ -689,7 +742,8 @@ def load_counts(rd: Path, phase: str | None, with_names: bool = False):
     with_names=True 时返回 (计数, names)：names 是录制时记下的 键 → qualname（remap 用）。"""
     c = read_json(rd / "counts.json.gz", gz=True)
     phases = c["phases"]
-    out = dict(phases[phase]) if phase else _sum(phases)
+    # 阶段日志里有、计数里没有的阶段（这一段一个调用都没录到）：空的
+    out = dict(phases.get(phase) or {"funcs": {}, "func_edges": {}}) if phase else _sum(phases)
     return (out, c.get("names") or {}) if with_names else out
 
 
@@ -761,7 +815,11 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
     align.to_package_graph 现算；meta 保留老的全部键（前端认它们），再加上 run 的信息。"""
     if not ref:
         return None, None
-    run, rd, phase = resolve(repo, ref)
+    return load_run(repo, idx, *resolve(repo, ref))
+
+
+def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> tuple[dict, dict]:
+    """load 的后半：已经认出是哪个 run（和阶段 / 时间段）之后，映射到当前的 index 上"""
     if not (rd / "counts.json.gz").is_file():
         raise SystemExit(f"run {run['id']} 还没有计数：" + (
             "还在录制中" if _alive(run.get("driver")) else
