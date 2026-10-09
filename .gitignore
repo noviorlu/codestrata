@@ -5,6 +5,7 @@ dist/
 build/
 *.egg-info/
 .venv/
+.claude/
 
 # 内部工作文档：本地留着给开发会话用，不进公开仓库
 # （仓库里只放用户和开发者该看的：README、docs/usage、ARCHITECTURE、design/、images/；

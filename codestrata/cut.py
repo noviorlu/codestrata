@@ -80,9 +80,9 @@ def residual_base(node: str) -> str:
 
 
 def within(x: str, d: str) -> bool:
-    """id x（目录、本层文件、单元）在目录 d 的子树里（不含 d 自己）。"""
+    """id x（目录、本层文件、单元）在目录 d 的子树里（不含 d 自己）。虚拟节点（「GPU · 仓库外」）不在任何目录里。"""
     if d == ROOT_DIR:                      # 根目录的脚本：只装直接放着的文件，不装别的扫描根
-        return x != d and (x == residual(d) or "/" not in x)
+        return x != d and not is_virtual(x) and (x == residual(d) or "/" not in x)
     return x != d and x.startswith(d)
 
 

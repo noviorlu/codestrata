@@ -1285,27 +1285,26 @@ def _truth_run():
     return repo, run, det, rd
 
 
-def test_edge_times_api():
-    """/api/seq/edges 经真的 serve 走一遍：录了事件的 run 给每条边的时间；没录事件的、没有这个阶段的给 404 说明。"""
+def test_events_api():
+    """录了事件 / 没录事件的 run 经真的 serve 走一遍：/api/lanes 给分列，没录事件的、没有这个阶段的给 404 说明；时间段的 hotMeta；
+    模块图的时间顺序和时序图的那几个接口都去掉了"""
     import urllib.request
+    from codestrata import seq
     repo, run, det, rd = _truth_run()
     cs("trace", repo, "--case", "plain", "--no-events", "--", PY, "-m", "fakesvc.truth")
+    end = seq.run_end(run, rd)
     with served(repo) as get:
-        st, te = get(f"/api/seq/edges?run={run['id']}")
-        assert st == 200 and te["edges"] and all(v["first"] <= v["last"] for v in te["edges"].values()), te
-        st, e = get("/api/seq/edges?run=plain")
+        st, la = get(f"/api/lanes?run={run['id']}")
+        assert st == 200 and la["lanes"] and la["window"] == [0, end], (st, la.get("error"))
+        st, e = get("/api/lanes?run=plain")
         assert st == 404 and "--no-events" in e["error"], e
-        st, e = get(f"/api/seq/edges?run={run['id']}@nosuch")
+        st, e = get(f"/api/lanes?run={run['id']}@nosuch")
         assert st == 404, e
-        st, tw = get(f"/api/seq/edges?run={run['id']}@t=0-{te['span_us']}")      # 时间段：和整个 run 一样
-        assert st == 200 and tw["edges"] == te["edges"], (tw, te)
-        st, e = get(f"/api/seq/edges?run={run['id']}@t=9-3")
-        assert st == 404 and "起点" in e["error"], e
-        st, g = get(f"/api/graph?run={run['id']}@t=0-{te['span_us']}")
-        assert st == 200 and g["hotMeta"]["window"] == [0, te["span_us"]], g.get("hotMeta")
-        st, e = get("/api/seq/edges")
-        assert st == 400
-        for gone in ("/api/seq", "/api/seq/overview", "/api/seq/find"):     # 时序图去掉了
+        st, lw = get(f"/api/lanes?run={run['id']}@t=0-{end}")                      # 时间段：和整个 run 一样
+        assert st == 200 and [x["edges"] for x in lw["lanes"]] == [x["edges"] for x in la["lanes"]], (lw, la)
+        st, g = get(f"/api/graph?run={run['id']}@t=0-{end}")
+        assert st == 200 and g["hotMeta"]["window"] == [0, end], g.get("hotMeta")
+        for gone in ("/api/seq", "/api/seq/overview", "/api/seq/find", "/api/seq/edges"):     # 时序图、模块图的时间顺序去掉了
             try:
                 urllib.request.urlopen(f"{get.base}{gone}?run={run['id']}", timeout=10)
                 raise AssertionError(f"{gone} 还在")
@@ -1315,10 +1314,21 @@ def test_edge_times_api():
         assert {x["case"]: x["events"] for x in rl["runs"]} == {"truth": True, "plain": False}
 
 
-def test_seq_edge_times():
-    """「时间顺序」上色的数据：切面上每条边在一个阶段里第一次 / 最后一次被调用的时刻和次数。节点内部的、
-    import / 类体这种定义时的执行、index 外的不算（这里从原始 span 另算一遍对照：折叠行展开成一次次调用，
-    阶段的段左闭右开、最后一段闭到 run 的终点）；整个 run 上次数和 hot 图的调用次数一致
+def _lane_edges(idx, rd, run, phase, hot, open_):
+    """分列里所有列的边加起来：{"a|b": {first, last, n}}（同样两个节点之间的调用在各列里各算一份，这里合起来），和 lanes.build 的结果"""
+    from codestrata import lanes
+    L = lanes.build(idx, rd, run, phase, hot, open_)
+    out: dict = {}
+    for ln in L["lanes"]:
+        for e in ln["edges"]:
+            w = out.setdefault(f"{e['a']}|{e['b']}", {"first": e["first"], "last": e["last"], "n": 0})
+            w["first"], w["last"], w["n"] = min(w["first"], e["first"]), max(w["last"], e["last"]), w["n"] + e["n"]
+    return out, L
+
+
+def test_lanes_match_spans_and_hot():
+    """分列的边（所有列加起来）：节点内部的、import / 类体这种定义时的执行、index 外的不算（这里从原始 span 另算一遍对照：折叠行展开成
+    一次次调用，阶段的段左闭右开、最后一段闭到 run 的终点）；整个 run 上次数和 hot 图的调用次数一致；「反复调用」按 seq.is_repeat
     （分了阶段时边界上会差一点：时间窗按时刻切，fork 出来的进程是轮询着跟着切阶段的）"""
     from codestrata import seq
     repo = fresh()
@@ -1327,11 +1337,13 @@ def test_seq_edge_times():
     idx = ui_load.load_index(repo)
     spans, _ = _spans(rd)
     end = seq.run_end(run, rd)
+    hot, meta = ui_load.load_hot(repo, idx, run["id"])
+    raw = {**hot, "redirect": {}, "keymap": None}          # 和原始 span 比：不挪构造、不挪键
     for phase, opened in ((None, None), ("generate", None), ("generate", ["fakesvc/"])):
-        r = seq.edge_times(idx, rd, run, open_=opened, phase=phase)
-        t0, t1 = r["window"]
-        assert (t0 > 0) == bool(phase), r["window"]
-        inside = lambda c: any(a <= c < b or c == b == end for a, b in r["intervals"])      # noqa: E731
+        got, L = _lane_edges(idx, rd, run, phase, raw, opened)
+        t0, t1 = L["window"]
+        assert (t0 > 0) == bool(phase), L["window"]
+        inside = lambda c: any(a <= c < b or c == b == end for a, b in L["segs"])      # noqa: E731
         v = cut.view(idx, set(opened if opened is not None else idx["default_open"]))
         loc, _ = align.sym_locs(idx["symbols"])
         want: dict = {}
@@ -1346,13 +1358,12 @@ def test_seq_edge_times():
             f, l = x["t0"] + round(min(cs_) - x["t0"]), x["t0"] + round(max(cs_) - x["t0"])
             w = want.setdefault(f"{na}|{nb}", {"first": f, "last": l, "n": 0})
             w["first"], w["last"], w["n"] = min(w["first"], f), max(w["last"], l), w["n"] + len(cs_)
-        got = {k: {f: v[f] for f in ("first", "last", "n")} for k, v in r["edges"].items()}
         assert want and got == want, (got, want)
-        assert all(v["repeat"] == (v["n"] >= seq.REPEAT_MIN and v["spread"] > r["span_us"] / 2) for v in r["edges"].values())
+        span_us = sum(b - a for a, b in L["segs"])
+        assert all(e["repeat"] == seq.is_repeat(e["n"], e["first"], e["last"], span_us) for ln in L["lanes"] for e in ln["edges"])
         if phase is None:
-            hot, meta = ui_load.load_hot(repo, idx, run["id"])
             he = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=opened)["hot"]["edges"]
-            assert {k: v["n"] for k, v in r["edges"].items()} == he, (r["edges"], he)
+            assert {k: v["n"] for k, v in _lane_edges(idx, rd, run, None, hot, opened)[0].items()} == he, (got, he)
 
 
 def test_phase_intervals():
@@ -1393,16 +1404,18 @@ def test_calls_in_and_run_end():
     (sp / "index.json").write_text("{坏了")
     assert seq.run_end({"duration_s": 0.0001}, rd) == 100
     assert seq.run_end({}, tmpdir("cs-end-none-")) is None
-    # _pairs 按阶段分：切阶段那一刻的调用归新阶段；一行折叠的调用（50、100、150）跨了两个阶段就分成两份
+    # 调用表（phase_calls）按阶段分：切阶段那一刻的调用归新阶段；一行折叠的调用（50、100、150）跨了两个阶段就分成两份；
+    # first0 是这一段里深度 0 的最早一次（时刻，读到的先后）
     rows = [[100, 5, 1, 0, 0, 1, 1, 0], [50, 100, 1, 0, 1, 0, 3, 0]]
     (sp / "p1-000.jsonl.gz").write_bytes(gzip.compress("\n".join(json.dumps(r) for r in rows).encode()))
     (sp / "keys.json").write_text('{"keys": ["x.py:1", "y.py:2"]}')
     (sp / "index.json").write_text(json.dumps({"chunks": [{"chunk": "p1-000.jsonl.gz", "pid": 1, "t0_us": 50, "t1_us": 150}]}))
     two = {"phase_log": [["a", 0, "start"], ["b", 100, "hook"]], "duration_s": 0.0002}
-    agg = seq._pairs(sp, two)[1]["agg"]
-    assert {k: v[:3] for k, v in agg["a"].items()} == {(1, 0): [50, 50, 1]}, agg["a"]
-    assert {k: v[:3] for k, v in agg["b"].items()} == {(0, 1): [100, 100, 1], (1, 0): [100, 150, 2]}, agg["b"]
-    assert {k: v[:3] for k, v in agg[None].items()} == {(0, 1): [100, 100, 1], (1, 0): [50, 150, 3]}, agg[None]
+    assert seq.phase_calls(rd, two, "a")["calls"] == {(1, 1, 1, 0): [50, 50, 1, (50, 2)]}
+    assert seq.phase_calls(rd, two, "b")["calls"] == {(1, 1, 0, 1): [100, 100, 1, (100, 1)], (1, 1, 1, 0): [100, 150, 2, (100, 2)]}
+    assert seq.phase_calls(rd, two, None)["calls"] == {(1, 1, 0, 1): [100, 100, 1, (100, 1)], (1, 1, 1, 0): [50, 150, 3, (50, 2)]}
+    rr = seq.run_rows(rd)
+    assert rr["tids"] == {1: {1}} and rr["rows"][1] == ([1, 0], [100, 50]) and rr["held"][(1, 1)] == {0: [100, 105], 1: [50, 150]}, rr
 
 
 def test_time_window():
@@ -1422,7 +1435,7 @@ def test_time_window():
         spans, _ = _spans(rd)
         end = seq.run_end(run, rd)
         assert end and end >= max(x["t0"] + max(x["dur"], 0) for x in spans)
-        c = seq.window_counts(rd, t0, t1)
+        c = seq.window_counts(rd, run, t0, t1)
         want_f, want_e = {}, {}
         for x in spans:                                # 折叠行展开成一次次调用，数落在窗口里的
             n = sum(1 for c_ in _calls(x) if t0 <= c_ <= t1)
@@ -1437,8 +1450,8 @@ def test_time_window():
         assert meta["phase"] == f"t={t0}-{t1}" and meta["window"] == [t0, t1] and hot["run"] == ref, meta["phase"]
         assert meta["end_us"] == end and meta["timeline"] == [list(s) for s in seq.phase_segments(run, end)]
         he = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta)["hot"]["edges"]
-        te = seq.edge_times(idx, rd, run, open_=None, phase=f"t={t0}-{t1}")
-        assert te["window"] == [t0, t1] and {k: v["n"] for k, v in te["edges"].items()} == he, (te["edges"], he)
+        te, L = _lane_edges(idx, rd, run, f"t={t0}-{t1}", hot, None)
+        assert L["window"] == [t0, t1] and {k: v["n"] for k, v in te.items()} == he, (te, he)
         return c
 
     # 分了阶段的：窗口正好是一个阶段
@@ -1476,7 +1489,8 @@ def test_time_window():
     chunk = json.loads((tsp / "index.json").read_text())["chunks"][0]["chunk"]
     (tsp / chunk).write_bytes(b"garbage")
     try:
-        ui_load.load_hot(trepo, tidx, f"{trun['id']}@t=0-{seq.run_end(trun, trd)}")
+        # 用一个之前没读过的时间段：读过的那张调用表按 (run, 时间段) 缓存着（index.json 没变就不重读）
+        ui_load.load_hot(trepo, tidx, f"{trun['id']}@t=3-{seq.run_end(trun, trd) - 1}")
         raise AssertionError("坏了的 span 也加载出来了")
     except SystemExit as e:
         assert "读不出来" in str(e) and "merge" in str(e), e
@@ -2296,21 +2310,21 @@ def test_constructor_calls_counted_once():
     og = {k.partition("|")[2]: x for k, x in old["calls"].items() if k.startswith(U + "|")}
     assert {k: x["n"] for k, x in og.items()} == {k: x["n"] for k, x in got.items()}, og
     assert og[f"{M}Own"]["lines"] is None and og[f"{M}Own"]["guessed"] == [L["a"], L["e"]], og[f"{M}Own"]
-    # 「时间顺序」：Leaf() 跑到 root.py 的 __init__，时刻算在 use → leaf 上，和图上的边一致
+    # 分列的边：Leaf() 跑到 root.py 的 __init__，算在 use → leaf 上，和图上的边一致（不挪构造的话落在 root.py 上）
     run, rd, _ = runs.resolve(repo, "ct")
-    te = seq.edge_times(idx, rd, run, open_=opened, keymap=hot["keymap"], redirect=hot["redirect"])
-    assert "ct/use.py|ct/leaf.py" in te["edges"] and "ct/use.py|ct/root.py" not in te["edges"], te["edges"]
-    raw = seq.edge_times(idx, rd, run, open_=opened)
-    assert "ct/use.py|ct/root.py" in raw["edges"], raw["edges"]
-    # 录制之后文件挪了几行：次数、时刻都按函数名挪回来（seq 走 keymap）
+    te, _ = _lane_edges(idx, rd, run, None, hot, opened)
+    assert "ct/use.py|ct/leaf.py" in te and "ct/use.py|ct/root.py" not in te, te
+    raw, _ = _lane_edges(idx, rd, run, None, {**hot, "redirect": {}, "keymap": None}, opened)
+    assert "ct/use.py|ct/root.py" in raw, raw
+    # 录制之后文件挪了几行：分列里的次数也按函数名挪回来（lanes.build 走 keymap）
     for rel in ("ct/root.py", "ct/models.py"):
         (repo / rel).write_text("# moved\n\n" + (repo / rel).read_text())
     cs("scan", repo)
     idx2 = ui_load.load_index(repo)
     hot2, _ = ui_load.load_hot(repo, idx2, "ct")
     assert {k: x["n"] for k, x in hot2["calls"].items()} == {k: x["n"] for k, x in hot["calls"].items()}, hot2["calls"]
-    te2 = seq.edge_times(idx2, rd, run, open_=opened, keymap=hot2["keymap"], redirect=hot2["redirect"])
-    assert {k: v["n"] for k, v in te2["edges"].items()} == {k: v["n"] for k, v in te["edges"].items()}, te2["edges"]
+    te2, _ = _lane_edges(idx2, rd, run, None, hot2, opened)
+    assert {k: v["n"] for k, v in te2.items()} == {k: v["n"] for k, v in te.items()}, te2
 
 
 _NT = {
@@ -2623,6 +2637,64 @@ _CX = {"cx/__init__.py": "",
                       "if __name__ == '__main__':\n    main()\n")}
 
 
+def test_lane_counts():
+    """分列里一列的叠加（lanes.lane_counts → ui.load.load_lane；/api/lanehot、/api/edge?lane=）：只算这一列里的调用——
+    所有列加起来正好是时序事件里的全部调用；一列里节点的次数和 lanes.build 画的一样；列里的边的详情只有这一列里的调用"""
+    from urllib.parse import quote
+    from codestrata import lanes, seq
+    repo = fresh()
+    cs("scan", repo)
+    cs("trace", repo, "--case", "truth", "--", PY, "-m", "fakesvc.truth",
+       env={"PYTHONPATH": str(HERE / "trace_cases" / "fakezmq")})
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "truth")
+    run, rd, phase = runs.resolve(repo, "truth")
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]))
+    T, C = "fakesvc/truth.py", "fakesvc/callee.py"
+    # 所有列（按时序事件里出现过的线程现算列 id，不只 build 画了的）加起来 == 全部调用
+    pc = seq.phase_calls(rd, run, None)
+    keys, tn = pc["keys"], pc["threads"]
+    ids = {f"{p}:{lanes.thread_group((tn.get(str(p)) or {}).get(str(t)) or f'线程 {t}')}" for p, t, _, _ in pc["calls"]}
+    got: dict = {}
+    want: dict = {}
+    for lid in ids:
+        for k, n in lanes.lane_counts(rd, run, None, lid)["funcs"].items():
+            got[k] = got.get(k, 0) + n
+    for (_, _, _, b), (_, _, n, _) in pc["calls"].items():
+        want[keys[b]] = want.get(keys[b], 0) + n
+    assert want and got == want, (got, want)
+    # 一列的叠加：节点上的次数和 build 画的一样（目录全部展开：节点就是文件）；只跑仓库外代码的列什么都没有
+    for x in L["lanes"]:
+        h = ui_load.load_lane(repo, idx, "truth", x["id"])
+        assert h["lane"] == x["id"] and h["run"] == run["id"], h
+        drawn = {nd: v["n"] for nd, v in x["nodes"].items() if v["n"]}
+        assert {u: n for u, n in h["packages"].items() if n} == drawn, (x["id"], h["packages"], drawn)
+    assert not ui_load.load_lane(repo, idx, "truth", next(x for x in L["lanes"] if x["thread"] == "stdlib-put")["id"])["packages"]
+    assert not ui_load.load_lane(repo, idx, "truth", "12345:nosuch")["packages"]   # 没有这一列：什么都没有
+    try:
+        ui_load.load_lane(repo, idx, "truth", "nolane")
+        raise AssertionError("列 id 写错了应该报错")
+    except LookupError as e:
+        assert "pid:线程名" in str(e), e
+    w = next(x for x in L["lanes"] if x["thread"] == "worker")
+    e = next(e for e in w["edges"] if e["a"] == T and e["b"] == C)
+    with served(repo) as get:
+        st, h = get(f"/api/lanehot?run=truth&lane={quote(w['id'])}")
+        assert st == 200 and h["lane"] == w["id"] and h["packages"] == {u: v["n"] for u, v in w["nodes"].items() if v["n"]}, (st, h)
+        assert set(h) == {"lane", "run", "packages", "symbols", "files", "kernels", "lines_approx"}, h.keys()
+        # 列里的边：只算这一列里的调用，和图上那条边的次数一样；不给 lane 是所有线程的（更多）
+        st, E = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=truth&lane={quote(w['id'])}")
+        assert st == 200 and E["lane"] == w["id"] and E["counts"]["calls"] == e["n"] > 0, (st, E.get("counts"), e)
+        st, A = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=truth")
+        assert st == 200 and "lane" not in A and A["counts"]["calls"] > E["counts"]["calls"], (A["counts"], E["counts"])
+        st, err = get("/api/lanehot?run=truth&lane=nolane")
+        assert st == 404 and "pid:线程名" in err["error"], (st, err)
+        st, err = get("/api/lanehot?run=truth")
+        assert st == 400, (st, err)
+        st, err = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=nosuch&lane={quote(w['id'])}")
+        assert st == 404, (st, err)
+
+
 def test_lanes_wrap():
     """一列里展开一个有很多子模块的目录：同一层的子模块每 5 个占一个子行（同模块图折行），不排成一长行；
     名次只看这一段里调到过的、同一深度的兄弟，按 id 排，和这一列画了哪几个无关"""
@@ -2933,6 +3005,100 @@ def test_deferred_starts_and_super():
     assert co == [(ln("return await asyncio.wait_for("), "both", {"k": "deferred", "at": [ln("lib.coro(1),")]})], co
     sw = C["df/app.py#Worker.__init__|df/app.py#Worker.__setitem__"]["lines"]
     assert [(y["status"], y["note"]) for y in sw] == [("trace", {"k": "line", "names": ["super().__init__"]})], sw
+
+
+# 循环里反复调同一个仓库函数（没有子调用的叶子：这几次合成 span 的一行），在它里面放、起线程、join、起 / 等子进程、fork：
+# 主线程循环 5 次调 put_one（里面 q.put(i)），一条消费线程循环 q.get()；start_one / join_one / spawn_one / fork_one 各在循环里调 3 次
+_FH = {
+    "fh/__init__.py": "",
+    "fh/main.py": ("import os\nimport queue\nimport subprocess\nimport threading\n\n\n"
+                   "def put_one(q, i):\n    q.put(i)\n\n\n"
+                   "def consume(q, n, out):\n    for _ in range(n):\n        out.append(q.get())\n\n\n"
+                   "def leaf():\n    return 1\n\n\n"
+                   "def work():\n    return leaf()\n\n\n"
+                   "def start_one(t):\n    t.start()\n\n\n"
+                   "def join_one(t):\n    t.join()\n\n\n"
+                   "def spawn_one():\n    subprocess.run(['true'], check=True)\n\n\n"
+                   "def fork_one():\n    pid = os.fork()\n    if pid == 0:\n        os._exit(0)\n    return pid\n\n\n"
+                   "def main():\n"
+                   "    q, out = queue.Queue(), []\n"
+                   "    c = threading.Thread(target=consume, args=(q, 5, out), name='consumer')\n"
+                   "    c.start()\n"
+                   "    for i in range(5):\n        put_one(q, i)\n"
+                   "    c.join()\n"
+                   "    assert out == list(range(5)), out\n"
+                   "    ws = [threading.Thread(target=work, name=f'w-{k}') for k in range(3)]\n"
+                   "    for t in ws:\n        start_one(t)\n"
+                   "    for t in ws:\n        join_one(t)\n"
+                   "    for _ in range(3):\n        spawn_one()\n"
+                   "    kids = []\n"
+                   "    for _ in range(3):\n        kids.append(fork_one())\n"
+                   "    for p in kids:\n        os.waitpid(p, 0)\n\n\n"
+                   "if __name__ == '__main__':\n    main()\n"),
+}
+
+
+def test_handoff_in_folded_calls():
+    """循环里反复调同一个仓库函数、它里面 q.put(x)：这几次调用合成 span 的一行（rep 5），5 次放的那一头都落在这一行上、
+    标出 put_one 和 q.put 的那一行——不能只有第一次对、其余成了 -1（不在任何 span 里，分列里那一头就退成这条线程栈底的
+    函数、不知道是哪一行、经仓库外的代码）。起线程、join、起 / 等子进程、fork 也一样（index.json 里查 span 下标的几处）"""
+    from codestrata import events, lanes
+    from codestrata.ui import source
+    repo = tmpdir("cs-runs-fh-") / "repo"
+    for rel, src in _FH.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "fh", "--events", "--", PY, "-m", "fh.main")
+    run, rd, phase = runs.resolve(repo, "fh")
+    sd = rd / "events" / "spans"
+    ix, kj = json.loads((sd / "index.json").read_text()), json.loads((sd / "keys.json").read_text())
+    code = _FH["fh/main.py"].splitlines()
+    ln = lambda s: next(i for i, x in enumerate(code, 1) if x.strip() == s)      # noqa: E731
+    puts = [h["from"] for h in ix["handoffs"] if h["via"] == "queue"]
+    assert len(puts) == 5, ix["handoffs"]
+    pid = puts[0][0]
+    rows = events.read_spans(sd, pid)
+
+    def row_of(fn):
+        """fn 的那几次调用合成的那一行（下标）：只有一行，rep > 1"""
+        k = _line(repo, "fh/main.py", f"def {fn}(")
+        got = [i for i, r in enumerate(rows) if kj["keys"][r[5]] == k]
+        assert len(got) == 1 and rows[got[0]][6] > 1, (fn, [rows[i] for i in got])
+        return got[0]
+    # 交接：5 次放的那一头都在 put_one 合成的那一行、q.put 那一行
+    pr = row_of("put_one")
+    assert rows[pr][6] == 5 and all((p[0], p[2], p[4]) == (pid, pr, ln("q.put(i)")) for p in puts), puts
+    # 起线程、join：3 条 w-* 线程都是在 start_one / join_one 合成的那一行里起的、等到的
+    ws = [t for t, nm in kj["threads"][str(pid)].items() if nm.startswith("w-")]
+    assert len(ws) == 3, kj["threads"]
+    for t in ws:
+        f, by = ix["thread_from"][str(pid)][t], ix["thread_end"][str(pid)][t]["by"]
+        assert (f[1], f[2], by[1], by[2]) == (row_of("start_one"), ln("t.start()"), row_of("join_one"), ln("t.join()")), (t, f, by)
+    # 子进程：3 次 exec、等它们的 3 次 waitpid 都在 spawn_one 合成的那一行；3 次 fork 都在 fork_one 合成的那一行
+    # （fork 的那一头记在子进程的日志里，查的是父进程那个映像的 span 号）
+    sl = (row_of("spawn_one"), ln("subprocess.run(['true'], check=True)"))
+    ex = {s["child"] for s in ix["spawns"] if s["how"] == "exec"}
+    assert [(s["row"], s["line"]) for s in ix["spawns"] if s["how"] == "exec"] == [sl] * 3, ix["spawns"]
+    assert [(s["row"], s["line"]) for s in ix["reaps"] if s["child"] in ex] == [sl] * 3, ix["reaps"]
+    assert [(s["pid"], s["row"], s["line"]) for s in ix["spawns"] if s["how"] == "fork"] == \
+        [(pid, row_of("fork_one"), ln("pid = os.fork()"))] * 3, ix["spawns"]
+    # 分列：主线程 → consumer 的交接线，放的那一头只有 put_one 这一对（没有经仓库外的代码的那一头），一共 5 次；
+    # 起 / 收 w 那一列的连线在主线程那一头也只有 start_one / join_one
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "fh")
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]), text=lambda f, l: source.line_text(repo, f, l).strip())
+    hs = [x for x in L["links"] if x["kind"] == "handoff"]
+    assert {(x["from"]["lane"], x["to"]["lane"]) for x in hs} == {(f"{pid}:MainThread", f"{pid}:consumer")}, hs
+    assert {(p["a"], p["la"], p["ta"], p["xa"]) for x in hs for p in x["pairs"]} == \
+        {("fh/main.py#put_one", ln("q.put(i)"), "q.put(i)", False)} and sum(x["n"] for x in hs) == 5, hs
+
+    def main_end(kind, side):
+        """一头是 w 那一列的 kind 连线：主线程那一头（side 是 a / b）的 {(函数, 那一行的代码, 经仓库外的代码)}，和一共几次"""
+        xs = [x for x in L["links"] if x["kind"] == kind and f"{pid}:w" in (x["from"]["lane"], x["to"]["lane"])]
+        return {(p[side], p["t" + side], p["x" + side]) for x in xs for p in x["pairs"]}, sum(x["n"] for x in xs)
+    assert main_end("spawn", "a") == ({("fh/main.py#start_one", "t.start()", False)}, 3), L["links"]
+    assert main_end("join", "b") == ({("fh/main.py#join_one", "t.join()", False)}, 3), L["links"]
 
 
 if __name__ == "__main__":

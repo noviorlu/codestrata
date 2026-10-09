@@ -11,7 +11,7 @@ span 带父 span 的 run（2026-10-01 起录的、或者 runs merge 重建过的
      找不到带时刻的调用方的是根：线程的入口、这一段之前就进去了的。
   3. 老 run（2026-10-01 之前录的）的时序事件只记了跨文件的调用，同一个文件里的调用没有时刻：根要是在 hot 里有同一个文件里的
      调用方、而它也在这棵树上，就挂到它下面，标 untimed（这一跳没有时刻，位置是按它自己第一次往外调的时刻排的）。
-  4. 反复调用（seq.REPEAT_MIN 次以上、首末隔了这段时间的一半以上：轮询、每个 token 都走一遍）标 rep。
+  4. 反复调用（seq.is_repeat：REPEAT_MIN 次以上、首末隔了这段时间的一半以上：轮询、每个 token 都走一遍）标 rep。
 每一行带调用写在调用方的哪一行（hot 里这对函数次数最多的那一行）、代码里看不看得出（status、note，见 align.judge）。
 """
 from __future__ import annotations
@@ -75,10 +75,13 @@ def request_path(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, m
             "rows_cut": cut, "scope": pc["scope"], "procs": out}
 
 
-def first_calls(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict) -> dict[str, int]:
-    """{"F|G": 这一段里第一次调用的时刻}（不分进程、线程）：边详情按先后排函数对用。没有时序事件抛 LookupError"""
+def first_calls(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, lane: str | None = None) -> dict[str, int]:
+    """{"F|G": 这一段里第一次调用的时刻}（不分进程、线程；给了 lane 就只算分列里这一列）：边详情按先后排函数对用。没有时序事件抛 LookupError"""
     out: dict[str, int] = {}
-    for _, _, _, f_, g, first, _, _ in _labeled(idx, _seq.phase_calls(rd, run, phase), hot):
+    keep = _lanes.in_lane(lane) if lane else None
+    for pid, _, tname, f_, g, first, _, _ in _labeled(idx, _seq.phase_calls(rd, run, phase), hot):
+        if keep is not None and not keep(pid, tname):
+            continue
         k = f"{f_}|{g}"
         if k not in out or first < out[k]:
             out[k] = first
@@ -111,7 +114,7 @@ def _labeled(idx: dict, pc: dict, hot: dict):
     被调方落不上的不要）"""
     pair = _pair_labeler(idx, hot)
     keys, threads = pc["keys"], pc["threads"]
-    for (pid, tid, a, b), (first, last, n) in pc["calls"].items():
+    for (pid, tid, a, b), (first, last, n, _) in pc["calls"].items():
         if not (0 <= a < len(keys) and 0 <= b < len(keys)):
             continue
         fg = pair(keys[a], keys[b])
@@ -165,7 +168,6 @@ def _contexts(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, call
                     x[0] = got[1] if x[0] is None else min(x[0], got[1])
                     x[1] = got[2] if x[1] is None else max(x[1], got[2])
                     x[2] += got[0]
-    repeat = _seq.REPEAT_MIN
     out = {}
     for key, nd in nodes.items():
         kids: dict[tuple, list] = {}
@@ -178,7 +180,7 @@ def _contexts(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, call
             first, last, n, _ = nd[c]
             via = c[-2] if len(c) > 1 else None
             row = {"d": len(c) - 1, "t": when(c), "fn": c[-1], "def": _align.node_def(idx, c[-1]), "from": via,
-                   "n": n or None, "rep": bool(n >= repeat and last - first > span / 2), "untimed": False,
+                   "n": n or None, "rep": bool(n and _seq.is_repeat(n, first, last, span)), "untimed": False,
                    "before": first is None, "line": _line(calls, via, c[-1]) if via else None}
             if row["line"]:
                 row["line"]["f"] = _align.node_def(idx, via)["f"]
@@ -227,14 +229,12 @@ def _tree(edges: dict, calls: dict, idx: dict, span: int, fill_same_file: bool) 
         kids.setdefault(f_, []).append(g)
     rows: list[dict] = []
     done: set[str] = set()
-    repeat = _seq.REPEAT_MIN
-
     def walk(node: str, d: int, via: str | None) -> None:
         done.add(node)
         e = edges.get((via, node)) if via else None
         row = {"d": d, "t": seen[node], "fn": node, "def": _align.node_def(idx, node), "from": via,
                "n": e[2] if e and node not in untimed else None,
-               "rep": bool(e and e[2] >= repeat and e[1] - e[0] > span / 2),
+               "rep": bool(e and _seq.is_repeat(e[2], e[0], e[1], span)),
                "untimed": node in untimed, "line": _line(calls, via, node) if via else None}
         if row["line"]:
             row["line"]["f"] = _align.node_def(idx, via)["f"]

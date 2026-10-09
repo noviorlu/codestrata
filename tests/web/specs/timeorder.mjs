@@ -12,6 +12,8 @@ export default async function (t) {
   const chip = '#edgechips [data-t="timeorder"]';
   ok(await page.ev(`!!document.querySelector('${chip}') && document.querySelector('${chip}').getAttribute('aria-pressed')`) === 'false',
      '分列里有「时间顺序」，默认关着');
+  ok(await page.ev(`document.querySelector('${chip} linearGradient').getAttribute('gradientUnits')`) === 'userSpaceOnUse',
+     '开关上的渐变线按用户坐标铺（按包围盒铺的话，水平线高 0，画不出来）');
   await page.click(chip);
   ok(await page.wait(`CS.lanes.edges.some(E => E._tc)`, 15000), '开：上了色');
   const r = await ranked(page);

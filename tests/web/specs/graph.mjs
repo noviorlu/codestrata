@@ -9,6 +9,8 @@ export default async function (t) {
   ok(api.length >= 5 && JSON.stringify([...drawn].sort()) === JSON.stringify([...api].sort()), `图上的节点和 /api/graph 一致（${drawn.length} 个）`);
   ok(await page.ev(`document.getElementById('runbtn').textContent`) === '静态图', '没选 run：运行按钮写「静态图」');
   ok(!(await page.ev('!!CS.graph.hot')), '没有叠加');
+  ok(await page.ev(`getComputedStyle(document.getElementById('viewlbl')).display === 'none'`),
+     '没叠 run：「视图」下面的按钮都没有，标签也藏起来');
   // 分层：被调的在下面（truth 调 callee，callee 调 other）
   const y = await page.ev(`Object.fromEntries([...document.querySelectorAll('#g .nd')].map(g => [g.dataset.id, g.getBoundingClientRect().top]))`);
   ok(y['fakesvc/truth.py'] < y['fakesvc/callee.py'] && y['fakesvc/callee.py'] < y['fakesvc/other.py'], '分层：依赖方在上、被依赖的在下');

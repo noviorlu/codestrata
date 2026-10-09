@@ -16,8 +16,16 @@ export default async function (t) {
   const seg = await page.rect('.tseg[data-seg="loop"]'), sel = await page.rect('.tsel');
   ok(Math.abs(seg.l - sel.l) < 2 && Math.abs(seg.r - sel.r) < 2, '选中框和 loop 色段对齐');
 
-  // 拖左把手往右：变成 loop 的后半段（前半段刚切阶段、还没有调用：切阶段时触发的进程会停 0.1 s）
-  await page.drag(sel.l + 2, sel.y, sel.l + sel.w * 0.5);
+  // 拖左把手往右：变成 loop 的后半段（前半段刚切阶段、还没有调用：切阶段时触发的进程会停 0.1 s）。
+  // 拖的半路上条的宽度定住（标签随时间段变宽会把条挤窄，手下对应的时间就跳），松手放开
+  const x0 = sel.l + 2, x1 = sel.l + sel.w * 0.5, bw = Math.round((await page.rect('.tbar')).w);
+  await page.mouse('mouseMoved', x0, sel.y); await page.mouse('mousePressed', x0, sel.y, 1);
+  for (let i = 1; i <= 4; i++) await page.mouse('mouseMoved', x0 + (x1 - x0) * i / 8, sel.y, 1);
+  const frozen = await page.ev(`(c => [c.flexGrow, c.flexShrink, Math.round(parseFloat(c.flexBasis))])(getComputedStyle(document.querySelector('.tbar')))`);
+  for (let i = 5; i <= 8; i++) await page.mouse('mouseMoved', x0 + (x1 - x0) * i / 8, sel.y, 1);
+  await page.mouse('mouseReleased', x1, sel.y);
+  ok(JSON.stringify(frozen) === JSON.stringify(['0', '0', bw]) && await page.ev(`!document.querySelector('.tbar').style.flex`),
+     '拖的半路上条的宽度定住、松手放开 ' + JSON.stringify([frozen, bw]));
   ok(await page.wait(`/@t=\\d+-\\d+(&|$)/.test(decodeURIComponent(location.hash)) && !!CS.app.data.hotMeta.window`, 15000), '拖左把手：地址变成 @t=起-止 ' + await hash(page));
   ok(await page.wait(`document.getElementById('prog').textContent === ''`, 15000), '画好了：「叠加 run …」清掉');
   s = await st(page);
@@ -38,7 +46,10 @@ export default async function (t) {
   const w1 = s.win;
   await page.ev(`document.querySelector('.th.r').focus()`);
   await page.key('ArrowLeft', 'ArrowLeft', 37);
+  const kbHeld = await page.ev(`document.querySelector('.tbar').style.flex`);
   ok(await page.wait(`CS.app.data.hotMeta.window && CS.app.data.hotMeta.window[1] < ${w1[1]}`, 15000), '键盘 ←：终点前移');
+  ok(/^0 0 [\d.]+px$/.test(kbHeld) && await page.wait(`!document.querySelector('.tbar').style.flex`, 3000),
+     '键盘挪的时候条宽也定住，提交后放开 ' + JSON.stringify(kbHeld));
   await sleep(300);
   ok(await page.ev(`!!document.activeElement && document.activeElement.matches('.th.r')`), '提交重画之后焦点还在右把手上');
   ok(/^\d+$/.test(await page.ev(`document.querySelector('.th.r').getAttribute('aria-valuenow')`)), '把手有 aria-valuenow');

@@ -8,9 +8,9 @@
   录了时序事件的 run 叠上去是按进程 · 线程分列（lanes.js）；A、B 各有一个不录时序事件的同样的 run（an、bn），叠上去是一张模块图，
   测模块图上的叠加（overlay、calls）用它们
 另有一个只 scan 的小仓库（_CUT：嵌套目录、一个又有子目录又有十几个文件的目录），给展开 / 收起、搜索定位用（base2）；
-再一个录过的小仓库（_DYN：runner 经 self.model.forward 调到按字符串加载的类，代码里看不出），给虚线边用（base3）；
+再一个录过的小仓库（DYN：runner 经 self.model.forward 调到按字符串加载的类，代码里看不出），给虚线边用（base3）；
 它录了两次，第二次去掉调用行当老 run。
-还有一个 GPU 的（_DYN 加一个 .cu 文件，base4）：在 CPU 上录一次，再往 parts/ 里放一份手写的 GPU 日志、runs merge，
+还有一个 GPU 的（DYN 加一个 .cu 文件，base4）：在 CPU 上录一次，再往 parts/ 里放一份手写的 GPU 日志、runs merge，
 当 trace --gpu 录到了两个 kernel（一个是仓库里 .cu 定义的，一个在仓库外），不用 GPU。
 serve 用随机端口，测完关掉；Chrome 由 tests/web/cdp.mjs 自己起、自己关。
 """
@@ -26,7 +26,7 @@ import sys
 import time
 import urllib.request
 
-from common import HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
+from common import DYN, HERE, PY, cs, fresh, gpu_repo, run_id, run_tests, tmpdir  # noqa: E402
 
 WEB = HERE / "web"
 _FX: dict = {}
@@ -43,11 +43,7 @@ def _tools():
     return node, chrome
 
 
-def _run_id(repo, case):
-    base = repo / ".codestrata" / "runs"
-    hits = sorted(p.name for p in base.iterdir() if p.name.endswith("-" + case))
-    assert hits, f"没有 {case} 的 run"
-    return hits[-1]
+
 
 
 # 切面用的仓库：cx/ 下有子目录、子目录的子目录；big/ 直接放着 14 个文件又有子目录，展开后是「本层文件」节点
@@ -59,54 +55,7 @@ _CUT = {"cx/__init__.py": "", "cx/app.py": "from cx.sansio import app as a\nfrom
         **{f"cx/big/f{i:02d}.py": f"from cx.ops import util\n\n\ndef f{i:02d}():\n    return util.u()\n" for i in range(14)}}
 
 
-# runner 经 self.model.forward 调到的 Net 是按字符串加载的：这条调用代码里看不出（图上是橙虚线）
-_DYN = {
-    "dyn/__init__.py": "",
-    "dyn/models/__init__.py": "",
-    "dyn/models/net.py": ("class Net:\n    def __init__(self):\n        self.k = 2\n\n"
-                          "    def forward(self, x):\n        return x * self.k\n\n\ndef helper():\n    return 0\n"),
-    "dyn/runner.py": ("from dyn.models import net\n\n\n"
-                      "class Runner:\n    def __init__(self, model):\n        self.model = model\n\n"
-                      "    def step(self):\n        return self.model.forward(1)\n\n"
-                      "    def warm(self):\n        return net.helper()\n"),
-    "dyn/main.py": ("import importlib\n\nfrom dyn.runner import Runner\n\n\n"
-                    "def build():\n    return getattr(importlib.import_module('dyn.models.net'), 'Net')()\n\n\n"
-                    "if __name__ == '__main__':\n    r = Runner(build())\n    for _ in range(3):\n        r.step()\n"),
-}
 
-
-def _gpu_repo() -> tuple:
-    """_DYN 加一个 .cu 文件，录一次（CPU），再手写一份 GPU 日志：Net.forward 里各启动一次仓库里的 k::scale 和仓库外的
-    at::native::foo（三次 step 各一次），runs merge 把它们挂上去。返回 (仓库, run id)"""
-    repo = tmpdir("cs-browser-gpu-") / "gpurepo"
-    # forward 睡 2 ms：手写的启动时刻放在它中间，离它的进 / 出都远（事件的时刻是微秒）
-    net = _DYN["dyn/models/net.py"].replace("        return x * self.k\n", "        import time\n        time.sleep(0.002)\n        return x * self.k\n")
-    for rel, src in {**_DYN, "dyn/models/net.py": net,
-                     "dyn/csrc/k.cu": "namespace k {\n__global__ void scale(float* x) { x[0] *= 2; }\n}\n"}.items():
-        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        (repo / rel).write_text(src)
-    cs("scan", repo)
-    cs("trace", repo, "--case", "gpu", "--", PY, "-m", "dyn.main")
-    rid = _run_id(repo, "gpu")
-    rd = repo / ".codestrata" / "runs" / rid
-    run = json.loads((rd / "run.json").read_text())
-    spans = rd / "events" / "spans"
-    keys = json.loads((spans / "keys.json").read_text())
-    chunk = json.loads((spans / "index.json").read_text())["chunks"][0]
-    rows = [json.loads(x) for x in gzip.decompress((spans / chunk["chunk"]).read_bytes()).splitlines()]
-    fwd = [r for r in rows if keys["keys"][r[5]] == "dyn/models/net.py:5"]
-    pid, mono0 = chunk["pid"], run["clock"]["mono0_ns"]
-    ntid = keys["native"][str(pid)][str(fwd[0][2])]
-    lines = [f"H {pid} {mono0}"]
-    for i, r in enumerate(fwd):
-        t = mono0 + (r[0] + max(r[1], 0) // 2) * 1000
-        for j, name in enumerate(("void k::scale(float*)", "void at::native::foo<float>(float*)")):
-            c = 10 * i + j + 1
-            lines += [f"A {t} {t + 1000} {ntid} {c}\tcudaLaunchKernel", f"K {t + 2000} {t + 52000} 0 7 {c}\t_Z\t{name}"]
-    (rd / "parts").mkdir(exist_ok=True)
-    (rd / "parts" / f"cu-{pid}-{mono0}.log").write_text("\n".join(lines) + "\n")
-    cs("runs", repo, "merge", rid)
-    return repo, rid
 
 
 def _serve(repo) -> tuple:
@@ -148,7 +97,7 @@ def fixture() -> dict:
        "t = threading.Thread(target=s, name='side'); t.start(); t.join(); f00()")
     srv2, base2 = _serve(cut)
     dyn = tmpdir("cs-browser-dyn-") / "dynrepo"
-    for rel, src in _DYN.items():
+    for rel, src in DYN.items():
         (dyn / rel).parent.mkdir(parents=True, exist_ok=True)
         (dyn / rel).write_text(src)
     cs("scan", dyn)
@@ -156,20 +105,20 @@ def fixture() -> dict:
     cs("trace", dyn, "--case", "dynne", "--no-events", "--", PY, "-m", "dyn.main")
     # 同样跑一次、去掉调用行，当 2026-09-30 之前录的老 run
     cs("trace", dyn, "--case", "dynold", "--no-events", "--", PY, "-m", "dyn.main")
-    cp = dyn / ".codestrata" / "runs" / _run_id(dyn, "dynold") / "counts.json.gz"
+    cp = dyn / ".codestrata" / "runs" / run_id(dyn, "dynold") / "counts.json.gz"
     c = json.loads(gzip.decompress(cp.read_bytes()))
     for ph in c["phases"].values():
         ph.pop("func_lines", None)
     cp.write_bytes(gzip.compress(json.dumps(c).encode()))
     srv3, base3 = _serve(dyn)
-    gpu, gpu_run = _gpu_repo()
+    gpu, gpu_run = gpu_repo()
     srv4, base4 = _serve(gpu)
     from codestrata import native_scan
     _FX.update(srv4=srv4, base4=base4, gpu=gpu_run, gpu_native=native_scan.available() is None)
-    _FX.update(srv3=srv3, base3=base3, dyn=_run_id(dyn, "dyn"), dynold=_run_id(dyn, "dynold"), dynn=_run_id(dyn, "dynne"))
+    _FX.update(srv3=srv3, base3=base3, dyn=run_id(dyn, "dyn"), dynold=run_id(dyn, "dynold"), dynn=run_id(dyn, "dynne"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
-               a=_run_id(repo, "truth"), b=_run_id(repo, "offline"), an=_run_id(repo, "truthne"), bn=_run_id(repo, "offlinene"),
-               cutrun=_run_id(cut, "cutrun"))
+               a=run_id(repo, "truth"), b=run_id(repo, "offline"), an=run_id(repo, "truthne"), bn=run_id(repo, "offlinene"),
+               cutrun=run_id(cut, "cutrun"))
     fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3", "srv4")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))

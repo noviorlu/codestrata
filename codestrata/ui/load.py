@@ -5,8 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+from .. import align as _align
 from .. import cut as _cut
+from .. import lanes as _lanes
 from .. import runs as _runs
+from .. import seq as _seq
 
 
 def index_summary(repo: Path) -> dict | None:
@@ -57,3 +60,31 @@ def load_hot(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict 
     print(f"[codestrata] hot 图用的 run：{meta['run_id']}" + (f" @{meta['phase']}" if meta["phase"] else ""),
           file=sys.stderr)
     return hot, meta
+
+
+def load_lane(repo: Path, idx: dict, ref: str, lane: str) -> dict:
+    """分列里一列的叠加：和 load_hot 一样的 hot，只是次数只算这一列（这个进程里的这一类线程，或一个 GPU 流）在这一段里的
+    调用（lanes.lane_counts，来自时序事件）。span 不记调用行：调用行按这一段（时间段是整个 run）所有线程记的比例摊开，
+    lines_approx 为真。老 run 的时序事件只记了跨文件的调用，这种 run 上同一个文件里的调用这里没有。
+    找不到 run 抛 SystemExit，没有时序事件、列 id 不对抛 LookupError，span 读不出来抛 OSError / ValueError"""
+    run, rd, phase = _runs.resolve(repo, ref)
+    win = _seq.parse_window(phase)
+    base, names = _runs.load_counts(rd, None if win else phase, with_names=True)
+    counts = _lanes.lane_counts(rd, run, phase, lane)
+    pairs = counts.pop("gpu_pairs", None)
+    if base.get("func_lines") is not None:
+        counts["func_lines"] = _seq.spread_lines(counts["func_edges"], base["func_lines"])
+    hot, _ = _runs.overlay(idx, counts, names, _runs.file_state(repo, idx, _runs.read_detail(rd)))
+    if pairs:                                    # GPU 的列：每种 kernel 是谁发起的、各几次、各占多少 GPU 时间（多的在前）
+        label, km = _align.node_labeler(idx), hot["keymap"] or (lambda k: k)
+        for k, (n, us) in pairs.items():
+            ka, _, kb = k.partition("|")
+            x = hot["kernels"].get(label(km(kb)))
+            if x is not None:
+                x.setdefault("callers", []).append({"caller": label(km(ka)), "n": n, "gpu_us": us})
+        for x in hot["kernels"].values():
+            x.get("callers", []).sort(key=lambda c: (-c["gpu_us"], -c["n"], c["caller"]))
+    hot["run"] = run["id"] + (f"@{phase}" if phase else "")
+    hot["lane"] = lane
+    hot["lines_approx"] = "func_lines" in counts
+    return hot

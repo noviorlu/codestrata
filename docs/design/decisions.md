@@ -48,7 +48,7 @@
 
 ### 纵轴按依赖分层，不用 SCC 缩点，也不用架构高度
 - 决定：`layout.layers` 直接对边排序：按权重贪心去环（Eades–Lin–Smyth），再 sifting（最多 20 轮）把逆向边的权重压到最小，
-  最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。架构高度 `(出 − 入) / (出 + 入)` 只留在详情面板和派活顺序里。
+  最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。架构高度 `(出 − 入) / (出 + 入)` 只留在详情面板和 scan 的输出里。
 - 为什么：Python 的循环 import 让强连通分量退化——vllm-omni 上 30 个包有 20 个塌进同一个环，缩点后分层信息全丢。
   架构高度只看每个模块自己的出入比例、不看谁连着谁，omni → omni_base 这种边会画成往上指。贪心在 vllm-omni 上为了拆环
   反过一条 4383 次调用的边，所以加 sifting（测试里的例子：贪心逆掉的权重 91，sifting 后 51）。从上往下数时，只被一个入口
@@ -113,51 +113,54 @@
 - 为什么：「这次请求按什么顺序走过哪些函数」是定位要回答的问题，可时间顺序只给目录之间的边编号，边详情按次数排、轮询压在最上面；
   vllm-omni 的一次请求要在 39 条目录边里一条条点。按线程分开是因为 vLLM 的 stage 在不同进程、后台线程（收发、保存）一直在轮询，
   混在一起读不出主线。第一版（10-01 上午）是「第一次调用树」：一个函数只挂在第一个调用方下面——vllm-omni 上 thinker→talker 的交接 `llm2tts`
-  （+0.546 s）因此挂到了 +0.108 s 的 `_handle_add_request` 底下（外部评审指出）；同文件的调用又没有时刻，只列出了跑过的一半函数。
+  （+0.546 s）因此挂到了 +0.108 s 的 `_handle_add_request` 底下；同文件的调用又没有时刻，只列出了跑过的一半函数。
   同文件的调用记进事件、span 带了父亲之后（10-01 下午），按真实的调用链建树。
 - 放弃的方案：按时刻平铺所有调用（几千行，轮询淹掉主线）；只在时间顺序上加函数级的提示框；第一次调用树（新 run 上不再用）。
 - 在哪：`path.py`；`seq.phase_calls`；`serve.py` 的 `/api/path`；`__main__.py` 的 `cmd_path`；`web/path.js`。测试 `test_request_path`、`tests/web/specs/path.mjs`。
 
 ### 运行时按进程 · 线程分列
-- 决定（用户 2026-10-01 定的展示）：叠了录了时序事件的 run，模块图按进程 · 线程分成并排的几列，按进程分组；每列只放这条线程调到的节点，
+- 决定：叠了录了时序事件的 run，模块图按进程 · 线程分成并排的几列，按进程分组；每列只放这条线程调到的节点，
   同一个节点在几列里各复制一份。列之间三种关系：共用同一个节点（各份放在同一高度，悬停 / 选中才连线）、谁起了谁（spawn）、谁把数据交给谁（handoff，
   标通道和次数）。线程名归一之后再合并（`Thread-N (target)` → target，线程池 `X_k` → `X ×N`），列按内容宽，进程能整个收起；
   列的先后：进程按启动先后，进程里顺着交接走。只跑仓库外代码、但是交接一头的线程给一列空的。
-  叠了录了时序事件的 run 就是它，没有切回一张图的开关（用户 10-01：运行时一律按线程分，不要把所有线程合成一张的功能）；
+  叠了录了时序事件的 run 就是它，没有切回一张图的开关（运行时一律按线程分，不做把所有线程合成一张的功能）；
   「这次跑了」「其中代码里看不出」管列里的边，时间顺序把列里的边和交接连线放在一起、跨线程按第一次发生的先后排名。
   列之间的连线可以点（详情里两头的函数和那一行代码），排线见下一条。
-  线程的起和收（用户 10-01：「每一个 thread 应该都有一个地方 launch 一个地方 recycle，类似于 sequence 的 start 和 end 一样高亮」）：
+  线程的起和收：每条线程都有起的地方和回收的地方，像阶段的起点 / 终点那样高亮——
   起线程、回收线程的节点照阶段起点 / 终点的样子描绿 / 红、写「▶ 起 / ■ 收」，列头写起 / 收的时刻；谁回收了谁是第四种连线（红色细虚线）。
-  起线程和交接的连线要标出两边的代码（用户 10-01）：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
-  选中节点只算点的那一份（用户 10-01：「选择engine就应该只highlight这个thread的engine」）；节点详情的调用 / 被调用 / 连线也只列这一份的（用户 10-01 定），
-  详情里点名字选中同一列里的那一份。选了阶段 / 时间段（用户 10-01 定）：起 / 收只算这一段里跑过的线程，段外的时刻照写、标「段前 / 段后」；
+  起线程和交接的连线标出两边的代码：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
+  选中节点只算点的那一份；整个详情也只讲这一份：顶上写明是哪个进程 · 哪条线程，次数、调用 / 被调用 / 连线、文件树和 kernel 表都只算这一列，
+  列里的边的详情同理（一列的叠加：`lanes.lane_counts` 从 `seq.phase_calls` 里挑出这一列的线程，和阶段的计数同样的形状，走同一个 `runs.overlay`；
+  span 不记调用行，调用行按这一段所有线程的比例摊，详情里写明）。分列里的次数都来自时序事件：线程入口被调的那一次、递归调用自己的不记，
+  比模块图（hook 的计数）少一些；没去补——分列图上画的次数本来就是时序事件的，详情和图上对得上更要紧。详情里点名字选中同一列里的那一份。
+  选了阶段 / 时间段：起 / 收只算这一段里跑过的线程，段外的时刻照写、标「段前 / 段后」；
   交接按放 / 发的时刻算进这一段；「这一段里跑过」= 有调用，或者它那一头的交接在这一段里，取的那头没有调用的线程给一列 idle 的（只放交接的节点）。
   每个时刻各自标段前 / 段后（阶段的两个时间片之间的：起算段前、收算段后），整条连线都在段外才画淡。
   连线一头发生在仓库外的代码里时，写那一刻这条线程最底下在跑的仓库函数：线程名写着 target（Thread-N (x)）的就是 x（target 一直在栈底），
   否则按 depth 0 的调用方的起止时间认，认不出就是仓库外的代码；被起的一头同理，名字里没写 target 的取最早的 depth 0 调用方，
   它之前已经在仓库外收发过的不算。fork 的时刻用子进程映像的起点（不用调 fork 的那个 span 的开始）；从非主线程 fork 的子进程没有 MainThread，
   接它唯一的那条线程。
-  切面每列各自的（用户 10-02：「我点击一个thread的expand collapse不应该影响另外一个thread或者是进程」），展开着的目录画成框
-  （「我需要类似于静态图里面的外边框include展开的所有内容」「而非现在直接换名字了」），名字照模块图在那一列的切面上的写法。
+  切面每列各自的：在一列里展开 / 收起不影响别的线程、别的进程；展开着的目录像模块图那样画成框、框住展开的所有内容
+  （不是只把节点换个名字），名字照模块图在那一列的切面上的写法。
   一个节点在哪一行只看它自己：在共用切面的图上就照它的高度，比它细的排在装着它的那个节点那一层下面的子行里（子行按这一段里
-  调到的单元自己分一次层），比它粗的取它装着的里面最高的一层——一列展开 / 收起，别的列的层和先后不变，最多被推开几个像素（用户 10-02 认可）。
+  调到的单元自己分一次层），比它粗的取它装着的里面最高的一层——一列展开 / 收起，别的列的层和先后不变，最多被推开几个像素。
   没用「各列切面的并集」排高度：cx 仓库上实测一列展开 cx/ops/ 会让别的列的 cx/sansio/ 换一层、换先后。同一层子模块超过 5 个折成几行（同模块图），
   名次按这一段里调到过的、同一深度的兄弟排（和哪一列画了哪几个无关，不然一列展开会把另一列的子模块挪到别的子行里）；整个 run 上展开一个有 40 个
   子模块的目录，框从没封顶的 5714 px 变成 744 px。框的横排照搬模块图（layout.py）
   的轨道排法；排线把框当障碍（竖轨在框外、S 形不穿过不相干的框、不压框头的 −）。换阶段 / 时间段保留各列的展开，换 run 清掉、回到共用的切面；
-  「恢复默认层级」清掉所有列单独的展开；详情里的展开 / 收起改选中那一份的列，搜索改调到它的第一列；时间顺序还是所有列一起排名次（用户 10-02 定）。
+  「恢复默认层级」清掉所有列单独的展开；详情里的展开 / 收起改选中那一份的列，搜索改调到它的第一列；时间顺序还是所有列一起排名次。
 - 为什么：多进程、多线程的服务（vLLM：主线程、orchestrator、每个 stage 的收请求 / 主循环 / 输出 / 收发 chunk 的线程）合在一张图上
-  看不出谁交给谁；请求路径按线程分节、只展开主线程，交接散在几节里。用户的原话是「有几个 thread 就把那个 thread call 到的 module duplicate
-  对应的 thread 数量然后平行和主 thread 放置，这样我们就能够很清晰的看到 thread 和 thread 之间的 collaboration」。
-  共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条（外部评审量的），按同一高度对齐就看得出。
+  看不出谁交给谁；请求路径按线程分节、只展开主线程，交接散在几节里。每条线程调到的模块按线程各复制一份、和主线程平行放，
+  线程之间怎么协作才看得清楚。
+  共用节点不一直画线：serving 阶段 21 个节点里 17 个在两列以上，一直画要几十条，按同一高度对齐就看得出。
 - 放弃的方案（设计说明里比过）：泳道时间线（Perfetto 那种，自己做工作量最大）、按时间合并的一张表（看不出重叠）、顺序图（箭头没有录的话只能按时刻猜）。
-- 在哪：`lanes.py`（`build` 里的 `held` / `root_at` / `named_target` / `target_of` / `out_of`、`thread_group`、`_order`、连线的 `pairs`、`out`）、
-  `serve.py` 的 `/api/lanes`、`ui/lanesview.py`（`decorate`：节点信息、子层、每列的名字和框）、`web/lanepack.js`（`keys`、`pack`）、
+- 在哪：`lanes.py`（`build` 里的 `held` / `root_at` / `named_target` / `target_of` / `out_of`、`thread_group`、`_order`、连线的 `pairs`、`out`；一列的叠加 `lane_counts`）、
+  `ui/load.py` 的 `load_lane`、`serve.py` 的 `/api/lanes`、`/api/lanehot`、`/api/edge?lane=`、`web/panel.js` 的 `asCopy`、`ui/lanesview.py`（`decorate`：节点信息、子层、每列的名字和框）、`web/lanepack.js`（`keys`、`pack`）、
   `web/laneroute.js`（框当障碍、框头的高度）、`web/lanecut.js`（`CS.laneCut`：各列的切面、改了之后接着选）、
   `web/lanes.js`（`draw`、`drawFrames`、`paint`、`touching`、`snapshot`、`pickFrame`、`copies` / `twins`、`fold`、`settled`、`reveal`、`highlight`）、
   `web/lanedetail.js`（`link`、`node`、`marks`、`frame`）、
   `web/app.js` 的 `lanesMode`、`drawMain`、`repaint`、`applyTimes`、`revealLane`、`goNode` / `goEdge`。
-  测试 `test_lanes`、`test_lanes_percut`、`test_lanes_wrap`、`test_lane_pack`、`tests/web/specs/lanes.mjs`、`tests/web/specs/lanecut.mjs`。
+  测试 `test_lanes`、`test_lanes_percut`、`test_lanes_wrap`、`test_lane_counts`、`test_lane_pack`、`tests/web/specs/lanes.mjs`、`tests/web/specs/lanecut.mjs`。
 
 ### 叠了 run 默认只看跑到的
 - 决定（2026-10-01 起只管没录时序事件的 run，录了的一律按线程分列）：选了一个 run 打开，默认是「只看跑到的」（单独排版的运行时图）；开关还在，用户自己关过之后换 run 不再替他打开。
@@ -309,7 +312,7 @@
 - 为什么：代码改了之后老 run 照样能用，不让整个 run 作废。行号是会随编辑变的位置，名字是只有录制时拿得到的身份，两样都存，读的一侧才有退路。
   对不上的不留原键：老行号可能正好是另一个函数现在的定义行，数字看着正常其实是别人的；也不改成 0：第 0 行是模块顶层，这些调用就等于丢了。
   3.10 的 `co_name` 只是短名字，方法 `Model.forward` 会被挪到同文件里同名的顶层函数上——错挪比不挪更糟。
-- 放弃的方案：存 index 快照；对不上的保留原行号（设计稿最初的写法）；3.10 退回 `co_name`。
+- 放弃的方案：存 index 快照；对不上的保留原行号（最初的写法）；3.10 退回 `co_name`。
 - 在哪：`runs.py` 的 `load`、`load_counts`；`align.py` 的 `remap`、`sym_locs`、`to_package_graph`（-1 落进 `anon`）；`trace/hook.py` 的 `_key`、`_names`；测试 `test_remap_moved_functions`。
 
 ### 「录制之后改过没有」拿执行时的哈希和 index 比，不和工作区比
@@ -324,9 +327,9 @@
 ### 清单拆成 run.json 和 detail.json，目录扁平，只用文件不用数据库
 - 决定：`runs/<id>/` 一层；列表只读几 KB 的 run.json，procs、哈希、环境在 detail.json；所有写都先写临时文件再 `os.replace`。不用 sqlite，不做就地 schema 升级，
   读取端兼容所有 schema。老格式的迁移加文件锁、只拷不挪、核对（计数逐键相等、legacy 逐字节相同）通过才删老文件。
-- 为什么：列 100 个 run 时不用读几十 MB；glob 只需一层，按 id 排序就是按时间排序。run 只有几十个，按时间窗取数据靠分块加 index.json 就够（设计稿第 10 节）。
+- 为什么：列 100 个 run 时不用读几十 MB；glob 只需一层，按 id 排序就是按时间排序。run 只有几十个，按时间窗取数据靠分块加 index.json 就够。
   迁移只拷不挪：runs/ 常是指到另一块盘的软链，rename 跨不了文件系统。
-- 放弃的方案：sqlite；按 case 分层的目录；迁移时用 rename 认领（设计稿 3.7 的原计划）。
+- 放弃的方案：sqlite；按 case 分层的目录；迁移时用 rename 认领（最初的计划）。
 - 在哪：`runs.py` 的 `new_run`、`catalog`、`_write`、`migrate`、`_migrate_locked`、`_cleanup_legacy`。
 
 ### REF 是「完整 id 或 case 名」；时序事件的问题不改 status
@@ -355,7 +358,7 @@
   存成解析好的完整 id；不给时只显示静态图。
 - 为什么：以前 hot 是 `Handler` 的类属性，换 run 要重启。每次现解析：删掉的 run 立刻 404，写 case 名时跟着最新的走，serve 开着时新录的也用得上。
   run.json 进缓存键是因为 meta 里带着 tags / note。浏览器验收：换 run 57 ms、换阶段 109 ms 出图。默认存完整 id：同一个 case 又录了新的也不会悄悄换掉默认。
-  不自动选最近的 run：理由未记录（设计稿第 11 节只写了推荐不选）。
+  不自动选最近的 run：理由未记录（最初的设计只写了不选）。
 - 放弃的方案：进程级的单个 hot；文件监视；serve 热加载 index（scan 之后仍要重启 serve，主菜单会在原端口替人重启）。
 - 在哪：`serve.py` 的 `Handler._hot`、`Handler._runs`、`main`（`default_run`）；`web/ds.js` 的 `CS.ds.run`。
 
@@ -379,7 +382,7 @@
   第一级折叠按 (父 span, 段) 认兄弟；span 带父 span 的下标。上限 `CODESTRATA_EV_MAX`（默认 300 万）只管调用行。
 - 为什么：hook 跑在被 trace 的程序里，每次调用都要付开销，所以只做最少的事；算法改了不用重录，`runs merge` 从原始日志重建。
   能对账：span 的 Σrep 等于 `func_edges` 之和，父 span 的被调方就是这一行的调用方（`test_events_truth`、`test_events_fake_service`）。
-  同文件的也记（用户 2026-10-01 定）：只记跨文件时，请求路径缺了中间那几层（vllm-omni MiniCPM 的 serving 里同文件的调用 12.6 万次，比跨文件的 9.2 万次还多，
+  同文件的也记：只记跨文件时，请求路径缺了中间那几层（vllm-omni MiniCPM 的 serving 里同文件的调用 12.6 万次，比跨文件的 9.2 万次还多，
   24% 的 span 和它的父 span 之间隔着没记的同文件调用），只能从计数里猜着补、没有时刻。按 span 号不按栈：同一线程上交错的 asyncio 协程，
   先开始的不一定先结束。父 span 按重放时这个线程上最里层正在执行的 span 定，而不是按时间包含 + 深度：协程挂起期间别的协程在这个线程上跑，
   时间上包住它的不一定是它的父亲。按父 span 不按深度认兄弟：两个协程各自的子调用深度相同却不是兄弟；看「段」：中间有过挂起 / 恢复，合出来的时间窗会盖住别的协程的调用。
@@ -389,8 +392,7 @@
 - 在哪：`trace/hook.py` 的 `_ev_call`、`_ev_mark`、`_ev_room`、`_ev_flush`；`events.py` 的 `parse`、`pair`、`fold`、`build`。
 
 ### 分列的排线：正交、每条线自己的轨道、按交叉最少排先后；点线按离鼠标最近的算
-- 决定（用户 10-01：「所有的 arrow 都 tight 在一起了很难点击到，想办法 spread 一下」「比如说这个 8 和 45，排线上可以一个从上面走一个从下面走，
-  类似于一个 loop」「你再研究一下排线」）：`web/laneroute.js` 是纯函数的排线，lanes.js 拿它的节点位置和路径画。每一层节点上下各一条轨带，
+- 决定（连线挤在一起很难点中，要散开；一来一回的两条一条走上面、一条走下面，成一个圈）：`web/laneroute.js` 是纯函数的排线，lanes.js 拿它的节点位置和路径画。每一层节点上下各一条轨带，
   横轨在轨带里，竖轨在列的两侧和列之间的缝里；往右的连线走上带、往左的走下带（一来一回成一个圈）；列里往下一层的边 S 形，隔层的不挡着就直下，
   挡着的走列的侧边（同一侧只套不交错，最边上的节点从侧面出），同一层、往上的走轨带。轨道的先后用 ELK Layered 的正交排线（Sander GD 2003）：
   两段重叠时数两种放法各交叉几次，便宜的定成约束，有环按 Eades–Lin–Smyth 去掉；先排竖轨、再按真实横坐标排轨带，接点按轨道先后重排、来回两次。
@@ -410,7 +412,7 @@
 - 决定：时序事件开着时，hook 包一层 `threading.Thread.start`（记下在哪个线程的哪个 span 里起的，新线程第一次登记时写 F 行）、
   `_posixsubprocess.fork_exec` 和 `os.posix_spawn(p)`（起完拿到 pid，在父进程里写 P 行），`os.register_at_fork` 的 before / after_in_child
   （fork 之前记下，子进程里写 B 行）。「在哪个 span 里」是从调用处往外找第一个记过账的帧。只包一层、照原样调，出错不影响被 trace 的程序。
-- 为什么：P0（用户 2026-10-01 定）要画线程之间「谁起了谁」。subprocess 和 multiprocessing 的 spawn 最后都经 `fork_exec`，fork 方式都经 `os.fork`，
+- 为什么：分列要画线程之间「谁起了谁」。subprocess 和 multiprocessing 的 spawn 最后都经 `fork_exec`，fork 方式都经 `os.fork`，
   包这几处就够，不用为了打补丁去 import multiprocessing。exec 出来的子进程是全新的解释器，只有父进程知道是谁起的；fork 出来的子进程继承了父进程的
   内存，fork 之前记下、子进程自己写最简单。
 - 放弃的方案：按时刻猜（子进程的起始时刻落在父进程的哪个 span 里——同一时刻好几个线程都在跑）；包 `subprocess.Popen`、`multiprocessing.Process.start`
@@ -423,7 +425,7 @@
   `_ev_here` 往外找到第一个记过账的帧时，顺便取它的 `f_lineno`——就是起线程、放 / 取、发 / 收、join 的那一行（经仓库外的代码转了一道的，是调进去的那一行）。
   F 行顺便带上是不是守护线程。lanes 里谁回收了谁从被回收的那一列的入口节点连到 join 的那一行所在的节点；等它的线程没有列（asyncio.run 收尾时起的
   `_do_shutdown` 线程替它 join 线程池）就顺着「谁起了它」往上找。行号按录制时的文件记，录制之后文件改过的跟着函数的首行一起挪（`align.key_mapper`）。
-- 为什么：用户 10-01 要每条线程的起和收像阶段的起点 / 终点那样标出来，起线程、交接的连线要标出两边的代码。线程池的 `shutdown(wait=True)`、`Popen.wait`、
+- 为什么：每条线程的起和收要像阶段的起点 / 终点那样标出来，起线程、交接的连线要标出两边的代码。线程池的 `shutdown(wait=True)`、`Popen.wait`、
   `multiprocessing.Process.join` 最后都经 `Thread.join` / `os.waitpid`，包这两处就够。只在 join 等到结束时记：带超时的 join 返回时线程可能还活着。
   行号取帧上现成的 `f_lineno`，不另外走栈；老日志没有这一列，按字段数认，照样读。
 - 放弃的方案：按线程最后一个 span 的结束当它结束的时刻（线程可能在仓库外的代码里又跑了很久）；包 `ThreadPoolExecutor.shutdown`、`Popen.wait`
@@ -439,50 +441,79 @@
   ZMQ 按消息指纹（数据帧的长度 + 首尾 32 字节的哈希）跨进程先发先收地配。ZMQ 按帧记：带 SNDMORE 的帧攒到一条消息的最后一帧再算（vLLM 的输出先
   `send(第一帧, SNDMORE)` 再 `send_multipart(其余的)`）；ROUTER 发的时候去掉第一帧（对方的身份，不发出去）、收的时候也去掉（vLLM 的 orchestrator 用 ROUTER、
   stage 用 DEALER）。asyncio 版的 ZMQ socket 背后真正收发的是一个同步的影子 socket：影子的收发不记，由 asyncio 那一层记，收的 span 是等它的协程。
-  第一版（`e95d86d`）只包了 multipart、不认 ROUTER 的身份帧，在 vLLM 上一条都配不上（外部评审读 vLLM 源码指出）；改了之后用 vllm-omni 环境里真的 pyzmq
+  第一版（`e95d86d`）只包了 multipart、不认 ROUTER 的身份帧，在 vLLM 上一条都配不上（对照 vLLM 的源码才发现）；改了之后用 vllm-omni 环境里真的 pyzmq
   （asyncio ROUTER ↔ 同步 DEALER、SNDMORE）在临时仓库上录过一遍，三条交接都配上了。
-- 为什么：P0（用户 2026-10-01 定）要画线程之间「谁把数据交给谁」；只按时刻排的话同一时刻好几个线程都在跑，看不出因果。vllm-omni 的交接正好走这几种：
+- 为什么：分列要画线程之间「谁把数据交给谁」；只按时刻排的话同一时刻好几个线程都在跑，看不出因果。vllm-omni 的交接正好走这几种：
   主线程和 orchestrator 之间是 janus 队列，orchestrator 和各个 stage 进程之间、stage 进程里收请求的线程是 ZMQ，引擎循环和收发线程之间是 `queue.Queue`。
   按模块被 import 时再打补丁，不为了打补丁去 import asyncio、pyzmq（每个被录的 Python 进程都会跑 hook）。
 - 放弃的方案：按 payload 的内容（pickle）配对（贵，还要拷大张量）；包 `Socket.send` / `recv`（multipart 会调它们，记重复）。
   没盯的：`queue.SimpleQueue`（C 写的，包不了）、线程池的 `submit`、共享内存、裸管道和 socket——stage1 到 stage2 走的共享内存通道两边都是仓库里的同一个模块，靠「共用同一个模块」那种连线连上。
 - 在哪：`trace/hook.py` 的 `_queue_patch`、`_fp`、`_zdata`、`_zsend`、`_zmq_sync`、`_zmq_async`、`_OnImport`；`events.py` 的 `_handoffs`。
   测试 `test_events_truth`（`trace_cases/fakezmq` 是照 pyzmq 的样子写的假 pyzmq：send_multipart 逐帧调 send、ROUTER 的身份帧；场景照 vLLM 的收发方式）。
-### 调用的先后画在模块图的边上，按名次上色
-- 决定：录了事件的 run 在 serve 里多一个「时间顺序」开关：看得见的、跑到的边按第一次被调用的先后排名 1…N，按名次在三个色标之间插值上色、标序号。
-  同一个进程里第一次到最后一次隔了超过阶段总长一半、而且至少 5 次的，序号后加 ↻。
+### 调用的先后画在分列的边和交接线上，按名次上色
+- 决定：分列里有一个「时间顺序」开关：看得见的列里的边和交接线放在一起，按第一次发生的先后排名 1…N（跨线程），按名次在三个色标之间插值上色、标序号。
+  至少 5 次、而且第一次到最后一次隔了这一段（各个时间片加起来）的一半以上的，序号后加 ↻（`seq.is_repeat`，请求路径的 ↻ 用同一个判法）。
+  录了时序事件的 run 一律分列，所以模块图上没有这个开关（模块图那一套 2026-10-08 删了）。
 - 为什么：讲一条调用链时的先后直接画在同一张图上，跟着切面、阶段一起变。按名次不按时刻：模型加载这种长时段会把按时刻插值的颜色都挤到一头。
-  ↻ 的判据按同一进程算：几个 worker 各初始化一次、隔得再远也不算反复；轮询、每个 token 都走一遍的路径才算，它的序号只说明从什么时候开始。
-- 放弃的方案：单独一张时序图（生命线 + 消息，M5 做过，已整个删掉）；按时刻插值上色。
-- 在哪：`seq.py` 的 `edge_times`、`REPEAT_MIN`；`serve.py` 的 `Handler._seq`（`/api/seq/edges`）；`web/graph.js` 的 `_rankTimes`、`timeColor`、`_paintOrder`；`web/app.js` 的 `applyTimes`。
+  ↻ 是轮询、每个 token 都走一遍的路径，它的序号只说明从什么时候开始。
+- 放弃的方案：单独一张时序图（生命线 + 消息，M5 做过，已整个删掉）；按时刻插值上色；模块图上的时间顺序（录了事件就是分列，走不到）。
+- 在哪：`seq.py` 的 `is_repeat`、`REPEAT_MIN`；`lanes.py`（列里的边、交接线的 `repeat`）；`web/lanes.js` 的 `paint`、`timeColor`、`badges`；`web/app.js` 的 `applyTimes`。
 
 ### 合成一行的连续调用，按次数均匀摊在它盖住的时间上
 - 决定：第一级折叠只记第一次的开始和整行的结束；按阶段、按时间段计数时，把 rep 次调用均匀摊在 [开始, 结束] 上，没返回的整行算在开始。
 - 为什么：一行能盖住几十秒（vllm-omni 的轮询，一行 3852 次、从 68 s 到 112 s），整行算在开始那一刻，一秒的时间段里会多出几千次、之后几十秒一次都没有。
   均匀是近似：只知道总数和首尾。
 - 放弃的方案：整行算在开始时刻。
-- 在哪：`seq.py` 的 `_calls_in`（`_pairs` 和 `window_counts` 共用）；测试 `test_calls_in_and_run_end`。
+- 在哪：`seq.py` 的 `calls_in`（`phase_calls` 用它）；测试 `test_calls_in_and_run_end`。
 
 ### 任意时间段写成 `@t=起-止`，和阶段名放在同一个位置
-- 决定：时间轴上拖出的一段时间写成 REF 的 `@t=起-止`（微秒），CLI 的 `--hot`、serve 的缓存键、页面地址都照走；次数由 `seq.window_counts` 按这段时间里的 span 现算，
+- 决定：时间轴上拖出的一段时间写成 REF 的 `@t=起-止`（微秒），CLI 的 `--hot`、serve 的缓存键、页面地址都照走；次数由 `seq.window_counts` 从这段时间的调用表（`seq.phase_calls`）加起来，
   形状和 counts.json.gz 一样，后面的 `remap`、`to_package_graph` 不分两种。拖到和整个 run 或某个阶段差不到 4 像素就当成它。
   时间轴终点取最后一条 span 的结束、最后一次切阶段、run 的时长三者最大的。
 - 为什么：不另开通道。counts.json.gz 是按阶段切的，分不出任意一段时间，带时刻的只有时序事件。吸附：拖回原样不会凭空多出一个时间段。
-  只按 span 定终点时，被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回，最后一个阶段会倒着走。代价：时间段的次数只有跨文件的调用（横幅上写明）。
+  只按 span 定终点时，被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回，最后一个阶段会倒着走。代价：时间段的次数只算记进时序事件的调用（线程入口被调的那一次、递归调自己的不记；2026-10-01 之前录的 run 只记了跨文件的，横幅上写明）。
 - 放弃的方案：阶段之外另设时间窗参数。理由未另外记录。
 - 在哪：`runs.py` 的 `resolve`、`load`；`seq.py` 的 `parse_window`、`window_counts`、`run_end`、`phase_segments`；`web/timebar.js` 的 `snap`。
 
-### span 读一遍，按切面归很多次
-- 决定：`_pairs` 把整个 run 的 span 解压读一遍，按阶段聚合成「键对 → 首次 / 末次 / 次数」，缓存 8 份；`edge_times` 再把键对经 rel → 单元 → 当前切面节点归一遍。
-  「键 → 符号」和「是不是定义」与模块图共用 `analysis.sym_locs`、`analysis.defining`。同一个请求同时来只算一次（按键加锁）。
-- 为什么：解压、读 span 是贵的一步，归到节点很便宜。记录的数字（没复测）：158 万条 span 的 sympy run 第一次 2.2 s，之后换阶段 9 ms、每个新切面约 30 ms。
-  共用判断，整个 run 上每条边的次数和 hot 图逐条相等（`test_seq_edge_times`）。
-- 放弃的方案：每次请求按时间窗重读块（时序图时代的 16 块 LRU）。
-- 在哪：`seq.py` 的 `_pairs`、`_pairs_scan`、`_Map`、`edge_times`、`_PAIRS`、`_BUSY`。
+### 每条线程的调用表读一遍、缓存，按切面归很多次
+- 决定：`seq.phase_calls` 把一段时间（阶段、时间段、整个 run）里的 span 读一遍，聚合成（进程, 线程, 调用方键, 被调方键）→ 首次 / 末次 / 次数 /
+  深度 0 的最早一次（GPU 的行另按设备 · 流记），按 (run, 时间段) 缓存 8 份；`seq.run_rows` 存整个 run 的、和时间段无关的（有 span 的线程、
+  每条线程最底下的仓库函数、按下标取一行的被调方和开始），按 run 缓存。分列（`lanes.build`、一列的叠加）、时间段的计数（`window_counts`）、
+  边详情按先后排（`path.first_calls`）、老 run 的请求路径都从这两份取：改切面、换一列展开只把表里的键对归到节点上。「键 → 符号」和「是不是定义」
+  与模块图共用 `align.sym_locs`、`align.defining`。请求路径的调用上下文树要每一行的父 span，那一处（`path._contexts`）自己逐行读。
+- 为什么：解压、读 span 是贵的一步，归到节点便宜。vllm-omni 的 MiniCPM run（23.5 万行 span）上分列改一列切面从约 0.7 s 降到 0.04 s，
+  qwen 的 GPU run 的 decode 从约 1.2 s 降到几乎不花时间（2026-10-08 实测）。以前分列、请求路径、时间段、模块图的时间顺序四处各读各算，
+  「第一次调用」「反复调用」的口径已经分叉。共用一张表，各列加起来和原始 span、和 hot 图逐条相等（`test_lanes_match_spans_and_hot`）。
+- 放弃的方案：每次请求按时间窗重读块（时序图时代的 16 块 LRU）；按阶段一次把整个 run 读成一张不分线程的表（`_pairs`，跟着模块图的时间顺序一起删了）。
+- 在哪：`seq.py` 的 `phase_calls`、`run_rows`、`window_counts`、`cut_map`；`lanes.py` 的 `build`、`lane_counts`；`path.py` 的 `first_calls`、`_contexts`。
+  测试 `test_lanes_match_spans_and_hot`、`test_lane_counts`、`test_calls_in_and_run_end`。
 
 ---
 
 ## 前端
+
+### C / C++ / CUDA 进静态图：tree-sitter，名字按文本对（近似）
+- 决定：装了 `[native]` 时，tree-sitter 认 C / C++ / CUDA 的定义、调用、`kernel<<<…>>>` 启动和 `#include`：一个文件一个单元，函数、类、
+  `__global__` 成符号；调用和启动都画成静态（灰）边，按名字对上的在边详情里标「近似」，一个名字对上好几个定义的不连（宁可不连，也不连错）；
+  `#include` 只当排版权重，和 Python 的 import 一样。没装就照旧只扫 Python，原生文件挂成 aux。
+- 为什么：录下来的 GPU kernel 要有地方落（仓库里的 `.cu`），C 那边的调用链要能看；准确的名字解析（scip-clang）要 `compile_commands.json`，
+  Python 仓库里的 CUDA 代码多半是现场 nvcc 编的、没有它。
+- 放弃的方案：scip-clang（准档，以后再说）；Python 调进原生代码的那一跳（ctypes、pybind、`torch.ops`）、原生函数之间的运行时调用、kernel 内部，这一轮都不录。
+- 在哪：`native_scan.py`；`scan.py` 把原生单元装进索引；`graph.py` 的调用种类（启动是 7）。测试 `tests/test_native_scan.py`。
+
+### GPU kernel：自己的 CUPTI 注入库录，挂到发起它的 Python 调用上，图上写 GPU 时间
+- 决定：`trace --gpu` 用自己的 CUPTI 注入库（`CUDA_INJECTION64_PATH`；源码随包，录的时候用本机 CUDA 工具链现编、按源码哈希缓存）录每个 kernel 的
+  起止、设备、流和发起它的启动调用。整理时重放时序事件，在启动那一刻看这条线程真实的栈，最里层的被录到的函数是调用方，不经静态的 C 链补中间几跳。
+  仓库里定义的 kernel 落在定义它的文件上，仓库外的（PyTorch、cuBLAS、Triton 生成的）落到虚拟节点「GPU · 仓库外」。分列里每个设备 · 流一列；
+  节点、launch 连线、kernel 表都写次数和 GPU 时间，kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久。录制端按 `CUpti_ActivityKernel9`
+  读记录：用到的字段（起止、设备、流、关联号、名字）在 Kernel9–12 里位置一样，CUDA 12.0 起的头都有它。
+- 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里、花了多少 GPU 时间」。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
+  而且是外部工具或要改被录的程序；注入库不用改程序、不要 root，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的都录得到。
+  只写次数会看反：qwen 上 decode 的 kernel 17 次、GPU 上 318 ms，另一组 120 次只有 0.22 ms。
+- 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）。
+- 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（GPU 的列、节点和连线的 `gpu_us`，
+  `lane_counts` 的 `gpu_pairs`）、`ui/load.py` 的 `load_lane`（kernel 的调用方）、`web/panel.js` 的 `_kernels`、`web/lanes.js`、`web/lanedetail.js`。
+  测试 `tests/test_gpu.py`（手写的 GPU 日志、`test_gpu_time_in_lanes`、对着几个版本的 CUPTI 头编、有 GPU 时真录一个小程序）、`tests/web/specs/gpu.mjs`。
 
 ### 一套零构建的前端，数据只经 ds.js 从 serve 取；取数只在 ui/ 里做
 - 决定：前端是 `codestrata/web/` 下的普通 HTML/CSS/JS，零构建。UI 只调 `web/ds.js`，它 fetch 相对地址 `api/…`；数据一律由 `ui/` 下的模块从 graph（索引和叠上的 run）里取，serve 按请求给。
@@ -585,7 +616,7 @@
 - 决定：`trace` 不 import `runs`：`trace.driver.run` 只接收一个 parts 目录和一个 `after` 回调，收尾（打包、写 run.json）在 `run` 的 try/finally 里跑。`seq` 不 import `events`
   也不 import `runs`，只读 events/spans/ 的文件，run 目录由 `serve` 经 `runs.resolve` 找好交给它。新功能进新模块。
 - 为什么：driver 的信号处理器要一直装到收尾做完，收尾中途按 Ctrl+C 才不会留下半截的 run——所以用回调而不是返回后再收尾。写 run、删 run 的代码全在 `runs` 里，
-  审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.edge_times`；代价是 spans/ 的格式两边各认一份（`test_seq_edge_times` 兜底）。
+  审一个文件就能确认谁会删原始数据。`events` 保持是叶子、测试能直接调 `seq.phase_calls`；代价是 spans/ 的格式两边各认一份（`test_lanes_match_spans_and_hot` 兜底）。
   原来的 `payload.py` 是 god module，2026-09-30 拆成了 `align.py`（两边的比较）和 `ui/` 下几个按页面区域分的模块；原来的 `trace.py` 已按运行环境拆成 hook / driver / analysis 三块。
 - 放弃的方案：`driver.run` 返回后由调用方收尾。
 - 在哪：`trace/driver.py` 的 `run`（`after`）；`runs.py` 的 `finalize`；`seq.py` 的 import。

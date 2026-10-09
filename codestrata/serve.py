@@ -4,8 +4,6 @@
     GET  /<asset>                 前端静态资源（app.css、*.js）
     GET  /api/app                 {home}：从主菜单（codestrata app）打开时主菜单的地址，页面上放回去的链接
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
-    GET  /api/seq/edges?run=&open=   切面上每条边在 run 选的阶段里第一次 / 最后一次被调用的时刻和次数
-                                  （模块图的「时间顺序」上色）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
     GET  /api/lanes?run=&open=&cuts=
                                   按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
@@ -22,7 +20,10 @@
     GET  /api/refs?t=             一个定义被哪些地方引用（全文窗口里 Ctrl+点击定义）
     GET  /api/search-index        搜索栏要的全部名字（模块、文件、类 / 函数），前端自己搜
     GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
-    GET  /api/edge?a=&b=&run=     一条边承载了什么：两端底下函数之间的调用，scan 写的和 trace 录到的
+    GET  /api/edge?a=&b=&run=&lane=
+                                  一条边承载了什么：两端底下函数之间的调用，scan 写的和 trace 录到的；
+                                  给了 lane（分列里的列 id）就只算这一列里的调用
+    GET  /api/lanehot?run=&lane=  分列里一列的叠加（只算这一列里的调用）：节点详情里的次数、文件树、kernel 表用
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
@@ -161,6 +162,7 @@ class Handler(BaseHandler):
     _graphs: dict = {}          # (切面, 宽度, run) → 已算好的 /api/graph 结果
     _search: bytes | None = None  # /api/search-index，算一次
     _hots: dict = {}            # (run id, 阶段, (counts、run.json 的 mtime)) → (hot, meta)；最近 8 个
+    _lanehots: dict = {}        # (run id, 阶段, counts 的 mtime, 列) → 分列里一列的 hot；最近 16 个
     _stale: dict = {}           # (run id, detail 的 mtime) → 录制后改过几个文件（下拉列表用）
     _lock = threading.Lock()
 
@@ -204,16 +206,57 @@ class Handler(BaseHandler):
                     Handler._hots.pop(next(iter(Handler._hots)))
         return hit[0], hit[1], key
 
-    def _first(self, q: dict, hot: dict | None) -> dict | None:
-        """边详情按先后排要的：这个 run（阶段）里每个函数对第一次调用的时刻；没录时序事件的是 None"""
+    def _first(self, q: dict, hot: dict | None, lane: str | None = None) -> dict | None:
+        """边详情按先后排要的：这个 run（阶段）里每个函数对第一次调用的时刻（给了 lane 只算这一列）；没录时序事件的是 None"""
         ref = (q.get("run") or [""])[0].strip()
         if not hot or not ref:
             return None
         try:
             run, rd, phase = _runs.resolve(self.repo, ref)
-            return _path.first_calls(self.idx, rd, run, phase, hot)
+            return _path.first_calls(self.idx, rd, run, phase, hot, lane=lane)
         except (SystemExit, LookupError, OSError, ValueError):
             return None
+
+    def _lane_hot(self, q: dict, lane: str) -> dict:
+        """分列里一列的叠加（load.load_lane）：按 (run id, 阶段, counts.json.gz 的 mtime, 列) 缓存最近 16 个。
+        没选 run、找不到 run / 列、没有时序事件抛 LookupError，span 读不出来抛 OSError / ValueError"""
+        ref = (q.get("run") or [""])[0].strip()
+        if not ref:
+            raise LookupError("要先选一个 run（录了时序事件的）")
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+            mt = (rd / "counts.json.gz").stat().st_mtime_ns
+        except SystemExit as e:
+            raise LookupError(str(e)) from None
+        except OSError:
+            raise LookupError("这个 run 还没有计数（还在录，或录制中断了要 runs merge）") from None
+        key = (run["id"], phase, mt, lane)
+        with Handler._lock:
+            hit = Handler._lanehots.get(key)
+        if hit is None:
+            try:
+                hit = _load.load_lane(self.repo, self.idx, run["id"] + (f"@{phase}" if phase else ""), lane)
+            except SystemExit as e:
+                raise LookupError(str(e)) from None
+            with Handler._lock:
+                Handler._lanehots[key] = hit
+                while len(Handler._lanehots) > 16:
+                    Handler._lanehots.pop(next(iter(Handler._lanehots)))
+        return hit
+
+    def _lanehot(self, q: dict):
+        """/api/lanehot：分列里一列的叠加，只给节点详情要的（各单元 / 符号 / 文件的次数、kernel 的次数和 GPU 时间）"""
+        lane = (q.get("lane") or [""])[0].strip()
+        if not lane:
+            return self._json({"error": "要给 lane（分列里的列 id）"}, 400)
+        try:
+            h = self._lane_hot(q, lane)
+        except LookupError as e:
+            return self._json({"error": str(e)}, 404)
+        except (OSError, ValueError) as e:
+            return self._json({"error": _seq.unreadable(e, (q.get("run") or [""])[0])}, 500)
+        return self._json({"lane": lane, "run": h["run"], "packages": h["packages"], "symbols": h["symbols"],
+                           "files": h["files"], "kernels": h["kernels"], "lines_approx": h["lines_approx"]})
 
     def _path(self, q: dict):
         """/api/path：请求路径（path.request_path）。run 必填，@阶段（或 @t=）决定时间段"""
@@ -253,31 +296,6 @@ class Handler(BaseHandler):
         except (OSError, ValueError) as e:
             # 还没认出是哪个 run 就出错（读 runs 目录失败）：没有 run id 可写
             return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
-
-    def _seq(self, path: str, q: dict):
-        """/api/seq/edges：模块图「时间顺序」上色要的数据。run 必填（run id 或 case 名，@阶段决定时间窗）。"""
-        ref = (q.get("run") or [""])[0].strip()
-        if not ref:
-            return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
-        try:
-            run, rd, phase = _runs.resolve(self.repo, ref)
-        except SystemExit as e:
-            return self._json({"error": str(e)}, 404)
-        raw = (q.get("open") or [None])[0]
-        open_ = None if raw is None else [o for o in raw.split(",") if o]
-        open_ = sorted(_cut.norm_open(self.idx, open_))
-        try:
-            hot = self._hot(q)[0]                  # 带着录制时的键 → 现在的键（改过的文件里函数挪了位置）
-        except LookupError as e:
-            return self._json({"error": str(e)}, 404)
-        try:
-            return self._json(_seq.edge_times(self.idx, rd, run, open_=open_, phase=phase,
-                                              keymap=(hot or {}).get("keymap"), redirect=(hot or {}).get("redirect")))
-        except (LookupError, FileNotFoundError) as e:
-            return self._json({"error": str(e) if isinstance(e, LookupError)
-                               else "这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12），或者 span 没整理好（runs merge 重来）"}, 404)
-        except (OSError, ValueError) as e:            # span 文件坏了：说清楚，不让连接直接断
-            return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 
     def _runs(self) -> dict:
         """/api/runs：下拉列表要的摘要，新的在前。「录制后改过几个文件」要读 detail.json 和当前
@@ -329,14 +347,14 @@ class Handler(BaseHandler):
             except SystemExit as e:                  # runs/ 是软链、指向的盘没挂上
                 return self._json({"error": str(e)}, 503)
 
-        if path == "/api/seq/edges":
-            return self._seq(path, q)
-
         if path == "/api/path":
             return self._path(q)
 
         if path == "/api/lanes":
             return self._lanes(q)
+
+        if path == "/api/lanehot":
+            return self._lanehot(q)
 
         hot = hot_meta = hot_key = None
         if path in ("/api/graph", "/api/edge", "/api/refs", "/api/file"):
@@ -376,7 +394,18 @@ class Handler(BaseHandler):
             a, b = (q.get("a") or [""])[0], (q.get("b") or [""])[0]
             if not _cut.is_node(self.idx, a) or not _cut.is_node(self.idx, b):
                 return self._json({"error": "unknown node"}, 404)
-            return self._json(_edge.edge_detail(self.repo, self.idx, a, b, hot, first=self._first(q, hot)))
+            lane = (q.get("lane") or [""])[0].strip() or None
+            if lane:                                  # 分列里的边：只算这一列里的调用
+                try:
+                    hot = self._lane_hot(q, lane)
+                except LookupError as e:
+                    return self._json({"error": str(e)}, 404)
+                except (OSError, ValueError) as e:
+                    return self._json({"error": _seq.unreadable(e, (q.get("run") or [""])[0])}, 500)
+            d = _edge.edge_detail(self.repo, self.idx, a, b, hot, first=self._first(q, hot, lane))
+            if lane:
+                d["lane"] = lane
+            return self._json(d)
 
         if path == "/api/search-index":
             if Handler._search is None:
@@ -439,7 +468,7 @@ class Handler(BaseHandler):
 def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | None = None) -> int:
     idx = _load.load_index(repo)
     Handler.repo, Handler.idx, Handler.home = repo, idx, home
-    Handler._graphs, Handler._hots, Handler._stale = {}, {}, {}
+    Handler._graphs, Handler._hots, Handler._stale, Handler._lanehots = {}, {}, {}, {}
     Handler._search = None
     # --hot 只决定页面打开时先选哪个 run（页面上随时能换）；启动时先加载一遍：写错了当场报出来
     h = hm = None

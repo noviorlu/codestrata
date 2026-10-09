@@ -20,7 +20,7 @@
 | 时间 | 磁盘上的时刻都是**相对 run 起点的微秒**（字段名以 `_us` 结尾），起点是 run.json 的 `clock.mono0_ns`（Linux 的 `CLOCK_MONOTONIC`，全机共享，不同进程可以直接比；换机器、重启后不可比）。原始分片和日志里的 `t0` / `t` 是绝对的 monotonic 纳秒 |
 | 内容哈希 | `sha16` = `sha256(文件字节).hexdigest()[:16]`。录制端的 `file_shas`、scan 的 `file_sha`、存下文件的 `sha` 都是它，三边直接比 |
 | 写法 | JSON 一律 UTF-8。run.json、detail.json、counts.json.gz 先写 `<名字>.<pid>.tmp` 再 `os.replace`（`runs._write`），读的一方看不到写了一半的文件：`.json` 是缩进 1 的 JSON，`.json.gz` 是紧凑 JSON 再 gzip（mtime=0），命令行里不是 UTF-8 的字节写成 `\udcXX` 转义。`events/spans/` 是整个目录先写到临时目录再换上 |
-| 阶段名、case 名 | 都只能用 `[A-Za-z0-9._-]`（`runs.CASE_RE`、`trace.PHASE_NAME_RE`） |
+| 阶段名、case 名 | 都只能用 `[A-Za-z0-9._-]`（`runs.CASE_RE`、`trace.analysis.PHASE_NAME_RE`） |
 
 ## 1 目录布局
 
@@ -359,12 +359,12 @@ R 3784145 1 2
 | `scope` | str | `"all"`：每次调用都有 span；`"cross"`：只有跨文件的（老 run，没有这个字段也是）；`"mixed"`：几个进程不一样（录到一半换了 codestrata） | `seq.phase_calls` → `path`（老 run 才按计数补同文件的那一跳） |
 | `chunks` | [{pid, chunk, t0_us, t1_us, n}] | 每块 span 文件：属于哪个 pid、文件名、块里最早的开始、最晚的结束（`max(t0 + max(dur, 0))`）、行数。**块上没有 truncated 字段** | `seq`：按 `t0_us` / `t1_us` 跳过和时间段不重叠的块；`seq.run_end` 取所有块的 `t1_us` 最大值当时间轴终点的候选 |
 | `procs` | [{pid, ppid, t0_us, n_events, n_spans, truncated}] | 每个进程映像一条（同一 pid exec 前后是两条）；`n_events` 是 C/R/Y/S 行数；`truncated` 是这个映像到了行数上限 | `runs._build_events`（数进程） |
-| `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.edge_times` 原样带出 |
+| `truncated` | [pid] | 到了行数上限的进程 | run.json 的 `events.truncated`、`seq.phase_calls`、`lanes.build` 原样带出 |
 | `thread_from` | {"\<pid\>": {"\<tid\>": [起它的 tid, span 下标, 行, t_us, 守护]}} | 线程是谁起的（F 行）：在同一个进程的哪个线程、哪个 span 里、哪一行 `Thread.start`；span 下标是 `-1` 时不在任何 span 里（模块顶层、线程的入口函数），行 0 是不知道。没记到的线程（2026-10-01 之前的 run、主线程）没有；老的只有前两项 | `lanes`（谁起了谁） |
 | `thread_end` | {"\<pid\>": {"\<tid\>": {"t": t_us 或 null, "by": [join 它的 tid, span 下标, 行, t_us] 或 null}}} | 线程怎么结束的（X / J 行）：`t` 是 run 跑完的时刻（null：到录制结束还在跑），`by` 是第一次 join 等到它的那一处（null：没人 join）。只有 `thread_from` 里有的线程才有；老 run 没有这个字段 | `lanes`（谁回收了谁、列头的起 / 收） |
 | `reaps` | [{pid, tid, row, line, child, t_us}] | 子进程是谁收的（W 行）：waitpid 等到 `child` 退出的那一边。老 run 没有 | `lanes` |
-| `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us, 行]`（老的没有行），`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （P0 的运行时模型） |
-| `spawns` | [{pid, tid, row, line, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` / `line` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里；`line` 0 是不知道，老 run 没有），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （P0 的运行时模型） |
+| `handoffs` | [{via, from, to}] | 谁把数据交给谁：`from` / `to` 是 `[pid, tid, span 下标, t_us, 行]`（老的没有行），`via` 是 `queue` / `asyncio` / `janus` / `zmq`。队列在同一个进程映像里按（队列 id, 对象 id）先进先出地配；ZMQ 跨进程按指纹先发先收地配（发的时刻不晚于收的）；同一个线程里自己放自己取的不算。没盯的通道（`queue.SimpleQueue`、线程池的 submit、共享内存、管道、socket）没有 | （分列用） |
+| `spawns` | [{pid, tid, row, line, child, how, t_us}] | 子进程是谁起的：`pid` / `tid` / `row` / `line` 是起它的那一边（`row` 是 span 下标，-1 是不在任何 span 里；`line` 0 是不知道，老 run 没有），`child` 是子进程 pid，`how` 是 `exec`（P 行，带 `t_us`）或 `fork`（B 行）。exec 出来的子进程不一定是 Python、也不一定跑到仓库代码 | （分列用） |
 | `n_lines` | int | 所有日志的 C/R/Y/S 行数 | run.json 的 `events` |
 | `n_spans` | int | span 行数（折叠后；含 GPU 的行） | 同上 |
 | `n_calls` | int | Python 的调用次数（`Σ rep`，不含 GPU 的行） | 同上 |
@@ -393,7 +393,7 @@ R 3784145 1 2
 | 6 | `rep` | 这一行合了几次调用（≥1） |
 | 7 | `n_susp` | 挂起了几次；>0 就是 async 的 span（折叠行一定是 0） |
 | 8 | `parent` | 父 span 在这个 pid 的 span 里的下标，没有（线程的根、父亲在行数上限之后）是 `-1`。父 span 是调用那一刻这个线程上最里层正在执行的 span（挂起的不算），按原始日志重放得到，async 的也准。`scope` 是 `"all"` 时父 span 的被调方就是这一行的调用方。2026-10-01 之前整理的 span 没有这一列，`runs merge` 从原始日志重建就有 |
-| 9 | `gpu` | **只有 GPU 的行有这一列**（`trace --gpu`，`kernels.attach`）：`[设备, 流, 晚了多少 µs]`。GPU 的行是一个 kernel：`t0` 是发起它的启动调用的时刻（时间顺序按发起排），`dur` 到它在 GPU 上跑完，`tid` / `parent` 是发起它的线程和那一刻那个线程栈顶的 span（重放事件得到的；栈顶是被合成一行的连续调用之一时，是合成的那一行），`a` 是那个 span 的被调方，`b` 是 kernel 的键（见 §4），`rep` 是 1；最后一项是从发起到真正开始在 GPU 上跑隔了多久。GPU 的行不折叠、不受时序事件的行数上限管（行数上限只管 hook 写的事件） |
+| 9 | `gpu` | **只有 GPU 的行有这一列**（`trace --gpu`，`kernels.attach`）：`[设备, 流, 晚了多少 µs, 在 GPU 上跑了多少 ns]`（第 4 项 2026-10-08 起才有，之前的按 `dur` 减晚了的那段算，都是取整过的 µs）。GPU 的行是一个 kernel：`t0` 是发起它的启动调用的时刻（时间顺序按发起排），`dur` 到它在 GPU 上跑完，`tid` / `parent` 是发起它的线程和那一刻那个线程栈顶的 span（重放事件得到的；栈顶是被合成一行的连续调用之一时，是合成的那一行），`a` 是那个 span 的被调方，`b` 是 kernel 的键（见 §4），`rep` 是 1；第 3 项是从发起到真正开始在 GPU 上跑隔了多久。GPU 时间一律按纳秒加起来最后才换成 µs（`seq.gpu_ns`、`kernels.run_ns`），1 µs 上下的小 kernel 一个个先取整会差出三成。GPU 的行不折叠、不受时序事件的行数上限管（行数上限只管 hook 写的事件） |
 
 真实的行（vllm-omni）：`[89391161, 25097353, 2, 0, 994, 995, 2268, 0]` 是一个轮询：同一对函数连续调了 2268 次、
 从 89.4 秒到 114.5 秒；`[6338823, 4321, 2, 1, 572, 574, 1, 1]` 是一次挂起过一次的 async 调用（这两行是加 `parent` 之前的）。
@@ -401,6 +401,9 @@ R 3784145 1 2
 **第一级折叠**（`events.fold`）：同一个线程上、同一个**父 span** 下、中间这个线程没有挂起 / 恢复、同一对 `a → b`、
 自己没挂起过、没有记下的子调用、已经返回的连续调用，合成一行，`rep` 是次数，`dur` 从第一次开始到最后一次结束。
 按父 span 而不按深度认兄弟：同一线程上交错的两个协程，子调用深度相同但不是兄弟。
+合掉的每一次里发生的事都落在合成的那一行上：index.json 的 `handoffs`、`thread_from`、`spawns`、`thread_end`、`reaps` 里的 span 下标
+（循环里反复调同一个函数、它里面 `q.put(x)`：每一次放的那一头都是这一行）。2026-10-08 及以前整理的 index.json 里只有第一次是这一行、
+其余是 `-1`（像是不在任何 span 里），`runs merge` 重新整理就对了。
 
 **怎么读 rep > 1 的行**（`seq._calls_in`，时间段和时间顺序都这样算）：把 `rep` 次调用**均匀摊在 `[t0, t0 + dur]` 上**，
 第 i 次（i = 0 … rep−1）在 `t0 + i·dur/(rep−1)`。`rep ≤ 1` 或 `dur ≤ 0`（含没返回的 −1）时，整行的次数都算在 `t0` 那一刻。
@@ -417,10 +420,10 @@ R 3784145 1 2
   和 scan 比的结果和按阶段看的一样；每行的次数是约数（`hot.lines_approx`，页面上注明）。老 run 没有 `func_lines` 就不给。
 - **请求路径**（`seq.phase_calls` → `path.request_path`，`/api/path`、`codestrata path`）：一个阶段（或时间段）里每个（进程, 线程, 调用方键, 被调方键）
   的首末时刻和次数，落到 graph 的节点上排成调用树（见 decisions「请求路径」）。线程名来自 keys.json 的 `threads`，进程名来自 detail.json 的 `procs`（`title`、`argv`）。
-- **时间顺序**（`seq.edge_times`，`/api/seq/edges`）：一个阶段（或时间段）里，切面上每条节点间的边
-  `{first, last, n, spread, repeat}`。阶段的时间段来自 `phase_log`：各段左闭右开，最后一段闭到 run 的终点；
-  终点 = max(`duration_s`、最后一次切阶段、所有块的 `t1_us`)（`seq.run_end`）。`repeat` = 至少 5 次，且同一进程里第一次到最后一次
-  隔了这段时间的一半以上。两端落在同一个节点的、被调方是定义时的执行（模块顶层、类体）的、落不到 index 里的都不算。
+- **分列**（`seq.phase_calls` → `lanes.build`，`/api/lanes`）：同一张调用表按进程 · 线程分列、落到每列的切面上；列里的边带 `{first, last, n, only, repeat}`。
+  阶段的时间段来自 `phase_log`：各段左闭右开，最后一段闭到 run 的终点；终点 = max(`duration_s`、最后一次切阶段、所有块的 `t1_us`)（`seq.run_end`）。
+  `repeat` = 至少 5 次，且第一次到最后一次隔了这段时间（各段加起来）的一半以上（`seq.is_repeat`）。两端落在同一个节点的、被调方是定义时的执行
+  （模块顶层、类体）的、落不到 index 里的都不算。
 
 ## 7 run 的引用
 
@@ -428,12 +431,12 @@ R 3784145 1 2
 REF := (<完整 run id> | <case 名>) [ "@" <阶段名> | "@t=" <起 µs> "-" <止 µs> ]
 ```
 
-`runs.resolve` 解析，命令行（`--hot`、`runs show/merge/tag/note`）和页面（`/api/graph?run=`、`/api/seq/edges?run=`）通用：
+`runs.resolve` 解析，命令行（`--hot`、`runs show/merge/tag/note`）和页面（`/api/graph?run=`、`/api/lanes?run=`）通用：
 
 - 先当完整 id 找，找不到再当 case 名：取这个 case 最新一次 `ok` 的；没有就取最新的 `partial`（打印提示）；再没有就取最新的一次（不论状态）。
   「最新」按目录名倒序（id 以时间戳开头）。`runs rm` 只认完整 id。
 - `@阶段名`：必须在 run.json 的 `phases` 里；只看 counts.json.gz 里这一阶段的数。
-- `@t=起-止`：时间段（页面上时间条拖出来的），微秒、相对 run 起点，要求 `0 ≤ 起 < 止`；要有 `events/spans/`，次数只有跨文件的调用（§6.4）。
+- `@t=起-止`：时间段（页面上时间条拖出来的），微秒、相对 run 起点，要求 `0 ≤ 起 < 止`；要有 `events/spans/`，次数按这段时间里的时序事件算（2026-10-01 之前录的 run 只记了跨文件的调用，§6.4）。
 - 不带 `@`：全部阶段相加。
 
 例：`20260929-180408-run_single_prompt`、`run_single_prompt@serving`、`run_single_prompt@t=103715942-108681679`。

@@ -117,6 +117,26 @@ export default async function (t) {
   ok(await page.wait(`CS.lanes.sel === ${JSON.stringify('n:' + tl + '|fakesvc/callee.py')}
                       && [...document.querySelectorAll('#g .ln-nd.sel')].map(g => g.dataset.lane + '|' + g.dataset.id).join() === ${JSON.stringify(tl + '|fakesvc/callee.py')}
                       && document.getElementById('det').dataset.pkg === 'fakesvc/callee.py'`, 5000), '点名字：选中这一列里的 callee.py');
+  // 整个详情只算这一份（用户 10-01）：顶上写明是哪一列；次数、文件树里的次数是这一列的（callee.py 好几条线程都调，整个阶段的更多）
+  ok(await page.wait(`CS.panel._copy && CS.panel._copy.hot && !!document.querySelector('#tree .tn.file')`, 8000), '这一份的次数取回来了');
+  const cp = JSON.parse(await page.ev(`JSON.stringify((() => {
+    const n = CS.lanes.laneIx[${JSON.stringify(tl)}].nodes['fakesvc/callee.py'].n, row = document.querySelector('#tree .tn.file[data-file="fakesvc/callee.py"] > .tr .rt');
+    return { n, hint: (document.querySelector('#det .copyhint') || {}).textContent || '', label: CS.lanes.laneLabel(${JSON.stringify(tl)}),
+             rtc: document.querySelector('#det .rtc').textContent, tree: row ? +row.textContent : null, all: CS.app.data.hot.files['fakesvc/callee.py'] };
+  })())`));
+  ok(cp.n > 0 && cp.hint.includes(cp.label) && cp.rtc.includes('这一份 被调 ' + cp.n + ' 次') && cp.tree === cp.n && cp.all > cp.n,
+     '详情只算这一份：顶上写明哪一列，次数和文件树里都是这一列的 ' + cp.n + '（整个阶段 ' + cp.all + '）' + JSON.stringify(cp));
+  // 列里的边：详情也只算这一列里的调用，次数和图上那条边一样
+  const ek = 'e:' + tl + '|fakesvc/truth.py|fakesvc/callee.py';
+  await page.ev(`CS.lanes.open(CS.lanes.byKey[${JSON.stringify(ek)}])`);
+  ok(await page.wait(`document.querySelector('#det .copyhint') && /trace \\d+ 次/.test(document.querySelector('#det .sub').textContent)`, 8000), '点列里的边');
+  const ec = JSON.parse(await page.ev(`JSON.stringify({ n: CS.lanes.byKey[${JSON.stringify(ek)}].e.n, sub: document.querySelector('#det .sub').textContent,
+    hint: document.querySelector('#det .copyhint').textContent, lane: document.getElementById('det').dataset.lane })`));
+  ok(ec.sub.includes('trace ' + ec.n + ' 次') && ec.lane === tl && ec.hint.includes('这一列'), '列里的边：只算这一列里的调用 ' + JSON.stringify(ec));
+  // 分列时帮助讲分列、工具栏有连线的图例
+  ok(await page.ev(`(() => { const v = el => !!el && getComputedStyle(el).display !== 'none';
+    return v(document.querySelector('#lede .lanesonly')) && !v(document.querySelector('#lede .graphonly')) && v(document.getElementById('lnlegend'))
+      && document.getElementById('lnlegend').querySelectorAll('line.ln-link').length === 4; })()`), '分列时帮助讲分列、工具栏有四种连线的图例');
   await page.key('Escape', 'Escape', 27);
 
   // 排线：每条线的路径都不一样；每一条线沿路径取点，离鼠标最近的就是它（点下去选中它）的地方占大多数，没有一条点不到

@@ -5,11 +5,31 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codestrata"
 version = "0.1.0"
-description = "Two graphs for a Python repo: a static architecture map, and a runtime hot path overlaid on it."
+description = "Run-path tool for a repository: record one real run and see which path it took through a large codebase, per process and thread, on top of a static call graph."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = []            # 标准库为主
+keywords = ["call graph", "tracing", "code navigation", "multiprocessing", "sys.monitoring"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/noviorlu/codestrata"
+Documentation = "https://github.com/noviorlu/codestrata/blob/master/docs/usage.md"
+Issues = "https://github.com/noviorlu/codestrata/issues"
 
 [project.optional-dependencies]
 highlight = ["Pygments>=2.17"]   # 源码高亮，可选

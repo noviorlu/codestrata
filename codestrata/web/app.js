@@ -55,12 +55,6 @@ window.CS = window.CS || {};
         }
         if (window.MutationObserver)
           new MutationObserver(retint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-        // 开关（这次跑了 / 代码里看不出 / 只看跑到的）改了看得见的边：时间顺序重排名次，开关上的数跟着变
-        CS.graph.onTimed = function (n) {
-          if (self.lanesMode()) return;               // 分列自己数（CS.lanes.timed），模块图那套在分列下数出来的是 0
-          var c = document.querySelector('#edgechips [data-t=timeorder] .n');
-          if (c && !self._timesLoading) c.textContent = CS.graph.state.timeOrder ? n : '';
-        };
         CS.graph.onSelectFrame = function (f) {
           var t = document.getElementById('dtitle'); if (t) { t.textContent = CS.panel.full(f); t.title = f; }
           var s = document.getElementById('dsub'); if (s) s.textContent = '已在图上展开成框（框头的 − 收起）';
@@ -430,41 +424,12 @@ window.CS = window.CS || {};
       return !!(this.data && this.data.hot) && this.runHasEvents();
     },
 
-    /* 时间顺序上色要的数据：当前 run（阶段）、当前切面上每条边第一次 / 最后一次被调用的时刻。
-       开关关着就把颜色撤掉；同一个 run + 切面取过的直接用；取回来时已经换了 run / 切面的丢掉 */
+    /* 时间顺序只在分列里有（叠着录了时序事件的 run 一律分列）：时刻在 /api/lanes 里已经有了，开关一变重新上色；
+       模块图上（没叠 run、没录时序事件）没有这个开关 */
     applyTimes: function () {
-      var s = CS.graph.state, self = this;
-      if (this.lanesMode()) {                     // 分列：时刻在 /api/lanes 里已经有了，不另取
-        CS.lanes.paint(); this.edgeChips(); this.controls();
-        return;
-      }
-      if (!s.timeOrder || !this.canTimeOrder()) {
-        if (CS.graph.times) CS.graph.setTimes(null);
-        if (s.timeOrder && !this.canTimeOrder()) s.timeOrder = false;
-        this.edgeChips(); this.controls();
-        return;
-      }
-      var open = this.data.open || [], key = CS.ds.run + '|' + open.join(',');
-      if (this._times && this._times.key === key) {
-        this._timesLoading = null;
-        CS.graph.setTimes(this._times.data); this.edgeChips(); this.controls();
-        return;
-      }
-      // 取回来之前不上色（不拿上一个 run / 切面的时间画新图），开关上显示「…」
-      this._timesLoading = key;
-      CS.graph.setTimes(null); this.edgeChips(); this.controls();
-      CS.ds.seqEdges(open).then(function (d) {
-        if (self._timesLoading !== key) return;            // 这期间又换了 run / 切面（那边已经另取）
-        self._timesLoading = null;
-        if (CS.ds.run + '|' + (self.data.open || []).join(',') !== key || !s.timeOrder) return self.applyTimes();
-        self._times = { key: key, data: d };
-        CS.graph.setTimes(d); self.edgeChips(); self.controls();
-      }, function (e) {
-        if (self._timesLoading !== key) return;
-        self._timesLoading = null;
-        s.timeOrder = false; CS.graph.setTimes(null); self.edgeChips(); self.controls();
-        if (CS.viewer) CS.viewer.toast('时间顺序：' + e.message);      // 浮层提示：进度栏一会儿就被别的消息换掉
-      });
+      if (this.lanesMode()) CS.lanes.paint();
+      else if (CS.graph.state.timeOrder) CS.graph.state.timeOrder = false;
+      this.edgeChips(); this.controls();
     },
 
     /* 当前阶段从哪个函数开始、到哪个函数（下一个阶段的起点）结束：{start, end}，各是 phase_at 里的一项
@@ -606,15 +571,23 @@ window.CS = window.CS || {};
 
     header: function (d) {
       var r = d.repo, self = this;
-      document.getElementById('h1').textContent = r.name + ' 架构';
+      document.getElementById('h1').textContent = r.name;
       this.homeLink();
       this.wireHelp();
       document.getElementById('lede').innerHTML =
-        '纵轴是<b>调用的层次</b>：箭头尽量都从上指向下——调用方在上、被调用的在下（按 import 关系排，'
+        // 叠着录了时序事件的 run 时是分列（body.lanesmode），说明换成分列的
+        '<span class="lanesonly"><b>按进程 · 线程分列</b>：一列是一个进程里的一类线程（同名的合成一列，列头的 ×N 是几条），'
+        + '列按进程分组，进程头的 ▾ 能把整个进程收起来。列里是这条线程调到的模块（文件 / 目录），同一个模块在几列里各有一份；'
+        + '节点上的「被调 N 次」和点开的详情都只算这一列。列里的边和模块图一样：橙色是这次跑到的调用，橙虚线是代码里看不出会调到它的。'
+        + '<br><b>列之间的线</b>（图例在工具栏）：青色实线是<b>交接数据</b>（queue / janus / asyncio 的队列、ZMQ，按放和取配对）；'
+        + '绿虚线是<b>谁起了谁</b>（起线程、起子进程）；红虚线是<b>谁回收了谁</b>（join、waitpid）；橙细虚线是<b>启动 GPU kernel</b>（trace --gpu）。'
+        + '节点上的「▶ 起」「■ 收」是线程 / 进程在这里起的、在这里被等到结束的。'
+        + '分列里的次数来自时序事件：线程的入口函数（栈上它下面没有仓库里的函数）被调的那一次、递归调用自己的不算，所以会比模块图上的少一些。</span>'
+        + '<span class="graphonly">纵轴是<b>调用的层次</b>：箭头尽量都从上指向下——调用方在上、被调用的在下（按 import 关系排，'
         + '叠了 run 时再按这次实际的调用排，所以换 run 时节点会上下挪）。横轴用重心排序减少交叉。'
         + ' 图上的边只有<b>调用</b>：灰实线是代码里写了的调用。'
         + (d.hot ? ' 橙色是这次 <b>runtime</b> 真正跑到的，边上是调用次数；橙虚线是代码里看不出会调到它的。' : '')
-        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。'
+        + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。</span>'
         + (d.hot ? '<br><b>读图须知</b>：' + READ_NOTE + '「未归到命名符号的调用」是进 lambda、生成器表达式'
                    + '（3.12 之前还有推导式）这类没有名字的代码的次数：算到文件和模块上，不单列函数，边详情里写成「外层函数.&lt;L行&gt;」。' : '');
       var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
@@ -681,7 +654,7 @@ window.CS = window.CS || {};
                    + (c.dyn ? '其中 ' + c.dyn + ' 条跑到的全是代码里看不出的，画虚线，后一个开关单独管它们' : ''), true]);
         if (c.dyn) defs.push(['dyn', 'e dyn warm', '其中代码里看不出', c.dyn, DYN_TIP + (s.hot === false ? '。要先开「这次跑了」' : ''), true]);
         if (this.canTimeOrder())
-          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this._timesLoading ? '…' : (this.lanesMode() ? CS.lanes.timed : CS.graph.timed) || 0) : '',
+          defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this.lanesMode() ? CS.lanes.timed : 0) || 0 : '',
                      '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
                      + '换阶段、展开收起都会按新的时间窗重算', true]);
       }
@@ -692,7 +665,9 @@ window.CS = window.CS || {};
         return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="'
           + (tm ? !!s.timeOrder : s[x[0]] !== false) + '"' + (x[0] === 'dyn' && s.hot === false ? ' disabled' : '') + ' title="'
           + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true">'
-          + (tm ? '<defs><linearGradient id="tmchip"><stop offset="0" style="stop-color:var(--tm0)"/>'
+          // 渐变按用户坐标铺：默认的 objectBoundingBox 在水平线上（包围盒高 0）不画，线就没了
+          + (tm ? '<defs><linearGradient id="tmchip" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="22" y2="4">'
+                  + '<stop offset="0" style="stop-color:var(--tm0)"/>'
                   + '<stop offset=".5" style="stop-color:var(--tm1)"/><stop offset="1" style="stop-color:var(--tm2)"/></linearGradient></defs>'
                   + '<line x1="0" y1="4" x2="22" y2="4" stroke="url(#tmchip)" style="stroke-width:2.4"/>'
                 : '<line x1="0" y1="4" x2="22" y2="4" class="' + x[1] + '" style="stroke-width:1.8"/>')
@@ -700,7 +675,7 @@ window.CS = window.CS || {};
       }).join('')
         + (s.timeOrder && CS.graph.times ? '<span class="tmleg" title="颜色按第一次被调用的先后排名：最早的在左边那头，最晚的在右边那头">'
            + '早<i class="tmbar"></i>晚　<b class="tp" style="background:var(--tm0)">3</b> 第几个开始的　'
-           + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 同一个进程里一直在反复调用'
+           + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
@@ -1008,6 +983,8 @@ window.CS = window.CS || {};
         pb.hidden = !CS.graph.hot;
         pb.onclick = function () { CS.path.show(); };
       }
+      // 「视图」下面的两个按钮（只看跑到的、请求路径）都只在叠着 run 时有：没叠时标签也藏，不留一个空标签
+      document.getElementById('viewlbl').style.display = CS.graph.hot ? '' : 'none';
       document.getElementById('reset').onclick = function () {
         if (CS.search) CS.search.clear();
         CS.graph.highlight(null); CS.graph.clear();
@@ -1029,9 +1006,9 @@ window.CS = window.CS || {};
     footer: function (d) {
       var r = d.repo;
       document.getElementById('foot').innerHTML =
-        'codestrata · 结构由 <code>ast</code> 遍历 <code>' + esc((r.roots || []).join(', '))
-        + '</code> 得出（' + r.n_files + ' 文件，解析失败 ' + r.n_parse_errors + '）'
-        + (d.hot ? '；hot 部分来自 runtime hook' : '') + '。';
+        'codestrata · 静态的调用图扫描自 <code>' + esc((r.roots || []).join(', '))
+        + '</code>（' + r.n_files + ' 个文件，解析失败 ' + r.n_parse_errors + '）'
+        + (d.hot ? '；运行时的部分是 trace 录下的 run ' + esc(d.hot.run || '') : '') + '。';
     }
   };
   // 内联进宿主页面时脚本可能在 DOMContentLoaded 之后才跑，那时再监听就永远等不到

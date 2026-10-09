@@ -24,7 +24,7 @@ window.CS = window.CS || {};
   function laneName(id) { return id.slice(id.indexOf(':') + 1); }
   // TOP：图框左上角浮着缩放按钮，进程头、列头往下让一点
   // HEAD：列头（线程名、仓库外的代码、起 / 收两行）的底
-  var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72, REPEAT = 5;
+  var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72;
   var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue',
               thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）',
               join: 'join 等它结束', wait: 'waitpid 等子进程退出', cuda: '启动 GPU kernel' };
@@ -38,6 +38,8 @@ window.CS = window.CS || {};
     return (s < 0 ? '−' : '+') + Math.abs(s).toFixed(3) + ' s';
   }
   function clip(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+  /* GPU 上跑了多久（微秒）→ 150 µs / 318 ms / 2.4 s */
+  function gpuT(us) { return us >= 1e6 ? (us / 1e6).toFixed(1) + ' s' : us >= 1000 ? (us / 1000).toFixed(us >= 1e4 ? 0 : 1) + ' ms' : Math.round(us) + ' µs'; }
   /* 列头的起 / 收两行：[{kind: start|end, text, title}] */
   /* 段外的时刻（选了阶段 / 时间段时，起 / 收、交接发生在这一段之外）：每个时刻按它自己在不在这一段里标段前 / 段后（用户 10-01）。
      L：/api/lanes 的结果（window、segs）；落在阶段的两个时间片之间的，late（收）算段后，否则算段前（同 lanes.py 的 out_of） */
@@ -78,7 +80,7 @@ window.CS = window.CS || {};
 
   CS.lanes = {
     // 详情栏（lanedetail.js）也用的写法和说法
-    fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, VIA: VIA, KIND: KIND, ENDS: ENDS },
+    fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, gpuT: gpuT, VIA: VIA, KIND: KIND, ENDS: ENDS },
     data: null, collapsed: {}, sel: null, edges: [], links: [], nodes: [], frames: [], fpos: {}, laneIx: {},
 
     /* 取数并画（app.drawMain 在叠着录了时序事件的 run 时调） */
@@ -363,9 +365,12 @@ window.CS = window.CS || {};
             var nm = self.label(id, ln.id);
             t.textContent = nm.length > 18 ? nm.slice(0, 17) + '…' : nm; g.appendChild(t);
             var s = el('text', { x: cx, y: cy + 9, class: 'ns', 'text-anchor': 'middle' });
-            s.textContent = info.n ? '被调 ' + fmtN(info.n) + ' 次' : info.handoff ? '只在这里交接' : '只往外调'; g.appendChild(s);
+            // GPU 的列：kernel 跑了几次、在 GPU 上一共跑了多久（次数多的不一定耗时多）
+            s.textContent = info.gpu_us != null ? fmtN(info.n) + ' 次 · ' + gpuT(info.gpu_us)
+              : info.n ? '被调 ' + fmtN(info.n) + ' 次' : info.handoff ? '只在这里交接' : '只往外调'; g.appendChild(s);
             var tp = el('title', {});
-            tp.textContent = id + '\n' + ln.thread + ' 里' + (info.n ? '被调了 ' + info.n + ' 次' : info.handoff
+            tp.textContent = id + '\n' + ln.thread + ' 里' + (info.gpu_us != null ? '跑了 ' + info.n + ' 次 kernel，GPU 上共 ' + gpuT(info.gpu_us)
+              : info.n ? '被调了 ' + info.n + ' 次' : info.handoff
               ? '这一段里没调到它，只是在这里放 / 取（交接在这一段里）' : '只当调用方')
               + '\n别的列里也有它的话，鼠标停在这里会连上；点了看详情';
             g.appendChild(tp);
@@ -393,7 +398,7 @@ window.CS = window.CS || {};
           E.p = el('path', { d: R.d, class: 'ln-e' + (dashed ? ' dyn' : '') });
           E.tipBase = e.a + ' → ' + e.b + '\n' + ln.proc + ' · ' + ln.thread + ' 里调了 ' + e.n + ' 次'
             + (dashed ? '，全都是代码里看不出会调到的' : e.only ? '，其中约 ' + e.only + ' 次代码里看不出' : '')
-            + '\n点击看具体是哪些函数（详情不分线程）';
+            + '\n点击看具体是哪些函数（只算这一列里的调用）';
           E.tip = el('title', {}); E.tip.textContent = E.tipBase;    // 不挂在线上：悬停提示按离鼠标最近的那条线出（pointAt）
           eg.appendChild(E.halo); eg.appendChild(E.p);
           E.R = R; E.labTxt = fmtN(e.n); E.labCls = 'ecnt';      // 次数标签等连线画完、和连线的标签一起排（labels）
@@ -494,7 +499,8 @@ window.CS = window.CS || {};
         E.tip = el('title', {}); E.tip.textContent = E.tipBase;
         lk.appendChild(E.halo); lk.appendChild(E.p);
         E.R = R; E.labCls = 'ln-ltxt ' + k.kind;
-        E.labTxt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '');
+        E.labTxt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '')
+          + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
         self.wire(E);
         self.links.push(E);
       });
@@ -593,7 +599,7 @@ window.CS = window.CS || {};
       var E = was && this.byKey[was], nk = was && was.indexOf('n:') === 0 ? was.slice(2) : null;
       var fk = was && was.indexOf('f:') === 0 ? was.slice(2) : null;
       if (E) this.open(E, true);
-      else if (nk && this.pos[nk]) {               // 节点的这一份还画着：只重写详情里分线程的那几行（文件树、打开的源码不动）
+      else if (nk && this.pos[nk]) {               // 节点的这一份还画着：只重写详情里只算这一列的那些（次数、调用 / 被调用、文件树、kernel 表），打开的源码不动
         this.select(was);
         CS.laneDetail.node(nk.slice(nk.lastIndexOf('|') + 1), nk.slice(0, nk.lastIndexOf('|')));
       } else if (fk && this.fpos[fk]) this.select(was);   // 框还画着
@@ -618,9 +624,17 @@ window.CS = window.CS || {};
     /* 选中一条边 / 连线、开详情（点了线，或者详情里点了它那一行） */
     open: function (E, quiet) {                       // quiet：改切面、收起进程之后接着选，不去打开用户关上的详情栏
       this.select(E.key);
-      if (E.kind === 'edge') { if (CS.graph.onPickEdge) CS.graph.onPickEdge(E.e.a, E.e.b); }
-      else CS.laneDetail.link(E.k);
+      if (E.kind === 'edge') {                         // 列里的边：详情只算这一列里的调用
+        CS.panel.showEdge(E.e.a, E.e.b, E.lane.id, this.laneLabel(E.lane.id));
+        CS.app.drawerTitle(null, E.e.a, E.e.b);
+      } else CS.laneDetail.link(E.k);
       if (!quiet) CS.app.drawer(true);
+    },
+
+    /* 列的全名：「进程 · 线程」，同名合了几条的写 ×N（详情里说「只算这一列」时用） */
+    laneLabel: function (id) {
+      var x = ((this.L && this.L.lanes) || []).filter(function (l) { return l.id === id; })[0];
+      return x ? x.proc + ' · ' + x.thread + (x.n_threads > 1 ? ' ×' + x.n_threads : '') : laneName(id);
     },
 
     /* 按开关上色、藏起来、排时间顺序（画完、开关变了时调） */
@@ -640,10 +654,10 @@ window.CS = window.CS || {};
       var list = tm ? this.edges.concat(this.links.filter(function (E) { return E.k.kind === 'handoff'; }))
         .filter(function (E) { return E.show && E.first != null && E.first >= w[0] && E.first <= w[1]; }) : [];
       list.sort(function (p, q) { return p.first - q.first || (p.last || 0) - (q.last || 0) || (p.key < q.key ? -1 : 1); });
-      var n = list.length, span = Math.max(1, w[1] - w[0]);
+      var n = list.length;
       this.edges.concat(this.links).forEach(function (E) { E._t = null; });
       list.forEach(function (E, i) {
-        E._t = { k: i, n: n, repeat: E.n >= REPEAT && (E.last - E.first) > span / 2 };
+        E._t = { k: i, n: n, repeat: !!(E.kind === 'edge' ? E.e.repeat : E.k.repeat) };   // 反复调用：后端按 seq.is_repeat 算好的
       });
       function sec(us) { return when(us, w[0]); }
       this.edges.concat(this.links).forEach(function (E) {

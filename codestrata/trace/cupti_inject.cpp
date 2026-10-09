@@ -96,7 +96,10 @@ void CUPTIAPI buffer_completed(CUcontext ctx, uint32_t stream, uint8_t* buffer, 
         switch (rec->kind) {
             case CUPTI_ACTIVITY_KIND_KERNEL:
             case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL: {
-                auto* k = reinterpret_cast<CUpti_ActivityKernel12*>(rec);
+                // 记录是这个 CUPTI 最新的版本（CUDA 12.x 是 Kernel9，13 是 Kernel12），只用到前面这几个字段：
+                // start / end / deviceId / streamId / correlationId / name 在 Kernel9–12 里位置一样（新版本只在后面加字段），
+                // 按 Kernel9 读，CUDA 12.0 起的头都有它（写死 Kernel12 时 CUDA 12 的头编不过）
+                auto* k = reinterpret_cast<CUpti_ActivityKernel9*>(rec);
                 fprintf(f, "K %llu %llu %u %u %u\t%s\t%s\n", static_cast<unsigned long long>(k->start),
                         static_cast<unsigned long long>(k->end), k->deviceId, k->streamId, k->correlationId,
                         k->name ? k->name : "?", demangle(k->name).c_str());
