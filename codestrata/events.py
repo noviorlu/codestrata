@@ -56,6 +56,8 @@ events/raw.tar.gz 里永久保留）：
 谁把数据交给谁（Q / G / O / I 行）整理进 handoffs：[{via, from: [pid, tid, row, t_us, line], to: [pid, tid, row, t_us, line]}]，
 via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配
 （发的时刻不晚于收的）。同一个线程里自己放自己取的不算交接。
+这几处的 row（span 下标）：发生在被合成一行的连续调用（rep > 1）里的，不管是其中第几次，都是合成的那一行
+（2026-10-08 及以前整理的只有第一次对，其余是 -1；`runs merge` 重新整理就对了）。
 
 写出 events/spans/：keys.json {keys, threads, native}、index.json {chunks, truncated, scope, thread_from, spawns, thread_end, reaps, ...}、
 p<pid>-NNN.jsonl.gz（按 t0 排好，每块最多 10 万行）。
@@ -266,6 +268,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
     images: list[tuple] = []                      # (映像名, pid, 线程号偏移, 起点, log)：最后整理「谁起了谁」用
     probes = gpu.probes() if gpu is not None else {}
     found: dict[int, tuple] = {}                  # 探针编号 → (调用方键, 线程号, 父 span 的号, 父 span 的深度)
+    aliases: dict[str, dict] = {}                 # 映像 → {被合掉的 span 号: 合进的那一行的号}（fold 的 alias）
     starts: dict[int, list] = {}                  # pid → 各映像的起点（ns）：exec 前后的探针分给各自的映像
     for path in files:
         try:
@@ -294,7 +297,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
         threads.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["threads"].items()})
         if log["native"]:
             native.setdefault(str(log["pid"]), {}).update({str(t + off): n for t, n in log["native"].items()})
-        mine, hits, alias = None, {}, {}
+        mine, hits, alias = None, {}, aliases.setdefault(img, {})
         if probes.get(log["pid"]) and log["t0"] is not None:
             nxt = min((x for x in starts.get(log["pid"], []) if x > log["t0"]), default=None)
             local: dict[int, list] = {}
@@ -329,7 +332,7 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
             for i, sp in hits.items():
                 s = by_sp.get(sp) if sp is not None else None
                 if s is not None and remap.get(s[5]) is not None:
-                    found[i] = (keys[remap[s[5]]], s[2] + off, (img, alias.get(sp, sp)), s[3])
+                    found[i] = (keys[remap[s[5]]], s[2] + off, (img, sp), s[3])
         procs.append({"pid": log["pid"], "ppid": log["ppid"], "t0_us": base, "n_events": len(log["ev"]),
                       "n_spans": len(rows), "truncated": log["truncated"]})
     gpu_summary = None
@@ -344,17 +347,24 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
     tmp.mkdir(parents=True)
     chunks = []
     n_spans = n_calls = 0
-    at: dict[tuple, int] = {}                     # (映像, span 号) → 排好之后在这个 pid 里的下标
+    at: dict[tuple, int] = {}                     # (映像, span 号) → 排好之后在这个 pid 里的下标（只有留下来的行）
     for pid, rows in per_pid.items():
         rows.sort(key=lambda r: (r[0], r[3]))
         at.update((r[9], i) for i, r in enumerate(rows))
+
+    def row_of(img: str, sp: int) -> int:
+        """(映像, span 号) → 排好之后在这个 pid 里的下标。被合掉的 span 号落到合进的那一行：循环里反复调同一个函数、在它里面
+        放 / 取、起线程、join、起 / 收子进程、发起 kernel 的，每一次都标在合成的那一行上（只查留下来的行的话，除了第一次都是 -1）。
+        不在任何 span 里（0）、截断在上限之后（没有调用行）的是 -1"""
+        return at.get((img, aliases.get(img, {}).get(sp, sp)), -1)
+
     for rows in per_pid.values():
         for r in rows:
-            r[8] = at.get(r[8], -1)                     # 父亲被截断在上限之后（没有调用行）的也是 -1
+            r[8] = row_of(*r[8]) if r[8] is not None else -1     # 父亲被截断在上限之后（没有调用行）的也是 -1
             del r[9]
-    thread_from, spawns = _origins(images, at)
-    thread_end, reaps = _ends(images, at)
-    handoffs = _handoffs(images, at)
+    thread_from, spawns = _origins(images, row_of)
+    thread_end, reaps = _ends(images, row_of)
+    handoffs = _handoffs(images, row_of)
     for pid, rows in sorted(per_pid.items(), key=lambda kv: kv[0] or 0):
         for ci in range(0, max(len(rows), 1), CHUNK):
             part = rows[ci:ci + CHUNK]
@@ -384,28 +394,29 @@ def build(files: list[Path], mono0_ns: int | None, out_dir: Path, gpu=None) -> d
     return index
 
 
-def _origins(images: list[tuple], at: dict) -> tuple[dict, list]:
-    """F / P / B 行 → index.json 的 thread_from、spawns（见模块说明）。span 号换成下标，线程号加上映像的偏移"""
+def _origins(images: list[tuple], row_of) -> tuple[dict, list]:
+    """F / P / B 行 → index.json 的 thread_from、spawns（见模块说明）。span 号换成下标（row_of(映像, span 号)，见 build），
+    线程号加上映像的偏移"""
     by_name = {f"ev-{pid}-{lg['t0']}.log": (pid, off) for _, pid, off, _, lg in images}
     thread_from: dict[str, dict] = {}
     spawns: list[dict] = []
     for img, pid, off, base, lg in images:
         for tid, (ftid, fsp, ft, fln, dmn) in lg["from"].items():
-            thread_from.setdefault(str(pid), {})[str(tid + off)] = [ftid + off, at.get((img, fsp), -1), fln, base + ft, dmn]
+            thread_from.setdefault(str(pid), {})[str(tid + off)] = [ftid + off, row_of(img, fsp), fln, base + ft, dmn]
         for t, tid, sp, child, ln in lg["spawns"]:
-            spawns.append({"pid": pid, "tid": tid + off, "row": at.get((img, sp), -1), "line": ln, "child": child,
+            spawns.append({"pid": pid, "tid": tid + off, "row": row_of(img, sp), "line": ln, "child": child,
                            "how": "exec", "t_us": base + t})
         if lg["forked"] is not None and lg["ppid"]:
             pt0, ptid, psp, pln = lg["forked"]
             pimg = f"ev-{lg['ppid']}-{pt0}.log"
             poff = by_name.get(pimg, (None, 0))[1]
-            spawns.append({"pid": lg["ppid"], "tid": ptid + poff, "row": at.get((pimg, psp), -1), "line": pln, "child": pid,
+            spawns.append({"pid": lg["ppid"], "tid": ptid + poff, "row": row_of(pimg, psp), "line": pln, "child": pid,
                            "how": "fork"})
     spawns.sort(key=lambda s: (s["pid"], s["child"]))
     return thread_from, spawns
 
 
-def _ends(images: list[tuple], at: dict) -> tuple[dict, list]:
+def _ends(images: list[tuple], row_of) -> tuple[dict, list]:
     """X / J / W 行 → index.json 的 thread_end、reaps（见模块说明）。线程只整理起它的时候记下了 F 行的（它们才有起点）"""
     thread_end: dict[str, dict] = {}
     reaps: list[dict] = []
@@ -414,9 +425,9 @@ def _ends(images: list[tuple], at: dict) -> tuple[dict, list]:
             x, j = lg["exits"].get(tid), lg["joins"].get(tid)
             thread_end.setdefault(str(pid), {})[str(tid + off)] = {
                 "t": base + x if x is not None else None,
-                "by": [j[1] + off, at.get((img, j[2]), -1), j[3], base + j[0]] if j else None}
+                "by": [j[1] + off, row_of(img, j[2]), j[3], base + j[0]] if j else None}
         for t, tid, sp, child, ln in lg["reaps"]:
-            reaps.append({"pid": pid, "tid": tid + off, "row": at.get((img, sp), -1), "line": ln, "child": child,
+            reaps.append({"pid": pid, "tid": tid + off, "row": row_of(img, sp), "line": ln, "child": child,
                           "t_us": base + t})
     reaps.sort(key=lambda s: (s["pid"], s["child"]))
     return thread_end, reaps
@@ -425,7 +436,7 @@ def _ends(images: list[tuple], at: dict) -> tuple[dict, list]:
 _VIA = {"q": "queue", "a": "asyncio", "j": "janus"}
 
 
-def _handoffs(images: list[tuple], at: dict) -> list[dict]:
+def _handoffs(images: list[tuple], row_of) -> list[dict]:
     """Q / G / O / I 行 → index.json 的 handoffs（见模块说明）"""
     out: list[dict] = []
     sends: dict[str, list] = {}                   # ZMQ：指纹 → [(t, 那一边)]，跨进程配
@@ -433,7 +444,7 @@ def _handoffs(images: list[tuple], at: dict) -> list[dict]:
     for img, pid, off, base, lg in images:
         puts: dict[tuple, list] = {}
         for tag, t, tid, sp, what, ln in sorted(lg["msgs"], key=lambda m: m[1]):
-            side = [pid, tid + off, at.get((img, sp), -1), base + t, ln]
+            side = [pid, tid + off, row_of(img, sp), base + t, ln]
             if tag == "Q":
                 puts.setdefault(what, []).append(side)
             elif tag == "G":

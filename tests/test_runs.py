@@ -3007,5 +3007,99 @@ def test_deferred_starts_and_super():
     assert [(y["status"], y["note"]) for y in sw] == [("trace", {"k": "line", "names": ["super().__init__"]})], sw
 
 
+# 循环里反复调同一个仓库函数（没有子调用的叶子：这几次合成 span 的一行），在它里面放、起线程、join、起 / 等子进程、fork：
+# 主线程循环 5 次调 put_one（里面 q.put(i)），一条消费线程循环 q.get()；start_one / join_one / spawn_one / fork_one 各在循环里调 3 次
+_FH = {
+    "fh/__init__.py": "",
+    "fh/main.py": ("import os\nimport queue\nimport subprocess\nimport threading\n\n\n"
+                   "def put_one(q, i):\n    q.put(i)\n\n\n"
+                   "def consume(q, n, out):\n    for _ in range(n):\n        out.append(q.get())\n\n\n"
+                   "def leaf():\n    return 1\n\n\n"
+                   "def work():\n    return leaf()\n\n\n"
+                   "def start_one(t):\n    t.start()\n\n\n"
+                   "def join_one(t):\n    t.join()\n\n\n"
+                   "def spawn_one():\n    subprocess.run(['true'], check=True)\n\n\n"
+                   "def fork_one():\n    pid = os.fork()\n    if pid == 0:\n        os._exit(0)\n    return pid\n\n\n"
+                   "def main():\n"
+                   "    q, out = queue.Queue(), []\n"
+                   "    c = threading.Thread(target=consume, args=(q, 5, out), name='consumer')\n"
+                   "    c.start()\n"
+                   "    for i in range(5):\n        put_one(q, i)\n"
+                   "    c.join()\n"
+                   "    assert out == list(range(5)), out\n"
+                   "    ws = [threading.Thread(target=work, name=f'w-{k}') for k in range(3)]\n"
+                   "    for t in ws:\n        start_one(t)\n"
+                   "    for t in ws:\n        join_one(t)\n"
+                   "    for _ in range(3):\n        spawn_one()\n"
+                   "    kids = []\n"
+                   "    for _ in range(3):\n        kids.append(fork_one())\n"
+                   "    for p in kids:\n        os.waitpid(p, 0)\n\n\n"
+                   "if __name__ == '__main__':\n    main()\n"),
+}
+
+
+def test_handoff_in_folded_calls():
+    """循环里反复调同一个仓库函数、它里面 q.put(x)：这几次调用合成 span 的一行（rep 5），5 次放的那一头都落在这一行上、
+    标出 put_one 和 q.put 的那一行——不能只有第一次对、其余成了 -1（不在任何 span 里，分列里那一头就退成这条线程栈底的
+    函数、不知道是哪一行、经仓库外的代码）。起线程、join、起 / 等子进程、fork 也一样（index.json 里查 span 下标的几处）"""
+    from codestrata import events, lanes
+    from codestrata.ui import source
+    repo = tmpdir("cs-runs-fh-") / "repo"
+    for rel, src in _FH.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "fh", "--events", "--", PY, "-m", "fh.main")
+    run, rd, phase = runs.resolve(repo, "fh")
+    sd = rd / "events" / "spans"
+    ix, kj = json.loads((sd / "index.json").read_text()), json.loads((sd / "keys.json").read_text())
+    code = _FH["fh/main.py"].splitlines()
+    ln = lambda s: next(i for i, x in enumerate(code, 1) if x.strip() == s)      # noqa: E731
+    puts = [h["from"] for h in ix["handoffs"] if h["via"] == "queue"]
+    assert len(puts) == 5, ix["handoffs"]
+    pid = puts[0][0]
+    rows = events.read_spans(sd, pid)
+
+    def row_of(fn):
+        """fn 的那几次调用合成的那一行（下标）：只有一行，rep > 1"""
+        k = _line(repo, "fh/main.py", f"def {fn}(")
+        got = [i for i, r in enumerate(rows) if kj["keys"][r[5]] == k]
+        assert len(got) == 1 and rows[got[0]][6] > 1, (fn, [rows[i] for i in got])
+        return got[0]
+    # 交接：5 次放的那一头都在 put_one 合成的那一行、q.put 那一行
+    pr = row_of("put_one")
+    assert rows[pr][6] == 5 and all((p[0], p[2], p[4]) == (pid, pr, ln("q.put(i)")) for p in puts), puts
+    # 起线程、join：3 条 w-* 线程都是在 start_one / join_one 合成的那一行里起的、等到的
+    ws = [t for t, nm in kj["threads"][str(pid)].items() if nm.startswith("w-")]
+    assert len(ws) == 3, kj["threads"]
+    for t in ws:
+        f, by = ix["thread_from"][str(pid)][t], ix["thread_end"][str(pid)][t]["by"]
+        assert (f[1], f[2], by[1], by[2]) == (row_of("start_one"), ln("t.start()"), row_of("join_one"), ln("t.join()")), (t, f, by)
+    # 子进程：3 次 exec、等它们的 3 次 waitpid 都在 spawn_one 合成的那一行；3 次 fork 都在 fork_one 合成的那一行
+    # （fork 的那一头记在子进程的日志里，查的是父进程那个映像的 span 号）
+    sl = (row_of("spawn_one"), ln("subprocess.run(['true'], check=True)"))
+    ex = {s["child"] for s in ix["spawns"] if s["how"] == "exec"}
+    assert [(s["row"], s["line"]) for s in ix["spawns"] if s["how"] == "exec"] == [sl] * 3, ix["spawns"]
+    assert [(s["row"], s["line"]) for s in ix["reaps"] if s["child"] in ex] == [sl] * 3, ix["reaps"]
+    assert [(s["pid"], s["row"], s["line"]) for s in ix["spawns"] if s["how"] == "fork"] == \
+        [(pid, row_of("fork_one"), ln("pid = os.fork()"))] * 3, ix["spawns"]
+    # 分列：主线程 → consumer 的交接线，放的那一头只有 put_one 这一对（没有经仓库外的代码的那一头），一共 5 次；
+    # 起 / 收 w 那一列的连线在主线程那一头也只有 start_one / join_one
+    idx = ui_load.load_index(repo)
+    hot, _ = ui_load.load_hot(repo, idx, "fh")
+    L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]), text=lambda f, l: source.line_text(repo, f, l).strip())
+    hs = [x for x in L["links"] if x["kind"] == "handoff"]
+    assert {(x["from"]["lane"], x["to"]["lane"]) for x in hs} == {(f"{pid}:MainThread", f"{pid}:consumer")}, hs
+    assert {(p["a"], p["la"], p["ta"], p["xa"]) for x in hs for p in x["pairs"]} == \
+        {("fh/main.py#put_one", ln("q.put(i)"), "q.put(i)", False)} and sum(x["n"] for x in hs) == 5, hs
+
+    def main_end(kind, side):
+        """一头是 w 那一列的 kind 连线：主线程那一头（side 是 a / b）的 {(函数, 那一行的代码, 经仓库外的代码)}，和一共几次"""
+        xs = [x for x in L["links"] if x["kind"] == kind and f"{pid}:w" in (x["from"]["lane"], x["to"]["lane"])]
+        return {(p[side], p["t" + side], p["x" + side]) for x in xs for p in x["pairs"]}, sum(x["n"] for x in xs)
+    assert main_end("spawn", "a") == ({("fh/main.py#start_one", "t.start()", False)}, 3), L["links"]
+    assert main_end("join", "b") == ({("fh/main.py#join_one", "t.join()", False)}, 3), L["links"]
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))
