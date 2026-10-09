@@ -471,7 +471,7 @@
   形状和 counts.json.gz 一样，后面的 `remap`、`to_package_graph` 不分两种。拖到和整个 run 或某个阶段差不到 4 像素就当成它。
   时间轴终点取最后一条 span 的结束、最后一次切阶段、run 的时长三者最大的。
 - 为什么：不另开通道。counts.json.gz 是按阶段切的，分不出任意一段时间，带时刻的只有时序事件。吸附：拖回原样不会凭空多出一个时间段。
-  只按 span 定终点时，被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回，最后一个阶段会倒着走。代价：时间段的次数只有跨文件的调用（横幅上写明）。
+  只按 span 定终点时，被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回，最后一个阶段会倒着走。代价：时间段的次数只算记进时序事件的调用（线程入口被调的那一次、递归调自己的不记；2026-10-01 之前录的 run 只记了跨文件的，横幅上写明）。
 - 放弃的方案：阶段之外另设时间窗参数。理由未另外记录。
 - 在哪：`runs.py` 的 `resolve`、`load`；`seq.py` 的 `parse_window`、`window_counts`、`run_end`、`phase_segments`；`web/timebar.js` 的 `snap`。
 
@@ -509,7 +509,7 @@
   读记录：用到的字段（起止、设备、流、关联号、名字）在 Kernel9–12 里位置一样，CUDA 12.0 起的头都有它。
 - 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里、花了多少 GPU 时间」。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
   而且是外部工具或要改被录的程序；注入库不用改程序、不要 root，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的都录得到。
-  只写次数会看反：qwen 上 decode 的 kernel 17 次、GPU 上 318 ms，另一组 120 次只有 0.16 ms。
+  只写次数会看反：qwen 上 decode 的 kernel 17 次、GPU 上 318 ms，另一组 120 次只有 0.22 ms。
 - 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）。
 - 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（GPU 的列、节点和连线的 `gpu_us`，
   `lane_counts` 的 `gpu_pairs`）、`ui/load.py` 的 `load_lane`（kernel 的调用方）、`web/panel.js` 的 `_kernels`、`web/lanes.js`、`web/lanedetail.js`。

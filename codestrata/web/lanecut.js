@@ -81,8 +81,8 @@ window.CS = window.CS || {};
 
     /* 接着选画好那一刻选着的（同模块图的 app.keepSelection），各列按自己的切面：
        - 节点 / 框：这一份在这一列里展开着（展开成了框，或者本来就是框）就选中那个框；只改了别的列、或者这一份还画着，只重选、
-         重写详情里分线程的那几行（文件树、打开的源码不动）；被收进了别的节点就选那个节点（同一列）。共用的切面变了（换阶段之类）
-         数据也变了，整个详情重画；
+         重写详情里只算这一列的那些（次数、调用 / 被调用、文件树、kernel 表；打开的源码不动）；被收进了别的节点就选那个节点（同一列）。
+         共用的切面变了（换阶段之类）数据也变了，整个详情重画；
        - 边：两头按同样的规则落到新节点上，这一列里还有这条边就接着选它；连线按种类、通道、两头的列认，几条都对得上时取第一次的
          时刻对得上的（连线的 key 是下标，换了切面会变）。
        认不出来的（起 / 收的标签那种一次选好几条的也算）取消选中，免得详情里留着点了会选错的按钮 */
@@ -101,7 +101,7 @@ window.CS = window.CS || {};
       } else if (s.indexOf('e:') === 0) {
         var b = p.pop(), a2 = p.pop(), ln = p.join('|'), A = home(ln, a2), B = home(ln, b);
         E = A && B && lanes.byKey['e:' + ln + '|' + A + '|' + B];
-        if (E && E.key === s && a.lane) { lanes.select(s); return; }   // 还是那条边：边详情不分线程、没变
+        if (E && E.key === s && a.lane) { lanes.select(s); return; }   // 还是那条边：边详情只看两头和这一列、和切面无关，没变
       } else if (s.indexOf('l:') === 0 && snap.link) {
         var K = snap.link, same = lanes.links.filter(function (x) {
           return x.k.kind === K.kind && x.k.via === K.via && x.k.from.lane === K.from && x.k.to.lane === K.to;

@@ -28,6 +28,7 @@ export default async function (t) {
 
   // 叠了 run 默认只看跑到的：没跑到、也不在路径上的节点藏起来；点一下回全图，再点回来
   ok(await page.ev(`document.querySelector('[data-t="onlyhot"]').getAttribute('aria-pressed')`) === 'true', '叠了 run 默认「只看跑到的」');
+  ok(await page.ev(`getComputedStyle(document.getElementById('viewlbl')).display !== 'none'`), '叠了 run：工具栏上有「视图」');
   const only = await drawnNodes(page);
   ok(only.includes('fakesvc/truth.py') && only.includes('fakesvc/work.py') && !only.includes('fakesvc/race.py'),
      `只看跑到的：${only.length} 个节点（race 这类没跑到的藏起来）`);

@@ -398,7 +398,7 @@ window.CS = window.CS || {};
           E.p = el('path', { d: R.d, class: 'ln-e' + (dashed ? ' dyn' : '') });
           E.tipBase = e.a + ' → ' + e.b + '\n' + ln.proc + ' · ' + ln.thread + ' 里调了 ' + e.n + ' 次'
             + (dashed ? '，全都是代码里看不出会调到的' : e.only ? '，其中约 ' + e.only + ' 次代码里看不出' : '')
-            + '\n点击看具体是哪些函数（详情不分线程）';
+            + '\n点击看具体是哪些函数（只算这一列里的调用）';
           E.tip = el('title', {}); E.tip.textContent = E.tipBase;    // 不挂在线上：悬停提示按离鼠标最近的那条线出（pointAt）
           eg.appendChild(E.halo); eg.appendChild(E.p);
           E.R = R; E.labTxt = fmtN(e.n); E.labCls = 'ecnt';      // 次数标签等连线画完、和连线的标签一起排（labels）
@@ -599,7 +599,7 @@ window.CS = window.CS || {};
       var E = was && this.byKey[was], nk = was && was.indexOf('n:') === 0 ? was.slice(2) : null;
       var fk = was && was.indexOf('f:') === 0 ? was.slice(2) : null;
       if (E) this.open(E, true);
-      else if (nk && this.pos[nk]) {               // 节点的这一份还画着：只重写详情里分线程的那几行（文件树、打开的源码不动）
+      else if (nk && this.pos[nk]) {               // 节点的这一份还画着：只重写详情里只算这一列的那些（次数、调用 / 被调用、文件树、kernel 表），打开的源码不动
         this.select(was);
         CS.laneDetail.node(nk.slice(nk.lastIndexOf('|') + 1), nk.slice(0, nk.lastIndexOf('|')));
       } else if (fk && this.fpos[fk]) this.select(was);   // 框还画着

@@ -1,12 +1,13 @@
 """codestrata 命令行。
 
-    codestrata scan  <repo>                      静态扫描 → .codestrata/index.json
+    codestrata scan  [repo]                      静态扫描 → .codestrata/index.json
     codestrata app                               主菜单：选文件夹，点按钮扫描 / 录制运行 / 打开图
-    codestrata serve <repo> [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
-    codestrata trace <repo> --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
-    codestrata path  <repo> RUN                  请求路径：每个进程、每条线程按第一次调用排的函数级调用树
-    codestrata runs  <repo> ls|show|tag|untag|note|rm|merge   管理录下的 run
+    codestrata serve [repo] [--hot RUN]          本地部署前端：图 + 运行叠加 + 源码 + 跳编辑器
+    codestrata trace [repo] --case NAME -- CMD   跑一个 case，记录真实调用（每次都存成一个新的 run）
+    codestrata path  [repo] RUN                  请求路径：每个进程、每条线程按第一次调用排的函数级调用树
+    codestrata runs  [repo] ls|show|tag|untag|note|rm|merge   管理录下的 run
 
+repo 是被分析的仓库目录，省掉就是当前目录。
 RUN 是一次录制：完整的 run id（runs ls 里看），或 case 名（取它最新一次录完的），
 后面可以加 @阶段（如 minicpmo-duplex@serving）。
 """
@@ -196,7 +197,7 @@ def cmd_trace(a) -> int:
                                          for t in phase_at]},
                        invocation=getattr(a, "invocation", None),
                        env_inherited=_runs.inherited_env(os.environ, skip=env))
-    # 时序事件（模块图「时间顺序」的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
+    # 时序事件（分列、时间段、时间顺序、请求路径的数据）：hook 看这个变量；不记进 run 的 env（那是给命令的）
     # 明确写 0：shell 里恰好 export 了 CODESTRATA_EVENTS=1 也不录——以命令行为准，重录命令才对得上
     env_run = {**env, "CODESTRATA_EVENTS": "1" if a.events else "0"}
     if gpu_lib:                              # 和 CODESTRATA_EVENTS 一样是 codestrata 自己的，不记进 run 的 env
@@ -241,7 +242,7 @@ def cmd_trace(a) -> int:
     ev = run.get("events")
     if ev and ev.get("error"):
         print(f"  ⚠ 时序事件整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
-    elif ev:
+    elif ev and ev.get("n_calls"):
         print(f"  时序事件 {ev['n_lines']} 行 → {ev['n_spans']} 段（{ev['n_calls']} 次{_ev_calls(ev)}），"
               f"原始日志 {_size(ev['bytes'] or 0)}"
               + (f"；⚠ {len(ev['truncated'])} 个进程到了行数上限，之后的调用没记时序（计数完整）"
@@ -249,8 +250,12 @@ def cmd_trace(a) -> int:
     elif a.events:
         old = sorted({v["version"] for v in (detail.get("pythons") or {}).values()
                       if v.get("version") and tuple(map(int, v["version"].split(".")[:2])) < (3, 12)})
+        # 时序事件只记调用方是仓库代码（或 case 脚本）的调用，递归调自己的不记：函数跑到了却没有事件（或者事件里
+        # 一次调用都没有），就是这两种
         print(f"  （被录的 Python 是 {'、'.join(old)}，没有时序事件：要 3.12+。请求路径、时间顺序看不了，计数照常）" if old else
-              "  ⚠ 没有录到时序事件：命令没起来，或者这次根本没有跨文件的调用")
+              "  ⚠ 没有录到时序事件：跑到的仓库函数都是仓库外的代码（比如 python -c 的那一行、import）直接调的，"
+              "或者是递归调自己——时序事件只记仓库代码发起的调用，递归调自己的不记" if sm["n_funcs"] else
+              "  ⚠ 没有录到时序事件：命令没起来，或者没跑到仓库里的代码")
     g = run.get("gpu")
     if g and g["n_kernels"]:
         print(f"  GPU kernel {g['n_kernels']} 次（{g['n_names']} 种，GPU 上共 {g['gpu_us'] / 1000:.1f} ms）"
@@ -282,8 +287,9 @@ def cmd_trace(a) -> int:
         print(f"    {v:8d}  {k}")
     # 分了阶段、有 serving 的，默认建议只看 serving（启动时的初始化会淹没请求本身）
     serving = any(p["name"] == "serving" for p in run["phases"])
-    print(f"  叠到图上：codestrata serve {a.repo} --hot {run['id']}" + ("@serving" if serving else ""))
-    if ev and not ev.get("error"):
+    if run["status"] != "failed":                 # 一个函数都没录到的，叠上去也是空的
+        print(f"  叠到图上：codestrata serve {a.repo} --hot {run['id']}" + ("@serving" if serving else ""))
+    if ev and not ev.get("error") and ev.get("n_calls"):
         print(f"  请求路径：codestrata path {a.repo} {run['id']}" + ("@serving" if serving else ""))
     return 0 if run["status"] != "failed" else 1
 
@@ -555,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
                                                        # trace 的位置参数也叫 cmd，会互相覆盖
 
     def common(p, roots_help="要扫描的目录，相对仓库根（给了就照单全收；不给就自动探测，跳过 tests/examples 这类）"):
-        p.add_argument("repo", nargs="?", default=".")
+        p.add_argument("repo", nargs="?", default=".", help="仓库目录；省掉就是当前目录")
         p.add_argument("--roots", nargs="*", default=None, help=roots_help)
 
     s = sub.add_parser("scan", help="静态扫描")
@@ -597,7 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     t.set_defaults(fn=cmd_trace)
 
     r = sub.add_parser("runs", help="管理录下的 run（ls / show / tag / untag / note / rm / merge）")
-    r.add_argument("repo")
+    r.add_argument("repo", metavar="[repo]", help="仓库目录；省掉就是当前目录（codestrata runs ls）")
     rv = r.add_subparsers(dest="verb", required=True)
     x = rv.add_parser("ls", help="列出所有 run，按 case 分组，新的在前")
     x.add_argument("--case", default=None)
@@ -622,20 +628,21 @@ def main(argv: list[str] | None = None) -> int:
 
     v = sub.add_parser("serve", help="本地服务：图 + 源码 + 跳编辑器")
     common(v, "serve 用不到（读的是 scan 时的索引，换目录要重新 scan）；收下它只是为了和别的命令写法一样")
-    v.add_argument("--port", type=int, default=8900)
-    v.add_argument("--hot", default=None, metavar="RUN")
+    v.add_argument("--port", type=int, default=8900, help="端口（默认 %(default)s）")
+    v.add_argument("--hot", default=None, metavar="RUN",
+                   help="页面打开时先叠哪个 run：完整的 run id 或 case 名（取它最新一次录完的），可加 @阶段；页面上随时能换")
     v.add_argument("--home", default=None, help=argparse.SUPPRESS)   # 主菜单（codestrata app）起的：回主菜单的链接
     v.set_defaults(fn=cmd_serve)
 
     pa = sub.add_parser("path", help="请求路径：一个 run（阶段）里每个进程、每个线程按第一次调用排的函数级调用树")
-    pa.add_argument("repo", nargs="?", default=".")
+    pa.add_argument("repo", nargs="?", default=".", help="仓库目录；省掉就是当前目录")
     pa.add_argument("run", metavar="RUN", help="run id 或 case 名，可加 @阶段 / @t=起-止（要录了 --events 的 run）")
     pa.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
     pa.add_argument("--json", action="store_true", help="打印 JSON（和 /api/path 一样）")
     pa.set_defaults(fn=cmd_path)
 
     m = sub.add_parser("app", help="主菜单：选文件夹、点按钮扫描 / 录制运行 / 打开图（浏览器里）")
-    m.add_argument("--port", type=int, default=8930)
+    m.add_argument("--port", type=int, default=8930, help="端口（默认 %(default)s）")
     m.add_argument("--no-browser", action="store_true", help="不自动打开浏览器，只打印地址")
     m.add_argument("--proxy", action="store_true",
                    help="图也经这个端口转发（远程用：ssh -L 只转这一个端口）。图页面和主菜单会同源，"
@@ -656,6 +663,18 @@ def main(argv: list[str] | None = None) -> int:
     if "--" in raw:
         i = raw.index("--")
         raw, tail = raw[:i], raw[i + 1:]
+    # runs 也能省掉仓库（同别的子命令，默认当前目录）。argparse 认不出子命令前面那个可省的位置参数
+    # （runs show RUN 会把 show 当成仓库），这里补上仓库「.」：
+    # - runs 后面第一个词是动作——除非这个词也是个目录、后面又紧跟着一个动作（runs show ls：仓库 show、动作 ls）；
+    # - 第一个词不是目录、后面也没跟着动作：多半是敲错的动作（runs list），补上之后报「invalid choice: 'list'」，
+    #   而不是把它当仓库、报缺动作；后面跟着动作的（runs 不存在的目录 ls）照旧当仓库，报没有这个仓库；
+    # - 只敲 runs、或者后面直接是选项（-h 除外）：报缺动作
+    if raw[:1] == ["runs"]:
+        w, nxt = (raw[1:2] or [None])[0], (raw[2:3] or [None])[0]
+        if w is None or (w.startswith("-") and w not in ("-h", "--help")) or not w.startswith("-") and (
+                w in rv.choices and not (os.path.isdir(w) and nxt in rv.choices)
+                or not os.path.isdir(w) and nxt not in rv.choices):
+            raw.insert(1, ".")
     a = ap.parse_args(raw)
     if getattr(a, "roots", None):
         a.roots = _scan.clean_roots(a.roots)

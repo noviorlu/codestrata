@@ -169,7 +169,7 @@ scan 记的是最细的粒度：每个 `.py` 文件一个模块，依赖、符�
 
 ### 点节点、点边
 
-- **详情栏第一次是收着的**：点了节点或边之后，再点页面底部的「详情」栏（或它左边的 ▴）展开，之后记住开合状态。
+- **详情栏第一次是收着的**：模块图上点了节点或边之后，再点页面底部的「详情」栏（或它左边的 ▴）展开，之后记住开合状态。分列里点节点、框、列里的边、列之间的连线都会自动打开它（各讲什么见上面「按进程 · 线程分列」一节）。
 - **点节点**：下面的详情抽屉里是它调用谁、被谁调用、文件树、类和函数、源码片段（带真实行号）。选中的节点用蓝色光晕标出，不改边本身的颜色——选中一个节点时，最想看的恰恰是它的边里哪些是真调用。再点一次、点空白处或按 Esc 取消选中。
 - **点边**：这条边上哪个函数调了哪个、各几次，调用写在调用方的哪一行（录制时记下的），被调函数的定义。代码里看不出的标出来，说明 scan 在那一行看到了什么；被调的类在仓库里被按名字登记过的（注册表、插件表，比如 `registry.py:3` 的 `"toy.plugins.double:Double"`），一并列出那几行。折叠栏「代码里写了，这次没录到」（构造一个 trace 看不到的类，比如 dataclass，单独说明）。每种最多列 60 对，多的写明还有几对。规则见[边的种类](#边的种类)。
 
@@ -244,7 +244,7 @@ codestrata trace <repo> --case qwen-chat --env MODEL_NAME=Qwen2.5-Omni-7B --tag 
 - **挂到谁身上**：一个 kernel 的调用方是发起它那一刻、那个线程真实的调用栈上最里层的、被录到的函数（比如 `Lib.launch` 启动了 `decode_kernel`）——整理时重放时序事件，在启动调用的那一刻看栈，挂起着的生成器 / 协程不算。被录到的是仓库目录下的代码，放在仓库里的 `.venv` 也在内，所以调用方可能是三方库的函数（比如 triton 的）。不经 C++ 的静态调用链去补中间几跳，也不知道是这个函数里的哪一行。这种边是只有 trace 的（橙色虚线），边详情里标「GPU kernel」。
 - **仓库里的 kernel 和仓库外的**：名字（去掉返回类型、模板参数、参数表）对得上扫描到的 `__global__` 的，落在定义它的文件上，和别的函数一样；对不上的（PyTorch、cuBLAS、Triton 生成的……）都落到一个虚拟节点「GPU · 仓库外」上，它只在叠着的 run 跑到了才画，放在图最下面一层。
 - **在图上看**：分列里 kernel 按 GPU 设备 · 流各一列，节点上写跑了几次、GPU 上一共跑了多久（「17 次 · 318 ms」——次数多的不一定耗时多），从发起它的那一列连过来的线上也写次数和 GPU 时间；点 GPU 列里的节点，kernel 表按 GPU 时间列出每种 kernel，下面是谁发起的、各几次、各多久。
-- **按阶段看时次数和 GPU 时间是全的**：直接从 GPU 日志算，时序事件到了行数上限、整理失败都不影响。找不到发起它的调用的（启动它的线程上当时没有被录到的函数在跑、在时序事件截断之后发起的）照样算次数和 GPU 时间，只是没有调用边；`trace` 结束时和 `runs show` 会说有几次。**拖出来的时间段**和分列里的数（节点、连线、kernel 表）从时序事件算，只有挂上了发起它的调用的 kernel。GPU 时间都是按纳秒加起来最后换成 µs；2026-10-08 之前整理的 run 是一个个先取整再加的，1 µs 上下的小 kernel 加起来会差出三成，`codestrata runs <repo> merge <run>` 重新整理就按纳秒算。
+- **按阶段看时次数和 GPU 时间是全的**：直接从 GPU 日志算，时序事件到了行数上限、整理失败都不影响。找不到发起它的调用的（启动它的线程上当时没有被录到的函数在跑、在时序事件截断之后发起的）照样算次数和 GPU 时间，只是没有调用边；`trace` 结束时和 `runs show` 会说有几次。**拖出来的时间段**和分列里的数（节点、连线、kernel 表）从时序事件算，只有挂上了发起它的调用的 kernel。GPU 时间都是按纳秒加起来最后换成 µs；2026-10-08 之前整理的 run 是一个个先取整再加的，1 µs 上下的小 kernel 加起来会差出三成，`codestrata runs [repo] merge <run>` 重新整理就按纳秒算。
 - **不录的**：fork 出来的子进程里的 kernel；kernel 内部（一个 kernel 里跑了哪些 device 函数）。
 
 ### 录真实部署：服务、多进程、安装包
@@ -284,7 +284,7 @@ codestrata trace <repo> --case offline \
 # 服务：case 脚本里（服务就绪后）写 PHASE
 [[ -n "${CODESTRATA_OUT:-}" ]] && { echo serving > "$CODESTRATA_OUT/PHASE"; sleep 2; }
 codestrata trace <repo> --case demo -- bash case.sh
-codestrata serve <repo> --hot demo@serving       # 再勾「只看跑到的」，得到单独排版的运行时图
+codestrata serve <repo> --hot demo@serving       # 只叠 serving 这一段（录了时序事件的按进程 · 线程分列）
 ```
 
 页面上「时间」一行列出各阶段的按钮；图上用绿色 ▶ 和红色 ■ 标出阶段的起点和终点（`--phase` 的触发函数所在的节点）。
@@ -315,13 +315,13 @@ codestrata serve <repo> --hot demo@serving       # 再勾「只看跑到的」�
 ### runs 命令
 
 ```bash
-codestrata runs <repo> ls [--case C]          # 按 case 分组：状态、时长、进程数、git、录制后改过几个文件、大小、有没有时序、标签、备注
-codestrata runs <repo> show RUN               # 详情：阶段、进程、Python 和包的版本、GPU、存下的文件、文件相对当前代码的状态、复刻命令、继承的环境变量
-codestrata runs <repo> tag RUN T…             # 加标签；untag 去标签
-codestrata runs <repo> note RUN TEXT          # 写备注（覆盖原来的）
-codestrata runs <repo> rm RUN_ID… [--yes]     # 删 run：只认完整的 run id；还在录的删不了；不在终端里运行时必须加 --yes
-codestrata runs <repo> rm RUN_ID --events-only  # 只删时序事件
-codestrata runs <repo> merge RUN              # 从原始数据重算计数和时序；录制中断时用它把散着的分片合起来
+codestrata runs [repo] ls [--case C]          # 按 case 分组：状态、时长、进程数、git、录制后改过几个文件、大小、有没有时序、标签、备注
+codestrata runs [repo] show RUN               # 详情：阶段、进程、Python 和包的版本、GPU、存下的文件、文件相对当前代码的状态、复刻命令、继承的环境变量
+codestrata runs [repo] tag RUN T…             # 加标签；untag 去标签
+codestrata runs [repo] note RUN TEXT          # 写备注（覆盖原来的）
+codestrata runs [repo] rm RUN_ID… [--yes]     # 删 run：只认完整的 run id；还在录的删不了；不在终端里运行时必须加 --yes
+codestrata runs [repo] rm RUN_ID --events-only  # 只删时序事件
+codestrata runs [repo] merge RUN              # 从原始数据重算计数和时序；录制中断时用它把散着的分片合起来
 ```
 
 ### 存储
@@ -344,7 +344,7 @@ codestrata runs <repo> merge RUN              # 从原始数据重算计数和�
 
 ## 时间轴和时间顺序
 
-这两样都要 run 录了时序事件：`trace` 默认录（`--no-events` 不录），被录的 Python 要 3.12+。事件记每一次调用（2026-10-01 之前只记**跨文件**的）：每次调用的起止时刻、调用它的是哪一次调用，返回 / 挂起 / 恢复按帧配对，同一线程里交错的 asyncio 协程也配得对。原始日志永久留在 `events/raw.tar.gz`，整理好的在 `events/spans/`（`runs merge` 可重建）；不要了用 `runs <repo> rm <id> --events-only`。
+这两样都要 run 录了时序事件：`trace` 默认录（`--no-events` 不录），被录的 Python 要 3.12+。事件记每一次调用（2026-10-01 之前只记**跨文件**的）：每次调用的起止时刻、调用它的是哪一次调用，返回 / 挂起 / 恢复按帧配对，同一线程里交错的 asyncio 协程也配得对。原始日志永久留在 `events/raw.tar.gz`，整理好的在 `events/spans/`（`runs merge` 可重建）；不要了用 `runs [repo] rm <id> --events-only`。
 
 CLI 的 `trace` 和主菜单的录制表单都默认录事件（2026-10-01 起；之前 CLI 默认不录）。
 
@@ -449,12 +449,12 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 | `app` | 浏览器主菜单 | `--port`（默认 8930）<br>`--no-browser`<br>`--proxy` |
 | `serve [repo]` | 本地网页 | `--port`（默认 8900）<br>`--hot RUN` 页面打开时先叠哪个 run<br>`--roots`（收但不起作用）<br>隐藏参数 `--home` 给主菜单用 |
 | `trace [repo] --case NAME [...] -- CMD` | 跑一次命令、录下真实调用（子进程一起录），存成新的 run | `--case`（必填）<br>`--cwd DIR`<br>`--timeout S`<br>`--stop-grace S`（默认 90）<br>`--tag T`、`--note TEXT`<br>`--env K=V`（可重复）<br>`--attach FILE`<br>`--no-events`<br>`--gpu` 同时录 GPU kernel（见 [GPU kernel](#gpu-kernel--gpu)）<br>`--phase NAME=FUNC`（可重复）<br>`--roots` |
-| `runs <repo> ls [--case C]` | 按 case 分组列出 run | |
-| `runs <repo> show RUN` | 一个 run 的详情和复刻命令 | |
-| `runs <repo> tag\|untag RUN T…` | 加 / 去标签 | |
-| `runs <repo> note RUN TEXT` | 写备注（覆盖） | |
-| `runs <repo> rm RUN_ID…` | 删 run（只认完整 id） | `--yes`、`--events-only` |
-| `runs <repo> merge RUN` | 从原始数据重算计数和时序 | |
+| `runs [repo] ls [--case C]` | 按 case 分组列出 run | |
+| `runs [repo] show RUN` | 一个 run 的详情和复刻命令 | |
+| `runs [repo] tag\|untag RUN T…` | 加 / 去标签 | |
+| `runs [repo] note RUN TEXT` | 写备注（覆盖） | |
+| `runs [repo] rm RUN_ID…` | 删 run（只认完整 id） | `--yes`、`--events-only` |
+| `runs [repo] merge RUN` | 从原始数据重算计数和时序 | |
 | `path [repo] RUN[@阶段]` | 打出请求路径：每个进程、每个线程的函数级调用上下文树（要录了时序事件的 run） | `--depth N` 只打前几层<br>`--json` |
 
 RUN 的写法见[管理 run](#管理-run)。

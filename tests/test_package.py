@@ -171,6 +171,17 @@ def test_web_scripts_all_loaded():
     assert sorted(f.name for f in web.glob("*.js")) == sorted(used), (sorted(f.name for f in web.glob("*.js")), sorted(used))
 
 
+def test_repeat_rule_text():
+    """「反复调用」（↻）的判法 seq.is_repeat 写在时间顺序的图例和文档里（「至少 N 次」）：改 REPEAT_MIN 时这几处一起改"""
+    sys.path.insert(0, str(HERE.parent))
+    from codestrata import seq
+    want = f"至少 {seq.REPEAT_MIN} 次"
+    for p in (ROOT / "codestrata" / "web" / "app.js", ROOT / "docs" / "usage.md", ROOT / "docs" / "design" / "decisions.md",
+              ROOT / "docs" / "design" / "run-format.md"):
+        if p.is_file():                           # 从 sdist 跑时没有 docs/
+            assert want in p.read_text(encoding="utf-8"), (p, want)
+
+
 def test_trace_layering():
     """录制的三块：driver 用 hook 和 analysis；hook、analysis 不 import driver（analysis 在任何系统上都要能用，
     hook 里注入被测进程的那段源码不能 import codestrata 自己——被测程序的 Python 里没有它）"""

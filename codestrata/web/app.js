@@ -665,7 +665,9 @@ window.CS = window.CS || {};
         return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="'
           + (tm ? !!s.timeOrder : s[x[0]] !== false) + '"' + (x[0] === 'dyn' && s.hot === false ? ' disabled' : '') + ' title="'
           + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true">'
-          + (tm ? '<defs><linearGradient id="tmchip"><stop offset="0" style="stop-color:var(--tm0)"/>'
+          // 渐变按用户坐标铺：默认的 objectBoundingBox 在水平线上（包围盒高 0）不画，线就没了
+          + (tm ? '<defs><linearGradient id="tmchip" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="22" y2="4">'
+                  + '<stop offset="0" style="stop-color:var(--tm0)"/>'
                   + '<stop offset=".5" style="stop-color:var(--tm1)"/><stop offset="1" style="stop-color:var(--tm2)"/></linearGradient></defs>'
                   + '<line x1="0" y1="4" x2="22" y2="4" stroke="url(#tmchip)" style="stroke-width:2.4"/>'
                 : '<line x1="0" y1="4" x2="22" y2="4" class="' + x[1] + '" style="stroke-width:1.8"/>')
@@ -673,7 +675,7 @@ window.CS = window.CS || {};
       }).join('')
         + (s.timeOrder && CS.graph.times ? '<span class="tmleg" title="颜色按第一次被调用的先后排名：最早的在左边那头，最晚的在右边那头">'
            + '早<i class="tmbar"></i>晚　<b class="tp" style="background:var(--tm0)">3</b> 第几个开始的　'
-           + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 同一个进程里一直在反复调用'
+           + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
@@ -981,6 +983,8 @@ window.CS = window.CS || {};
         pb.hidden = !CS.graph.hot;
         pb.onclick = function () { CS.path.show(); };
       }
+      // 「视图」下面的两个按钮（只看跑到的、请求路径）都只在叠着 run 时有：没叠时标签也藏，不留一个空标签
+      document.getElementById('viewlbl').style.display = CS.graph.hot ? '' : 'none';
       document.getElementById('reset').onclick = function () {
         if (CS.search) CS.search.clear();
         CS.graph.highlight(null); CS.graph.clear();

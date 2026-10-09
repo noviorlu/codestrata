@@ -52,7 +52,7 @@ for n in ('a','b','c'): print(c.get('/hi/'+n).json)
 codestrata serve --hot hello      # 浏览器打开 http://127.0.0.1:8900/
 ```
 
-被录的 Python 是 3.12+ 时（时序事件默认录），图按线程分列：这个例子只有一条主线程，就是一列，列里是这次调到的 flask 模块，边上是次数；点一条橙色的边，再点页面底部的「详情」栏，能看到这条边上调了对方哪些函数、各几次。没录时序事件的 run（3.10 / 3.11，或加了 `--no-events`）是一张按依赖分层的模块图（flask 是 22 个节点）。
+被录的 Python 是 3.12+ 时（时序事件默认录），图按线程分列：这个例子只有一条主线程，就是一列，列里是这次调到的 flask 模块，边上是次数；点一条橙色的边，页面底部的「详情」栏自动打开，列出这条边上调了对方哪些函数、各几次（分列里的详情只算这一列）。没录时序事件的 run（3.10 / 3.11，或加了 `--no-events`）是一张按依赖分层的模块图（默认只画这次跑到的模块；flask 整个仓库的默认切面是 22 个节点），点了边之后详情栏不会自己打开，收着时再点一下页面底部的「详情」栏。
 serve 开着时再录的 run，页面上方「运行」菜单里直接能选。不想敲命令，可以用 `codestrata app` 在浏览器里点按钮完成扫描、录制和打开图。
 scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 `.gitignore`）。
 
@@ -69,9 +69,9 @@ scan 和 trace 的产物都写在被分析仓库的 `.codestrata/` 里（自带 
 
 ### 一张图，两层数据
 
-![vllm-omni 的模块图，叠上一次请求的调用](docs/images/graph.png)
+![vllm-omni 的模块图，叠上一次 MiniCPM 请求的 serving 阶段](docs/images/graph.png)
 
-<sub>没按线程分的模块图（没叠 run，或叠的 run 没录时序事件）：调用方在上、被调用的在下；灰线是代码里写的调用，橙线是这次跑到的、边上是次数，橙虚线是代码里看不出会调到的。</sub>
+<sub>没按线程分的模块图（叠的 run 没录时序事件，或者没叠 run）：调用方在上、被调用的在下；灰线是代码里写的调用，橙线是这次跑到的、边上是次数，橙虚线是代码里看不出会调到的。叠了 run 默认只画跑到的模块（「只看跑到的」），这张关掉了它，看得到全图。录了时序事件的 run 一律按线程分列（下面几张图用的就是这个 run），所以这张是在一份拷贝上删掉了它的时序事件（`runs rm --events-only`）再叠的。</sub>
 
 **底下一层是代码里写的调用**：每个节点是一个模块或目录，纵向按 import 关系分成一条条横带（**泳道**）。仓库大时图上只画目录树的一个**切面**，默认最多 80 个节点；点节点左上角的 ＋ 就地展开成框，框头的 − 收回去。**上面一层是某次运行**：
 
@@ -99,13 +99,15 @@ vllm-omni 的一次请求读得出 main → orchestrator → 各 stage 的收请
 
 ### 点一条边：这条边上是谁调了谁
 
-![点开 model_executor.models → patch 这条边：TTS 的 forward 在第 1153 行 return self.tts_model(…)，经 torch.compile 调进了 patch.py 里的函数 724 次，代码里看不出](docs/images/edge.png)
+![分列里点开 stage1 主线程那一列的 model_executor.models → patch：TTS 的 sample 在第 1206 行 Sampler()(logits, …)，经仓库外的 vLLM 采样器调进了 patch.py 换上去的 random_sample 249 次，代码里看不出](docs/images/edge.png)
 
-底部的详情栏按「哪个函数调了哪个」列出这条边上的调用：各几次，调用写在调用方的哪一行（录制时记下的），被调函数的定义。代码里看不出的标出来，并说明 scan 在那一行看到了什么——只知道写的名字、写的是基类的方法、这一行调的是别的函数（经它转了一道）、还是什么调用都没看到。上图里 MiniCPM 的 TTS `forward` 在第 1153 行 `return self.tts_model(…)`，经 torch.compile 调进了 `patch.py` 里打的补丁 724 次；scan 只知道名字 `tts_model`。见[边的种类](docs/usage.md#边的种类)。
+底部的详情栏按「哪个函数调了哪个」列出这条边上的调用：各几次，调用写在调用方的哪一行（录制时记下的），被调函数的定义。代码里看不出的标出来，并说明 scan 在那一行看到了什么——只知道写的名字、写的是基类的方法、这一行调的是别的函数（经它转了一道）、还是什么调用都没看到。上图是分列里 stage1 主线程那一列的这条边（详情只算这一列）：MiniCPM 的 TTS 在 `sample` 里第 1206 行 `output = Sampler()(logits, sampling_metadata)`，经仓库外的 vLLM 采样器调进了 `patch.py` 换上去的 `random_sample`（它替换了 vLLM 的采样函数）249 次；scan 在那一行只看到仓库外的 `Sampler` 和一个定不下的调用。见[边的种类](docs/usage.md#边的种类)。
 
 ### 时间轴：只看某一段时间
 
-![在时间条上拖出一段，图上只剩这段时间里跑到的模块和边，并按先后编号](docs/images/timebar.png)
+![在时间条上拖出 serving 的后半段，打开「时间顺序」：只画这段时间里跑过的线程，列里的边和列之间的交接按第一次发生的先后编号](docs/images/timebar.png)
+
+<sub>拖出 serving 的后半段（79.60 – 81.80 s）：图上只画这段时间里跑过的线程，stage0 这时只剩 save_loop，stage1、stage2 在把输出送回 orchestrator。打开「时间顺序」后，列里的边和列之间的交接按第一次发生的先后编号：11 是 stage1 的 MainThread 经 queue 交给 process_output_sockets（×201），17 是它再经 zmq 发给 orchestrator（×201）；带 ↻ 的是这段时间里一直在反复的，比如 34↻ 是 stage2 经 zmq 发给 orchestrator（×9）。</sub>
 
 - **阶段**：`--phase serving=模块:函数` 表示这个函数第一次被调到时进入 serving 阶段，不用改被录的脚本；页面「时间」一行点一下只看那一段。
 - **时间段**：录了时序事件的 run（3.12+ 默认录），还能在时间条上拖出任意一段。

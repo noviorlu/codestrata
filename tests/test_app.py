@@ -16,7 +16,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from common import FAKE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
+from common import FAKE, HERE, PY, cs, fresh, run_tests, tmpdir  # noqa: E402
 
 from codestrata import app as app_mod  # noqa: E402
 from codestrata import native_scan, projects, runs, serve  # noqa: E402
@@ -573,6 +573,54 @@ def test_cli_app():
         out = p.communicate(timeout=60)[0]
     assert p.returncode == 0, out
     assert not _listening(vport), "主菜单退出了，它起的图服务还在"
+
+
+def test_cli_runs_without_repo():
+    """runs 和 scan / serve / trace / path 一样能省掉仓库：runs 后面第一个词是动作（ls、show…），仓库就是当前目录。
+    写仓库的老写法照旧；当前目录下正好有个叫 show 的目录、后面又跟着动作（runs show ls）时，它是仓库"""
+    import os
+    import subprocess
+    top = tmpdir("cs-app-")
+    repo = top / "show"                       # 仓库目录和动作同名：在 top 下写 runs show ls 是「仓库 show、动作 ls」
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "m.py").write_text("def g():\n    return 1\n\n\ndef f():\n    return g()\n")
+    cs("trace", repo, "--case", "here", "--", PY, "-c", "from pkg import m; m.f()")
+    rid = runs.catalog(repo)[0]["id"]
+
+    def at(cwd, *args):                       # 在 cwd 下跑（cs 是在本仓库的根目录跑）
+        return subprocess.run([PY, "-m", "codestrata", *args], cwd=cwd, capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "PYTHONPATH": str(HERE.parent)})
+
+    ls = at(repo, "runs", "ls")
+    assert ls.returncode == 0 and rid in ls.stdout and str(repo.resolve() / ".codestrata" / "runs") in ls.stdout, \
+        ls.stdout + ls.stderr
+    assert rid in at(repo, "runs", "ls", "--case", "here").stdout
+    show = at(repo, "runs", "show", rid)
+    assert show.returncode == 0 and show.stdout.startswith(f"run {rid}"), show.stdout + show.stderr
+    assert at(repo, "runs", "show", "here").stdout.splitlines()[0] == show.stdout.splitlines()[0]   # case 名也认
+    # 老写法：写仓库（在别的目录，或者写 .）
+    assert rid in cs("runs", repo, "ls").stdout
+    assert cs("runs", repo, "show", rid).stdout.splitlines()[0] == show.stdout.splitlines()[0]
+    assert rid in at(repo, "runs", ".", "ls").stdout
+    assert rid in at(top, "runs", "show", "ls").stdout
+    # 仓库里正好有和动作同名的目录：后面没跟着动作，就还是动作
+    (repo / "ls").mkdir()
+    (repo / "show").mkdir()
+    assert rid in at(repo, "runs", "ls").stdout
+    r = at(repo, "runs", "show", rid)
+    assert r.returncode == 0 and r.stdout.startswith(f"run {rid}"), r.stdout + r.stderr
+    # 当前目录不是仓库：说是哪个目录下没有 .codestrata，不是 argparse 的「缺 verb」
+    r = at(top, "runs", "ls")
+    assert r.returncode != 0 and f"{top.resolve()} 下没有 .codestrata" in r.stderr and "verb" not in r.stderr, r.stderr
+    r = at(repo, "runs")                      # 只敲 runs：缺的是动作，不说仓库也是必填的
+    assert r.returncode != 0 and "required: verb" in r.stderr, r.stderr
+    # 敲错的动作报的是这个动作不认识，不是把它当成仓库、再说缺动作；不存在的仓库后面跟着动作的，照旧说没有这个仓库
+    for args, want in ((("runs", "list"), "invalid choice: 'list'"), (("runs", "sho", rid), "invalid choice: 'sho'")):
+        r = at(repo, *args)
+        assert r.returncode != 0 and want in r.stderr, (args, r.stderr)
+    r = at(repo, "runs", "nosuch", "ls")
+    assert r.returncode != 0 and "nosuch" in r.stderr and "invalid choice" not in r.stderr, r.stderr
 
 
 def _get_json(port: int, path: str):

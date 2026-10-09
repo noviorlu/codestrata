@@ -139,6 +139,10 @@ window.CS = window.CS || {};
       }
       function pick(r) { if (r !== ref) select(r); else layout(cur[0], cur[1]); }
       function pxTime() { return (view[1] - view[0]) / Math.max(1, bar.getBoundingClientRect().width); }
+      // 一次拖动、一串键盘挪动，从开始到提交条的宽度都定住：右边的标签随时间段变（小数位多了）会变宽、把条挤窄，
+      // 手下对应的时间就跳，按像素算的吸附门槛也跟着变。提交之后放开（提交了会整个重画，放开的是旧的条也不要紧）
+      function hold() { if (!bar.style.flex) bar.style.flex = '0 0 ' + bar.getBoundingClientRect().width + 'px'; }
+      function release() { bar.style.flex = ''; }
       function commit(a, b) {
         a = Math.max(0, Math.min(a, end)); b = Math.max(0, Math.min(b, end));
         if (b - a < 3 * pxTime()) return layout(cur[0], cur[1]);          // 窄到几个像素：当成没拖
@@ -178,6 +182,7 @@ window.CS = window.CS || {};
         var mode = h ? (h.classList.contains('l') ? 'l' : 'r') : sel && ev.target.closest('.tsel') ? 'move' : 'new';
         cancel();
         bar.setPointerCapture(ev.pointerId);
+        hold();
         bar.onpointermove = function (e) {
           if (!o.canDrag || !moved && Math.abs(e.clientX - x0) < 4) return;
           moved = true;
@@ -190,8 +195,9 @@ window.CS = window.CS || {};
         };
         bar.onpointerup = bar.onpointercancel = function (e) {
           bar.onpointermove = bar.onpointerup = bar.onpointercancel = null;
-          if (e.type === 'pointercancel') return layout(cur[0], cur[1]);
-          if (moved) return commit(a, b);
+          if (e.type === 'pointercancel') { release(); return layout(cur[0], cur[1]); }
+          if (moved) { commit(a, b); return release(); }    // 吸附按拖的时候的条宽算，算完再放开
+          release();
           var under = segs.filter(function (s) { return s[1] <= t0 && t0 < s[2]; })[0];
           if (under && !h && names.indexOf(under[0]) >= 0) pick(under[0]);   // 点把手、没录到调用的阶段不算
         };
@@ -213,6 +219,7 @@ window.CS = window.CS || {};
           var d = (ev.key === 'ArrowLeft' ? -1 : 1) * w * (ev.shiftKey ? 0.1 : 0.01);
           if (left) kb[0] = Math.max(0, Math.min(kb[1] - w * 0.01, kb[0] + d));
           else kb[1] = Math.min(end, Math.max(kb[0] + w * 0.01, kb[1] + d));
+          hold();
           follow(kb[left ? 0 : 1]);
           layout(kb[0], kb[1]);
           cancel();
@@ -221,6 +228,7 @@ window.CS = window.CS || {};
             refocus = left ? 'l' : 'r';
             var r = self.snap(segs, kb[0], kb[1], end, 0, names);
             if (r !== ref) o.onSelect(r); else { refocus = null; layout(cur[0], cur[1]); }
+            release();
           }, 500);
         };
       });

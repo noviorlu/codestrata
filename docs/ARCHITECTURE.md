@@ -82,7 +82,7 @@ flowchart LR
 |---|---:|---|
 | `__init__.py` | 9 | `self_command`：用当前 Python 跑 codestrata 的命令行前缀 |
 | `compat.py` | 54 | 平台差异：能不能录（只支持 Linux）、跨平台的文件锁 |
-| `__main__.py` | 684 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
+| `__main__.py` | 703 | CLI 分派；`cmd_scan` 串 scan + xref，`cmd_trace` 把 `runs` 和 `trace` 缝起来，`cmd_path` 打请求路径 |
 | `scan.py` | 763 | `ast` 静态扫描：单元、import 边、符号、目录树，写 index.json / symbols.json |
 | `xref.py` | 1703 | 交叉引用（名字 → 定义），写 xref.json，给 Ctrl+点击；同一遍把每个文件里的调用交给 `on_file`，走完把构造时跑到的方法（`ctor_methods`）交给 `on_end` |
 | `native_scan.py` | 250 | C / C++ / CUDA 的扫描端（tree-sitter，可选依赖 `[native]`）：每个原生文件一个单元，函数 / 类 / kernel 成符号，`#include` 当排版权重，调用和 `<<<…>>>` 启动按名字对上（近似：只有一个候选才连），交给 scan 装进同一份索引、经 `index["native_graph"]` 交给 `graph.Builder` |
@@ -116,13 +116,13 @@ flowchart LR
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 37 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 66 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 1014 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/app.js` | 1018 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 568 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 721 | 详情面板：节点的事实和源码（GPU kernel 的次数和 GPU 时间），边上实际调了哪些函数（可按先后排）；分列里选中的是一列里的一份时，次数、文件树、kernel 表换成只算这一列的（`asCopy`，`/api/lanehot`），列里的边的详情也只算这一列（`/api/edge?lane=`）；GPU 列的一份的 kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久 |
 | `web/viewer.js` | 455 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 345 | 搜索栏：模块、文件、类 / 函数 |
-| `web/timebar.js` | 229 | 时间轴：阶段按钮 + 可拖的时间段 |
+| `web/timebar.js` | 237 | 时间轴：阶段按钮 + 可拖的时间段 |
 | `web/lanes.js` | 919 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
 | `web/lanepack.js` | 167 | 分列的摆放（纯函数）：每个节点在第几行只看它自己（公共切面上的高度、在哪个节点里面的子行），一列换了切面不动别的列；一列里横着怎么排——展开的目录画成框，照模块图的轨道排法（框在左、散节点在右居中） |
 | `web/lanecut.js` | 125 | 分列里每列各自的切面（`CS.laneCut`）：共用的切面 + 各列单独的，改一列只重取分列；画好后只在改过的那一列里闪新节点、接着选原来选着的 |
@@ -207,8 +207,8 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 - `test_native_scan.py`：C / C++ / CUDA 的扫描端（命名空间、类、重载、kernel、按名字对上 / 不连、启动、include、`__align__` 和 `#pragma`）和它装进 scan 的样子；没装 tree-sitter 时原生文件照旧挂成 aux。
 - `test_gpu.py`：GPU 录制（找工具链、hook 的系统线程号）、导入端（手写的日志：kernel 挂到哪个 span——按重放出来的真实的栈，折叠的连续调用、挂起的生成器、截断之后都测了；次数不靠时序事件；仓库里 / 外的键、虚拟节点的叠加和边的说明）；给了 `CODESTRATA_TEST_CUDA_PY`（装了 CUDA 版 torch 的 Python）时真录一个小程序，核对 kernel 和启动调用的关联号、线程号；分列里 GPU 的列和连线的 GPU 时间、一列的叠加里 kernel 是谁发起的（`test_gpu_time_in_lanes`，手写的 GPU 日志）；录制端对着本机工具链和 `CODESTRATA_TEST_CUPTI_INCLUDE` 给的几个 CUPTI 头都编得过（CUDA 12 / 13）。
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
-- `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，以及 scan 的 roots 选择。
-- `test_package.py`：wheel 里带着 web/ 每个文件；拿整个工作区（连 .gitignore 挡着的）打的 sdist / wheel 里只有包、README、LICENSE、pyproject 和完整的测试，没有 .gitignore 挡着的文件、`.codestrata/`、构建残留；wheel 装进一个干净的 venv 能跑 scan、trace、serve；公开文档里没有内部内容；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
+- `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，scan 的 roots 选择，以及命令行省掉仓库的写法（`runs ls`）。
+- `test_package.py`：wheel 里带着 web/ 每个文件；拿整个工作区（连 .gitignore 挡着的）打的 sdist / wheel 里只有包、README、LICENSE、pyproject 和完整的测试，没有 .gitignore 挡着的文件、`.codestrata/`、构建残留；wheel 装进一个干净的 venv 能跑 scan、trace、serve；公开文档里没有内部内容；↻ 的判法写在图例和文档里的「至少 N 次」和 `seq.REPEAT_MIN` 一致；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签、分列的排线 `test_lane_route`、分列的摆放 `test_lane_pack`：框装得下、不越界、不压别的框，改一列不动别的列）。
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
 - `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
@@ -245,5 +245,6 @@ driver 用 `/proc/<pid>/stat|status|environ|cmdline` 认进程、找残留（`pr
   cd /tmp/codestrata-release && uv build --out-dir dist    # dist/ 里是 sdist 和 wheel
   ```
 
-- PyPI 上 `codestrata` 这个名字是别的项目的：现在只发 GitHub——tag 推上去，GitHub Release 上挂 dist/ 里的两个文件；
-  安装写 `pip install 'git+https://github.com/noviorlu/codestrata@vX.Y.Z'`（README 的快速上手、usage 的安装照这个写）。
+- PyPI 上 `codestrata` 这个名字是别的项目的：现在只发 GitHub——tag 推上去，GitHub Release 上挂 dist/ 里的两个文件。
+  还没打过 tag，README 的快速上手、usage 的安装装的是 master；打 tag 的那个提交里把这两处改成钉这个 tag
+  （`pip install 'git+https://github.com/noviorlu/codestrata@vX.Y.Z'`）。
