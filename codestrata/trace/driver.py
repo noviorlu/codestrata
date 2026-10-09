@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -22,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from .analysis import PHASE_NAME_RE, fired_phases, merge, merge_phase_log
+from .analysis import PHASE_NAME_RE, clean_phase, fired_phases, merge, merge_phase_log
 from .hook import ENV_CASE_DIRS, ENV_OUT, ENV_PKGS, ENV_ROOT, make_bootstrap
 
 # ---------------------------------------------------------------- 驱动的一侧
@@ -326,8 +325,8 @@ def run(root: Path, cmd: list[str], parts: Path, *, mono0_ns: int,
             lines = phase_file.read_text().splitlines()
         except OSError:
             return
-        # 阶段名会出现在 REF 和地址栏里：case 脚本写来的名字里 [A-Za-z0-9._-] 以外的字符换成 _
-        ph = re.sub(r"[^A-Za-z0-9._-]", "_", lines[0].strip()) if lines and lines[0].strip() else "start"
+        # 阶段名会出现在 REF 和地址栏里：case 脚本写来的名字里 [A-Za-z0-9._-] 以外的字符换成 _（hook 记计数时同样换）
+        ph = clean_phase(lines[0].strip()) if lines and lines[0].strip() else "start"
         if ph != phase_times[-1][0]:
             src = "hook" if len(lines) > 1 else "sh"
             phase_times.append((ph, us(), src))

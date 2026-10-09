@@ -13,18 +13,18 @@ from . import common, out
 
 NAME = "path"
 EFFECT = "read"
-DOES = "函数级的请求路径：每个进程、每条线程的调用上下文树（默认整棵树，很长；给了列 / --limit / --json 时截到 200 行）"
+DOES = "函数级的请求路径：每个进程、每条线程的调用上下文树（默认整棵树，很长；给了列 / --limit / --json 时每列截到 60 行）"
 USAGE = "codestrata path REF [--depth N] [--limit N] [--json]"
-EXAMPLE = "codestrata path 20261001-170349-run_single_prompt@serving/stage1/MainThread --limit 60"
+EXAMPLE = "codestrata path 20261001-170349-run_single_prompt@serving/stage1/MainThread --limit 30"
 
-LIMIT = 200
+LIMIT = 60          # 每列最多几行（给了列 / --json 时的默认）
 
 
 def add_args(p) -> None:
     p.add_argument("ref", nargs="+", metavar="REF",
                    help="RUN[@范围][/列,…] 或页面地址；老写法 path <repo> RUN 也认（第一个是仓库）")
     p.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
-    p.add_argument("--limit", type=int, default=None, help=f"最多几行（给了列或 --json 时默认 {LIMIT}）")
+    p.add_argument("--limit", type=int, default=None, help=f"每列最多几行（给了列或 --json 时默认 {LIMIT}；不算 --depth 藏掉的）")
 
 
 def run(a) -> out.Result:
@@ -41,10 +41,7 @@ def run(a) -> out.Result:
     idx = common.index(c)
     r = c.res
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
-    procs = _laneid.proc_aliases(_lanes.proc_names(r.rd))
-
-    def lane_id(pid: int, tname: str) -> str:
-        return f"{pid}:{_lanes.thread_group(tname)}"
+    lane_id = _lanes.lane_id
 
     try:
         p = _path.request_path(idx, r.rd, r.run, r.phase, hot, max_rows=None)
@@ -52,36 +49,32 @@ def run(a) -> out.Result:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    aliases = _aliases(p, procs, lane_id)           # 对着这一段里全部的节算（截之前）
+    aliases = _lanes.run_aliases(r.rd)
     keep = None
     if r.lanes:
         want = set(_laneid.select(r.lanes, aliases))
         keep = lambda pid, tname: lane_id(pid, tname) in want    # noqa: E731
-    _path.trim(p, a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None), keep)
+    cap = a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None)
+    total_rows = {id(th): len([x for x in th["rows"] if a.depth is None or x["d"] <= a.depth])
+                  for pr in p["procs"] for th in pr["threads"]}
+    _path.trim(p, None, keep, max_depth=a.depth, per_thread=cap)
     lane_of = lambda pid, tname: aliases.get(lane_id(pid, tname), f"{pid}/{tname}")   # noqa: E731
     for pr in p["procs"]:
         for th in pr["threads"]:
             th["lane"] = lane_of(pr["pid"], th["name"])
-    shown = sum(len(th["rows"]) for pr in p["procs"] for th in pr["threads"])
+    ths = [th for pr in p["procs"] for th in pr["threads"]]
+    shown = sum(len(th["rows"]) for th in ths)
     more = None
     if p["rows_cut"]:
+        widest = max(total_rows[id(th)] for th in ths)
         more = {"shown": shown, "total": shown + p["rows_cut"],
-                "how": out.command("path", r.full, "--limit", str(shown + p["rows_cut"]), repo=c.flag)}
+                "how": out.command("path", r.full, *(["--depth", str(a.depth)] if a.depth is not None else []),
+                                   "--limit", str(widest), repo=c.flag)}
+        for th in ths:                               # 每节末尾写截了几行（format_text 打）
+            th["cut"] = total_rows[id(th)] - len(th["rows"])
     text = _path.format_text(p, a.depth, lane_of=lane_of).split("\n")
-    if p["rows_cut"]:
-        text = [x for x in text if not x.startswith("（还有 ")]
     nxt = []
     if not r.lanes and len(p["procs"]) > 1:
         first = p["procs"][0]["threads"][0]
         nxt.append(c.cmd("read", "path", f"{r.text}/{first['lane']}", why="只看一列"))
     return out.Result(data=p, text=text, repo=c.repo, ref=c.ref_json(), next=nxt, more=more, warnings=c.warnings)
-
-
-def _aliases(p: dict, procs: dict[int, str], lane_id) -> dict[str, str]:
-    """请求路径的各节 → {列 id: 列别名}（和 lanes 同一套写法）"""
-    seen: dict[str, dict] = {}
-    for pr in p["procs"]:
-        for th in pr["threads"]:
-            lid = lane_id(pr["pid"], th["name"])
-            seen.setdefault(lid, {"id": lid, "pid": pr["pid"], "thread": _lanes.thread_group(th["name"])})
-    return _laneid.lane_aliases(list(seen.values()), procs)

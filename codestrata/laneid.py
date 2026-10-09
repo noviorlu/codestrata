@@ -130,3 +130,17 @@ def _near(sel: str, aliases: dict[str, str]) -> list[str]:
 def parse_list(text: str | None) -> list[str]:
     """逗号隔开的选择器"""
     return [x.strip() for x in (text or "").split(",") if x.strip()]
+
+
+def canonical(selectors: list[str], aliases: dict[str, str]) -> list[str]:
+    """选择器规整：和某个列别名、进程别名整个对上的（不分大小写）换成它的标准写法；带 * 的、pid:线程 原样；去重。
+    哪个选择器一列都对不上就报 lane_not_found"""
+    by = {a.lower(): a for a in aliases.values()}
+    procs = {a.partition("/")[0].lower(): a.partition("/")[0] for a in aliases.values()}
+    out: list[str] = []
+    for sel in selectors:
+        select([sel], aliases)
+        s = by.get(sel.lower()) or procs.get(sel.lower()) or sel
+        if s not in out:
+            out.append(s)
+    return out

@@ -38,7 +38,9 @@ from . import align as _align
 from . import compat as _compat
 from . import events as _events
 from . import kernels as _kernels
+from . import ref as _ref
 from . import seq as _seq
+from .errors import CodestrataError
 from .trace import analysis as _tana
 from .trace import driver as _tdrv
 
@@ -668,27 +670,30 @@ def pick(runs: list[dict], name: str) -> dict | None:
 
 
 def resolve(repo: Path, ref: str) -> tuple[dict, Path, str | None]:
-    """REF := <完整 run id> | <case>，后面可以加 @阶段，或者 @t=起-止（微秒，时间轴上拖出来的时间段，
-    要录了时序事件）。只写 case 时取它最新的一次 ok 的；一次 ok 都没有就取最新的 partial（并提示）。"""
-    ref, _, phase = (ref or "").partition("@")
+    """RUN[@范围]（写法见 ref.py，和命令行同一套）→ (run.json, run 目录, 交给老接口的 phase：阶段名、t=起-止 或 None)。
+    只写 case 时取它最新的一次 ok 的；一次 ok 都没有就取最新的 partial（并提示）。页面、serve --hot、老命令走这里，
+    出错是 SystemExit（说明 + 候选）；给 agent 的命令走 locate.resolve（错误码）"""
+    name, at, rest = (ref or "").partition("@")
     runs = catalog(repo)
-    hit = pick(runs, ref)
-    if hit is not None and hit["id"] != ref and hit.get("status") != "ok":
-        print(f"[codestrata] case {ref} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
+    hit = pick(runs, name)
+    if hit is not None and hit["id"] != name and hit.get("status") != "ok":
+        print(f"[codestrata] case {name} 没有完整录完的 run，用的是 {hit['id']}（{hit.get('status')}）",
               file=sys.stderr)
     if hit is None:
         have = ", ".join(sorted({r.get('case') for r in runs})) or "（还没有）"
-        raise SystemExit(f"没有叫 {ref!r} 的 run 或 case；有的 case：{have}\n"
-                         f"  录一个：codestrata trace <repo> --case {ref or 'NAME'} -- <命令>")
+        raise SystemExit(f"没有叫 {name!r} 的 run 或 case；有的 case：{have}"
+                         + (f"\n  录一个：codestrata trace <repo> --case {name} -- <命令>" if CASE_RE.match(name) else ""))
     rd = runs_dir(repo) / hit["id"]
+    if not at:
+        return hit, rd, None
     try:
-        win = _seq.parse_window(phase)
-    except ValueError as e:
-        raise SystemExit(str(e)) from None
-    if phase and not win and phase not in {p["name"] for p in hit.get("phases") or []}:
-        raise SystemExit(f"run {hit['id']} 里没有阶段 {phase!r}；有的是："
-                         + ", ".join(p["name"] for p in hit.get("phases") or []))
-    return hit, rd, phase or None
+        rng, lanes = _ref.split_range(hit, rest)
+        if lanes:
+            raise SystemExit(f"这里不收 /列：{ref}")
+        phase, _ = _ref.parse_range(hit, rng, _seq.run_end(hit, rd), bounds=False)   # 页面收超出终点的时间段
+    except CodestrataError as e:
+        raise SystemExit(e.msg + ("；可以写：" + "、".join(e.candidates[:6]) if e.candidates else "")) from None
+    return hit, rd, phase
 
 
 def stale_counts(repo: Path, idx: dict, rd: Path) -> dict:
@@ -696,6 +701,12 @@ def stale_counts(repo: Path, idx: dict, rd: Path) -> dict:
     fs = file_state(repo, idx, read_json(rd / "detail.json"))
     return {"changed": sum(1 for v in fs.values() if v in ("changed", "gone")),
             "mismatch": sum(1 for v in fs.values() if v == "mismatch")}
+
+
+def state(r: dict) -> str:
+    """run 的状态，给机器读的：ok / partial / failed / recording（还在录）/ interrupted（录制的进程没了，可以 runs merge）"""
+    st = r.get("status") or "?"
+    return "interrupted" if st == "recording" and not _alive(r.get("driver")) else st
 
 
 def brief(r: dict, rd: Path, stale: dict | None) -> dict:
@@ -731,7 +742,8 @@ def load_counts(rd: Path, phase: str | None, with_names: bool = False):
     with_names=True 时返回 (计数, names)：names 是录制时记下的 键 → qualname（remap 用）。"""
     c = read_json(rd / "counts.json.gz", gz=True)
     phases = c["phases"]
-    out = dict(phases[phase]) if phase else _sum(phases)
+    # 阶段日志里有、计数里没有的阶段（这一段一个调用都没录到）：空的
+    out = dict(phases.get(phase) or {"funcs": {}, "func_edges": {}}) if phase else _sum(phases)
     return (out, c.get("names") or {}) if with_names else out
 
 

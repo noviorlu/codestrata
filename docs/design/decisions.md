@@ -108,7 +108,8 @@
 - 决定：请求路径是每个线程的调用上下文树：一行是从线程的根到这里的一条调用链（父亲是调用那一刻真正在跑的那个，span 的 parent），
   同一条链上的多次调用合成一行，同一层按第一次被调用的先后排；这一段之前就在跑的祖先列出来当上下文（「之前」）。
   一个进程、一个线程一节（同名的线程合成一节），进程名取改过的进程标题，没有就取脚本名。页面上放在详情栏里（最多 4000 行），
-  命令行 `codestrata path` 默认打全部；只看几列（`REF/列`）、`--limit`、`--json` 时截到 200 行（给 agent 的输出要有上限，人看的默认照旧）。span 没有父亲的老 run 照老做法：一个函数挂在第一次调用它的那个调用方下面，同一个文件里调过来的
+  命令行 `codestrata path` 默认打全部；只看几列（`REF/列`）、`--limit`、`--json` 时每列截到 60 行（给 agent 的输出要有上限，人看的默认照旧；
+  按列截而不是一共截：一共截时主线程一列就用完了，后面几列像是没干活）。span 没有父亲的老 run 照老做法：一个函数挂在第一次调用它的那个调用方下面，同一个文件里调过来的
   根挂到同文件的调用方下面、标「同文件」。
 - 为什么：「这次请求按什么顺序走过哪些函数」是定位要回答的问题，可时间顺序只给目录之间的边编号，边详情按次数排、轮询压在最上面；
   vllm-omni 的一次请求要在 39 条目录边里一条条点。按线程分开是因为 vLLM 的 stage 在不同进程、后台线程（收发、保存）一直在轮询，
@@ -339,7 +340,7 @@
 - 为什么：id 前缀和日期冲突。重录中途失败时 case 名不会被失败的那次抢走。计数是完整的，要是因为时序缺了一截降成 partial，拿 case 名解析时就会跳到更早的一次
   （`test_events_cap` 用上限 1 录，断言仍是 ok）。页面地址直接能用：用户把页面贴给 agent 时不用转写。
 - 放弃的方案：id 前缀、`case/tag`、`case/latest`。
-- 在哪：`runs.py` 的 `pick`、`resolve`、`derive`、`_build_events`；`ref.py`（命令行的 REF）。
+- 在哪：`runs.py` 的 `pick`、`resolve`（范围走 `ref.py`）、`derive`、`_build_events`；`ref.py`（REF 的语法，页面和命令行共用）、`locate.py`（命令行对上仓库和 run）。
 
 ### 复刻命令存录制时原样的命令，而不是事后拼
 - 决定：`main()` 在解析参数之前把原样 argv（入口脚本取绝对路径）和当前目录记成 run.json 的 `invocation`，`cmd_trace` 另记白名单里的继承环境
@@ -578,7 +579,9 @@
   给全的 REF 和候选让它不用拼、不用猜。`#24` 这种不加引号会被 shell 当注释，所以输出里的命令一律加好引号。
   页面地址当 RUN 时老的 `path` 会建议重录（MiniCPM 录一次 90 s GPU），新命令不再建议 record 类的下一步。
 - 放弃的方案：另起 HTTP / MCP 主入口（命令表留好生成的口子）；run id 前缀。
-- 在哪：`ref.py`、`laneid.py`、`errors.py`、`confdir.py`、`cli/`；`serve.py` 的 `/api/app`；测试 `tests/test_agentcli.py`。
+- 读命令真的只读：不迁移老格式的录制、不建目录（老文件只给警告，`serve` 起来、`trace` 时照旧迁）。REF 的语法只在 `ref.py` 一处（页面经 `runs.resolve` 也走它；越界只有命令行报，页面照旧收超出终点的时间段、把时间条放长），
+  列别名只在 `lanes.run_aliases` 一处按整个 run 算。
+- 在哪：`ref.py`、`locate.py`、`laneid.py`、`errors.py`、`cmdline.py`、`confdir.py`、`cli/`；`lanes.py` 的 `run_aliases`；`serve.py` 的 `/api/app`；测试 `tests/test_agentcli.py`。
 
 ### 读代码的功能冻结，只修 bug
 - 决定：代码窗口、Ctrl+点击跳转和引用列表的界面、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。

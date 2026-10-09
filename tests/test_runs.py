@@ -763,7 +763,9 @@ def test_migrate_legacy():
     idx = ui_load.load_index(repo)
     want = ui_load.load_hot(repo, idx, run["id"])[0]
     runs._MIGRATED.clear()
-    procs = [subprocess.Popen([PY, "-m", "codestrata", "runs", str(repo), "ls"], cwd=HERE.parent,
+    # 几个进程同时读 run 列表（serve、trace 开头都会迁移；runs ls 是只读的，不迁）
+    code = f"import sys; sys.path.insert(0, {str(HERE.parent)!r}); from codestrata import runs; runs.catalog({str(repo)!r})"
+    procs = [subprocess.Popen([PY, "-c", code], cwd=HERE.parent,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
     outs = [p.communicate(timeout=60) for p in procs]
     assert all(p.returncode == 0 for p in procs), outs
@@ -2359,7 +2361,7 @@ def test_trace_only_notes():
     assert old["nt/base.py#Base.run|nt/base.py#Sub.step"]["note"] == {"k": "override", "w": "nt/base.py#Base.step"}
     assert ui_source.runtime_lines(idx, "nt/app.py", {"calls": old}) == {}
     # 时间段（整个 run）：调用行按整个 run 的比例摊，跨文件的调用分类和次数都和按阶段看一样
-    full = f"{runs.resolve(repo, 'nt')[0]['id']}@t=0-{meta['end_us'] + 1}"
+    full = f"{runs.resolve(repo, 'nt')[0]['id']}@t=0-{meta['end_us']}"      # 时间段两头都含：到终点就是整个 run
     wh, _ = ui_load.load_hot(repo, idx, full)
     assert wh["lines_approx"] and not hot["lines_approx"]
     cross = {k: (x["n"], x["only"]) for k, x in C.items() if x["a"] != x["b"]}

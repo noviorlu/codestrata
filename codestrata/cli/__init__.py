@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from . import guide, lanes, out, path, runs, status  # noqa: F401  （runs：__main__.cmd_runs 用）
+from . import guide, lanes, out, path, runs, status, trace  # noqa: F401  （runs、trace：__main__ 用）
 
 COMMANDS = [status, lanes, path, guide]
 

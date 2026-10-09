@@ -41,9 +41,13 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 
 ## 输出
 - 文字给你读：先汇总，末尾「下一步」是能直接粘的命令和它的 effect。默认有上限，超了会写「给了 N / 共 M」和怎么要更多。
-- `--json`：stdout 只有一个 JSON：{{v, ok, cmd, repo, ref, data, more, warnings, next, algo}}；出错时 {{v, ok: false, cmd, error: {{code, msg, candidates}}, next}}。
+- `--json`：stdout 只有一个 JSON：{{v, ok, cmd, repo, ref, data, more, warnings, next}}（按规则推算的命令另有 algo）；出错时 {{v, ok: false, cmd, error: {{code, msg, candidates}}, next}}。
 - JSON 里的时刻一律是从 run 起点算的整数微秒（字段名带 _us）；文字里写 +秒，基准写在第一行。
-- 仓库：-C 目录 > 页面地址对应的仓库 > 按 run id 在已知仓库里找 > 从当前目录往上找。不是从当前目录找到的，下一步里都带 -C。
+- 仓库：-C 目录（往上找最近的 .codestrata/）> 页面地址对应的仓库 > 按完整 run id 在已知仓库里找 > 从当前目录往上找。
+  不在仓库里、又只写 case 名时要给 -C（找不到时，报错的下一步会指到有它的仓库）。不是从当前目录找到的，下一步里都带 -C。
+- 出错时之前的警告也在信封里（比如页面地址问不到）；警告带的下一步照样能粘贴。run 的 status 是 ok / partial / failed / recording / interrupted。
+- path 的记号：+秒是第一次调用的时刻（从这一段开头算）；×N 是这条线程里调了几次；「← 文件:行」是调用写在哪一行（经仓库外的代码调进来的，
+  是最近的仓库内的那一行）；（之前）是这一段之前就在跑的上层；↻ 反复调用；[看不出] 代码里看不出会调到它。--limit 是每列几行。
 
 ## 退出码
 {exits}
@@ -51,9 +55,10 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 
 ## 常见任务
 1. 用户贴来页面地址，问「现在看的是什么」：
-   codestrata status '<地址>'   →   codestrata lanes '<地址>'
-2. 只看一个进程有哪些线程在干活：codestrata lanes 'RUN@阶段/stage1'
-3. 函数级的调用树：codestrata path [仓库] RUN@阶段（输出很长，整棵树）
+   codestrata status '<地址>'  →  codestrata lanes '<地址>'  →  codestrata path '<地址>'（每列 60 行）
+2. 一个进程有哪些线程、各调了多少：codestrata lanes RUN@阶段/stage1（轮询也算调用，要看调用树才知道是不是在干活）
+3. 一列在调什么：codestrata path RUN@阶段/stage1/MainThread --limit 30；某一段时间：RUN@serving+0.6s-3.1s/列
+4. 列出所有 run：codestrata runs ls -C 仓库（--json 带各阶段的微秒窗口）；等还在录的：codestrata runs wait RUN
 
 ## 要知道的坑
 - 别为了看数据去重录（trace 是 record：可能占 GPU、跑几分钟）。数据不够先问用户。
@@ -80,7 +85,7 @@ def text() -> str:
     by: dict[int, list[str]] = {}
     for code, n in EXIT.items():
         by.setdefault(n, []).append(code)
-    what = {1: "意外", 2: "用法错", 3: "名字写错（带候选）", 4: "没数据 / 推断被拒", 5: "页面换不了", 6: "页面还没换（等用户）"}
+    what = {1: "意外", 2: "用法错", 3: "名字写错（带候选）", 4: "没数据（含还在录）/ 推断被拒", 5: "页面换不了", 6: "页面还没换（等用户）"}
     exits = "  0 成功\n" + "\n".join(f"  {n} {what[n]}：{' '.join(v)}" for n, v in sorted(by.items()))
     return _BODY.format(ref=REF_GRAMMAR, cmds=cmds, exits=exits)
 

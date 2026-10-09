@@ -1,39 +1,22 @@
 """给 agent 的命令的输出：同一份结果渲染成文字（给模型读）或 JSON 信封（给命令串），错误兜底，命令行引号。
 
-信封：{v, ok, cmd, repo, ref, data, more, warnings, next, algo}；出错时 {v, ok: false, cmd, error: {code, msg, candidates}, next}。
-stdout 上只有一个 JSON。文字输出的每条下一步都按 shell 规矩加好引号，原样粘贴就能跑。
+信封：{v, ok, cmd, repo, ref, data, more, warnings, next, algo}；出错时 {v, ok: false, cmd, error: {code, msg, candidates},
+warnings, next}。stdout 上只有一个 JSON（意外的错误也是：code=internal，堆栈写到 stderr）。
+文字输出的每条下一步都按 shell 规矩加好引号，原样粘贴就能跑。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..cmdline import command, step  # noqa: F401  （各命令从这里取）
 from ..errors import CodestrataError
 
 V = 1
-_REPO_POSITIONAL = {"scan", "runs", "serve", "trace"}
-
-
-def command(*parts: str, repo: Path | None = None) -> str:
-    """一条能原样粘贴的命令：codestrata 子命令 [-C 仓库] 参数…（每个参数按 shell 规矩加引号）"""
-    head, rest = list(parts[:1]), list(parts[1:])
-    if repo is not None:
-        # 老命令的仓库是第一个位置参数（scan / runs / serve），新命令用 -C
-        rest = ([str(repo)] if head and head[0] in _REPO_POSITIONAL else ["-C", str(repo)]) + rest
-    return shlex.join(["codestrata"] + head + rest)
-
-
-def step(effect: str, *parts: str, repo: Path | None = None, why: str = "") -> dict:
-    """next 里的一条：{cmd, effect, why}"""
-    d = {"cmd": command(*parts, repo=repo), "effect": effect}
-    if why:
-        d["why"] = why
-    return d
 
 
 @dataclass
@@ -57,9 +40,7 @@ def emit(cmd: str, res: Result, as_json: bool) -> int:
             env["algo"] = res.algo
         _dump(env)
         return 0
-    lines = list(res.text)
-    for w in res.warnings:
-        lines.append(f"⚠ {w['msg']}")
+    lines = list(res.text) + _warn_lines(res.warnings)
     if res.more:
         lines.append(f"（给了 {res.more['shown']} / 共 {res.more['total']}；要更多：{res.more['how']}）")
     if res.next:
@@ -71,12 +52,16 @@ def emit(cmd: str, res: Result, as_json: bool) -> int:
     return 0
 
 
+def _warn_lines(warnings: list[dict]) -> list[str]:
+    return [f"⚠ {w['msg']}" + (f"（下一步：{w['next']['cmd']}，{w['next']['effect']}）" if w.get("next") else "") for w in warnings]
+
+
 def fail(cmd: str, err: CodestrataError, as_json: bool) -> int:
     if as_json:
-        _dump({"v": V, "ok": False, "cmd": cmd,
-               "error": {"code": err.code, "msg": err.msg, "candidates": err.candidates}, "next": err.next})
+        _dump({"v": V, "ok": False, "cmd": cmd, "error": {"code": err.code, "msg": err.msg, "candidates": err.candidates},
+               "warnings": err.warnings, "next": err.next})
     else:
-        lines = [f"codestrata {cmd}: {err.msg}  [{err.code}]"]
+        lines = _warn_lines(err.warnings) + [f"codestrata {cmd}: {err.msg}  [{err.code}]"]
         if err.candidates:
             lines.append("候选：")
             lines += [f"  {c}" for c in err.candidates[:20]]
@@ -99,6 +84,12 @@ def run(cmd: str, fn, a) -> int:
         if isinstance(e.code, int) or e.code is None:
             raise
         return fail(cmd, CodestrataError("internal", str(e.code)), as_json)
+    except Exception as e:                       # noqa: BLE001  意外：--json 时 stdout 也只有一个信封，堆栈给 stderr
+        if not as_json:
+            raise
+        import traceback
+        traceback.print_exc()
+        return fail(cmd, CodestrataError("internal", f"{type(e).__name__}: {e}（codestrata 的 bug，堆栈在 stderr）"), as_json)
     try:
         return emit(cmd, res, as_json)
     except BrokenPipeError:                      # 接在 head 这类命令后面：读的一方先关了，不算错
@@ -125,11 +116,11 @@ def dur(us: int) -> str:
 class Parser(argparse.ArgumentParser):
     """命令行带了 --json 时，用法错也在 stdout 给一个信封（code=usage），退出码仍是 2"""
     json_errors = False
-    json_cmd: str | None = None
+    json_cmd: str | None = None              # 敲的是哪个命令（runs 带动作：「runs show」），main 按 argv 填
 
     def error(self, message):
         if Parser.json_errors:
-            cmd = self.prog.removeprefix("codestrata").strip() or Parser.json_cmd
+            cmd = Parser.json_cmd or self.prog.removeprefix("codestrata").strip() or None
             _dump({"v": V, "ok": False, "cmd": cmd, "error": {"code": "usage", "msg": message, "candidates": []},
                    "next": []})
             sys.exit(2)

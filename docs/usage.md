@@ -329,7 +329,7 @@ codestrata runs [repo] merge RUN              # 从原始数据重算计数和�
 ### 存储
 
 - `runs/` 可以是软链（比如指到大盘）。**`.codestrata/` 里除了 `runs/` 都能随时删掉重建**；`runs/` 删了就没了。
-- 老版本的 `trace-<case>.json` 第一次被读到时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）。
+- 老版本的 `trace-<case>.json` 在 `serve` 起来、`trace`、`runs` 的写动作时自动迁成 run（原文件逐字节留在 run 的 `legacy/` 里）；只读的命令（`status`、`runs ls` 这些）不迁，只提示。
 
 ### 复刻
 
@@ -374,13 +374,13 @@ CLI 的 `trace` 和主菜单的录制表单都默认录事件（2026-10-01 起�
 - **一行一个函数，缩进是调用的层次**：每一行挂在调用它的那一次调用下面（调用上下文树：同一个函数被几个地方调过，就在几处各出现一次；同一条调用链上的多次调用合成一行），同一层按第一次被调用的先后排。这一段之前就在跑的上层（引擎循环、请求处理的协程）也列出来当上下文，时刻写「之前」。行上写着第一次被调用的时刻（从这一段的开头算）、这个线程里调了几次、调用写在调用方的哪一行（`← omni.py:160`，点了看那一行）、代码里看不出会调到它的标出来（悬停看 scan 在那一行看到了什么）。点函数名看它的定义，点 ▾ 收起它下面那几层。
 - **↻** 是反复调用（轮询、每个 token 都走一遍）。**根**是线程的入口；经仓库外的代码调进来的（vLLM 的引擎循环 `run_busy_loop` 调 scheduler）挂在最近的仓库内函数下面，那一跳标「代码里看不出」。模块顶层写成 `文件名:<module>`。
 - 2026-10-01 之前录的 run（span 没有父亲）照老做法：一个函数挂在第一次调用它的那个调用方下面（同一个函数被别处调的那几次就挂不上了），只有跨文件的调用有时刻，同一个文件里调过来的挂到同文件的调用方下面、标「同文件」。`runs merge` 从原始日志重建 span 之后有父亲，但同文件的调用还是没有。
-- 跟着选的阶段、时间段变。要录了时序事件的 run（3.12+ 默认录）；没录的 run 上按钮照样在，点开说明为什么看不了。页面上最多列 4000 行，命令行默认打全部（只看几列、`--limit`、`--json` 时截到 200 行）。命令行的节标题是列的写法（`stage1/MainThread`），后面是进程名、pid、线程原名。
+- 跟着选的阶段、时间段变。要录了时序事件的 run（3.12+ 默认录）；没录的 run 上按钮照样在，点开说明为什么看不了。页面上最多列 4000 行，命令行默认打全部（只看几列、`--limit`、`--json` 时每列截到 60 行）。命令行的节标题是列的写法（`stage1/MainThread`），后面是进程名、pid、线程原名。
 - 边详情里也能按第一次调用的先后排函数对（「排序：按先后」），默认按次数。
 
 ```bash
 codestrata path <RUN>@serving                     # 打出整棵树（RUN 的写法见「管理 run」；不在仓库里时加 -C <repo>）
 codestrata path <RUN>@serving --depth 2           # 只看前三层
-codestrata path <RUN>@serving/stage1/MainThread   # 只看一列（列的写法和 codestrata lanes 打的一样），截到 200 行
+codestrata path <RUN>@serving/stage1/MainThread   # 只看一列（列的写法和 codestrata lanes 打的一样），每列截到 60 行（--limit N 改）
 codestrata path <RUN>@serving --json              # JSON 信封，data 和 /api/path 一样、每节多一个 lane
 ```
 
@@ -452,9 +452,9 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 | `app` | 浏览器主菜单 | `--port`（默认 8930）<br>`--no-browser`<br>`--proxy` |
 | `serve [repo]` | 本地网页 | `--port`（默认 8900；`--port 0` 让系统挑，打印实际的端口）<br>`--hot RUN` 页面打开时先叠哪个 run<br>`--roots`（收但不起作用）<br>隐藏参数 `--home` 给主菜单用 |
 | `trace [repo] --case NAME [...] -- CMD` | 跑一次命令、录下真实调用（子进程一起录），存成新的 run | `--case`（必填）<br>`--cwd DIR`<br>`--timeout S`<br>`--stop-grace S`（默认 90）<br>`--tag T`、`--note TEXT`<br>`--env K=V`（可重复）<br>`--attach FILE`<br>`--no-events`<br>`--gpu` 同时录 GPU kernel（见 [GPU kernel](#gpu-kernel--gpu)）<br>`--phase NAME=FUNC`（可重复）<br>`--roots`<br>`--json` stdout 上只给结果信封，被录程序的输出转到 stderr |
-| `runs [repo] ls [--case C]` | 按 case 分组列出 run | `--json` 信封（带各阶段的微秒窗口） |
-| `runs [repo] show RUN` | 一个 run 的详情和复刻命令 | `--json` |
-| `runs [repo] wait RUN` | 等还在录的 run 录完 | `--timeout S`（默认 600，超时退出码 5）<br>`--json` |
+| `runs [repo] ls [--case C]` | 按 case 分组列出 run（每个动作也收 `-C 仓库`；ls / show / wait 只读，不迁移老格式的录制） | `--json` 信封（带各阶段的微秒窗口） |
+| `runs [repo] show RUN` | 一个 run 的详情和复刻命令（RUN 也可以是页面地址、带范围） | `--json` |
+| `runs [repo] wait RUN` | 等还在录的 run 录完（给 case 名时等它最新的那一次） | `--timeout S`（默认 600，超时退出码 4）<br>`--json` |
 | `runs [repo] tag\|untag RUN T…` | 加 / 去标签 | |
 | `runs [repo] note RUN TEXT` | 写备注（覆盖） | |
 | `runs [repo] rm RUN_ID…` | 删 run（只认完整 id） | `--yes`、`--events-only` |

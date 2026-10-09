@@ -612,9 +612,9 @@ def test_cli_runs_without_repo():
     assert rid in at(repo, "runs", "ls").stdout
     r = at(repo, "runs", "show", rid)
     assert r.returncode == 0 and r.stdout.startswith(f"run {rid}"), r.stdout + r.stderr
-    # 当前目录不是仓库：说是哪个目录下没有 .codestrata，不是 argparse 的「缺 verb」
+    # 当前目录不是仓库：说从哪个目录往上没找到用过 codestrata 的仓库（repo_unknown），不是 argparse 的「缺 verb」
     r = at(top, "runs", "ls")
-    assert r.returncode != 0 and f"{top.resolve()} 下没有 .codestrata" in r.stderr and "verb" not in r.stderr, r.stderr
+    assert r.returncode == 3 and f"从 {top.resolve()} 往上没找到用过 codestrata 的仓库" in r.stderr and "verb" not in r.stderr, r.stderr
     r = at(repo, "runs")                      # 只敲 runs：缺的是动作，不说仓库也是必填的
     assert r.returncode != 0 and "required: verb" in r.stderr, r.stderr
     # 敲错的动作报的是这个动作不认识，不是把它当成仓库、再说缺动作；不存在的仓库后面跟着动作的，照旧说没有这个仓库

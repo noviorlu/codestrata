@@ -20,14 +20,16 @@ EXIT = {
 
 
 class CodestrataError(Exception):
-    """code：EXIT 里的错误码；candidates：写错名字时的候选（字符串）；next：[{cmd, effect}] 下一步"""
+    """code：EXIT 里的错误码；candidates：写错名字时的候选（字符串）；next：[{cmd, effect}] 下一步；warnings：之前的警告"""
 
-    def __init__(self, code: str, msg: str, candidates: list[str] | None = None, next: list[dict] | None = None):
+    def __init__(self, code: str, msg: str, candidates: list[str] | None = None, next: list[dict] | None = None,
+                 warnings: list[dict] | None = None):
         assert code in EXIT, code
         super().__init__(msg)
         self.code, self.msg = code, msg
         self.candidates = list(candidates or [])
         self.next = list(next or [])
+        self.warnings = list(warnings or [])      # 出错之前已经有的警告（比如页面地址问不到）：一起交给用户
 
     @property
     def exit(self) -> int:
