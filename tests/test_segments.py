@@ -197,5 +197,50 @@ def test_old_run_refused_by_commands():
         assert [n["cmd"].split()[1] for n in j["next"]] == ["lanes", "path"], j["next"]
 
 
+def test_finder_match():
+    """find 的匹配：完全一样 > 前缀 > 子串、不分大小写、* 通配、按种类和目录过滤；类、文件、目录也找得到"""
+    from codestrata import finder
+    idx = {"symbols": {"a/x.py#Foo": {"n": "Foo", "k": "class", "f": "a/x.py", "l": 1},
+                       "a/x.py#Foo.run": {"n": "Foo.run", "k": "method", "f": "a/x.py", "l": 3},
+                       "a/y.py#run_all": {"n": "run_all", "k": "func", "f": "a/y.py", "l": 1},
+                       "b/z.py#rerun": {"n": "rerun", "k": "func", "f": "b/z.py", "l": 1}},
+           "files": {"a/x.py": "a", "a/y.py": "a", "b/z.py": "b"}, "dirs": {"a": {}, "b": {}}}
+    names = [x["name"] for x in finder.match(idx, "run", kind="fn")]
+    assert names == ["Foo.run", "run_all", "rerun"], names               # 完全一样（短名）> 前缀 > 子串
+    assert [x["key"] for x in finder.match(idx, "FOO", kind="class")] == ["a/x.py#Foo"]
+    assert {x["name"] for x in finder.match(idx, "*run", kind="fn")} == {"Foo.run", "rerun"}
+    assert [x["name"] for x in finder.match(idx, "run", kind="fn", under="b")] == ["rerun"]
+    assert [x["key"] for x in finder.match(idx, "x.py", kind="file")] == ["a/x.py"]
+    assert [x["key"] for x in finder.match(idx, "b", kind="dir")] == ["b/"]
+    per_node = {"a/x.py#Foo.run": {"L1": [3, 10, 20]}, "a/y.py#run_all": {"L1": [1, 5, 5], "L2": [2, 7, 9]}}
+    assert finder.hits_of({"kind": "class", "key": "a/x.py#Foo"}, per_node) == {"L1": [3, 10, 20]}
+    assert finder.hits_of({"kind": "dir", "key": "a/"}, per_node) == {"L1": [4, 5, 20], "L2": [2, 7, 9]}
+
+
+def test_find_explain_path_on_toy():
+    """find 给次数和列；explain 讲一条交接（两头的原文、调用链、scan 的说法）和一个函数（谁调它）；编号要视图（need_view）、
+    只给 REF 是用法错；path --time 列自己的时间、--unseen 只列看不出的"""
+    repo, rid = truth()
+    j = one_json(cs("find", "callee", f"{rid}@work", "-C", repo, "--kind", "file", "--json"))
+    assert j["data"]["items"] and j["data"]["items"][0]["key"] == "fakesvc/callee.py" and j["data"]["items"][0]["n"] > 0, j["data"]
+    links = one_json(cs("links", "-C", repo, f"{rid}@work", "--json"))["data"]["links"]
+    assert links, "truth 的 work 阶段里有队列交接"
+    j = one_json(cs("explain", links[0]["id"], f"{rid}@work", "-C", repo, "--json"))
+    d = j["data"]
+    assert j["ok"] and d["n"] >= 1 and d["from"]["lane"] == links[0]["from"] and "scan" in d, d
+    assert d["from"]["code"]["text"] and d["from"]["chain"], d["from"]
+    fn = one_json(cs("find", "slow", f"{rid}@work", "-C", repo, "--kind", "fn", "--json"))["data"]["items"][0]["key"]
+    d = one_json(cs("explain", fn, f"{rid}@work", "-C", repo, "--json"))["data"]
+    assert d["item"] == fn and d["lanes"] and d["callers"] and d["first"]["chain"][-1]["fn"] == fn, d
+    assert d["def"]["signature"].startswith("def slow"), d["def"]
+    for args, code in ((["explain", "24", f"{rid}@work"], "need_view"), (["explain", f"{rid}@work"], "usage")):
+        r = subprocess.run([PY, "-m", "codestrata", *args, "-C", str(repo), "--json"], capture_output=True, text=True, cwd=HERE.parent)
+        assert one_json(r)["error"]["code"] == code, (args, r.stdout)
+    j = one_json(cs("path", "-C", repo, f"{rid}@work", "--time", "--json"))
+    assert j["data"]["self_time"] and j["data"]["self_time"][0]["us"] >= j["data"]["self_time"][-1]["us"], j["data"]["self_time"]
+    j = one_json(cs("path", "-C", repo, f"{rid}@work", "--unseen", "--json"))
+    assert "unseen" in j["data"] and all(x["n"] >= 0 for x in j["data"]["unseen"]), j["data"].keys()
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

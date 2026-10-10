@@ -295,7 +295,7 @@ def format_text(path: dict, max_depth: int | None = None, lane_of=None) -> str:
     lane_of(pid, 线程名) 给的话，节标题用它（列的稳定写法 stage1/MainThread），进程名放在后面"""
     t0 = path["window"][0]
     ph = path["phase"]
-    where = ("时间段 " if ph.startswith("t=") else "阶段 ") + ph if ph else "整个 run"
+    where = ("时间段" if ph.startswith("t=") else "阶段 " + ph) if ph else "整个 run"
     out = [f"请求路径（{where}：t={t0}-{path['window'][1]}，{t0 / 1e6:.2f}–{path['window'][1] / 1e6:.2f} s）。"
            f"+秒是第一次调用的时刻，从这一段开头（t={t0}）算；×N 是这条线程里调了几次；「← 文件:行」是调用写在哪一行"
            f"（经仓库外的代码调进来的，是最近的仓库内的那一行）；（之前）是这一段之前就在跑的上层；↻ 是反复调用；[看不出] 是代码里看不出会调到它"

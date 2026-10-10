@@ -58,9 +58,12 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
    codestrata steps <那段的 REF>/<主循环那一列>（一轮轮）→ 加 --why 看时间花在哪
 2. 「第 k 块数据在哪一轮」：codestrata steps RUN@阶段/stage1/save_loop --with SharedMemoryConnector.put
 3. 谁把数据交给谁、两头是哪个函数哪一行：codestrata links RUN@阶段（--kind all 连起线程、等结束也列）
-4. 用户贴来页面地址，问「现在看的是什么」：status '<地址>' → lanes '<地址>' → path '<地址>'（每列 60 行）
-5. 一列在调什么：codestrata path RUN@阶段/stage1/MainThread --limit 30；某一段时间：RUN@serving+0.6s-3.1s/列
-6. 列出所有 run：codestrata runs ls -C 仓库；等还在录的：codestrata runs wait RUN
+4. 「标出 model / 聚焦一个功能」：codestrata find tts RUN@阶段 --kind class（功能 → 代码由你判断；--under 目录 缩小）
+5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄）；函数：explain 限定名 RUN@阶段。
+   只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近
+6. 用户贴来页面地址，问「现在看的是什么」：status '<地址>' → lanes '<地址>' → path '<地址>'（每列 60 行）
+7. 一列在调什么：codestrata path RUN@阶段/stage1/MainThread --limit 30（--time 先列最花时间的；--unseen 只列看不出的调用）
+8. 列出所有 run：codestrata runs ls -C 仓库；等还在录的：codestrata runs wait RUN
 
 ## 要知道的坑
 - 别为了看数据去重录（trace 是 record：可能占 GPU、跑几分钟）。数据不够先问用户。
@@ -84,8 +87,9 @@ description: 读 codestrata 录下的运行路径（哪个进程、哪条线程�
 def text() -> str:
     from . import table
     rows = table()
-    w = max(len(r["usage"] or r["name"]) for r in rows)
-    cmds = "\n".join(f"  {(r['usage'] or 'codestrata ' + r['name']).ljust(w)}  {r['effect']:6}  {r['does']}" for r in rows)
+    w = max(len(r["name"]) for r in rows)
+    cmds = "\n".join(f"  {r['name'].ljust(w)}  {r['effect']:6}  {r['does']}" for r in rows)
+    cmds += "\n  每个命令的完整写法：codestrata 命令 --help（guide --json 里也有）"
     by: dict[int, list[str]] = {}
     for code, n in EXIT.items():
         by.setdefault(n, []).append(code)
