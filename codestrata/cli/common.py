@@ -100,9 +100,12 @@ def labeler(idx: dict):
 
 
 def short(node: str | None) -> str:
-    """节点的短写法：限定名；模块顶层写成 文件名:<module>"""
+    """节点的短写法：限定名；模块顶层写成 上一层目录/文件名:<module>（__init__.py 光看文件名分不出是哪个包）"""
     f, _, q = (node or "?").partition("#")
-    return f"{Path(f).name}:{q}" if q.startswith("<module>") else (q or f)
+    if q.startswith("<module>"):
+        pth = Path(f)
+        return f"{pth.parent.name + '/' if pth.parent.name else ''}{pth.name}:{q}"
+    return q or f
 
 
 def add_params(p) -> None:
@@ -110,14 +113,33 @@ def add_params(p) -> None:
     from .. import steps as _steps
     d = _steps.Params()
     p.add_argument("--min-calls", type=int, default=d.min_calls, help="轮头在这段时间里至少调几次（默认 %(default)s）")
-    p.add_argument("--min-share", type=float, default=d.min_share, help="在多少比例的轮里出现算常规调用（默认 %(default)s）")
-    p.add_argument("--long", type=float, default=d.long, help="超过中位几倍算超长（默认 %(default)s）")
-    p.add_argument("--gap", type=float, default=d.gap, help="前景轮之间空转超过这段时间长度的多少就切开（默认 %(default)s）")
+    p.add_argument("--class-share", type=float, default=d.class_share, help="一类轮至少占多少比例才算一类（默认 %(default)s）")
+    p.add_argument("--cheap", type=float, default=d.cheap,
+                   help="在仓库函数里的时间（中位）不超过最少那类几倍的类算便宜的、调到的算常规（默认 %(default)s）")
+    p.add_argument("--long", type=float, default=d.long, help="墙上时长超过便宜的那几类轮的中位几倍算超长（默认 %(default)s）")
+    p.add_argument("--gap", type=float, default=d.gap,
+                   help="前景轮之间空转超过 REF 所在的阶段长度的多少就切开（默认 %(default)s；交替干活的几块合成一块时调小）")
 
 
 def params(a):
     from .. import steps as _steps
-    return _steps.Params(min_calls=a.min_calls, min_share=a.min_share, long=a.long, gap=a.gap)
+    return _steps.Params(min_calls=a.min_calls, class_share=a.class_share, cheap=a.cheap, long=a.long, gap=a.gap)
+
+
+def head_window(c: Ctx) -> tuple[int, int]:
+    """认轮头用的那段：REF 所在的那个阶段（segments.head_window）。轮头和轮号不随 REF 的范围变（契约），REF 只决定列出哪几轮"""
+    from .. import segments as _segments
+    r = c.res
+    lo, hi = (r.slices[0][0], r.slices[-1][1]) if r.slices else (0, r.end_us or 0)
+    return _segments.head_window(r.run, r.end_us, lo, hi, r.phase)[1]
+
+
+def phase_name(c: Ctx) -> str | None:
+    """REF 所在的阶段名（REF 是 t= 的一小段时，取装着它的那个阶段）：认「请求」用"""
+    from .. import segments as _segments
+    r = c.res
+    lo, hi = (r.slices[0][0], r.slices[-1][1]) if r.slices else (0, r.end_us or 0)
+    return _segments.head_window(r.run, r.end_us, lo, hi, r.phase)[0]
 
 
 def proc_order(c: Ctx, label) -> dict:
@@ -125,4 +147,4 @@ def proc_order(c: Ctx, label) -> dict:
     from .. import segments as _segments
     r = c.res
     lo, hi = (r.slices[0][0], r.slices[-1][1]) if r.slices else (0, 0)
-    return _segments.proc_order(r.rd, r.run, r.phase, lo, hi, label)
+    return _segments.proc_order(r.rd, r.run, phase_name(c), lo, hi, label, head_window(c))

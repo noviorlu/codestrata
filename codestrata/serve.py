@@ -333,9 +333,11 @@ class Handler(BaseHandler):
         return _laneorder.rank(L, L["aliases"], fold=fold, hide=set(arg("hide")), lanes=lanes)
 
     def _proc_order(self, rd: Path, run: dict, phase: str | None) -> dict:
-        """进程的先后：这一段里开始干活的先后（分列和请求路径同一个）"""
-        segs, _, _ = _seq.window_segments(run, rd, phase)
-        return _segments.proc_order(rd, run, phase, segs[0][0], segs[-1][1], self._label())
+        """进程的先后：这一段里开始干活的先后（分列和请求路径同一个；轮头按装着这一段的阶段认，和命令行一样）"""
+        segs, _, end = _seq.window_segments(run, rd, phase)
+        lo, hi = segs[0][0], segs[-1][1]
+        name, hw = _segments.head_window(run, end, lo, hi, phase)
+        return _segments.proc_order(rd, run, name, lo, hi, self._label(), hw)
 
     def _label(self):
         """键 → 函数级的节点（按 index 缓存一个）"""

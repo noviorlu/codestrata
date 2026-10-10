@@ -1,4 +1,4 @@
-"""命令行里写的函数 → trace 的键（steps 的 --with / --head、segments 的 --by，以后的 find / explain 也用）。
+"""命令行里写的函数 → trace 的键（steps 的 --with / --head、explain 也用；没录到的函数 resolve_symbol 退到 scan 的索引）。
 
 写法：`仓库相对路径#限定名`（graph 的节点）、限定名（`OmniARScheduler.schedule`）、唯一的方法名或函数名（`schedule`）。
 同一个函数在 run 里可能有几个键（录制之后挪了行）：按节点合在一起。对不上报 item_not_found，对上好几个报 ambiguous_item，
@@ -45,3 +45,17 @@ def _match(text: str, node: str) -> bool:
         return node == text
     q = node.partition("#")[2]
     return q == text or q.endswith("." + text)
+
+
+def resolve_symbol(text: str, symbols: dict, kinds: tuple[str, ...] | None = None) -> str | None:
+    """在 scan 的索引里找（没录到的也找得到）：全路径#限定名、限定名、唯一的短名 → 节点；kinds 只认这几种（class、func、method…）。
+    对不上或对上好几个是 None"""
+    text = (text or "").strip()
+    if not text:
+        return None
+    ok = (lambda s: s.get("k") in kinds) if kinds else (lambda s: True)
+    if "#" in text:
+        s = symbols.get(text)
+        return text if s and ok(s) else None
+    hits = [k for k, s in symbols.items() if ok(s) and (s.get("n") == text or s.get("n", "").endswith("." + text))]
+    return hits[0] if len(hits) == 1 else None

@@ -69,6 +69,18 @@ def run_aliases(rd: Path, extra: list[dict] = ()) -> dict[str, str]:
     return _laneid.lane_aliases(list(seen.values()), proc_aliases(rd))
 
 
+def tid_aliases(rd: Path) -> dict[tuple, str]:
+    """{(pid, 线程号): 列别名}：交接的一头、一行 span 落在哪一列（explain 用；切段要列 id，自己建 tid_lane）"""
+    ix = _seq.span_index(rd)
+    aliases = run_aliases(rd)
+    out = {}
+    for pid_s, ts in ix["threads"].items():
+        for tid_s, name in ts.items():
+            lid = lane_id(int(pid_s), name)
+            out[(int(pid_s), int(tid_s))] = aliases.get(lid, lid)
+    return out
+
+
 def lane_counts(rd: Path, run: dict, phase: str | None, lane: str) -> dict:
     """一列（build 里的列 id：`pid:线程名`，或 GPU 的 `pid:GPU 设备 · 流 流号`）在这一段里的调用，和 counts.json.gz 同样形状的
     {funcs, func_edges, gpu_us?}（键是录制时的 文件:首行），交给 align.to_package_graph 就是只算这一列的叠加——分列里节点的详情、
@@ -150,7 +162,8 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     连线：{"kind": "spawn" | "handoff" | "join" | "launch", "via": thread / exec / fork / queue / asyncio / janus / zmq / join / wait / cuda,
            "from": {"lane", "node", "fn", "t", "line"}, "to": {…}, "n", "first", "last",
            "pairs": [{"a": 起点函数, "b": 终点函数, "la" / "lb": 那一头的行（0 不知道）, "ta" / "tb": 那一行的代码,
-                      "xa" / "xb": 那一头经仓库外的代码, "da" / "db": 定义 {f, l, k}, "n", "first"}]
+                      "xa" / "xb": 那一头经仓库外的代码, "da" / "db": 定义 {f, l, k}, "n", "first",
+                      "h": 交接的这一对最早那一次在 index 的 handoffs 里的下标（只有交接有）}]
            （次数最多的 8 对）, "n_pairs"}
     ——同样两头（列和节点）、同一种的合成一条，n 是几次；from / to 的 t 是最早的一次，first / last 是首末时刻（join 是等到的时刻，
     其余是起点那头的）；fn 是那一头的函数（span 的被调方；放 / 取发生在仓库外的代码里时是那一刻这条线程栈底的仓库函数——
@@ -380,8 +393,9 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     agg: dict[tuple, dict] = {}                  # 同样两头、同一种的连线合起来：(起点列, 起点节点, 终点列, 终点节点, 种类, 通道)
 
     def link(kind: str, via: str, a: dict, b: dict, t: int | None = None, n: int = 1, gpu_us: int | None = None,
-             t_last: int | None = None) -> None:
-        """连一条线（同样两头、同一种的合起来）。n 次一起算的（GPU 的一组 kernel）给 t_last：这一组最后一次的时刻"""
+             t_last: int | None = None, raw: int | None = None) -> None:
+        """连一条线（同样两头、同一种的合起来）。n 次一起算的（GPU 的一组 kernel）给 t_last：这一组最后一次的时刻。
+        raw：交接在 index 的 handoffs 里的下标（每一对记下最早那一次的，explain 从它讲起）"""
         k = (a["lane"], a["node"], b["lane"], b["node"], kind, via)
         x = agg.get(k)
         if t is None:
@@ -402,20 +416,20 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         if gpu_us is not None:
             x["gpu_us"] += gpu_us
         pr = x["pairs"].setdefault((a["fn"], a.get("line", 0), b["fn"], b.get("line", 0), a.get("ext", False), b.get("ext", False)),
-                                   [0, t, 0])
+                                   [0, t, 0, raw])
         pr[0] += n
         pr[2] += gpu_us or 0
         if t is not None and (pr[1] is None or t < pr[1]):
-            pr[1] = t
+            pr[1], pr[3] = t, raw
 
     # 先连交接：只跑仓库外代码的线程的列（external）是这时候建的，之后起它、回收它的连线才接得上
-    for h in ix.get("handoffs") or []:
+    for hx, h in enumerate(ix.get("handoffs") or []):
         t = h["from"][3] if h["from"][3] is not None else h["to"][3]   # 按放 / 发的时刻算在不在这一段里（用户 10-01 定），和连线上写的时刻一致
         if not any(x <= t <= y for x, y in segs):
             continue
         a, b = end_of(*h["from"][:4], line=_at(h["from"], 4), create=True), end_of(*h["to"][:4], line=_at(h["to"], 4), create=True)
         if a and b and a["lane"] != b["lane"]:
-            link("handoff", h["via"], a, b)
+            link("handoff", h["via"], a, b, raw=hx)
     tfrom, tend = ix.get("thread_from") or {}, ix.get("thread_end") or {}
     starts: dict[str, list] = {}                 # 列 → [(起的时刻, 起它的列, 守护)]：每列的 start 摘要
     stops: dict[str, list] = {}                  # 列 → [(结束 / 等到的时刻, 等它的列 或 None, 状态)]：stop 摘要
@@ -570,9 +584,11 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         prs = sorted(x["pairs"].items(), key=lambda kv: (-kv[1][0], kv[1][1] if kv[1][1] is not None else 0))
         x["n_pairs"] = len(prs)
         x["pairs"] = []
-        for (fa, la, fb, lb, xa, xb), (n, f, us) in prs[:8]:
+        for (fa, la, fb, lb, xa, xb), (n, f, us, raw) in prs[:8]:
             da, db = _align.node_def(idx, fa) if fa else None, _align.node_def(idx, fb) if fb else None
             pr = {"a": fa, "b": fb, "la": la, "lb": lb, "xa": xa, "xb": xb, "n": n, "first": f, "da": da, "db": db}
+            if raw is not None:
+                pr["h"] = raw
             if "gpu_us" in x:
                 pr["gpu_us"] = us
             if text is not None:

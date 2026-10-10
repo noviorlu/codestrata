@@ -50,12 +50,13 @@ def match(idx: dict, text: str, kind: str | None = None, under: str | None = Non
             if r is not None:
                 out.append({"kind": "file", "key": f, "name": f, "file": f, "line": None, "rank": r})
     if kind in (None, "dir"):
-        for d in idx.get("dirs") or {}:
-            if not ok(d):
+        for d in idx.get("dirs") or {}:          # 索引里的目录键带结尾的 /
+            if not ok(d.rstrip("/")):
                 continue
-            r = _rank(t, [PurePosixPath(d).name.lower(), d.lower()])
+            r = _rank(t, [PurePosixPath(d).name.lower(), d.rstrip("/").lower()])
             if r is not None:
-                out.append({"kind": "dir", "key": d + "/", "name": d + "/", "file": None, "line": None, "rank": r})
+                key = d.rstrip("/") + "/"
+                out.append({"kind": "dir", "key": key, "name": key, "file": None, "line": None, "rank": r})
     out.sort(key=lambda x: (x["rank"], len(x["name"]), x["name"]))
     return out
 

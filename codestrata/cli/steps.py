@@ -17,7 +17,7 @@ from . import common, out
 NAME = "steps"
 EFFECT = "read"
 DOES = "一列的主循环一轮轮：按多调了什么分组、超长的轮各给 REF；--with FN 只列调过 FN 的轮；--why 看时间花在哪"
-USAGE = "codestrata steps REF/列 [--head FN] [--with FN] [--round K[-M]] [--list] [--limit N] [--why] [--json]"
+USAGE = "codestrata steps REF/列 [--head FN] [--with FN] [--round K[-M]] [--list] [--limit N] [--why] [阈值…] [--json]"
 EXAMPLE = "codestrata steps 20261001-170349-run_single_prompt@serving/stage1/MainThread --why"
 
 SHOW_ROUNDS = 10        # 一组里列几个轮号
@@ -66,10 +66,11 @@ def run(a) -> out.Result:
     pid = int(lid.partition(":")[0])
     p = common.params(a)
     head = None
+    hw = common.head_window(c)
     if a.head:
-        A0 = _seg.analyse(r.rd, lo, hi, p, pids={pid})
+        A0 = _seg.analyse(r.rd, lo, hi, p, pids={pid}, head_window=hw)
         head = {lid: _funcref.resolve(a.head, keys, label, _calls(A0["lanes"][lid], lo, hi))[1]}
-    A = _seg.analyse(r.rd, lo, hi, p, head=head, pids={pid})
+    A = _seg.analyse(r.rd, lo, hi, p, head=head, pids={pid}, head_window=hw)
     ln = A["lanes"].get(lid)
     if ln is None or not ln["loop"]:
         top = _calls(ln, lo, hi).most_common(8) if ln else []
@@ -100,8 +101,9 @@ def run(a) -> out.Result:
 
     med_all = statistics.median(x["dur_us"] for x in rs)
     where = f"@{r.phase}" if r.phase and not r.phase.startswith("t=") else (f"@{r.phase}" if r.phase else "整个 run")
+    word = "空转" if A.get("handoffs_any") else "常规轮"      # 一次交接都没录到：分不清空等还是每轮干一样的活
     lines = [f"{lane} {where}：这段 {len(ln['win'])} 轮（整个 run {len(rs)} 轮，每轮从 {common.short(head_node)} 开始），"
-             f"交出 {sum(x['out'] for x in ln['win'])}，空转 {sum(1 for x in ln['win'] if x['spin'])}"]
+             f"交出 {sum(x['out'] for x in ln['win'])}，{word} {sum(1 for x in ln['win'] if x['spin'])}"]
     if a.with_:
         lines.append(f"其中调过 {common.short(node)} 的 {len(sel)} 轮：" + " ".join(f"#{x['k']}" for x in sel[:40])
                      + (" …" if len(sel) > 40 else ""))
@@ -111,7 +113,7 @@ def run(a) -> out.Result:
         lines += _why(r, ln, sel, label, keys)
     elif a.list:
         for x in sel[:a.limit]:
-            tag = "超长" if x["long"] else ("空转" if x["spin"] else "")
+            tag = "超长" if x["long"] else (word if x["spin"] else "")
             ex = names(x)
             lines.append(f"  #{x['k']:<6} {out.secs(x['t0_us'], lo)}  {out.dur(x['dur_us']):>10}  {x['calls']:>5} 次调用"
                          f"  交出 {x['out']}  {tag}" + (f"  多调了 {'、'.join(ex[:3])}" + (f" 等 {len(ex)} 个" if len(ex) > 3 else "") if ex else ""))
@@ -126,7 +128,7 @@ def run(a) -> out.Result:
             extra = f"  多调了 {'、'.join(ex[:3])}" + (f" 等 {len(ex)} 个" if len(ex) > 3 else "") if ex else ""
             if len(xs) == 1:
                 x = xs[0]
-                tag = f"超长（中位的 {x['dur_us'] / med_all:.0f} 倍）" if x["long"] else ("空转" if x["spin"] else "")
+                tag = f"超长（中位的 {x['dur_us'] / med_all:.0f} 倍）" if x["long"] else (word if x["spin"] else "")
                 lines.append(f"  #{x['k']:<10} {out.dur(x['dur_us']):>10}  {tag}{extra}")
                 if x["long"]:
                     lines.append(f"      REF {rref(x)}")
@@ -134,16 +136,18 @@ def run(a) -> out.Result:
                 ds = sorted(x["dur_us"] for x in xs)
                 ks = [f"#{x['k']}" for x in xs]
                 shown = " ".join(ks if len(ks) <= SHOW_ROUNDS else ks[:5]) + ("" if len(ks) <= SHOW_ROUNDS else " …")
+                lg = max(xs, key=lambda x: x["dur_us"])
                 lines.append(f"  ×{len(xs):<10} 中位 {out.dur(int(statistics.median(ds)))} · p90 {out.dur(ds[int(0.9 * (len(ds) - 1))])}"
-                             f"{'  空转' if all(x['spin'] for x in xs) else ''}（{shown}）{extra}")
+                             f" · 最长 #{lg['k']} {out.dur(lg['dur_us'])}"
+                             f"{'  ' + word if all(x['spin'] for x in xs) else ''}（{shown}）{extra}")
         if len(groups) > a.limit:
             more = {"shown": a.limit, "total": len(groups), "how": out.command("steps", r.full, "--limit", str(len(groups)), repo=c.flag)}
         if any(len(g["rounds"]) > SHOW_ROUNDS for g in groups):
             lines.append("（逐轮看：加 --list）")
     longest = max(sel, key=lambda x: x["dur_us"]) if sel else None
     nxt = []
-    if longest and not a.why:
-        nxt.append(c.cmd("read", "steps", rref(longest), "--why", why=f"最长的 #{longest['k']} 时间花在哪"))
+    if longest and not a.why:                       # 还是原来的 REF：轮头和轮号不变（拿那一轮的时间段当 REF 会换一个循环）
+        nxt.append(c.cmd("read", "steps", r.full, "--round", str(longest["k"]), "--why", why=f"最长的 #{longest['k']} 时间花在哪"))
     if longest:
         nxt.append(c.cmd("read", "path", rref(longest), "--limit", "40", why=f"#{longest['k']} 的调用树"))
     data = {"lane": lane, "head": head_node, "n_rounds": len(rs), "median_us": int(med_all),
@@ -181,14 +185,20 @@ def _why(r, ln: dict, sel: list[dict], label, keys) -> list[str]:
     """这几轮里每个函数自己的时间排行（只看主循环那条线程）"""
     if not sel:
         return ["（没有轮）"]
-    t0, t1 = sel[0]["t0_us"], sel[-1]["t1_us"]
-    own, idle, skipped = _steps.self_times(ln["lr"], ln["loop"]["tid"], t0, t1)
-    tot = max(t1 - t0, 1)
-    lines = [f"时间花在哪（#{sel[0]['k']}–#{sel[-1]['k']}，{out.dur(tot)}；自己的时间 = 时长减去它调的仓库函数）："]
+    own, idle, skipped = Counter(), 0, False
+    for x in sel:                                   # 一轮一轮算再加起来（--with 挑出来的轮可能不连着）
+        o, i, sk = _steps.self_times(ln["lr"], ln["loop"]["tid"], x["t0_us"], x["t1_us"])
+        own.update(o)
+        idle += i
+        skipped = skipped or sk
+    tot = max(sum(x["dur_us"] for x in sel), 1)
+    which = (f"#{sel[0]['k']}" if len(sel) == 1 else f"#{sel[0]['k']}–#{sel[-1]['k']}" if len(sel) == sel[-1]["k"] - sel[0]["k"] + 1
+             else f"{len(sel)} 轮")
+    lines = [f"时间花在哪（{which}，{out.dur(tot)}；自己的时间 = 时长减去它调的仓库函数）："]
     for b, us in own.most_common(10):
         node = label(keys[b])
         lines.append(f"  {out.dur(us):>10}  {us / tot:4.0%}  {common.short(node)}  {node.partition('#')[0]}")
-    lines.append(f"  {out.dur(idle):>10}  {idle / tot:4.0%}  （没有仓库函数在跑：仓库外的代码或在等）")
+    lines.append(f"  {out.dur(idle):>10}  {idle / tot:4.0%}  （不在这几轮的任何调用里：循环本身、仓库外的代码，或者在等）")
     if skipped:
         lines.append("  （挂起过的 async 调用时长含挂起，没算进来）")
     if not r.run.get("gpu"):

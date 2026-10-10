@@ -65,7 +65,7 @@ def run(a) -> out.Result:
             pc = _seq.phase_calls(r.rd, r.run, r.phase)
             ran = _finder.node_counts(pc["calls"], pc["keys"], pc["threads"], label,
                                       lambda pid, t: aliases.get(_lanes.lane_id(pid, t), f"{pid}:{t}"))
-        if item.endswith("/") and item.rstrip("/") in (idx.get("dirs") or {}):
+        if item.endswith("/") and item in (idx.get("dirs") or {}):      # 索引里的目录键带结尾的 /
             kind, key = "dir", item
         elif item in (idx.get("files") or {}):
             kind, key = "file", item

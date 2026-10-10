@@ -26,7 +26,7 @@ def label(k: str) -> str:
 
 
 def stage(b: Builder, pid: int, name: str, busy: range, long: int | None = None, start: int = 0):
-    """一个 stage 进程的主线程：30 轮，每 1000 µs 一轮。busy 里的轮多调一次 extra、交出一次数据（给持有请求的进程）"""
+    """一个 stage 进程的主线程：30 轮，每 1000 µs 一轮。busy 里的轮多调一次 extra（多花 300 µs）、交出一次数据（给持有请求的进程）"""
     t = b.thread(pid, 1, "MainThread", start=start)
     b.procs[pid]["title"] = f"VLLM::StageProc_{name}_replica0_DP0"
     outs = []
@@ -34,13 +34,13 @@ def stage(b: Builder, pid: int, name: str, busy: range, long: int | None = None,
         t0 = 1000 + k * 1000 + (5000 if long is not None and k > long else 0)     # 超长的那一轮：到下一轮隔了 6 ms
         t.call(t0, 2, 1)
         t.call(t0 + 5, 2, 1)
-        h = t.call(t0 + 10, 50, 0)
+        h = t.call(t0 + 10, 350 if k in busy else 50, 0)
         e = t.call(t0 + 20, 20, 2, parent=h)
         t.call(t0 + 25, 10, 3, parent=e)
         if k in busy:
-            x = t.call(t0 + 60, 5, 8, parent=h)
-            outs.append((pid, 1, x, t0 + 62))
-        t.call(t0 + 100, 5, 4)
+            x = t.call(t0 + 50, 300, 8, parent=h)
+            outs.append((pid, 1, x, t0 + 340))
+        t.call(t0 + 400, 5, 4)
     return outs
 
 
@@ -52,7 +52,7 @@ def scenario(d, old: bool = False):
         b.handoff("zmq", o, (REQ, 1, req, o[3] + 1))
     b.handoff("zmq", (REQ, 1, req, 11_040), (A, 1, -1, 11_050))          # 交给 stage0（第 11 轮里）：它开始前有交接，没有缺口
     stage(b, B, "stage1", busy=range(24, 29))                             # stage1 开始前没录到交给它的：缺口
-                                                                          # （多调的只在 5 / 30 轮里：不到两成，不算常规）
+                                                                          # （多调 extra 的轮在仓库函数里多花了时间：不是便宜的那类，不算常规）
     p = b.thread(A, 2, "recv")                                            # 只在轮询
     for k in range(40):
         p.call(500 + k * 900, 3, 5)
@@ -86,7 +86,7 @@ def test_rounds_and_kinds():
 
 
 def test_stage_segments():
-    """持有请求的进程不出段；每个进程取主循环最大的忙段；开始前没录到交给它的数据 → 缺口；截断的进程标出来；
+    """持有请求的进程不出段；每块忙段一段；开始前没录到交给它的数据 → 缺口；截断的进程标出来；
     交接按（通道, 起列, 终列）合成组；只在轮询的是背景"""
     rd, run = scenario(tmpdir("cs-seg-"))
     S = segments.analyse(rd, 0, 40_000)
@@ -204,7 +204,7 @@ def test_finder_match():
                        "a/x.py#Foo.run": {"n": "Foo.run", "k": "method", "f": "a/x.py", "l": 3},
                        "a/y.py#run_all": {"n": "run_all", "k": "func", "f": "a/y.py", "l": 1},
                        "b/z.py#rerun": {"n": "rerun", "k": "func", "f": "b/z.py", "l": 1}},
-           "files": {"a/x.py": "a", "a/y.py": "a", "b/z.py": "b"}, "dirs": {"a": {}, "b": {}}}
+           "files": {"a/x.py": "a", "a/y.py": "a", "b/z.py": "b"}, "dirs": {"a/": {}, "b/": {}}}     # 索引里的目录键带结尾的 /
     names = [x["name"] for x in finder.match(idx, "run", kind="fn")]
     assert names == ["Foo.run", "run_all", "rerun"], names               # 完全一样（短名）> 前缀 > 子串
     assert [x["key"] for x in finder.match(idx, "FOO", kind="class")] == ["a/x.py#Foo"]
@@ -212,6 +212,7 @@ def test_finder_match():
     assert [x["name"] for x in finder.match(idx, "run", kind="fn", under="b")] == ["rerun"]
     assert [x["key"] for x in finder.match(idx, "x.py", kind="file")] == ["a/x.py"]
     assert [x["key"] for x in finder.match(idx, "b", kind="dir")] == ["b/"]
+    assert [x["key"] for x in finder.match(idx, "a", kind="dir", under="a")] == ["a/"]
     per_node = {"a/x.py#Foo.run": {"L1": [3, 10, 20]}, "a/y.py#run_all": {"L1": [1, 5, 5], "L2": [2, 7, 9]}}
     assert finder.hits_of({"kind": "class", "key": "a/x.py#Foo"}, per_node) == {"L1": [3, 10, 20]}
     assert finder.hits_of({"kind": "dir", "key": "a/"}, per_node) == {"L1": [4, 5, 20], "L2": [2, 7, 9]}

@@ -25,7 +25,8 @@ def add_args(p) -> None:
     p.add_argument("ref", nargs="+", metavar="REF",
                    help="RUN[@范围][/列,…] 或页面地址；老写法 path <repo> RUN 也认（第一个是仓库）")
     p.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
-    p.add_argument("--limit", type=int, default=None, help=f"每列最多几行（给了列或 --json 时默认 {LIMIT}；不算 --depth 藏掉的）")
+    p.add_argument("--limit", type=int, default=None,
+                   help=f"每列最多几行（给了列或 --json 时默认 {LIMIT}；不算 --depth 藏掉的）；和 --unseen 一起时是列几处（默认 40）")
     p.add_argument("--time", action="store_true", help="先列出自己的时间（减去它调的仓库函数）最多的 5 处")
     p.add_argument("--unseen", action="store_true", help="只列代码里看不出会调到它的调用（按次数排）")
 
@@ -57,7 +58,8 @@ def run(a) -> out.Result:
     if r.lanes:
         want = set(_laneid.select(r.lanes, aliases))
         keep = lambda pid, tname: lane_id(pid, tname) in want    # noqa: E731
-    cap = a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None)
+    # --unseen 先筛「看不出」的再截（截了树再筛，总数会跟着 --limit 变）；--limit 在这里是列几处
+    cap = None if a.unseen else a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None)
     total_rows = {id(th): len([x for x in th["rows"] if a.depth is None or x["d"] <= a.depth])
                   for pr in p["procs"] for th in pr["threads"]}
     _path.trim(p, None, keep, max_depth=a.depth, per_thread=cap)
@@ -76,8 +78,12 @@ def run(a) -> out.Result:
         for th in ths:                               # 每节末尾写截了几行（format_text 打）
             th["cut"] = total_rows[id(th)] - len(th["rows"])
     if a.unseen:
-        text, p = _unseen(p, a.limit or 40)
-        more = None
+        limit = a.limit or 40
+        text, p = _unseen(p, limit)
+        if p["n_unseen"] > limit:
+            more = {"shown": limit, "total": p["n_unseen"],
+                    "how": out.command("path", r.full, "--unseen", *(["--depth", str(a.depth)] if a.depth is not None else []),
+                                       "--limit", str(p["n_unseen"]), repo=c.flag)}
     else:
         text = _path.format_text(p, a.depth, lane_of=lane_of).split("\n")
     if a.time:
