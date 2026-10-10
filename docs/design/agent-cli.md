@@ -97,6 +97,8 @@ RUN   := 完整 run id | case 名
 | `legacy_runs` | 有老格式的录制还没迁进 runs/（读命令不迁；`serve` 起来或下一次 `trace` 时会迁） |
 | `lanes_unchecked` | 没录时序事件的 run，REF 里的列没核对 |
 | `lane_idle` | 选的列在这段时间里没有活动 |
+| `no_lanes` | find：没录时序事件，次数不分列 |
+| `stale` | explain：讲到的文件录制之后改过 |
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
@@ -119,7 +121,7 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`segments`、`steps`、`links`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
 | write | `scan`、`runs tag / untag / note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
 | start | `serve`、`app` | 先问用户（起常驻进程、占端口） |
@@ -176,7 +178,24 @@ RUN   := 完整 run id | case 名
 - 要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 报 `no_handoffs`（退出码 4），下一步给 `lanes`、`path`。
 - 阈值都能在命令行上改，用的是哪一套写在 `basis` 里；判法改了时 `algo`（现在 `seg/1`）升版本。
 
-### `codestrata path REF [--depth N] [--limit N] [--json]`
+### `codestrata find 文字 [REF] [--kind fn|class|file|dir] [--under 目录] [--all] [--limit N] [--json]`
+- 按名字找函数、类、文件、目录：不分大小写，`*` 通配（加引号）；顺序是完全一样 > 前缀 > 子串（和页面搜索栏的排序可以不一样）。
+- 给了 REF：每个命中给这段时间里被调了几次、在哪几列跑过（各几次、首末时刻；类合它的方法，文件 / 目录合里面的函数），默认只列跑过的（`--all` 全列）。
+  没录时序事件的 run 给整个阶段的总数，不分列（警告 `no_lanes`）。
+- `data.items[]`：`kind`、`key`（函数 / 类是 `路径#限定名`，文件 / 目录是路径）、`name`、`file`、`line`、`lanes[]`、`n`。
+
+### `codestrata explain 东西 REF [--json]`
+- 只给原料，「为什么」由 agent 读代码后说。先写讲什么，再写 REF（也可以 `--in REF`）；只给了 REF 报 `usage`。
+- **连线** `'l:handoff|通道|起列|终列'`：这段时间里几次、第一次的时刻；两头各写列、函数、那一行的原文、往上最近的分支头（if / elif / else…，只给原文和行号）、
+  函数的签名和 docstring 第一行；放的一头的调用链（span 的父亲，≤ 8 层）；放之前这条线程最近收到的交接（标 `inferred: time`：只是时间上最近）；
+  取的一头这段时间里调那个取数函数几次；scan 的说法（代码里写明的调用，还是代码里看不出）。现在只讲 handoff。
+- **函数**（`路径#限定名`、限定名、唯一的名字）：定义、这段时间里各列的次数、谁调它 / 它调谁（次数、调用行、代码里看不出的标出来）、第一次的调用链和之前最近收到的交接。
+- **编号**（页面上的 `24`）要按页面的视图算：现在报 `need_view`（请用户复制地址栏）。
+- 录制之后改过的文件给警告 `stale`（原文可能对不上）。
+
+### `codestrata path REF [--depth N] [--limit N] [--time] [--unseen] [--json]`
+- `--time`：先列出这几列里「自己的时间」最多的 5 处（和 `steps --why` 同一个算法，按函数合；`data.self_time`）。
+- `--unseen`：只列代码里看不出会调到它的调用，按次数排（`data.unseen`，不打树）。
 - 函数级的请求路径（每个进程、每条线程的调用上下文树）。默认打整棵树；REF 带了列、给了 `--limit` 或 `--json` 时每列截到 60 行（`--limit` 是每列几行，`--depth` 藏掉的不算），截过的列末尾写还有几行，`more` 写一共几行。
 - 第一行写这一段的 `t=`，并说明记号：+秒是第一次调用的时刻（从这一段开头算）、×N、「← 文件:行」是调用写在哪一行（经仓库外的代码调进来的是最近的仓库内那一行）、（之前）、↻、[看不出]。
 - 节标题是列别名；`--json` 的 `data` 和页面的 `/api/path` 同形，每节多一个 `lane`。老写法 `path <repo> RUN` 也认。
