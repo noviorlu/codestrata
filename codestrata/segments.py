@@ -2,11 +2,11 @@
 
 一列的主循环、轮、空转、忙段的判法在 steps.py。这里：
     请求    `--phase` 的那个函数和这一段相交的每一次调用（run 用 --phase 切的时候才有）。
-    stage 段 一个进程里几列的前景轮合起来的每一块忙段（steps.busy_blocks）：至少两轮前景的一块一段，按开始的先后编号，
-            同一个进程可以出几段（先后两次请求、两个进程交替干活）；只有一轮前景的零星几块记在这个进程的段上，不单出段
-            （一块都不够两轮时最长的那块还是出段：干过活的进程不丢）。段的主循环是这块里前景时间最多的那一列。
+    stage 段 一个进程里几列的前景轮合起来的每一块忙段（steps.busy_blocks）：至少两轮前景、占这个进程前景时间 MIN_BLOCK_SHARE 以上的
+            一块一段，按开始的先后编号，同一个进程可以出几段（先后两次请求、两个进程交替干活）；零星的几块（只有一轮、收请求时登记一下）
+            记在这个进程最近的段上，不单出段（一块都不够时干活最多的那块还是出段：干过活的进程不丢）。段的主循环是这块里前景时间最多的那一列。
             持有请求的进程不出段（用「请求」那一行代表）；只有一个进程在干活的程序（单进程的脚本）例外。
-    缺口    段开始前后 max(段长 GAP_BEFORE, GAP_MIN_US) 里没录到别的进程交给它的数据：可能走了没录的通道（共享内存、deque…），
+    缺口    段开始前后 max(段长 GAP_BEFORE, GAP_MIN_US) 里没录到别的进程交给它的数据：可能走了没录的通道（deque、管道…；共享内存 10-10 起录），
             写上一次交给它是什么时候、什么通道，不说是谁交的（看的是整个 run 录到的交接）。REF 开始之前它就在忙（范围把开头切掉了）、
             或者同一个进程在这之前已经出过段，不报。
     独有代码 这段时间里这个进程调到、整个 REF 时间里别的进程都没调到的文件，按次数排——给 agent 认「这是 talker」用的证据。
@@ -23,6 +23,7 @@ from . import seq as _seq
 from . import steps as _steps
 
 GAP_BEFORE = 0.10
+MIN_BLOCK_SHARE = 0.05       # 一块忙段在这个进程这段时间的前景里占的（在仓库函数里的时间）不到这么多：零星的，不单出段（收请求时登记一下那种）
 GAP_MIN_US = 50_000
 REQ_SLACK_US = 1000          # 阶段函数的那次调用可能比切阶段的时刻早一点点（hook 在进入函数时才切）
 
@@ -135,12 +136,14 @@ def stage_segments(A: dict, lo: int, hi: int, skip_pids: set[int]) -> list[dict]
 
 def _process_segments(A: dict, lns: list[dict], lo: int, hi: int) -> list[dict]:
     """一个进程的段：几列的前景轮合起来切块，至少两轮前景的一块一段；零星的（一轮）记在离它最近的段上"""
-    items = [(x["t0_us"], x["t1_us"], ln["id"], x["work_us"]) for ln in lns for x in ln["win"] if not x["spin"]]
+    items = [(x["t0_us"], x["t1_us"], ln["id"], x["work_us"]) for ln in lns for x in ln["win"] if not x["spin"] and not x["wait"]]
     hlo, hhi = A["head_window"]                     # 切块的空转门槛按 REF 所在的阶段的长度算：REF 缩小了也切得一样
     blocks = _steps.busy_blocks(items, lo, hi, A["p"], scale=hhi - hlo)
     if not blocks:
         return []
-    big = [bl for bl in blocks if len(bl) >= 2] or [max(blocks, key=lambda bl: max(x[1] for x in bl) - bl[0][0])]
+    total = max(sum(x[3] for x in items), 1)
+    big = [bl for bl in blocks if len(bl) >= 2 and sum(x[3] for x in bl) >= MIN_BLOCK_SHARE * total] \
+        or [max(blocks, key=lambda bl: sum(x[3] for x in bl))]
     segs = [_segment(A, lns, bl, hi) for bl in big]
     for bl in blocks:
         if any(bl is x for x in big):

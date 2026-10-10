@@ -450,8 +450,10 @@
   主线程和 orchestrator 之间是 janus 队列，orchestrator 和各个 stage 进程之间、stage 进程里收请求的线程是 ZMQ，引擎循环和收发线程之间是 `queue.Queue`。
   按模块被 import 时再打补丁，不为了打补丁去 import asyncio、pyzmq（每个被录的 Python 进程都会跑 hook）。
 - 放弃的方案：按 payload 的内容（pickle）配对（贵，还要拷大张量）；包 `Socket.send` / `recv`（multipart 会调它们，记重复）。
-  没盯的：`queue.SimpleQueue`（C 写的，包不了）、线程池的 `submit`、共享内存、裸管道和 socket——stage1 到 stage2 走的共享内存通道两边都是仓库里的同一个模块，靠「共用同一个模块」那种连线连上。
-- 在哪：`trace/hook.py` 的 `_queue_patch`、`_fp`、`_zdata`、`_zsend`、`_zmq_sync`、`_zmq_async`、`_OnImport`；`events.py` 的 `_handoffs`。
+  共享内存（`multiprocessing.shared_memory`）：建一块（create=True）、连上一块各记一行，带名字的哈希，整理时跨进程按名字配——建了之后、下一次同名的建之前，
+  别的进程第一次连上它；vllm-omni 每块数据一个新名字（stage1 的 save_loop → stage2 的 recv_loop）。
+  没盯的：`queue.SimpleQueue`（C 写的，包不了）、`deque`（也是 C 写的；vllm-omni 里的 deque 都在一条线程里停放请求，不是交接）、线程池的 `submit`、裸管道和 socket。
+- 在哪：`trace/hook.py` 的 `_queue_patch`、`_fp`、`_zdata`、`_zsend`、`_zmq_sync`、`_zmq_async`、`_shm_patch`、`_OnImport`；`events.py` 的 `_handoffs`。
   测试 `test_events_truth`（`trace_cases/fakezmq` 是照 pyzmq 的样子写的假 pyzmq：send_multipart 逐帧调 send、ROUTER 的身份帧；场景照 vLLM 的收发方式）。
 ### 调用的先后画在分列的边和交接线上，按名次上色
 - 决定：分列里有一个「时间顺序」开关：看得见的列里的边和交接线放在一起，按第一次发生的先后排名 1…N（跨线程），按名次在三个色标之间插值上色、标序号。

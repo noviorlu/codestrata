@@ -71,7 +71,7 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 ## 要知道的坑
 - 别为了看数据去重录（trace 是 record：可能占 GPU、跑几分钟）。数据不够先问用户。
 - `--phase` 切阶段时 codestrata 会停 0.1 s，阶段开头那 0.1 s 不是被录的程序在干活。
-- CUDA graph / torch.compile 替掉的模型 Python 代码不进录制；共享内存、deque、SimpleQueue、线程池 submit 的交接没录。
+- CUDA graph / torch.compile 替掉的模型 Python 代码不进录制；deque、SimpleQueue、线程池 submit 的交接没录（共享内存 10-10 之后录的 run 才有）。
 - 轮询的列调用多不代表在干活。切段里「空转」= 这一轮只做便宜的、每轮都做的事、也没交出数据；段 = 一个进程一块干活的时间（先后两次请求就是两段）。
   段的名字（thinker / talker）codestrata 不给：看「这段里只有它跑」的文件自己叫，并说明依据。
 - 切段认不准的形状：每轮都交接一次的循环（心跳）、同名的几条线程各有一个循环、交替得很密的两个进程（调小 --gap）。拿不准时用 steps --list 一轮轮核对。

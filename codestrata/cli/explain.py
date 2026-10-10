@@ -158,7 +158,7 @@ def _where(e: dict) -> str:
 
 def _link_text(d: dict, lo: int) -> list[str]:
     a, b = d["from"], d["to"]
-    va, vb = {"zmq": ("发", "收")}.get(d["via"], ("放", "取"))
+    va, vb = {"zmq": ("发", "收"), "shm": ("写", "读")}.get(d["via"], ("放", "取"))
     rng = out.secs(d["first_us"], lo) + (f" → {out.secs(d['last_us'], lo)}" if d["last_us"] != d["first_us"] else "")
     L = [f"连线 {out.quote(d['item'])}：这段时间里 {d['n']} 次（{rng}）。时刻从这一段开头（t={lo}）算"]
     if len(d["kinds"]) > 1 or d["n_kinds"] > len(d["kinds"]):

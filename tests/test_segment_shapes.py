@@ -223,6 +223,35 @@ def test_alternating_stages():
     assert A["ix"]["keys"][lane(A, "stageA/MainThread")["loop"]["head"]] == "eng/sched.py:10"
 
 
+def test_waiting_rounds_do_not_bridge():
+    """收数据的线程等超时：轮的长短不一（偶尔长 5 倍以上），但一大半时间不在仓库函数里——算「在等」，不把开头收请求时登记的那两轮
+    和后面真干活的连成一大段；登记的那两轮在这个进程的前景里占得很少，记成零星的"""
+    K = ["e/loop.py:1", "e/sched.py:1", "e/reg.py:1", "e/work.py:1", "e/recv.py:1", "e/recv.py:9", CLIENT]
+    s = Script(K)
+    s.thread(10, 1, "MainThread", proc="python -m e.stage", title="StageProc_stage2")
+    s.thread(10, 2, "recv_loop", proc="python -m e.stage")
+    s.thread(30, 1, "MainThread", proc="python client.py")
+    req = s.call(30, 1, 0, 100_000, 6)
+    r1 = s.call(10, 1, -10, 100_020, 0)
+    r2 = s.call(10, 2, -10, 100_020, 4)
+    for k in range(100):
+        t = k * 1000
+        s.call(10, 1, t, 50, 1, parent=r1)
+        if k in (1, 2):                                   # 收到请求时登记一下（便宜的两轮）
+            s.call(10, 1, t + 60, 30, 2, parent=r1)
+        if 60 <= k < 90:                                  # 真干活
+            s.call(10, 1, t + 100, 800, 3, parent=r1)
+    t = 0
+    for k in range(300):                                  # 收数据的线程：每轮调一下 recv，大多 0.3 ms 一轮，每 10 轮等一次 2 ms 的超时
+        s.call(10, 2, t, 20, 5, parent=r2)
+        t += 2000 if k % 10 == 0 else 300
+    s.handoff("zmq", (30, 1, req, 500), (10, 1, r1, 900))
+    rd = s.write(tmpdir("cs-shape-"), phases=[["start", 0], ["serving", 0]], rec=REC)
+    A, segs, _ = cut(rd, 0, 100_000)
+    assert brief(segs) == [("StageProc_stage2", 60_000, 90_000)], brief(segs)
+    assert segs[0]["stray"] and segs[0]["stray"][0][0] == 1_000, segs[0]["stray"]
+
+
 def test_head_counts():
     """轮头：一轮调两次的（相邻两次轮头之间正好两次）去掉；只在忙的轮里调的（10 次）不会让每轮都调的（100 次）被当成它的倍数"""
     K = ["e/loop.py:1", "e/has.py:1", "e/sched.py:1", "e/exec.py:1", "e/sample.py:1", "e/update.py:1"]

@@ -24,6 +24,9 @@
     G <t_us> <tid> <span> <行> <种类> <队列 id> <对象 id>   从队列里取出一个对象
     O <t_us> <tid> <span> <行> <指纹>     ZMQ 发出一条消息（指纹：每一段的长度 + 首尾 32 字节的哈希）
     I <t_us> <tid> <span> <行> <指纹>     ZMQ 收到一条消息（asyncio 版的 span 和行是 await 它的那个协程、那一行）
+    D <t_us> <tid> <span> <行> <名字哈希>  建了一块共享内存（multiprocessing.shared_memory，create=True）
+    A <t_us> <tid> <span> <行> <名字哈希>  连上了一块共享内存（按名字）
+    U <tid> <系统线程号>                  线程的系统线程号（GPU 录制按它把 kernel 的启动对上线程）
 
 <行> 是那个 span 的函数里正执行到的那一行（起线程、放 / 取、发 / 收、join 的那一行代码；经仓库外的代码转了一道的，是调进仓库外
 代码的那一行），不在任何 span 里是 0。2026-10-01 之前录的日志没有 <行>、没有守护、没有 X / J / W 行，照样读（行记成 0）。
@@ -53,9 +56,10 @@ events/raw.tar.gz 里永久保留）：
 -1 是不在任何 span 里，line 0 是不知道；how 是 exec / fork；t_us 只有 exec 的有）。
 谁回收了谁（X / J / W 行）：thread_end {pid: {tid: {"t": run 跑完的 t_us 或 null, "by": [join 它的 tid, row, line, t_us] 或 null}}}
 （只有起它的时候记下了 F 行的线程才有）、reaps [{pid, tid, row, line, child, t_us}]（waitpid 等到子进程退出的那一边）。
-谁把数据交给谁（Q / G / O / I 行）整理进 handoffs：[{via, from: [pid, tid, row, t_us, line], to: [pid, tid, row, t_us, line]}]，
-via 是 queue / asyncio / janus / zmq。队列在同一个进程映像里按（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配
-（发的时刻不晚于收的）。同一个线程里自己放自己取的不算交接。
+谁把数据交给谁（Q / G / O / I / D / A 行）整理进 handoffs：[{via, from: [pid, tid, row, t_us, line], to: [pid, tid, row, t_us, line]}]，
+via 是 queue / asyncio / janus / zmq / shm。队列在同一个进程映像里按（队列, 对象）先进先出地配；ZMQ 跨进程按指纹先发先收地配
+（发的时刻不晚于收的）；共享内存按名字：建了之后、下一次同名的建之前，别的进程第一次连上它的那一次（2026-10-10 起录）。
+同一个线程里自己放自己取的不算交接。
 这几处的 row（span 下标）：发生在被合成一行的连续调用（rep > 1）里的，不管是其中第几次，都是合成的那一行
 （2026-10-08 及以前整理的只有第一次对，其余是 -1；`runs merge` 重新整理就对了）。
 
@@ -145,7 +149,7 @@ def parse(path: Path) -> dict:
                         x = x[:4] + ["0"] + x[4:]
                     tag, mt, mtid, msp, mln, kind, qid, oid = x
                     out["msgs"].append((tag, int(mt), int(mtid), int(msp), (kind, qid, oid), int(mln)))
-                elif ln[:2] in ("O ", "I "):
+                elif ln[:2] in ("O ", "I ", "D ", "A "):
                     x = ln.split()
                     if len(x) == 5:
                         x = x[:4] + ["0"] + x[4:]
@@ -437,10 +441,12 @@ _VIA = {"q": "queue", "a": "asyncio", "j": "janus"}
 
 
 def _handoffs(images: list[tuple], row_of) -> list[dict]:
-    """Q / G / O / I 行 → index.json 的 handoffs（见模块说明）"""
+    """Q / G / O / I / D / A 行 → index.json 的 handoffs（见模块说明）"""
     out: list[dict] = []
     sends: dict[str, list] = {}                   # ZMQ：指纹 → [(t, 那一边)]，跨进程配
     recvs: dict[str, list] = {}
+    made: dict[str, list] = {}                    # 共享内存：名字哈希 → [那一边]（建的 / 连上的），跨进程配
+    opened: dict[str, list] = {}
     for img, pid, off, base, lg in images:
         puts: dict[tuple, list] = {}
         for tag, t, tid, sp, what, ln in sorted(lg["msgs"], key=lambda m: m[1]):
@@ -453,8 +459,18 @@ def _handoffs(images: list[tuple], row_of) -> list[dict]:
                     src = q.pop(0)
                     if src[1] != side[1]:
                         out.append({"via": _VIA.get(what[0], what[0]), "from": src, "to": side})
+            elif tag in ("D", "A"):
+                (made if tag == "D" else opened).setdefault(what, []).append(side)
             else:
                 (sends if tag == "O" else recvs).setdefault(what, []).append(side)
+    for h, ms in made.items():                    # 每建一块：到下一次同名的建之前，别的进程第一次连上它
+        ms.sort(key=lambda s: s[3])
+        os_ = sorted(opened.get(h, ()), key=lambda s: s[3])
+        for k, m in enumerate(ms):
+            end = ms[k + 1][3] if k + 1 < len(ms) else None
+            hit = next((o for o in os_ if o[3] >= m[3] and (end is None or o[3] < end) and o[0] != m[0]), None)
+            if hit is not None:
+                out.append({"via": "shm", "from": m, "to": hit})
     for fp, rs in recvs.items():
         ss = sorted(sends.get(fp, ()), key=lambda s: s[3])
         i = 0

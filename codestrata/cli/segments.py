@@ -68,7 +68,7 @@ def run(a) -> out.Result:
         for g in s["gaps"]:
             last = f"上一次是 {out.secs(g['last_us'], base)} 的 {g['last_via']}" if g["last_us"] is not None else "这一段里之前一次都没有"
             lines.append(f"    ⚠ 开始前 {g['before_us'] / 1e6:.1f} s 没录到别的进程交给 {s['proc']} 的数据（{last}）："
-                         "可能走了没录的通道（共享内存、deque…）")
+                         "可能走了没录的通道（deque、管道…；10-10 之前录的 run 还没录共享内存）")
     if not segs:
         lines.append("没切出段：这段时间里没有认得出主循环、又在干活的列（codestrata lanes 看看有哪些列）")
     for e in loose:
@@ -84,6 +84,13 @@ def run(a) -> out.Result:
         lines.append(f"背景（只在轮询）  {'、'.join(bg)}")
     if len(reqs) > 1 and not alone:
         c.warnings.append({"code": "many_requests", "msg": f"这段时间里有 {len(reqs)} 次请求：一段里可能混着几次请求（span 里没有请求 id，分不开）"})
+    elif reqs and not alone:                        # 一次调用里并发了几个请求：看持有请求的进程开头往外交了几次（推的）
+        holder = {A["procs"].get(q["pid"]) for q in reqs}
+        first = min((g for g in groups if g["from"].partition("/")[0] in holder), key=lambda g: g["first_us"], default=None)
+        if first and first["n"] > len(reqs):
+            c.warnings.append({"code": "many_requests", "msg": f"{common.short(reqs[0]['fn'])} 只调了 {len(reqs)} 次，开头却交给 {first['to']} "
+                               f"{first['n']} 次（{first['via']}）：多半是一次调用里并发了 {first['n']} 个请求，一段里混着几次请求"
+                               "（按开头交出去的次数推的；span 里没有请求 id，分不开）"})
     if r.lanes:
         c.warnings.append({"code": "lanes_ignored", "msg": f"segments 切的是整个范围里的所有进程，REF 里的列（/{','.join(r.lanes)}）没用上"})
     mp = common.main_phase(r.run)

@@ -763,7 +763,8 @@ if _root and _out:
 
     # ---- 谁把数据交给谁（时序事件开着时）。进程内的队列：put 时、get 时各写一行（Q / G），带队列和对象的 id——
     # 对象在队列里的时候一直活着，整理时同一个队列里同一个对象的 put 和 get 配成一对。ZMQ：发、收各写一行（O / I），
-    # 带消息的指纹（每一段的长度 + 首尾 32 字节的哈希），整理时按指纹、先发先收配对（跨进程）。都算进行数上限。
+    # 带消息的指纹（每一段的长度 + 首尾 32 字节的哈希），整理时按指纹、先发先收配对（跨进程）。共享内存：建一块、连上一块各写一行
+    # （D / A），带名字的哈希，整理时跨进程按名字配。都算进行数上限。
     # 这些模块不为了打补丁主动 import：第一次 import 完的时候打（_OnImport），已经 import 过的马上打
     def _ev_put(tag, kind, q, item):
         if _ev_room():
@@ -910,9 +911,28 @@ if _root and _out:
                 return fut
             S.recv_multipart = recv_multipart
 
+    def _shm_patch(mod):
+        # 共享内存按名字交接（multiprocessing.shared_memory）：建一块（create=True）记 D，连上一块记 A，带名字的哈希；
+        # 整理时同一个名字建了之后、别的进程第一次连上它配成一对（vllm-omni 的 stage 之间每块数据一个新名字）
+        S = mod.SharedMemory
+        init0 = S.__dict__.get("__init__")
+        if init0 is None:
+            return
+        def __init__(self, name=None, create=False, size=0, *a, **kw):
+            init0(self, name, create, size, *a, **kw)
+            try:
+                if _ev_room():
+                    sp, ln = _ev_here()
+                    h = hashlib.blake2b(str(self.name).encode("utf-8", "replace"), digest_size=8).hexdigest()
+                    _ev.append("%s %d %d %d %d %s" % ("D" if create else "A", _ev_t(), _ev_tid(), sp, ln, h))
+            except Exception:
+                pass
+        S.__init__ = __init__
+
     _patches = {}
     if _EV:
         _patches = {
+            "multiprocessing.shared_memory": _shm_patch,
             "queue": lambda m: [_queue_patch(c, "q", "_put", "_get") for c in (m.Queue, m.PriorityQueue, m.LifoQueue)],
             "asyncio.queues": lambda m: [_queue_patch(c, "a", "_put", "_get")
                                          for c in (m.Queue, m.PriorityQueue, m.LifoQueue)],

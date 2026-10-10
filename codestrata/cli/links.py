@@ -18,7 +18,7 @@ EXAMPLE = "codestrata links 20261001-170349-run_single_prompt@serving"
 
 KINDS = ("handoff", "spawn", "join", "launch")
 # 两头各叫什么：放 / 取、发 / 收……
-_VERB = {"queue": ("放", "取"), "asyncio": ("放", "取"), "janus": ("放", "取"), "zmq": ("发", "收"),
+_VERB = {"queue": ("放", "取"), "asyncio": ("放", "取"), "janus": ("放", "取"), "zmq": ("发", "收"), "shm": ("写", "读"),
          "thread": ("起", "线程入口"), "exec": ("起", "子进程"), "fork": ("fork", "子进程"),
          "join": ("被等的", "等到"), "wait": ("被等的", "等到"), "cuda": ("启动", "kernel")}
 

@@ -3012,6 +3012,73 @@ _FH = {
 }
 
 
+_SHM = {
+    "shmapp/__init__.py": "",
+    "shmapp/main.py": """import os
+from multiprocessing import shared_memory
+
+
+def put_block(name, data):        # 建一块共享内存、写进去（vllm-omni 的 stage 之间那样：每块一个新名字）
+    s = shared_memory.SharedMemory(create=True, size=len(data), name=name)
+    s.buf[:len(data)] = data
+    s.close()
+
+
+def take_block(name, n):          # 别的进程按名字连上、读走、删掉
+    s = shared_memory.SharedMemory(name=name)
+    out = bytes(s.buf[:n])
+    s.close()
+    s.unlink()
+    return out
+
+
+def main():
+    name = "cs_test_shm_%d" % os.getpid()
+    put_block(name, b"x" * 64)
+    pid = os.fork()
+    if pid == 0:
+        take_block(name, 64)
+        os._exit(0)
+    os.waitpid(pid, 0)
+
+
+if __name__ == "__main__":
+    main()
+""",
+}
+
+
+def test_shm_handoff():
+    """跨进程的共享内存交接（multiprocessing.shared_memory，按名字配）：父进程 put_block 里建一块的那一行 → fork 的子进程
+    take_block 里按名字连上的那一行，handoffs 里一条 via shm；分列里是两个进程之间的一条交接线"""
+    from codestrata import events, lanes
+    repo = tmpdir("cs-runs-shm-") / "repo"
+    for rel, src in _SHM.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "shm", "--events", "--", PY, "-m", "shmapp.main")
+    run, rd, phase = runs.resolve(repo, "shm")
+    sd = rd / "events" / "spans"
+    ix, kj = json.loads((sd / "index.json").read_text()), json.loads((sd / "keys.json").read_text())
+    hs = [h for h in ix["handoffs"] if h["via"] == "shm"]
+    assert len(hs) == 1, ix["handoffs"]
+    h = hs[0]
+    code = _SHM["shmapp/main.py"].splitlines()
+    ln = lambda s: next(i for i, x in enumerate(code, 1) if x.strip() == s)      # noqa: E731
+    assert h["from"][0] != h["to"][0], h
+    assert h["from"][4] == ln("s = shared_memory.SharedMemory(create=True, size=len(data), name=name)"), h
+    assert h["to"][4] == ln("s = shared_memory.SharedMemory(name=name)"), h
+    rows = {p: events.read_spans(sd, p) for p in (h["from"][0], h["to"][0])}
+    fn = lambda side: kj["keys"][rows[side[0]][side[2]][5]]                       # noqa: E731
+    assert fn(h["from"]) == _line(repo, "shmapp/main.py", "def put_block(") and fn(h["to"]) == _line(repo, "shmapp/main.py", "def take_block("), h
+    idx = ui_load.load_index(repo)
+    hot, _ = runs.load_run(repo, idx, run, rd, None)
+    L = lanes.build(idx, rd, run, None, hot, None)
+    assert any(k["kind"] == "handoff" and k["via"] == "shm" and k["from"]["lane"].split(":")[0] != k["to"]["lane"].split(":")[0]
+               for k in L["links"]), [(k["kind"], k["via"]) for k in L["links"]]
+
+
 def test_handoff_in_folded_calls():
     """循环里反复调同一个仓库函数、它里面 q.put(x)：这几次调用合成 span 的一行（rep 5），5 次放的那一头都落在这一行上、
     标出 put_one 和 q.put 的那一行——不能只有第一次对、其余成了 -1（不在任何 span 里，分列里那一头就退成这条线程栈底的

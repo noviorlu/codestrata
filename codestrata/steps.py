@@ -13,9 +13,11 @@
     常规  这一列自己的「便宜的那几类轮」（按这一轮调到的函数分类，占得够多的类里，在仓库函数里的时间的中位不超过最少那类 cheap 倍的）
           调到的函数合起来。不和 run 里别处空闲了多久挂钩：忙的轮再多也不会把干活的函数算成常规。
           只有一类轮时它就是常规（只靠交接和超长分前景：每轮都在出 token 的 stage 靠交接，没有交接的单进程程序见 segments 的 alone）。
-    超长  墙上时长比便宜的那几类轮的中位长 long 倍以上。
+    超长  墙上时长比便宜的那几类轮的中位长 long 倍以上。只是长（没多调函数、没交接）、一大半时间不在仓库函数里的（收数据的线程等超时、
+          阻塞在仓库外取请求）记成「在等」（wait）：steps 照样列成超长，切块时不算前景。
     空转  只调常规的函数、没有交接、也不超长的轮（整个 run 一次交接都没录到时，叫「常规轮」：分不清是空等还是每轮干一样的活）。
-    忙段  一个进程里几列的前景轮（不空转的）合在一起按时刻排，在中间空转超过「REF 所在的阶段的长度」的 gap 处切开（segments 一块一段）。
+    忙段  一个进程里几列的前景轮（不空转、也不是在等的）合在一起按时刻排，在中间空转超过「REF 所在的阶段的长度」的 gap 处切开
+          （segments：至少两轮、占这个进程前景时间 MIN_BLOCK_SHARE 以上的一块一段，别的是零星的）。
 阈值都能在命令行上改（Params），输出里带上用的是哪一套（basis）。
 
 输入是 seq.pid_rows 的行（span：[t0, dur, tid, depth, a, b, rep, n_susp, parent, (gpu)]）。只认带 parent 的 span
@@ -179,6 +181,8 @@ def cut_rounds(loop: dict, lr: list, ho_out: list, ho_in: list, p: Params | None
         x["extra"] = sorted(b for b in x["kids"] if b not in regular)
         x["long"] = base_med > 0 and x["dur_us"] > p.long * base_med
         x["spin"] = not x["extra"] and not x["out"] and not x["in"] and not x["long"]
+        # 只是长、一大半时间不在仓库函数里：多半是在等（收数据的线程等超时、阻塞在仓库外取请求），切块时不算前景
+        x["wait"] = x["long"] and not x["extra"] and not x["out"] and not x["in"] and x["work_us"] < 0.5 * x["dur_us"]
     return rs, regular
 
 
