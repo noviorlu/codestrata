@@ -47,7 +47,7 @@ def run(a) -> out.Result:
     lane_id = _lanes.lane_id
 
     try:
-        p = _path.request_path(idx, r.rd, r.run, r.phase, hot, max_rows=None)
+        p = _path.request_path(idx, r.rd, r.run, r.phase, hot, max_rows=None, proc_order=common.proc_order(c, common.labeler(idx)))
     except LookupError as e:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:

@@ -43,7 +43,7 @@ def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str]]:
     r = c.res
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
     try:
-        b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None)
+        b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None, proc_order=common.proc_order(c, common.labeler(idx)))
     except LookupError as e:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:

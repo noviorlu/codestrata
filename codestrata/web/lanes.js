@@ -21,7 +21,11 @@ window.CS = window.CS || {};
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmtN(n) { return n >= 10000 ? (n / 10000).toFixed(n >= 100000 ? 0 : 1) + '万' : String(n); }
   function short(k) { return k ? k.slice(k.indexOf('#') + 1) : ''; }
-  function laneName(id) { return id.slice(id.indexOf(':') + 1); }
+  /* 列的名字：后端给的稳定写法（stage1/MainThread，和命令行、地址栏一样；用户 10-10 定页面也用它），没有就用线程名 */
+  function laneName(id) {
+    var a = CS.lanes && CS.lanes.L && CS.lanes.L.aliases && CS.lanes.L.aliases[id];
+    return a || id.slice(id.indexOf(':') + 1);
+  }
   // TOP：图框左上角浮着缩放按钮，进程头、列头往下让一点
   // HEAD：列头（线程名、仓库外的代码、起 / 收两行）的底
   var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72;
@@ -90,11 +94,13 @@ window.CS = window.CS || {};
       this.ready = null;
       // drawn：这次取数画完（搜索选中、改切面之后要等它画好再找节点）
       // 共用的切面 + 各列单独的切面（lanecut.js）
-      return (this.drawn = CS.ds.lanes(d.open, CS.laneCut.query()).then(function (L) {
+      var vq = this.viewQuery();
+      return (this.drawn = CS.ds.lanes(d.open, CS.laneCut.query(), vq).then(function (L) {
         if (tok !== self._tok) return;
         // 改切面画好之后接着选的，是这一刻选着的（取数可能要好几秒，这期间在旧图上点的那个算数）
         if (self.afterCut) self.afterCut.snap = self.snapshot();
         self.data = L;
+        self.order = L.order; self.orderQ = vq;
         CS.laneCut.settle(L);
         self.panelData(L);
         self.draw(svg, L, d.graphHot || d.graph, d.names || {});
@@ -304,12 +310,12 @@ window.CS = window.CS || {};
 
       // 进程头：名字 + 收起 / 展开
       procs.forEach(function (P) {
-        var name = P.lanes[0].proc, fold = !!self.collapsed[P.pid];
+        var name = P.lanes[0].proc, fold = !!self.collapsed[P.pid], alias = self.procAlias(P.pid);
         var g = el('g', { class: 'ln-proc', 'data-pid': P.pid });
         g.appendChild(el('rect', { x: P.x, y: TOP + 2, width: Math.max(P.w, 40), height: 22, rx: 6 }));
         var t = el('text', { x: P.x + 22, y: TOP + 17, class: 'ln-pname' });
-        t.textContent = name + '（pid ' + P.pid + '）';
-        var tip = el('title', {}); tip.textContent = name + '（pid ' + P.pid + '）\n' + P.lanes.length + ' 列；点 '
+        t.textContent = alias;
+        var tip = el('title', {}); tip.textContent = alias + '：' + name + '（pid ' + P.pid + '）\n' + P.lanes.length + ' 列；点 '
           + (fold ? '▸ 展开' : '▾ 收起'); g.appendChild(tip);
         g.appendChild(t);
         var b = el('text', { x: P.x + 8, y: TOP + 17, class: 'ln-fold', role: 'button', tabindex: '0',
@@ -335,9 +341,10 @@ window.CS = window.CS || {};
           return;
         }
         var ln = C.lane;
-        head.textContent = ln.thread + (ln.n_threads > 1 ? ' ×' + ln.n_threads : '');
+        var lal = laneName(ln.id);
+        head.textContent = lal.slice(lal.indexOf('/') + 1) + (ln.n_threads > 1 ? ' ×' + ln.n_threads : '');
         var tip = el('title', {});
-        tip.textContent = ln.proc + ' · ' + ln.thread + (ln.n_threads > 1 ? '（' + ln.n_threads + ' 个线程）' : '')
+        tip.textContent = lal + '：' + ln.proc + ' · ' + ln.thread + (ln.n_threads > 1 ? '（' + ln.n_threads + ' 个线程）' : '')
           + (ln.thread_names && ln.thread_names.length && (ln.thread_names.length > 1 || ln.thread_names[0] !== ln.thread)
              ? '\n原名：' + ln.thread_names.join('、') + (ln.n_threads > ln.thread_names.length ? ' …' : '') : '')
           + (ln.external ? '\n只跑仓库外的代码（这里没有节点），是交接的一头才列出来' : '')
@@ -648,16 +655,18 @@ window.CS = window.CS || {};
       });
       this.links.forEach(function (E) { E.show = true; });
       CS.graph.counts = cnt;
-      // 时间顺序：看得见的列里的边 + 交接连线放在一起，按第一次发生的先后排名（跨线程），按名次上色、标序号
+      // 时间顺序：编号是后端按这个视图（收起的进程、开关、只看的列）排好的（laneorder.py，命令行的 explain 24 用同一份）；
+      // 视图变了先按旧编号画，重取回来再画
       var tm = !!(s.timeOrder && CS.app.canTimeOrder());
       var w = this.L.window || [0, 0];
-      var list = tm ? this.edges.concat(this.links.filter(function (E) { return E.k.kind === 'handoff'; }))
-        .filter(function (E) { return E.show && E.first != null && E.first >= w[0] && E.first <= w[1]; }) : [];
-      list.sort(function (p, q) { return p.first - q.first || (p.last || 0) - (q.last || 0) || (p.key < q.key ? -1 : 1); });
+      if (tm && this.viewQuery() !== this.orderQ) this.reorder();
+      var keys = (this.order && this.order.keys) || {};
+      var list = tm ? this.edges.concat(this.links).filter(function (E) { return E.show && keys[E.key] != null; }) : [];
+      list.sort(function (p, q) { return keys[p.key] - keys[q.key]; });
       var n = list.length;
       this.edges.concat(this.links).forEach(function (E) { E._t = null; });
-      list.forEach(function (E, i) {
-        E._t = { k: i, n: n, repeat: !!(E.kind === 'edge' ? E.e.repeat : E.k.repeat) };   // 反复调用：后端按 seq.is_repeat 算好的
+      list.forEach(function (E) {
+        E._t = { k: keys[E.key], n: n, repeat: !!(E.kind === 'edge' ? E.e.repeat : E.k.repeat) };   // 反复调用：后端按 seq.is_repeat 算好的
       });
       function sec(us) { return when(us, w[0]); }
       this.edges.concat(this.links).forEach(function (E) {
@@ -676,6 +685,38 @@ window.CS = window.CS || {};
       this.timed = n;                                // 开关上的数（app.edgeChips 在分列下读它）
       CS.graph.times = tm ? { window: w, truncated: this.L.truncated || [] } : null;
       this.applySel();
+    },
+
+    /* 视图里只影响编号的那几个键（地址栏的写法：进程用别名）：fold=收起的进程&hide=藏起的边（hot / dyn） */
+    viewQuery: function () {
+      var self = this, s = CS.graph.state, q = [];
+      var fold = Object.keys(this.collapsed).filter(function (p) { return self.collapsed[p]; }).map(function (p) { return self.procAlias(p); }).sort();
+      if (fold.length) q.push('fold=' + encodeURIComponent(fold.join(',')));
+      var hide = [];
+      if (s.hot === false) hide.push('hot');
+      if (s.dyn === false) hide.push('dyn');
+      if (hide.length) q.push('hide=' + hide.join(','));
+      return q.join('&');
+    },
+
+    /* 进程的别名（stage1）：后端给的，没有就写 pid */
+    procAlias: function (pid) {
+      var a = this.L && this.L.proc_aliases && this.L.proc_aliases[pid];
+      return a || String(pid);
+    },
+
+    /* 视图变了（收起进程、切开关）：重取编号再画 */
+    reorder: function () {
+      var self = this, vq = this.viewQuery(), d = CS.app.data;
+      if (this._reordering === vq) return;
+      this._reordering = vq;
+      CS.ds.laneOrder(d.open, CS.laneCut.query(), vq).then(function (o) {
+        self._reordering = null;
+        if (self.viewQuery() !== vq) return;           // 又变了：等下一次
+        self.order = o; self.orderQ = vq;
+        self.paint();
+        if (CS.app.edgeChips) CS.app.edgeChips();
+      }).catch(function () { self._reordering = null; });
     },
 
     /* 序号牌：上了色的边 / 连线上画一个同色的小牌子，先试中点、被节点或别的牌子挡住就沿路径挪 */

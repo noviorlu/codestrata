@@ -12,7 +12,8 @@
 from __future__ import annotations
 
 import statistics
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 
 from . import lanes as _lanes
 from . import seq as _seq
@@ -192,3 +193,35 @@ def background(A: dict, segs: list[dict]) -> list[str]:
     """只在轮询的列（不在任何段里当主循环的）"""
     mains = {s["main"] for s in segs}
     return sorted(ln["alias"] for ln in A["lanes"].values() if ln["kind"] == "poll" and ln["alias"] not in mains)
+
+
+_ORDER: "OrderedDict[tuple, dict]" = OrderedDict()   # (span 目录, index 的 mtime, 时间段) → proc_order 的结果（最近 8 个）
+_ORDER_LOCK = threading.Lock()
+
+
+def proc_order(rd, run: dict, phase: str | None, lo: int, hi: int, label) -> dict[int, int]:
+    """进程的先后（用户 10-10 定：按这一段里开始干活的先后）：{pid: 开始干活的时刻}。持有请求的进程从请求开始算，
+    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。老 run（没录交接）是空的。
+    按 (run, 时间段) 缓存：分列改切面、收起进程都不再算"""
+    spans = rd / "events" / "spans"
+    try:
+        key = (str(spans), (spans / "index.json").stat().st_mtime_ns, lo, hi, phase)
+    except OSError:
+        return {}
+    with _ORDER_LOCK:
+        hit = _ORDER.get(key)
+    if hit is not None:
+        return hit
+    out: dict[int, int] = {}
+    if not old_format(rd):
+        A = analyse(rd, lo, hi)
+        reqs = requests(A, run, phase, lo, hi, label)
+        for q in reqs:
+            out[q["pid"]] = min(out.get(q["pid"], q["t0_us"]), q["t0_us"])
+        for sg in stage_segments(A, lo, hi, {q["pid"] for q in reqs}):
+            out.setdefault(sg["pid"], sg["slices_us"][0][0])
+    with _ORDER_LOCK:
+        _ORDER[key] = out
+        while len(_ORDER) > 8:
+            _ORDER.popitem(last=False)
+    return out

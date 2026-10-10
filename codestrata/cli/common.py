@@ -118,3 +118,11 @@ def add_params(p) -> None:
 def params(a):
     from .. import steps as _steps
     return _steps.Params(min_calls=a.min_calls, min_share=a.min_share, long=a.long, gap=a.gap)
+
+
+def proc_order(c: Ctx, label) -> dict:
+    """进程的先后：这一段里开始干活的先后（和页面一样，segments.proc_order）"""
+    from .. import segments as _segments
+    r = c.res
+    lo, hi = (r.slices[0][0], r.slices[-1][1]) if r.slices else (0, 0)
+    return _segments.proc_order(r.rd, r.run, r.phase, lo, hi, label)

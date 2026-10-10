@@ -242,5 +242,35 @@ def test_find_explain_path_on_toy():
     assert "unseen" in j["data"] and all(x["n"] >= 0 for x in j["data"]["unseen"]), j["data"].keys()
 
 
+def test_laneorder():
+    """时间顺序的编号按视图算：收起的进程、没选的列里的边不编；两头落在同一个收起窄列里的交接不编；
+    「其中代码里看不出」关了不编全是看不出的边；同一时刻的按稳定写法排（和列表下标无关）"""
+    from codestrata import laneorder
+    L = {"window": [0, 100],
+         "lanes": [{"id": "1:Main", "pid": 1, "nodes": {"a": {}, "b": {}}, "edges": [
+                       {"a": "a", "b": "b", "n": 2, "only": 0, "first": 10, "last": 20},
+                       {"a": "b", "b": "a", "n": 1, "only": 1, "first": 10, "last": 10}]},
+                   {"id": "1:w", "pid": 1, "nodes": {"c": {}}, "edges": []},
+                   {"id": "2:Main", "pid": 2, "nodes": {"a": {}, "d": {}}, "edges": [
+                       {"a": "a", "b": "d", "n": 1, "only": 0, "first": 5, "last": 5},
+                       {"a": "a", "b": "x", "n": 1, "only": 0, "first": 1, "last": 1}]}],      # x 不在这一列：不画、不编
+         "links": [{"kind": "handoff", "via": "zmq", "from": {"lane": "1:Main", "node": "a"}, "to": {"lane": "2:Main", "node": "a"},
+                    "first": 30, "last": 30},
+                   {"kind": "handoff", "via": "queue", "from": {"lane": "1:Main", "node": "a"}, "to": {"lane": "1:w", "node": "c"},
+                    "first": 40, "last": 40},
+                   {"kind": "spawn", "via": "thread", "from": {"lane": "1:Main"}, "to": {"lane": "1:w"}, "first": 2, "last": 2},
+                   {"kind": "handoff", "via": "zmq", "from": {"lane": "2:Main"}, "to": {"lane": "1:Main"}, "first": 500, "last": 500}]}
+    al = {"1:Main": "p1/Main", "1:w": "p1/w", "2:Main": "p2/Main"}
+    o = laneorder.rank(L, al)
+    assert [o["keys"][k] for k in ("e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1")] == [0, 1, 2, 3, 4], o
+    assert o["n"] == 5 and o["ids"][1] == "e:p1/Main|b|a", o["ids"]          # 同一时刻 10：先比最后一次，再比稳定写法
+    o = laneorder.rank(L, al, hide={"dyn"})
+    assert "e:1:Main|b|a" not in o["keys"] and o["n"] == 4
+    o = laneorder.rank(L, al, fold={1})
+    assert set(o["keys"]) == {"e:2:Main|a|d", "l:0"}, o["keys"]               # 进程 1 收起：它的边、它里面两头的交接都不编
+    o = laneorder.rank(L, al, lanes={"1:Main", "2:Main"})
+    assert set(o["keys"]) == {"e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1"}, o["keys"]   # 1:w 收进窄列，交接照接
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

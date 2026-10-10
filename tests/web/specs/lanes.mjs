@@ -262,7 +262,7 @@ export default async function (t) {
                       && [...document.querySelectorAll('#det .lk-code')].some(c => c.textContent === 't.join()')
                       && [...document.querySelectorAll('#det .lk-code')].some(c => c.textContent === 'os.waitpid(pid, 0)')`, 5000),
      '点「■ 收」：这里收的几条都高亮，详情里是 join / waitpid 的那几行');
-  await page.ev(`[...document.querySelectorAll('#det [data-key]')].find(b => b.textContent === 'worker').click()`);
+  await page.ev(`[...document.querySelectorAll('#det [data-key]')].find(b => b.textContent.endsWith('/worker')).click()`);
   ok(await page.wait(`/^l:/.test(CS.lanes.sel || '') && document.querySelectorAll('#g .ln-link.sel').length === 1
                       && /谁回收了谁/.test(document.getElementById('det').textContent)
                       && [...document.querySelectorAll('#g .ln-code text')].some(x => /^收 · s_threads:\\d+ {2}t\\.join\\(\\)$/.test(x.textContent))`, 5000),
@@ -364,8 +364,8 @@ export default async function (t) {
     const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'consumer');
     return { life: [...col.querySelectorAll('.ln-life')].map(x => x.textContent), tip: col.querySelector('title').textContent,
              main: CS.lanes.L.lanes.some(l => l.thread === 'MainThread' && l.pid === CS.lanes.L.lanes.find(x => x.thread === 'consumer').pid) }; })())`));
-  ok(/^▶ 起 −[\d.]+ s（段前）$/.test(cl.life[0]) && /^■ 收 \+[\d.]+ s（段后）$/.test(cl.life[1]) && /由 MainThread/.test(cl.tip)
-     && (cl.main || /MainThread（这一段里没跑）/.test(cl.tip)), '起在段前、收在段后，各自标出来 ' + JSON.stringify(cl));
+  ok(/^▶ 起 −[\d.]+ s（段前）$/.test(cl.life[0]) && /^■ 收 \+[\d.]+ s（段后）$/.test(cl.life[1]) && /由 \S*MainThread/.test(cl.tip)
+     && (cl.main || /\S*MainThread（这一段里没跑）/.test(cl.tip)), '起在段前、收在段后，各自标出来 ' + JSON.stringify(cl));
 
   // 一段里一个调用都没有（run 结束很久之后的 1 µs；时间从 run 开始算）：不留一张白图，说清楚为什么空、怎么办；「叠加 run …」清掉
   const empty = '100000000000-100000000001';

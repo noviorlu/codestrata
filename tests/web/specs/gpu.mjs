@@ -13,7 +13,7 @@ export default async function (t) {
     gpuNodes: CS.lanes.nodes.filter(n => /GPU/.test(n.lane)).map(n => n.id).sort(),
     launch: CS.lanes.links.filter(E => E.k.kind === 'launch').map(E => [E.k.from.node, E.k.to.node, E.k.n, E.labTxt])
   })`));
-  ok(s.cols.some(c => c.indexOf('GPU 0 · 流 7') === 0), 'kernel 单独成一列：GPU 0 · 流 7（' + s.cols.join('、') + '）');
+  ok(s.cols.some(c => c.indexOf('gpu0.7') === 0), 'kernel 单独成一列，列头是命令行的写法 gpu0.7（' + s.cols.join('、') + '）');
   // 装了 tree-sitter（[native]）时 .cu 里的 k::scale 是仓库里的 kernel，落在放 .cu 的目录上；没装时它也在仓库外
   const nat = fx.gpu_native;
   ok(JSON.stringify(s.gpuNodes) === JSON.stringify(nat ? ['?gpu', 'dyn/csrc/'] : ['?gpu']),

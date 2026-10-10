@@ -128,10 +128,11 @@ def in_lane(lane: str):
 
 
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None,
-          cuts: dict | None = None) -> dict:
+          cuts: dict | None = None, proc_order: dict | None = None) -> dict:
     """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线],
     "units": [各列调到的单元（排好序）]}。open_ 是共用的切面（None 是默认切面）；cuts 是 {列 id: 这一列自己的切面}——
     列里的节点、边、入口，连线在这一列的那一头，都落在这一列的切面上。列按进程启动的先后排，进程里主线程在前。
+    proc_order：{pid: 开始干活的时刻}（segments.proc_order）——进程按它排，不在里面的按第一次活动排在后面；None 按进程启动的先后。
     列：{"id": "pid:线程名", "pid", "proc": 进程名, "thread": 归一之后的线程名, "names": 合进来的原名（最多 6 个）,
          "open": 这一列用的切面（规整过、排好序）, "u": 这一列调到的单元（units 的下标；和切面无关）,
          "n_threads", "first", "last", "entry": 入口节点,
@@ -601,9 +602,17 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             e["only"] = round(e["only"])
             e["repeat"] = _seq.is_repeat(e["n"], e["first"], e["last"], span_us)
         out.append(L)
-    # 进程按启动的先后（父进程在前；按第一次调用排的话，一开机就在轮询的进程会排到最前面），进程里按交接的顺序（_order）
+    # 进程：给了 proc_order 按这一段里开始干活的先后（用户 10-10 定），没给按启动的先后（父进程在前；按第一次调用排的话，
+    # 一开机就在轮询的进程会排到最前面）；进程里按交接的顺序（_order）
     rank = _order(out, links, pstart)
-    out.sort(key=lambda L: (pstart.get(L["pid"], L["first"]), L["pid"], rank[L["id"]]))
+    if proc_order is not None:
+        first: dict[int, int] = {}
+        for L in out:
+            first[L["pid"]] = min(first.get(L["pid"], L["first"]), L["first"])
+        pkey = {pid: (0, proc_order[pid]) if pid in proc_order else (1, first[pid]) for pid in first}
+        out.sort(key=lambda L: (pkey[L["pid"]], L["pid"], rank[L["id"]]))
+    else:
+        out.sort(key=lambda L: (pstart.get(L["pid"], L["first"]), L["pid"], rank[L["id"]]))
     links.sort(key=lambda x: (x["from"]["t"] if x["from"]["t"] is not None else 0))
     return {"phase": phase, "window": [lo, hi], "segs": [list(s) for s in segs], "scope": ix.get("scope") or "cross",
             "truncated": ix.get("truncated") or [],

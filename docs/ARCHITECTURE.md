@@ -100,8 +100,8 @@ flowchart LR
 | `runs.py` | 1118 | run 目录的建、收尾、迁移、解析（`pick`、`resolve`）、加载（`load` / `load_run`、`file_state`；一份计数放到当前 index 上是 `overlay`，分列里一列的叠加也用它）、管理、复刻命令 |
 | `events.py` | 483 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
 | `seq.py` | 373 | 时序事件（span）→ 一段时间（阶段、时间段、整个 run）里每个进程、每条线程的调用表（`phase_calls`，按 run 和时间段缓存；GPU 的行按设备 · 流另记一份）、整个 run 的线程和每条线程最底下的仓库函数（`run_rows`）、时间段计数（`window_counts`，调用行按整个 run 的比例摊）、阶段区间、「反复调用」（`is_repeat`）、GPU 的行跑了多少 ns（`gpu_ns`）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`） |
-| `path.py` | 333 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、只留几列 / 截行 `trim`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`，给了列就只算那一列） |
-| `lanes.py` | 729 | 运行时按进程 · 线程分列：每列这条线程调到的切面节点和边（每列可以有自己的切面，`cuts`）、调到的单元、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的；GPU kernel 按设备 · 流各一列），列之间谁起了谁、谁回收了谁、谁把数据交给谁、谁启动了哪个 kernel，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`）；列 id（`lane_id`、`gpu_lane_id`）和整个 run 的列别名（`run_aliases`）；一列在这一段里的调用（`lane_counts`，和 counts.json.gz 同样的形状；分列里节点、边的详情只算这一列用它）；GPU 的列的节点和 launch 连线带 GPU 时间（`gpu_us`） |
+| `path.py` | 336 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、只留几列 / 截行 `trim`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`，给了列就只算那一列） |
+| `lanes.py` | 738 | 运行时按进程 · 线程分列：每列这条线程调到的切面节点和边（每列可以有自己的切面，`cuts`）、调到的单元、起 / 收的摘要（只跑仓库外代码、但是交接一头的线程给一列空的；GPU kernel 按设备 · 流各一列），列之间谁起了谁、谁回收了谁、谁把数据交给谁、谁启动了哪个 kernel，同样两头的合成一条、两头带那一行代码（`build`，`/api/lanes`）；进程名（`proc_names`）；列 id（`lane_id`、`gpu_lane_id`）和整个 run 的列别名（`run_aliases`）；一列在这一段里的调用（`lane_counts`，和 counts.json.gz 同样的形状；分列里节点、边的详情只算这一列用它）；GPU 的列的节点和 launch 连线带 GPU 时间（`gpu_us`） |
 | `ui/load.py` | 90 | 界面取数：读索引（index.json + symbols.json）、叠一个 run（经 `runs.load`）、分列里一列的叠加（`load_lane`：只算这一列在这一段里的调用，调用行按比例摊） |
 | `ui/graphview.py` | 177 | 一个切面上的图：节点、scan 边、只有 trace 的边、框、排版、叠加（`/api/graph`）；框（`frame_tree`）、节点的符号 / 文件 / 文档（`node_details`）、短名（`short_names`）、切面上撞名的补父目录段（`cut_alias`）分列也用 |
 | `ui/lanesview.py` | 206 | 分列里和切面有关的数据（`/api/lanes` 在 `lanes.build` 上补的）：画出来的每个 id 的节点信息（同模块图的 pkgs / names / labels，加调用次数）、不在共用切面上的节点的符号 / 文件 / 文档、比共用切面细的节点挂在哪个节点的第几个子层（`place`）、每列的框和图上的名字；`?cuts=` 的解析（`parse_cuts`） |
@@ -112,22 +112,23 @@ flowchart LR
 | `ref.py` | 173 | REF 的语法（`RUN[@范围][/列]` 或页面地址）：解析、范围对着 run.json 规整成阶段名或 `t=起-止`、越界和写错的候选；不碰文件和网络，命令行和 `runs.resolve`（页面、老命令）共用 |
 | `locate.py` | 218 | 命令行的 REF 对上仓库和 run：仓库查找（`-C` 往上找 → 页面的 `/api/app`，核对 run 在不在 → 已知仓库里的 run id → 当前目录往上）、找不到时指到别的已知仓库、run 的警告（partial、中断、还在录、同一个 case 有更新的在录）、列对着整个 run 核对规整；只读 |
 | `steps.py` | 167 | 一列的主循环：认轮头（按次数投票）、切轮、常规 / 空转 / 超长、忙段、一轮里每个函数自己的时间；纯计算，判法和阈值（`Params`）写在文件头 |
-| `segments.py` | 194 | 按功能切段：读整个 run 的 span、每列认主循环（`analyse`），请求、每个进程的 stage 段、缺口、独有的文件、跨进程交接合成组、背景列；认老格式的 run（`old_format`） |
+| `segments.py` | 227 | 按功能切段：读整个 run 的 span、每列认主循环（`analyse`），请求、每个进程的 stage 段、缺口、独有的文件、跨进程交接合成组、背景列；认老格式的 run（`old_format`）；进程的先后（`proc_order`，按 run 和时间段缓存，分列和请求路径用） |
 | `funcref.py` | 47 | 命令行里写的函数（限定名、路径#限定名、唯一的名字）→ trace 的键；对不上 / 对上几个时给候选 |
 | `finder.py` | 95 | find：按名字找函数 / 类 / 文件 / 目录（完全一样 > 前缀 > 子串、通配），每个节点在各列的次数和时刻，类 / 文件 / 目录合起来 |
 | `explain.py` | 243 | explain 的原料：连线两头的代码原文、往上最近的分支头、函数的签名和 docstring、span 的调用链、之前最近收到的交接（inferred: time）、scan 的说法；函数的谁调它 / 它调谁 |
+| `laneorder.py` | 48 | 分列里时间顺序的编号：按视图（收起的进程、开关、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
 | `laneid.py` | 147 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`、`stage1/gpu0.7`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
 | `errors.py` | 36 | `CodestrataError`：稳定的错误码、候选、下一步、之前的警告；错误码 → 退出码 |
 | `cmdline.py` | 28 | 输出里能原样粘贴的 codestrata 命令（shlex 加引号、带上仓库）和「下一步」的一条 |
 | `confdir.py` | 21 | 配置目录（`$XDG_CONFIG_HOME/codestrata`）和主菜单记得的仓库 |
 | `cli/` | 1682 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`path`、`guide`）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封 |
-| `serve.py` | 499 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
+| `serve.py` | 555 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
 | `projects.py` | 199 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
 | `jobs.py` | 287 | 主菜单的后台任务（scan / trace 子进程）、`TraceSpec` 录制表单 |
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 37 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
-| `web/ds.js` | 66 | 数据源层：fetch serve 的 `api/*` |
+| `web/ds.js` | 74 | 数据源层：fetch serve 的 `api/*` |
 | `web/app.js` | 1018 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 568 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 721 | 详情面板：节点的事实和源码（GPU kernel 的次数和 GPU 时间），边上实际调了哪些函数（可按先后排）；分列里选中的是一列里的一份时，次数、文件树、kernel 表换成只算这一列的（`asCopy`，`/api/lanehot`），列里的边的详情也只算这一列（`/api/edge?lane=`）；GPU 列的一份的 kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久 |
@@ -135,7 +136,7 @@ flowchart LR
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 345 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 237 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/lanes.js` | 919 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
+| `web/lanes.js` | 960 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
 | `web/lanepack.js` | 167 | 分列的摆放（纯函数）：每个节点在第几行只看它自己（公共切面上的高度、在哪个节点里面的子行），一列换了切面不动别的列；一列里横着怎么排——展开的目录画成框，照模块图的轨道排法（框在左、散节点在右居中） |
 | `web/lanecut.js` | 125 | 分列里每列各自的切面（`CS.laneCut`）：共用的切面 + 各列单独的，改一列只重取分列；画好后只在改过的那一列里闪新节点、接着选原来选着的 |
 | `web/laneroute.js` | 576 | 分列的排线（纯函数）：节点放在哪、每条线怎么走——轨带里的横轨、列两侧和缝里的竖轨，按交叉最少排先后（ELK 式），往右的走上面、往左的走下面；放不下就推层、加宽；`picker` 找离一点最近的线 |
@@ -230,7 +231,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
   页面地址经真的 serve 找到仓库、run id 在已知仓库里找到。
 - `test_segments.py`：切段。`tests/synth.py` 造只有时序事件的假 run（两个 stage 进程、持有请求的进程、只在轮询的线程、
   合成一行的叶子、5 条同名线程、两个同名进程、截断、async、没返回、老格式），测轮头投票、超长不算空转、各种列、stage 段和缺口、交接分组、
-  --head 和阈值、自己的时间、老 run 拒绝、find 的匹配；再在真录的 toy 上测 segments / steps / links / find / explain / path --time --unseen 的信封和错误。
+  --head 和阈值、自己的时间、老 run 拒绝、find 的匹配；再在真录的 toy 上测 segments / steps / links / find / explain / path --time --unseen 的信封和错误；时间顺序的编号（`test_laneorder`）。
 - `bench/segments_scale.py`：切段在 N 行（默认 300 万）的假 run 上的冷启动时间和峰值内存，不是回归测试。
 - `test_package.py`：wheel 里带着 web/ 每个文件；拿整个工作区（连 .gitignore 挡着的）打的 sdist / wheel 里只有包、README、LICENSE、pyproject 和完整的测试，没有 .gitignore 挡着的文件、`.codestrata/`、构建残留；wheel 装进一个干净的 venv 能跑 scan、trace、serve；公开文档里没有内部内容；↻ 的判法写在图例和文档里的「至少 N 次」和 `seq.REPEAT_MIN` 一致；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签、分列的排线 `test_lane_route`、分列的摆放 `test_lane_pack`：框装得下、不越界、不压别的框，改一列不动别的列）。
