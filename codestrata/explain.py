@@ -151,7 +151,8 @@ def parse_link(item: str) -> tuple[str, str, str, str]:
     return parts[0][2:], parts[1], parts[2], parts[3]
 
 
-def link(repo: Path, rd: Path, idx: dict, hot: dict, item: str, lo: int, hi: int, label) -> dict:
+def link(repo: Path, rd: Path, idx: dict, hot: dict, item: str, lo: int, hi: int, label, at_us: int | None = None) -> dict:
+    """at_us：页面上画的那一条连线第一次的时刻（explain 24 按视图挑出来的）：这一组里从那次讲起"""
     kind, via, fa, ta = parse_link(item)
     if kind != "handoff":
         raise CodestrataError("usage", f"explain 现在只讲交接（handoff）的连线；{kind} 的用 codestrata links --kind {kind} 看两头")
@@ -170,7 +171,7 @@ def link(repo: Path, rd: Path, idx: dict, hot: dict, item: str, lo: int, hi: int
                         for h in ix.get("handoffs") or [] if lo <= h["from"][3] < hi})
         raise CodestrataError("item_not_found", f"这段时间里没有 {item} 这组交接", candidates=cands)
     evs.sort(key=lambda h: h["from"][3])
-    h = evs[0]
+    h = next((x for x in evs if at_us is not None and x["from"][3] >= at_us), evs[0])
     rows = {p: _seq.pid_rows(rd, p) for p in {h["from"][0], h["to"][0]}}
 
     def end(e: list) -> dict:
@@ -241,3 +242,19 @@ def function(repo: Path, rd: Path, run: dict, idx: dict, hot: dict, node: str, k
         out["first"] = {"lane": alias_of(pid, r[2]), "t_us": t0, "chain": chain(rows, i, keys, label)}
         out["recent_handoff"] = recent_handoff(ix, pid, r[2], t0, alias_of)
     return out
+
+
+# ---------------------------------------------------------------- 分列里列中的一条边
+
+def edge(repo: Path, idx: dict, lane_hot: dict, lane_alias: str, e: dict, top: int = 5) -> dict:
+    """列中的一条边（切面上两个节点之间、这一列里的调用）：是什么、底下次数最多的几对函数和调用那一行的原文、scan 的说法"""
+    from .ui import edge as _edge
+    d = _edge.edge_detail(repo, idx, e["a"], e["b"], lane_hot)
+    pairs = []
+    for c in (d.get("calls") or [])[:top]:
+        ln = next(iter(c.get("lines") or []), None)
+        pairs.append({"caller": c["caller"], "callee": c["callee"], "n": c["n"], "status": c.get("status"),
+                      "code": code_at(repo, ln["f"], ln["l"]) if ln and ln.get("l") else None,
+                      "def": definition(repo, idx, c["callee"])})
+    return {"kind": "edge", "lane": lane_alias, "a": e["a"], "b": e["b"], "n": e.get("n"), "only": e.get("only"),
+            "first_us": e.get("first"), "last_us": e.get("last"), "repeat": bool(e.get("repeat")), "pairs": pairs}

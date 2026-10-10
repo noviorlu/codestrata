@@ -99,6 +99,7 @@ RUN   := 完整 run id | case 名
 | `lane_idle` | 选的列在这段时间里没有活动 |
 | `no_lanes` | find：没录时序事件，次数不分列 |
 | `stale` | explain：讲到的文件录制之后改过 |
+| `no_page` | view url：没给页面，只打了 # 后面那一段 |
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
@@ -121,7 +122,7 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
 | write | `scan`、`runs tag / untag / note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
 | start | `serve`、`app` | 先问用户（起常驻进程、占端口） |
@@ -190,8 +191,28 @@ RUN   := 完整 run id | case 名
   函数的签名和 docstring 第一行；放的一头的调用链（span 的父亲，≤ 8 层）；放之前这条线程最近收到的交接（标 `inferred: time`：只是时间上最近）；
   取的一头这段时间里调那个取数函数几次；scan 的说法（代码里写明的调用，还是代码里看不出）。现在只讲 handoff。
 - **函数**（`路径#限定名`、限定名、唯一的名字）：定义、这段时间里各列的次数、谁调它 / 它调谁（次数、调用行、代码里看不出的标出来）、第一次的调用链和之前最近收到的交接。
-- **编号**（页面上的 `24`）要按页面的视图算：现在报 `need_view`（请用户复制地址栏）。
+- **编号**（页面上的 `24`）：按页面地址里的视图算（`explain 24 '<页面地址>'`，地址里要有 `order=1`），和页面上的号牌是同一份（`laneorder.py`）；
+  第一行写按哪个视图算、一共几个编号、24 号的稳定写法。只给 RUN 不给地址、或地址里没开时间顺序，报 `need_view`；超出范围报 `item_not_found`。
+  编号落在列中的一条边上时，讲那一列里这两个节点之间次数最多的几对函数（调用那一行的原文、定义）。
 - 录制之后改过的文件给警告 `stale`（原文可能对不上）。
+
+### `codestrata view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--order on|off] [--hide …] [--path] [--page 端口] [--json]`
+- 拼出一个视图的页面地址，不推。用户粘进浏览器地址栏（同一个标签页也行），页面不刷新就换过去；后退回到原来的。
+- REF 定 run、范围和列；给的是页面地址时在它的视图上改（没给的选项沿用地址里的）。前缀取页面地址的，或 `--page 端口`；都没有时只打 `#…` 那一段（警告 `no_page`）。
+- `--focus 东西`：只看它跑过的列 + 在这些列里把切面展开到它的文件 + 标出它 + 选中它在最早那一列里的那一份。`--expand` 在它跑过的每一列里展开。
+- `--mark`：标出这些文件 / 目录 / 函数所在的节点（最多 20 个，页面工具栏「标记 N 个 · 清掉」）。
+- `data`：`url`、`fragment`、`view`（各个键）。
+
+### 视图描述（页面地址 # 后面）
+
+`run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & order=1 & hide=hot,dyn & panel=path`
+
+- 页面和命令行同一套（`web/view.js`、`viewspec.py`）。值里 `@ , / ~ | : ; + * =` 不转义；不认识的键原样留着。
+- `lanes`：只看这几列，没选的列每个进程收成一窄列「其他 N 列」，连线照接；`fold`：收起的进程（别名）；`cut`：共用的切面（和默认一样不写）；
+  `lcut`：各列自己的切面（列别名 ~ 展开着的目录）；`sel`：选中的（`n:列|节点`、`f:列|框`、`e:列|a|b`、`l:种类|通道|起列|终列`；模块图上 `n:节点`、`e:a|b`）；
+  `mark`：标记；`order=1`：时间顺序开；`hide`：藏起的边；`panel=path`：详情栏讲请求路径。
+- 页面上每改一处，地址按规范写法重写（不多出历史记录）；粘进来的地址、后退按固定的顺序套：run 和范围 → 切面 → 各列的切面 → 只看列和收起 → 开关 → 标记 → 选中 → 详情栏。
+  地址里阶段写错，退回这个 run 默认的阶段并提示；run 找不到，照旧看现在的并提示。
 
 ### `codestrata path REF [--depth N] [--limit N] [--time] [--unseen] [--json]`
 - `--time`：先列出这几列里「自己的时间」最多的 5 处（和 `steps --why` 同一个算法，按函数合；`data.self_time`）。

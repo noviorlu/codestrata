@@ -39,7 +39,8 @@ window.CS = window.CS || {};
   CS.path = {
     /* 打开请求路径（叠着 run 时的「请求路径」按钮） */
     show: function () {
-      var tok = CS.panel.claim('<p class="hint">读取中…</p>'), self = this;
+      var tok = this._tok = CS.panel.claim('<p class="hint">读取中…</p>'), self = this;
+      if (CS.view) CS.view.changed('panel');
       var m = CS.app.data && CS.app.data.hotMeta;
       document.getElementById('dtitle').textContent = '请求路径' + (m && m.phase ? ' · ' + CS.timebar.label(m.phase) : '');
       document.getElementById('dsub').textContent = '每个进程、每个线程按第一次调用的先后排的函数级调用';
@@ -54,6 +55,12 @@ window.CS = window.CS || {};
       }).catch(function (e) {
         if (CS.panel.mine(tok)) document.getElementById('det').innerHTML = '<p class="hint">读取失败：' + esc(e.message) + '</p>';
       });
+    },
+
+    /* 详情栏现在讲的是请求路径（视图描述的 panel=path） */
+    isOpen: function () {
+      var dr = document.getElementById('drawer');
+      return !!this._tok && CS.panel.mine(this._tok) && !!dr && dr.classList.contains('open');
     },
 
     render: function (P) {

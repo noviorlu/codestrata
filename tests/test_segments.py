@@ -272,5 +272,27 @@ def test_laneorder():
     assert set(o["keys"]) == {"e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1"}, o["keys"]   # 1:w 收进窄列，交接照接
 
 
+def test_view_url_and_numbered_explain():
+    """view url 拼出的地址解析回来是同一个视图（--focus 展开到它的文件、只看它跑过的列、标出、选中）；
+    explain N '<地址>' 按地址里的视图算编号：没开时间顺序报 need_view，超出范围报 item_not_found，第 1 号讲得出来"""
+    from codestrata import ref as R, viewspec
+    repo, rid = truth()
+    j = one_json(cs("view", "url", f"{rid}@work", "-C", repo, "--focus", "slow", "--order", "on", "--page", "1", "--json"))
+    url = j["data"]["url"]
+    assert url.startswith("http://127.0.0.1:1/#run=") and "@work" in url and "%3D" not in url, url
+    p = R.parse(url)
+    v = viewspec.from_keys(p.run + "@" + p.rest, p.lanes, p.view)
+    assert v.order and v.lanes and v.mark == ["fakesvc/callee.py#slow"] and v.sel.startswith("n:"), v    # toy 小，默认切面已经看得到它：不用展开
+    assert viewspec.fragment(v) == url.split("#", 1)[1], (viewspec.fragment(v), url)
+    base = f"http://127.0.0.1:1/#run={rid}@work"
+    r = subprocess.run([PY, "-m", "codestrata", "explain", "1", base, "-C", str(repo), "--json"], capture_output=True, text=True, cwd=HERE.parent)
+    assert one_json(r)["error"]["code"] == "need_view", r.stdout
+    r = subprocess.run([PY, "-m", "codestrata", "explain", "9999", base + "&order=1", "-C", str(repo), "--json"], capture_output=True, text=True,
+                       cwd=HERE.parent)
+    assert one_json(r)["error"]["code"] == "item_not_found", r.stdout
+    j = one_json(cs("explain", "1", base + "&order=1", "-C", repo, "--json"))
+    assert j["ok"] and j["data"]["number"] == 1 and j["data"]["view"]["n"] >= 1, j["data"].get("view")
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

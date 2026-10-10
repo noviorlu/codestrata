@@ -243,8 +243,9 @@ window.CS = window.CS || {};
       var kindOf = {};
       (G.nodes || []).forEach(function (n) { kindOf[n.id] = n.kind; });
       function contains(X, n) { return X === n || CS.app.homeOf(n, kindOf[n], { nodes: [{ id: X }] }) === X; }
-      var ids = [];
-      L.lanes.forEach(function (ln) { if (!self.collapsed[ln.pid]) ids.push.apply(ids, Object.keys(ln.nodes)); });
+      var ids = [], focus = CS.focus ? CS.focus.lanes() : null;   // 只看几列（lanefocus.js）：没选的列不画节点
+      function shown(ln) { return !self.collapsed[ln.pid] && !(focus && !focus[ln.id]); }
+      L.lanes.forEach(function (ln) { if (shown(ln)) ids.push.apply(ids, Object.keys(ln.nodes)); });
       var K = CS.lanePack.keys(G, ids, L.place || {}, contains), Rk = CS.lanePack.rows(K), nodeH = {};
       Object.keys(K).forEach(function (id) { nodeH[id] = K[id].h; });
       // 列：按进程分组，收起的进程合成一列；每列放这条线程调到的节点，展开着的目录画成框（frames：这一列自己的切面上的）
@@ -256,13 +257,17 @@ window.CS = window.CS || {};
       procs = procs.map(function (pid) {
         var ls = pidCols[pid], c0 = cols.length;
         if (self.collapsed[pid]) cols.push({ fold: true, pid: pid, lns: ls, lanes: ls.map(function (l) { return l.id; }), rows: {}, gap: c0 ? 14 : 0 });
-        else ls.forEach(function (ln, k) {
+        else ls.filter(shown).forEach(function (ln, k) {
           var frames = {}, frameOf = {}, fr = ln.frames || {};
           Object.keys(fr).forEach(function (f) { frames[f] = { parent: fr[f].parent, minw: fr[f].minw }; });
           Object.keys(ln.nodes).forEach(function (id) { var f = (meta[id] || {}).frame; frameOf[id] = f && fr[f] ? f : null; });
           cols.push({ lane: ln, pid: pid, lanes: [ln.id], external: !!ln.external, rows: CS.lanePack.colRows(Object.keys(ln.nodes), Rk),
                       frames: frames, frameOf: frameOf, gap: !cols.length ? 0 : k === 0 ? 14 : 8 });
         });
+        // 只看几列时没选的：这个进程里合成一窄列「其他 N 列」，连线照接（用户 10-09）
+        var hid = self.collapsed[pid] ? [] : ls.filter(function (ln) { return !shown(ln); });
+        if (hid.length) cols.push({ fold: true, part: true, pid: pid, lns: hid, lanes: hid.map(function (l) { return l.id; }), rows: {},
+                                    gap: cols.length === c0 ? (c0 ? 14 : 0) : 8 });
         return { pid: pid, c0: c0, c1: cols.length - 1, lanes: ls };
       });
       var layers = Rk.layers, layerOf = Rk.layerOf;
@@ -336,7 +341,10 @@ window.CS = window.CS || {};
         col.appendChild(head);
         bg.appendChild(col);
         if (C.fold) {
-          head.textContent = C.lns.length + ' 列（收起）';
+          head.textContent = C.part ? '其他 ' + C.lns.length + ' 列' : C.lns.length + ' 列（收起）';
+          var ft = el('title', {});
+          ft.textContent = (C.part ? '只看几列时没选的：' : '收起了：') + C.lns.map(function (l) { return laneName(l.id); }).join('、');
+          col.appendChild(ft);
           C.lns.forEach(function (ln) { laneOf[ln.id] = { x: C.x, w: C.w, fold: true, ci: ci }; });
           return;
         }
@@ -540,6 +548,8 @@ window.CS = window.CS || {};
       CS.graph.wireBox(svg.parentNode);
       CS.graph.fit();
       this.paint();
+      if (CS.mark) CS.mark.paint();
+      if (CS.view) CS.view.changed('draw');
     },
 
     /* 一列里展开着的目录：框把这一列里它底下的节点框在一起（同模块图），框头写名字、这一列里框着几个、−（只收起这一列里的它，
@@ -696,6 +706,8 @@ window.CS = window.CS || {};
       if (s.hot === false) hide.push('hot');
       if (s.dyn === false) hide.push('dyn');
       if (hide.length) q.push('hide=' + hide.join(','));
+      var f = CS.focus && CS.focus.lanes();
+      if (f) q.push('lanes=' + encodeURIComponent(Object.keys(f).map(function (id) { return laneName(id); }).sort().join(',')));
       return q.join('&');
     },
 
@@ -830,6 +842,7 @@ window.CS = window.CS || {};
         g.classList.toggle('dim', !!keep && !hi[g.dataset.key]);
       });
       this.codeTags(this.links.filter(function (E) { return E.key === s; })[0]);
+      if (CS.view) CS.view.changed('sel');
     },
 
     /* 碰到一个节点的这一份（lane 这一列里的 id）的：out 这一列里它调出去的边、inn 调进来的边、links 一头是它的连线。

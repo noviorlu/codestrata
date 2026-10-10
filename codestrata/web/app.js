@@ -70,6 +70,11 @@ window.CS = window.CS || {};
         self.footer(d);
         if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);
         if (CS.search) CS.search.init();
+        // 地址里的视图描述（只看列、收起、切面、选中、标记、开关…）：run 已经按它选好了，其余的画好之后套上；之后粘进来的地址、后退也套
+        var v0 = CS.view.parse(location.hash);
+        v0.run = CS.ds.run || null;
+        CS.view.init();
+        CS.view.apply(v0, 'boot');
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
         self._w = CS.graph.boxWidth();
         var rt = 0;
@@ -315,9 +320,7 @@ window.CS = window.CS || {};
     },
 
     _writeHash: function () {
-      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view|cmp)=/.test(x); });
-      if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
-      history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
+      if (CS.view) CS.view.write();                   // 地址按页面真实状态整个重写（view.js）；换 run 立刻写，不等合并
     },
 
     initRuns: function () {
@@ -335,6 +338,14 @@ window.CS = window.CS || {};
             self._runMissing = '地址里的 run ' + want + (hit ? ' 还没有计数（还在录，或录制中断了要 runs merge）'
                                                            : ' 找不到了（删了？）') + '，先只看静态图';
             want = '';
+          } else {
+            // 阶段写错（以前整页「加载失败」）：退回这个 run 默认看的阶段，并提示
+            var ph = want.indexOf('@') >= 0 ? want.slice(want.indexOf('@') + 1) : '';
+            if (ph && ph.indexOf('t=') !== 0 && ph.indexOf('+') < 0 && !(hit.phases || []).some(function (x) { return x.name === ph; })) {
+              var dp = self._defaultPhase(hit);
+              self._runMissing = 'run ' + hit.id + ' 里没有阶段 ' + ph + '，看的是' + (dp ? ' ' + dp : '整个 run');
+              want = hit.id + (dp ? '@' + dp : '');
+            }
           }
         }
         CS.ds.run = want;
@@ -678,6 +689,12 @@ window.CS = window.CS || {};
            + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
+      // 只看几列、标记（lanefocus.js）：工具栏上的小签，点了退回全部列 / 清掉标记
+      var ec = document.getElementById('edgechips');
+      ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip());
+      var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), self = this;
+      if (fbtn) fbtn.onclick = function () { CS.focus.clear(); self.edgeChips(); CS.view.changed('lanes'); };
+      if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
     },
 
@@ -859,6 +876,10 @@ window.CS = window.CS || {};
         return (x.u || []).some(function (i) { return units[i] === id || self.homeOf(units[i], 'unit', under) === id; });
       })[0];
       if (!ln) { CS.viewer.toast('这一段里哪条线程都没调到它'); return Promise.resolve(null); }
+      if (CS.focus.hidden(ln.id)) {                 // 只在没选的列里：退回全部列再找（不改搜索栏，只在这里接住）
+        CS.focus.clear();
+        CS.viewer.toast('它在只看几列时没选的列里：已经改回全部列');
+      }
       if (lanes.collapsed[ln.pid]) lanes.fold(ln.pid, false);
       function home() { return self.homeOf(id, kind, lanes.asGraph(ln.id)); }
       function opened() { return CS.laneCut.of(ln.id).indexOf(id) >= 0; }
@@ -974,6 +995,7 @@ window.CS = window.CS || {};
           else if (key === 'timeOrder') self.applyTimes();
           else if (key === 'hot') { self.repaint(); self.edgeChips(); self.controls(); }   // 「其中代码里看不出」跟着它能不能点
           else { self.repaint(); if (self.lanesMode()) { self.edgeChips(); self.controls(); } }
+          CS.view.changed('toggle');
         };
       });
       var rc = document.getElementById('resetcut');

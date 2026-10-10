@@ -164,6 +164,10 @@ def test_timeorder():
     _spec("timeorder")
 
 
+def test_view():
+    _spec("view")
+
+
 def test_viewer():
     _spec("viewer")
 

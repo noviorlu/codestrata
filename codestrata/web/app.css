@@ -3,7 +3,7 @@
   --ink:#11161f; --body:#39424f; --muted:#6b7686; --faint:#9aa4b2;
   --paper:#f6f7f9; --card:#fff; --sunk:#eef0f4; --line:#dde1e8; --rule:#e6e9ef;
   --hot:#b4690e; --hot-bg:#fdf3e2; --cool:#0f7b74; --cool-bg:#e6f4f2; --hotb:#7c3aed; --hotb-bg:#f1ebfd;
-  --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd;
+  --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd; --mk:#c026d3;
   --pstart:#15803d; --pend:#b91c1c;
   --tm0:#1d4ed8; --tm1:#9333ea; --tm2:#ea580c; --tmtext:#fff;
   --edge:#c3cad5; --shadow:0 1px 2px rgba(17,22,31,.06),0 8px 24px rgba(17,22,31,.05);
@@ -18,7 +18,7 @@
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
-  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
+  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a; --mk:#e879f9;
   --pstart:#4ade80; --pend:#f87171;
   --tm0:#60a5fa; --tm1:#c084fc; --tm2:#fb923c; --tmtext:#111;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
@@ -32,7 +32,7 @@
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
-  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
+  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a; --mk:#e879f9;
   --pstart:#4ade80; --pend:#f87171;
   --tm0:#60a5fa; --tm1:#c084fc; --tm2:#fb923c; --tmtext:#111;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
@@ -160,6 +160,9 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd.warm rect{fill:var(--hot-bg);stroke:var(--hot)}
 /* 选中必须写在 warm 后面，否则跑到过的节点选中了也还是橙框 */
 .nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
+/* 标记（视图描述的 mark，lanefocus.js）：独立的一层，不和搜索的 .match、选中的 .sel 混 */
+.nd.mk rect{stroke:var(--mk);stroke-width:3}
+.chip.focus,.chip.mark{border-color:var(--mk);color:var(--mk)}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
 .nd:focus{outline:none}.nd:focus-visible rect{stroke:var(--sel);stroke-width:2.4}
 /* 阶段的起点 / 终点：写在选中之后，选中了也还看得出是起点 / 终点 */

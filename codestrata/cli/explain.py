@@ -14,14 +14,14 @@ from . import common, out
 NAME = "explain"
 EFFECT = "read"
 DOES = "讲一条连线（'l:handoff|通道|起列|终列'）或一个函数：是什么、两头的代码原文和所在分支、定义、调用链、之前最近收到的交接；只给原料"
-USAGE = "codestrata explain 东西 REF [--json]"
+USAGE = "codestrata explain 东西 REF [--json]（页面上的编号：explain 24 '<页面地址>'，地址里要有 order=1）"
 EXAMPLE = "codestrata explain 'l:handoff|janus|end2end/orchestrator|end2end/MainThread' 20261001-170349-run_single_prompt@t=79600000-81800000"
 
 _NUM = re.compile(r"^#?\d+$")
 
 
 def add_args(p) -> None:
-    p.add_argument("item", metavar="东西", help="连线 'l:种类|通道|起列|终列'（加引号）、函数（路径#限定名、限定名）；页面上的编号要阶段 C 起")
+    p.add_argument("item", metavar="东西", help="连线 'l:种类|通道|起列|终列'（加引号）、函数（路径#限定名、限定名），或页面上的编号（24，配页面地址）")
     p.add_argument("ref", nargs="?", default=None, metavar="REF", help="RUN@范围，或页面地址（加单引号）")
     p.add_argument("--in", dest="in_", default=None, metavar="REF", help="同 REF（写在后面更清楚时用）")
 
@@ -30,10 +30,9 @@ def run(a) -> out.Result:
     if a.ref is None and a.in_ is None and (a.item.startswith("http") or "@" in a.item):
         raise CodestrataError("usage", "explain 要先写讲什么（连线、函数），再写 REF；只给了一个 REF")
     a.ref = a.in_ or a.ref
-    if _NUM.match(a.item):
-        raise CodestrataError("need_view", f"编号 {a.item} 要按页面上的那个视图算（哪些列、开没开时间顺序）：请用户把浏览器地址栏整个复制过来；"
-                              "现在先用 codestrata links 看连线的写法，再 explain 'l:…'")
     c = common.context(a)
+    if _NUM.match(a.item):
+        return _numbered(a, c)
     common.require_events(c)
     r = c.res
     lo, hi = r.slices[0][0], r.slices[-1][1]
@@ -145,4 +144,61 @@ def _fn_text(d: dict, lo: int) -> list[str]:
         rh = d.get("recent_handoff")
         if rh:
             L.append(f"  之前最近收到的交接（inferred: time，只是时间上最近）  {out.dur(rh['ago_us'])} 前，{rh['from']} 经 {rh['via']} 交来")
+    return L
+
+
+def _numbered(a, c) -> out.Result:
+    """页面上的第 N 号：按地址里的那个视图（切面、只看的列、收起、开关）算出同样的编号，再讲它"""
+    from .. import viewspec as _viewspec
+    n = int(a.item.lstrip("#"))
+    ref = c.ref
+    if ref is None or not ref.page:
+        raise CodestrataError("need_view", f"编号 {n} 要按页面上的那个视图算（哪些列、收起了什么、开关）：请用户把浏览器地址栏整个复制过来，"
+                              f"再 codestrata explain {n} '<地址>'")
+    v = _viewspec.from_keys(ref.run, ref.lanes, ref.view)
+    if not v.order:
+        raise CodestrataError("need_view", "地址里的视图没开时间顺序（order=1）：页面上没有编号。请用户在页面上开「时间顺序」，再复制地址")
+    common.require_events(c)
+    r = c.res
+    idx = common.index(c)
+    label = common.labeler(idx)
+    hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
+    L, aliases, order = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label))
+    if not 1 <= n <= order["n"]:
+        raise CodestrataError("item_not_found", f"这个视图里一共 {order['n']} 个编号，没有 {n}",
+                              candidates=[str(k) for k in range(1, min(order["n"], 10) + 1)])
+    inner = next(k for k, rk in order["keys"].items() if rk == n - 1)
+    lo, hi = r.slices[0][0], r.slices[-1][1]
+    head = (f"按这个视图算：{r.full}" + (f" · 收起 {','.join(v.fold)}" if v.fold else "") + (f" · 藏起 {','.join(v.hide)}" if v.hide else "")
+            + f" · 时间顺序开 · 共 {order['n']} 个编号；{n} 号是 {order['ids'][n - 1]}")
+    if inner.startswith("l:"):
+        k = L["links"][int(inner[2:])]
+        gid = f"l:handoff|{k['via']}|{aliases.get(k['from']['lane'], k['from']['lane'])}|{aliases.get(k['to']['lane'], k['to']['lane'])}"
+        d = _explain.link(c.repo, r.rd, idx, hot, gid, lo, hi, label, at_us=k.get("first"))
+        lines = [head] + _link_text(d, lo)
+    else:
+        lid, _, rest = inner[2:].partition("|")
+        a_, _, b_ = rest.partition("|")
+        ln = next(x for x in L["lanes"] if x["id"] == lid)
+        e = next(x for x in ln["edges"] if x["a"] == a_ and x["b"] == b_)
+        from ..ui import load as _uiload
+        lane_hot = _uiload.load_lane(c.repo, idx, r.text, lid)
+        d = _explain.edge(c.repo, idx, lane_hot, aliases.get(lid, lid), e)
+        lines = [head] + _edge_text(d, lo)
+    d["number"] = n
+    d["view"] = {"n": order["n"], "id": order["ids"][n - 1]}
+    nxt = [c.cmd("read", "links", f"{r.run['id']}@t={max(lo, (d.get('from') or {}).get('t_us', d.get('first_us') or lo) - 2000)}"
+                                  f"-{min(hi, (d.get('from') or {}).get('t_us', d.get('first_us') or lo) + 2000)}", why="这一刻前后 4 ms 里的交接")]
+    return out.Result(data=d, text=lines, repo=c.repo, ref=c.ref_json(), next=nxt, warnings=c.warnings)
+
+
+def _edge_text(d: dict, lo: int) -> list[str]:
+    L = [f"列中的边  {d['lane']}  {d['a']} → {d['b']}：这段时间里 {d['n']} 次，第一次 {out.secs(d['first_us'], lo)}"
+         + ("，一直在反复（↻）" if d["repeat"] else "") + (f"；其中约 {d['only']} 次代码里看不出" if d.get("only") else "")]
+    L.append("底下次数最多的几对函数：")
+    for p in d["pairs"]:
+        L.append(f"  ×{p['n']:<6} {common.short(p['caller'])} → {common.short(p['callee'])}"
+                 + ("  [代码里看不出]" if p.get("status") == "trace" else ""))
+        L += _code(p.get("code"), "      ")
+        L += _def(p.get("def"), "      ")
     return L

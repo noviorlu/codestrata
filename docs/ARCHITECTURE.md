@@ -115,13 +115,14 @@ flowchart LR
 | `segments.py` | 227 | 按功能切段：读整个 run 的 span、每列认主循环（`analyse`），请求、每个进程的 stage 段、缺口、独有的文件、跨进程交接合成组、背景列；认老格式的 run（`old_format`）；进程的先后（`proc_order`，按 run 和时间段缓存，分列和请求路径用） |
 | `funcref.py` | 47 | 命令行里写的函数（限定名、路径#限定名、唯一的名字）→ trace 的键；对不上 / 对上几个时给候选 |
 | `finder.py` | 95 | find：按名字找函数 / 类 / 文件 / 目录（完全一样 > 前缀 > 子串、通配），每个节点在各列的次数和时刻，类 / 文件 / 目录合起来 |
-| `explain.py` | 243 | explain 的原料：连线两头的代码原文、往上最近的分支头、函数的签名和 docstring、span 的调用链、之前最近收到的交接（inferred: time）、scan 的说法；函数的谁调它 / 它调谁 |
+| `explain.py` | 260 | explain 的原料：连线两头的代码原文、往上最近的分支头、函数的签名和 docstring、span 的调用链、之前最近收到的交接（inferred: time）、scan 的说法；函数的谁调它 / 它调谁 |
 | `laneorder.py` | 48 | 分列里时间顺序的编号：按视图（收起的进程、开关、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
+| `viewspec.py` | 95 | 视图描述（页面地址 # 后面）的 Python 一侧：解析、规范写法（和 web/view.js 同一套），按一个视图算分列和时间顺序的编号（explain 24、view url） |
 | `laneid.py` | 147 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`、`stage1/gpu0.7`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
 | `errors.py` | 36 | `CodestrataError`：稳定的错误码、候选、下一步、之前的警告；错误码 → 退出码 |
 | `cmdline.py` | 28 | 输出里能原样粘贴的 codestrata 命令（shlex 加引号、带上仓库）和「下一步」的一条 |
 | `confdir.py` | 21 | 配置目录（`$XDG_CONFIG_HOME/codestrata`）和主菜单记得的仓库 |
-| `cli/` | 1682 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`path`、`guide`）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封 |
+| `cli/` | 1892 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view`、`path`、`guide`）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封 |
 | `serve.py` | 555 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`BaseHandler` 给 app 复用 |
 | `app.py` | 379 | 主菜单 HTTP：路由、鉴权、`/v/<端口>/` 转发 |
 | `projects.py` | 199 | 主菜单的数据：项目清单、状态、挑目录、函数补全 |
@@ -129,20 +130,22 @@ flowchart LR
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 37 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 74 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 1018 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/app.js` | 1040 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 568 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 721 | 详情面板：节点的事实和源码（GPU kernel 的次数和 GPU 时间），边上实际调了哪些函数（可按先后排）；分列里选中的是一列里的一份时，次数、文件树、kernel 表换成只算这一列的（`asCopy`，`/api/lanehot`），列里的边的详情也只算这一列（`/api/edge?lane=`）；GPU 列的一份的 kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久 |
 | `web/viewer.js` | 455 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
 | `web/findbar.js` | 238 | 全文窗口里的查找 |
 | `web/search.js` | 345 | 搜索栏：模块、文件、类 / 函数 |
 | `web/timebar.js` | 237 | 时间轴：阶段按钮 + 可拖的时间段 |
-| `web/lanes.js` | 960 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
+| `web/view.js` | 215 | 视图描述 ⇄ 地址栏：解析 / 规范写法、页面此刻的视图（`current`）、按固定顺序套用（`apply`：启动、粘进来的地址、后退）、改了就重写地址（`changed`） |
+| `web/lanefocus.js` | 97 | 只看几列（`CS.focus`：选择器和命令行同一套，没选的列收成「其他 N 列」）、标记（`CS.mark`：描边、工具栏的小签） |
+| `web/lanes.js` | 973 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
 | `web/lanepack.js` | 167 | 分列的摆放（纯函数）：每个节点在第几行只看它自己（公共切面上的高度、在哪个节点里面的子行），一列换了切面不动别的列；一列里横着怎么排——展开的目录画成框，照模块图的轨道排法（框在左、散节点在右居中） |
 | `web/lanecut.js` | 125 | 分列里每列各自的切面（`CS.laneCut`）：共用的切面 + 各列单独的，改一列只重取分列；画好后只在改过的那一列里闪新节点、接着选原来选着的 |
 | `web/laneroute.js` | 576 | 分列的排线（纯函数）：节点放在哪、每条线怎么走——轨带里的横轨、列两侧和缝里的竖轨，按交叉最少排先后（ELK 式），往右的走上面、往左的走下面；放不下就推层、加宽；`picker` 找离一点最近的线 |
 | `web/lanepick.js` | 130 | 分列里点线：离鼠标最近的那条加粗、出提示，点了选中它；一样近的弹单子挑；换视图 / 重画前撤掉 |
 | `web/lanedetail.js` | 183 | 分列的详情栏：节点这一份的调用 / 被调用 / 连线（只算这条线程）、点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
-| `web/path.js` | 101 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
+| `web/path.js` | 108 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
 | `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 
@@ -244,7 +247,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 - `payload_parity.py`：重构用的对拍工具，不是回归测试：拿某个旧提交和工作区的代码，对同一份索引和 run 各算一遍几个切面上的图、边详情、时间顺序，逐项比。
 
 - `test_browser.py` + `tests/web/`：headless Chrome 经 CDP 真的点、拖、按键。`cdp.mjs` 起 / 关浏览器，`run.mjs` 跑 `specs/*.mjs`
-  （图、叠加和换 run、时间轴、时间顺序、代码窗口、查找、切面、分列 `lanes.mjs`、分列里每列各自的切面和框 `lanecut.mjs`、边上的调用、请求路径各一份）；
+  （图、叠加和换 run、时间轴、时间顺序、视图描述 `view.mjs`（粘地址不刷新就换、后退、刷新不丢、只看几列、标记、坏阶段）、代码窗口、查找、切面、分列 `lanes.mjs`、分列里每列各自的切面和框 `lanecut.mjs`、边上的调用、请求路径各一份）；
   数据是假服务当场录的两个 run（truth 带三个阶段、offline 用来测换 run；录了时序事件的叠上去是按进程 · 线程分列，没录的叠上去是一张模块图），
   切面和分列各自切面那两份另用一个只 scan / 又录了一次的嵌套小仓库（展开 / 收起、本层文件、搜索定位；分列那次录制起了一条线程 `side`、切了阶段 `two`，
   测一列展开不动别的列），边上的调用另用一个录过两次的小仓库（代码里看不出的虚线、构造、去掉调用行当老 run），GPU 那份在它上面加一个 `.cu`、往 parts/ 里放一份手写的 GPU 日志再 `runs merge`（不用 GPU）。
