@@ -85,7 +85,7 @@ window.CS = window.CS || {};
   CS.lanes = {
     // 详情栏（lanedetail.js）也用的写法和说法
     fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, gpuT: gpuT, VIA: VIA, KIND: KIND, ENDS: ENDS },
-    data: null, collapsed: {}, sel: null, edges: [], links: [], nodes: [], frames: [], fpos: {}, laneIx: {},
+    data: null, collapsed: {}, sel: null, edges: [], links: [], nodes: [], frames: [], fpos: {}, laneIx: {},   // collapsed：{进程别名: true}
 
     /* 取数并画（app.drawMain 在叠着录了时序事件的 run 时调） */
     show: function () {
@@ -237,14 +237,19 @@ window.CS = window.CS || {};
       CS.lanePick.leave();                            // 上一次画的提示、手形、单子、监听都撤掉
       svg.textContent = '';
       this.names = names; this.sel = null; this._args = [svg, L, G, names];
+      this.L = L;                                     // 先换上这次的数据：只看几列、收起的进程（按别名）都要按这一次的列来认
       // 纵坐标：共用切面上「只看跑到的」那张图的分层（同一个节点在各列里同一高度）；各列单独展开出来的节点排在装着它的那个节点
       // 那一层下面的子行里，收起来的排在它装着的那几个里最高的一层（lanepack.keys）——一个节点在哪一行只看它自己，
       // 一列展开 / 收起不动别的列的层和先后（用户 10-02）
       var kindOf = {};
       (G.nodes || []).forEach(function (n) { kindOf[n.id] = n.kind; });
       function contains(X, n) { return X === n || CS.app.homeOf(n, kindOf[n], { nodes: [{ id: X }] }) === X; }
-      var ids = [], focus = CS.focus ? CS.focus.lanes() : null;   // 只看几列（lanefocus.js）：没选的列不画节点
-      function shown(ln) { return !self.collapsed[ln.pid] && !(focus && !focus[ln.id]); }
+      var ids = [], focus = CS.focus ? CS.focus.lanes(L) : null;   // 只看几列（lanefocus.js）：没选的列不画节点
+      if (CS.focus && CS.focus.sels.length && !focus && this._noFocusL !== L) {   // 地址里只看的列这一段里一列都没有：画全部列，说一声
+        this._noFocusL = L;
+        if (CS.viewer) CS.viewer.toast('只看的列（' + CS.focus.sels.join(', ') + '）这一段里没有：显示全部列');
+      }
+      function shown(ln) { return !self.isFolded(ln.pid) && !(focus && !focus[ln.id]); }
       L.lanes.forEach(function (ln) { if (shown(ln)) ids.push.apply(ids, Object.keys(ln.nodes)); });
       var K = CS.lanePack.keys(G, ids, L.place || {}, contains), Rk = CS.lanePack.rows(K), nodeH = {};
       Object.keys(K).forEach(function (id) { nodeH[id] = K[id].h; });
@@ -256,7 +261,7 @@ window.CS = window.CS || {};
       });
       procs = procs.map(function (pid) {
         var ls = pidCols[pid], c0 = cols.length;
-        if (self.collapsed[pid]) cols.push({ fold: true, pid: pid, lns: ls, lanes: ls.map(function (l) { return l.id; }), rows: {}, gap: c0 ? 14 : 0 });
+        if (self.isFolded(pid)) cols.push({ fold: true, pid: pid, lns: ls, lanes: ls.map(function (l) { return l.id; }), rows: {}, gap: c0 ? 14 : 0 });
         else ls.filter(shown).forEach(function (ln, k) {
           var frames = {}, frameOf = {}, fr = ln.frames || {};
           Object.keys(fr).forEach(function (f) { frames[f] = { parent: fr[f].parent, minw: fr[f].minw }; });
@@ -265,7 +270,7 @@ window.CS = window.CS || {};
                       frames: frames, frameOf: frameOf, gap: !cols.length ? 0 : k === 0 ? 14 : 8 });
         });
         // 只看几列时没选的：这个进程里合成一窄列「其他 N 列」，连线照接（用户 10-09）
-        var hid = self.collapsed[pid] ? [] : ls.filter(function (ln) { return !shown(ln); });
+        var hid = self.isFolded(pid) ? [] : ls.filter(function (ln) { return !shown(ln); });
         if (hid.length) cols.push({ fold: true, part: true, pid: pid, lns: hid, lanes: hid.map(function (l) { return l.id; }), rows: {},
                                     gap: cols.length === c0 ? (c0 ? 14 : 0) : 8 });
         return { pid: pid, c0: c0, c1: cols.length - 1, lanes: ls };
@@ -315,7 +320,7 @@ window.CS = window.CS || {};
 
       // 进程头：名字 + 收起 / 展开
       procs.forEach(function (P) {
-        var name = P.lanes[0].proc, fold = !!self.collapsed[P.pid], alias = self.procAlias(P.pid);
+        var name = P.lanes[0].proc, fold = self.isFolded(P.pid), alias = self.procAlias(P.pid);
         var g = el('g', { class: 'ln-proc', 'data-pid': P.pid });
         g.appendChild(el('rect', { x: P.x, y: TOP + 2, width: Math.max(P.w, 40), height: 22, rx: 6 }));
         var t = el('text', { x: P.x + 22, y: TOP + 17, class: 'ln-pname' });
@@ -611,7 +616,7 @@ window.CS = window.CS || {};
     fold: function (pid, on) {
       var was = this.sel, many = this.selMany, a = this._args;
       if (!a) return;
-      this.collapsed[pid] = on;
+      this.collapsed[this.procAlias(pid)] = on;
       this.draw(a[0], a[1], a[2], a[3]);
       var E = was && this.byKey[was], nk = was && was.indexOf('n:') === 0 ? was.slice(2) : null;
       var fk = was && was.indexOf('f:') === 0 ? was.slice(2) : null;
@@ -700,7 +705,7 @@ window.CS = window.CS || {};
     /* 视图里只影响编号的那几个键（地址栏的写法：进程用别名）：fold=收起的进程&hide=藏起的边（hot / dyn） */
     viewQuery: function () {
       var self = this, s = CS.graph.state, q = [];
-      var fold = Object.keys(this.collapsed).filter(function (p) { return self.collapsed[p]; }).map(function (p) { return self.procAlias(p); }).sort();
+      var fold = this.foldedAliases();
       if (fold.length) q.push('fold=' + encodeURIComponent(fold.join(',')));
       var hide = [];
       if (s.hot === false) hide.push('hot');
@@ -716,6 +721,11 @@ window.CS = window.CS || {};
       var a = this.L && this.L.proc_aliases && this.L.proc_aliases[pid];
       return a || String(pid);
     },
+    /* 收起的进程按别名记（地址里的写法）：换 run 时同名的进程照样收着 */
+    isFolded: function (pid) { return !!this.collapsed[this.procAlias(pid)]; },
+    foldedAliases: function () { var c = this.collapsed; return Object.keys(c).filter(function (a) { return c[a]; }).sort(); },
+    /* 按上一次的数据重画（只看几列、收起、开关改了之后） */
+    redraw: function () { var a = this._args; if (a) this.draw(a[0], a[1], a[2], a[3]); },
 
     /* 视图变了（收起进程、切开关）：重取编号再画 */
     reorder: function () {
@@ -927,7 +937,7 @@ window.CS = window.CS || {};
     foldedHome: function (id, kind) {
       var self = this, hit = null;
       ((this.L || {}).lanes || []).forEach(function (ln) {
-        if (hit != null || !self.collapsed[ln.pid]) return;
+        if (hit != null || !self.isFolded(ln.pid)) return;
         var g = { nodes: Object.keys(ln.nodes).map(function (x) { return { id: x }; }) };
         if (CS.app.homeOf(id, kind, g)) hit = ln.pid;
       });

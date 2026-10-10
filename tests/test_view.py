@@ -91,14 +91,16 @@ def test_hub_rules():
     assert hub.push("run=a@w", "", None, 3.0)["state"] == "deferred"
     pg.mode = "offered"
     assert hub.push("run=a@w", "", None, 3.0)["state"] == "offered"
-    # 后来的顶掉前面的
+    # 后来的顶掉前面的：页面没回话时推第二条，第一条回 superseded；页面回过神来只换第二条
     pg.mode = "silent"
     t, out = _bg(hub.push, "run=a@1", "", None, 5.0)
     time.sleep(0.3)
-    pg.mode = "applied"
-    assert hub.push("run=a@2", "", None, 3.0)["state"] == "applied"
+    t2, out2 = _bg(hub.push, "run=a@2", "", None, 5.0)
     t.join(3)
     assert out["r"]["state"] == "superseded", out
+    pg.mode = "applied"
+    t2.join(5)
+    assert out2["r"]["state"] == "applied" and pg.view == "run=a@2", (out2, pg.view)
     # 看不见：直接 queued；回来时只换最后一条
     pg.visible = False
     pg.poll(pg.tab, pg.report(), 0)

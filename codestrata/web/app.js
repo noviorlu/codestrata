@@ -34,7 +34,7 @@ window.CS = window.CS || {};
     data: null,
 
     boot: function () {
-      var self = this;
+      var self = this, hash0 = location.hash;        // 地址里的视图先记下（套完之前页面不写地址：view.js 的 booted）
       // 先定叠哪个 run（URL hash → serve --hot → 只看静态图），再取图
       this.initRuns().then(function () {
         return CS.ds.graph(null, CS.graph.boxWidth());
@@ -43,10 +43,11 @@ window.CS = window.CS || {};
         CS.laneCut.adopt(d);
         self.header(d);
         CS.panel.init(document.getElementById('det'), d);
-        CS.graph.onPick = function (id) { CS.panel.showPkg(id); self.drawerTitle(id); };
-        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); self.drawerTitle(null, a, b); };
+        // 模块图上的选中也写进地址（分列里的在 lanes.js 里写）
+        CS.graph.onPick = function (id) { CS.panel.showPkg(id); self.drawerTitle(id); if (!self.lanesMode()) CS.view.changed('sel'); };
+        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); self.drawerTitle(null, a, b); if (!self.lanesMode()) CS.view.changed('sel'); };
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
-        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); if (CS.lanes) CS.lanes.unselect(); };
+        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); if (CS.lanes) CS.lanes.unselect(); CS.view.changed('sel'); };
         // 时间顺序的颜色是画的时候按当前主题的 --tm0/1/2 算好写死的：换了亮 / 暗（系统设置或页面上的切换）要重画
         var retint = function () { if (CS.graph.state.timeOrder) self.repaint(); };   // 分列或模块图
         if (window.matchMedia) {
@@ -71,8 +72,8 @@ window.CS = window.CS || {};
         if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);
         if (CS.search) CS.search.init();
         // 地址里的视图描述（只看列、收起、切面、选中、标记、开关…）：run 已经按它选好了，其余的画好之后套上；之后粘进来的地址、后退也套
-        var v0 = CS.view.parse(location.hash);
-        v0.run = CS.ds.run || null;
+        var v0 = CS.view.parse(hash0);
+        v0.run = CS.ds.run || null;                   // run 按后端认好的完整 id（地址里写的可能是 case 名）
         CS.view.init();
         CS.view.apply(v0, 'boot').then(function () { if (CS.viewsync) CS.viewsync.init(); });   // 画好之后才开始和 agent 同步
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
@@ -342,7 +343,7 @@ window.CS = window.CS || {};
             // 阶段写错（以前整页「加载失败」）：退回这个 run 默认看的阶段，并提示
             var ph = want.indexOf('@') >= 0 ? want.slice(want.indexOf('@') + 1) : '';
             if (ph && ph.indexOf('t=') !== 0 && ph.indexOf('+') < 0 && !(hit.phases || []).some(function (x) { return x.name === ph; })) {
-              var dp = self._defaultPhase(hit);
+              var dp = self.defaultPhase(hit);
               self._runMissing = 'run ' + hit.id + ' 里没有阶段 ' + ph + '，看的是' + (dp ? ' ' + dp : '整个 run');
               want = hit.id + (dp ? '@' + dp : '');
             }
@@ -354,8 +355,16 @@ window.CS = window.CS || {};
     },
 
     /* 列表里某个 run 默认看哪个阶段：有 serving 就只看 serving（启动时的初始化会淹没请求本身） */
-    _defaultPhase: function (x) {
+    defaultPhase: function (x) {
       return (x.phases || []).some(function (p) { return p.name === 'serving'; }) ? 'serving' : '';
+    },
+
+    /* 地址里写的 run（完整 id 或 case 名）→ 列表里的那一个；case 名和后端（runs.pick）一样挑：最新一次 ok 的，没有就最新的 partial，再没有最新的 */
+    pickRun: function (name) {
+      var L = this.runList || [], mine = L.filter(function (x) { return x.case === name; });
+      return L.filter(function (x) { return x.id === name; })[0]
+        || mine.filter(function (x) { return x.status === 'ok'; })[0]
+        || mine.filter(function (x) { return x.status === 'partial'; })[0] || mine[0] || null;
     },
 
     selectRun: function (id, phase) {
@@ -560,7 +569,7 @@ window.CS = window.CS || {};
         el.onclick = function () {
           var id = el.dataset.run, x = list.filter(function (r) { return r.id === id; })[0];
           if (id === cur) { self.closeRunPop(); return; }
-          self.selectRun(id, x ? self._defaultPhase(x) : '');
+          self.selectRun(id, x ? self.defaultPhase(x) : '');
         };
       });
       var first = pop.querySelector('[aria-current=true]') || pop.querySelector('.rr');
@@ -880,7 +889,7 @@ window.CS = window.CS || {};
         CS.focus.clear();
         CS.viewer.toast('它在只看几列时没选的列里：已经改回全部列');
       }
-      if (lanes.collapsed[ln.pid]) lanes.fold(ln.pid, false);
+      if (lanes.isFolded(ln.pid)) lanes.fold(ln.pid, false);
       function home() { return self.homeOf(id, kind, lanes.asGraph(ln.id)); }
       function opened() { return CS.laneCut.of(ln.id).indexOf(id) >= 0; }
       function done() {

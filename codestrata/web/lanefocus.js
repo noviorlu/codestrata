@@ -24,9 +24,10 @@ window.CS = window.CS || {};
   CS.focus = {
     sels: [],                                       // 视图里写的选择器（原样，写回地址用）
 
-    /* 现在只看哪些列：{列 id: 1}；没设、或者一列都没配上就是 null（全部列） */
-    lanes: function () {
-      var L = CS.lanes.L, sels = this.sels;
+    /* 现在只看哪些列：{列 id: 1}；没设、或者一列都没配上就是 null（全部列）。L：按哪一份分列认（缺省是画着的那份） */
+    lanes: function (L) {
+      var sels = this.sels;
+      L = L || CS.lanes.L;
       if (!sels.length || !L) return null;
       var al = L.aliases || {}, out = {}, n = 0;
       L.lanes.forEach(function (ln) {
@@ -43,8 +44,7 @@ window.CS = window.CS || {};
     },
     clear: function () { this.set([]); },
     redraw: function () {
-      var a = CS.lanes._args;
-      if (a) CS.lanes.draw(a[0], a[1], a[2], a[3]);
+      CS.lanes.redraw();
       if (CS.app.lanesChanged) CS.app.lanesChanged();
     },
 

@@ -50,7 +50,7 @@ def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str]]:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"]),
                               next=[c.cmd("write", "runs", "merge", r.run["id"])]) from None
     procs = _lanes.proc_aliases(r.rd)
-    return b, _lanes.run_aliases(r.rd, [ln for ln in b["lanes"] if ln.get("gpu")]), procs
+    return b, _lanes.aliases_of(r.rd, b), procs
 
 
 def run(a) -> out.Result:

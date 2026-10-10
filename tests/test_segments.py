@@ -293,6 +293,22 @@ def test_view_url_and_numbered_explain():
     assert one_json(r)["error"]["code"] == "item_not_found", r.stdout
     j = one_json(cs("explain", "1", base + "&order=1", "-C", repo, "--json"))
     assert j["ok"] and j["data"]["number"] == 1 and j["data"]["view"]["n"] >= 1, j["data"].get("view")
+    # 编号落在一条交接线上时，它给的稳定写法（组 + 两头的节点）原样喂回 explain：讲的是同一条、同样的次数和 #k
+    from codestrata import laneorder, lanes as _lanes, runs as _runs
+    from codestrata.ui import load
+    idx = load.load_index(repo)
+    rd = repo / ".codestrata" / "runs" / rid
+    run = json.loads((rd / "run.json").read_text())
+    hot, _ = _runs.load_run(repo, idx, run, rd, "work")
+    L = _lanes.build(idx, rd, run, "work", hot, None)
+    order = laneorder.rank(L, _lanes.run_aliases(rd))
+    n = next(i + 1 for i, x in enumerate(order["ids"]) if x.startswith("l:handoff|"))
+    a = one_json(cs("explain", str(n), base + "&order=1", "-C", repo, "--json"))["data"]
+    assert a["item"] == order["ids"][n - 1] and a["item"].count("|") == 5, a["item"]
+    b = one_json(cs("explain", a["item"], f"{rid}@work", "-C", repo, "--json"))["data"]
+    assert (b["n"], [k["n"] for k in b["kinds"]]) == (a["n"], [k["n"] for k in a["kinds"]]), (a["item"], b["n"], a["n"])
+    c = one_json(cs("explain", a["item"] + "#1", f"{rid}@work", "-C", repo, "--json"))["data"]
+    assert c["pick"] == 1 and c["from"]["fn"] == a["from"]["fn"], c
 
 
 if __name__ == "__main__":

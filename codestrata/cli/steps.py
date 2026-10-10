@@ -137,9 +137,10 @@ def run(a) -> out.Result:
                 ks = [f"#{x['k']}" for x in xs]
                 shown = " ".join(ks if len(ks) <= SHOW_ROUNDS else ks[:5]) + ("" if len(ks) <= SHOW_ROUNDS else " …")
                 lg = max(xs, key=lambda x: x["dur_us"])
+                ho = "" if xs[0]["spin"] or ex else (f"  交出 {sum(x['out'] for x in xs)} · 收到 {sum(x['in'] for x in xs)}")   # 只靠交接算前景的那组
                 lines.append(f"  ×{len(xs):<10} 中位 {out.dur(int(statistics.median(ds)))} · p90 {out.dur(ds[int(0.9 * (len(ds) - 1))])}"
                              f" · 最长 #{lg['k']} {out.dur(lg['dur_us'])}"
-                             f"{'  ' + word if all(x['spin'] for x in xs) else ''}（{shown}）{extra}")
+                             f"{'  ' + word if xs[0]['spin'] else ''}{ho}（{shown}）{extra}")
         if len(groups) > a.limit:
             more = {"shown": a.limit, "total": len(groups), "how": out.command("steps", r.full, "--limit", str(len(groups)), repo=c.flag)}
         if any(len(g["rounds"]) > SHOW_ROUNDS for g in groups):
@@ -172,11 +173,11 @@ def _calls(ln: dict | None, lo: int, hi: int) -> Counter:
 
 
 def _group(sel: list[dict], names) -> list[dict]:
-    """按「多调了什么 + 是不是超长」分组，组按第一轮的先后"""
+    """按「多调了什么 + 是不是超长 + 是不是空转」分组（交接过的轮和空转的轮调的函数一样也分开），组按第一轮的先后"""
     groups: dict[tuple, dict] = {}
     for x in sel:
         ex = names(x)
-        g = groups.setdefault((x["long"], frozenset(ex)), {"extra": ex, "rounds": []})
+        g = groups.setdefault((x["long"], x["spin"], frozenset(ex)), {"extra": ex, "rounds": []})
         g["rounds"].append(x)
     return sorted(groups.values(), key=lambda g: g["rounds"][0]["k"])
 

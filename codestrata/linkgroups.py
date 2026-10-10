@@ -1,5 +1,6 @@
 """分列的连线（lanes.build 的 links）按（种类, 通道, 起列, 终列）合成组：links 命令列组、explain 讲一组，用的是这同一份。
-组的写法 `l:种类|通道|起列|终列`（segments 的交接组用同样的写法，从录到的交接直接数）；explain 认 `…#k` 挑组里的第 k 种两头。
+组的写法 `l:种类|通道|起列|终列`（segments 的交接组用同样的写法，从录到的交接直接数）；页面上画的一条（两头落在两个节点上）
+再加 `|起节点|终节点`（页面的选中、时间顺序编号的稳定写法）；explain 认 `…#k` 挑这一组 / 这一条里的第 k 种两头。
 
 一组里两头的（函数, 行）可能有几种（同一个线程往同一个队列里放，1861 行放音频、1863 行放统计），合起来按次数排；
 那一头的放 / 取发生在仓库外的代码里时，函数是那一刻这条线程栈底的仓库函数（lanes.build 认的），outside 为真。
@@ -9,19 +10,34 @@ from __future__ import annotations
 from .errors import CodestrataError
 
 
-def group_id(kind: str, via: str, fa: str, ta: str) -> str:
-    return f"l:{kind}|{via}|{fa}|{ta}"
+def group_id(kind: str, via: str, fa: str, ta: str, nodes: tuple | None = None) -> str:
+    """组的写法；给了 nodes（起节点, 终节点）是页面上画的那一条（两头落在哪两个节点上）"""
+    return f"l:{kind}|{via}|{fa}|{ta}" + (f"|{nodes[0] or ''}|{nodes[1] or ''}" if nodes else "")
 
 
-def parse(item: str) -> tuple[str, str, str, str, int | None]:
-    """'l:种类|通道|起列|终列[#k]' → (种类, 通道, 起列, 终列, k)"""
+def parse(item: str) -> tuple[str, str, str, str, tuple | None, int | None]:
+    """'l:种类|通道|起列|终列[|起节点|终节点][#k]' → (种类, 通道, 起列, 终列, (起节点, 终节点) 或 None, k)。
+    带两个节点的是页面上画的那一条（页面的选中、时间顺序的编号都这么写），不带的是整组"""
     body, sep, k = item.rpartition("#") if "#" in item.rpartition("|")[2] else (item, "", "")
     parts = body.split("|")
-    if len(parts) != 4 or not parts[0].startswith("l:"):
-        raise CodestrataError("usage", f"连线写成 'l:种类|通道|起列|终列'（可以加 #k 挑第 k 种两头）：{item!r}")
+    if len(parts) not in (4, 6) or not parts[0].startswith("l:"):
+        raise CodestrataError("usage", f"连线写成 'l:种类|通道|起列|终列'，页面上的一条再加 '|起节点|终节点'（都可以加 #k 挑第 k 种两头）：{item!r}")
     if sep and not k.isdigit():
         raise CodestrataError("usage", f"'#' 后面是第几种两头（数字）：{item!r}")
-    return parts[0][2:], parts[1], parts[2], parts[3], int(k) if sep else None
+    return parts[0][2:], parts[1], parts[2], parts[3], (parts[4], parts[5]) if len(parts) == 6 else None, int(k) if sep else None
+
+
+def find(built: dict, aliases: dict, item: str) -> tuple[dict | None, int | None, list[str]]:
+    """一个连线的写法 → (组（带节点的写法只含那一条）、k、同种类的组的写法：找不到时当候选)"""
+    kind, via, fa, ta, nodes, k = parse(item)
+    links = built["links"]
+    if nodes is not None:
+        links = [lk for lk in links if ((lk["from"].get("node") or ""), (lk["to"].get("node") or "")) == nodes]
+    gs = groups({"links": links}, aliases, "all")
+    hit = next((g for g in gs if (g["kind"], g["via"], g["from"], g["to"]) == (kind, via, fa, ta)), None)
+    if hit is not None and nodes is not None:
+        hit["id"] = group_id(kind, via, fa, ta, nodes)
+    return hit, k, [g["id"] for g in groups(built, aliases, "all") if g["kind"] == kind]
 
 
 def _end(fn: str | None, line: int, outside: bool, d: dict | None) -> dict:

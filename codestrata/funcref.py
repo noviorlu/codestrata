@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from .errors import CodestrataError
@@ -31,7 +32,8 @@ def resolve(text: str, keys: list[str], label, calls: Counter | None = None) -> 
     if len(nodes) == 1:
         return next(iter(nodes.items()))
     if not nodes:
-        low = text.lower().rsplit(".", 1)[-1]
+        t = re.sub(r"\.py$", "", text.split("#")[-1].rsplit("/", 1)[-1])     # 写的是文件路径时按文件名（不带 .py）找近的
+        low = t.lower().rsplit(".", 1)[-1]
         near = sorted({lab for k in keys if k != "?" and (lab := label(k)) and low in lab.partition("#")[2].lower()})[:12]
         raise CodestrataError("item_not_found", f"没有叫 {text!r} 的函数（写全路径#限定名、限定名，或唯一的名字）", candidates=near)
     order = sorted(nodes, key=lambda x: -n[x])

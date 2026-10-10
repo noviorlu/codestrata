@@ -15,7 +15,7 @@ window.CS = window.CS || {};
     var nm = esc(CS.panel.short(node));
     if (lanes.pos[lane + '|' + node]) return '<button class="chip" data-node="' + esc(node) + '" data-lane="' + esc(lane) + '">' + nm + '</button>';
     var L0 = lanes.L.lanes.filter(function (x) { return x.id === lane; })[0];
-    var why = L0 && lanes.collapsed[L0.pid] ? '这个进程收起了，展开后能点' : '这一段里这一列没画它';
+    var why = L0 && lanes.isFolded(L0.pid) ? '这个进程收起了，展开后能点' : '这一段里这一列没画它';
     return '<span class="chip off" title="' + why + '">' + nm + '</span><span class="hint">（' + why + '）</span>';
   }
 

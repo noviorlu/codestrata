@@ -42,7 +42,7 @@ def run(a) -> out.Result:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    aliases = _lanes.run_aliases(r.rd, [ln for ln in b["lanes"] if ln.get("gpu")])
+    aliases = _lanes.aliases_of(r.rd, b)
     want = None
     if r.lanes:
         from .. import laneid as _laneid

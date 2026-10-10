@@ -61,9 +61,10 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 4. 「标出 model / 聚焦一个功能」：codestrata find tts RUN@阶段 --kind class（功能 → 代码由你判断；--under 目录 缩小）
 5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄；组里两头有几种时加 #k 挑一种）；
    函数 / 类：explain 限定名 RUN@阶段。只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近
-6. 用户问「现在看的是什么」：view get（开着的页面在看什么）或 status '<地址>' → lanes / path；「这根线是什么」：view wait（等用户点一下）→ explain --selected
+6. 用户问「现在看的是什么」：view get 或 status '<地址>'；「这根线是什么」：view wait（等用户点一下）→ explain --selected；
+   「页面上第 24 号是什么」：explain 24 '<地址>'（地址要开着时间顺序）
 6b. 给用户看：view set RUN@阶段 --focus 东西 --note '一句话'（页面先出「agent 接手」的过渡再换；退出码 6 是用户在操作、等他松手，view wait --for applied）；
-   没有开着的页面（no_live_page / old_serve）时用 view url 拼地址交给用户
+   没有开着的页面（no_live_page / old_serve）时用 view url … --page 端口 拼地址交给用户（地址那一行原样给，不带引号）
 7. 一列在调什么：codestrata path RUN@阶段/stage1/MainThread --limit 30（--time 先列最花时间的；--unseen 只列看不出的调用）
 8. 列出所有 run：codestrata runs ls -C 仓库；等还在录的：codestrata runs wait RUN
 

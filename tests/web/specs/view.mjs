@@ -61,4 +61,24 @@ export default async function (t) {
   ok(await page.wait(`CS.lanes.ready && document.getElementById('h1').textContent !== '加载失败'`, 15000), '阶段写错：页面照样画出来');
   ok(await page.wait(`/没有阶段 nosuchphase/.test((document.querySelector('.vtoast') || {}).textContent || '')`, 5000), '提示阶段写错了');
   ok(!/nosuchphase/.test(await hashNow(page)), '地址改成了真的在看的');
+
+  // 开着「只看几列」、收起了一个进程时，从「运行」里换 run（下拉里点另一个走的就是 selectRun）：图不空，收起按别名沿用，地址里不写 pid
+  await page.goto(base + '#run=' + fx.a);
+  await page.wait(`CS.lanes.ready && !CS.view.applying`, 15000);
+  const pa = await page.ev(`[...new Set(CS.lanes.L.lanes.map(l => CS.lanes.procAlias(l.pid)))]`);
+  await page.ev(`location.hash = 'run=${fx.a}&lanes=' + encodeURIComponent(${JSON.stringify(main)}) + '&fold=' + encodeURIComponent(${JSON.stringify(pa[pa.length - 1])}) + '&order=1'`);
+  ok(await page.wait(`CS.focus.lanes() && CS.lanes.foldedAliases().length === 1 && !CS.view.applying`, 5000), '只看一列、收起一个进程');
+  await page.ev(`CS.app.selectRun(${JSON.stringify(fx.b)}, '')`);
+  ok(await waitRun(page, fx.b) && await page.wait(`CS.lanes.ready && !CS.view.applying && CS.lanes.nodes.length > 0`, 15000),
+     '换 run 之后图不空 ' + await page.ev(`JSON.stringify([CS.lanes.nodes.length, CS.lanes.L && CS.lanes.L.lanes.length, CS.lanes.ready, CS.focus.sels, !!CS.focus.lanes(), CS.lanes.foldedAliases(), CS.app.lanesMode(), document.querySelectorAll('#g .ln-col').length, CS.view.applying])`));
+  await sleep(400);
+  ok(!/fold=\d/.test(await hashNow(page)), '地址里收起的进程写别名、不写 pid：' + await hashNow(page));
+  ok(await page.ev(`document.querySelectorAll('#g .tord .tn').length === CS.lanes.order.n`), '号牌一个不缺（和后端的编号一样多）');
+
+  // case 名写的地址：新开页面时别的键照样套上，run 换成完整 id
+  await page.goto(base + '#run=truth@loop&order=1');
+  ok(await page.wait(`CS.lanes.ready && !CS.view.applying && CS.graph.state.timeOrder`, 15000), 'case 名的地址：时间顺序照样开着');
+  await sleep(300);
+  const hc = await hashNow(page);
+  ok(hc.startsWith('run=' + fx.a + '@loop') && /order=1/.test(hc), '地址里 run 换成完整 id、别的键还在：' + hc);
 }

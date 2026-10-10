@@ -80,7 +80,6 @@ def fragment(v: View) -> str:
 def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, label, proc_order: dict | None):
     """按这个视图（切面、各列的切面）算分列，和页面取到的一样：(lanes.build 的结果, 列别名, 编号)"""
     from . import cut as _cut
-    from . import laneid as _laneid
     from . import laneorder as _laneorder
     from . import lanes as _lanes
     aliases0 = _lanes.run_aliases(rd)
@@ -88,8 +87,5 @@ def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, l
     open_ = sorted(_cut.norm_open(idx, v.cut if v.cut is not None else (idx.get("default_open") or [])))
     cuts = {inv[a]: dirs for a, dirs in v.lcut.items() if a in inv}
     L = _lanes.build(idx, rd, run, phase, hot, open_, cuts=cuts or None, proc_order=proc_order)
-    aliases = _lanes.run_aliases(rd, [ln for ln in L["lanes"] if ln.get("gpu")])
-    procs = {a: pid for pid, a in _lanes.proc_aliases(rd).items()}
-    fold = {procs[a] for a in v.fold if a in procs}
-    want = set(_laneid.select(v.lanes, aliases)) if v.lanes else None
-    return L, aliases, _laneorder.rank(L, aliases, fold=fold, hide=set(v.hide), lanes=want)
+    aliases = _lanes.aliases_of(rd, L)
+    return L, aliases, _laneorder.rank_view(L, aliases, _lanes.proc_aliases(rd), v.fold, v.hide, v.lanes)

@@ -25,6 +25,7 @@ window.CS = window.CS || {};
 
   CS.view = {
     applying: false,
+    booted: false,                    // 启动时地址里的视图套完了没有
 
     parse: function (hash) {
       var v = { run: null, lanes: [], fold: [], cut: null, lcut: {}, sel: null, mark: [], order: false, hide: [], panel: null, rest: [] };
@@ -68,7 +69,7 @@ window.CS = window.CS || {};
       v.run = CS.ds.run || null;
       if (lm) {
         v.lanes = CS.focus.sels.slice();
-        v.fold = Object.keys(lanes.collapsed).filter(function (p) { return lanes.collapsed[p]; }).map(function (p) { return lanes.procAlias(p); }).sort();
+        v.fold = lanes.foldedAliases();
         Object.keys(CS.laneCut.cuts).forEach(function (id) { v.lcut[al[id] || id] = CS.laneCut.cuts[id].slice().sort(); });
         v.sel = this.stableSel(lanes.sel);
       } else if (d) {
@@ -89,9 +90,10 @@ window.CS = window.CS || {};
       var lanes = CS.lanes, L = lanes.L, al = (L && L.aliases) || {};
       if (!key || !L) return null;
       var t = key.slice(0, 2), rest = key.slice(2);
-      if (t === 'l:') {
+      if (t === 'l:') {                                // 页面上画的这一条：组的写法再加两头的节点（和时间顺序编号的稳定写法一样）
         var E = lanes.byKey[key];
-        return E ? 'l:' + E.k.kind + '|' + E.k.via + '|' + (al[E.k.from.lane] || E.k.from.lane) + '|' + (al[E.k.to.lane] || E.k.to.lane) : null;
+        return E ? 'l:' + E.k.kind + '|' + E.k.via + '|' + (al[E.k.from.lane] || E.k.from.lane) + '|' + (al[E.k.to.lane] || E.k.to.lane)
+          + '|' + (E.k.from.node || '') + '|' + (E.k.to.node || '') : null;
       }
       if (t !== 'n:' && t !== 'f:' && t !== 'e:') return null;
       var lane = Object.keys(lanes.laneIx || {}).filter(function (id) { return rest.indexOf(id + '|') === 0; })
@@ -99,15 +101,18 @@ window.CS = window.CS || {};
       return lane ? t + (al[lane] || lane) + rest.slice(lane.length) : null;
     },
 
-    /* 稳定写法 → 页面内部的 key（连线组取次数最多的那一条） */
+    /* 稳定写法 → 页面内部的 key（连线带两头的节点时就是那一条；只写到终列的是整组，取次数最多的那一条） */
     innerSel: function (sel) {
       var lanes = CS.lanes, L = lanes.L, al = (L && L.aliases) || {}, inv = {};
       if (!sel || !L) return null;
       Object.keys(al).forEach(function (id) { inv[al[id]] = id; });
       var t = sel.slice(0, 2), p = sel.slice(2).split('|');
       if (t === 'l:') {
+        var nodes = p.length >= 6 ? [p[4], p[5].split('#')[0]] : null;
         var hit = lanes.links.filter(function (E) {
-          return E.k.kind === p[0] && E.k.via === p[1] && (al[E.k.from.lane] || E.k.from.lane) === p[2] && (al[E.k.to.lane] || E.k.to.lane) === p[3];
+          return E.k.kind === p[0] && E.k.via === p[1] && (al[E.k.from.lane] || E.k.from.lane) === p[2]
+            && (al[E.k.to.lane] || E.k.to.lane) === p[3].split('#')[0]
+            && (!nodes || ((E.k.from.node || '') === nodes[0] && (E.k.to.node || '') === nodes[1]));
         }).sort(function (a, b) { return (b.n || 0) - (a.n || 0); })[0];
         return hit ? hit.key : null;
       }
@@ -125,7 +130,7 @@ window.CS = window.CS || {};
     },
     /* 按页面真实状态重写地址（history.state 留着：viewsync 靠它认「这一步是 agent 推的」），再告诉 viewsync 现状变了 */
     write: function () {
-      if (this.applying || !CS.app.data) return;
+      if (this.applying || !this.booted || !CS.app.data) return;    // 启动时套完地址里的视图之前不写（不然地址里的键先被冲掉）
       var h = this.format(this.current()), url = location.pathname + location.search + (h ? '#' + h : '');
       this._last = h;
       if (location.hash.replace(/^#/, '') !== h) history.replaceState(history.state, '', url);
@@ -146,13 +151,13 @@ window.CS = window.CS || {};
       var p = Promise.resolve(true);
       var want = v.run || '', id = want.split('@')[0], ph = want.indexOf('@') >= 0 ? want.slice(want.indexOf('@') + 1) : '';
       if (want !== (CS.ds.run || '')) {
-        var hit = (app.runList || []).filter(function (x) { return x.id === id || x.case === id; })[0];
+        var hit = app.pickRun(id);
         if (want && !hit) { CS.viewer.toast('地址里的 run ' + id + ' 找不到了：照旧看现在的'); }
         else {
           if (hit && ph && ph.indexOf('t=') !== 0 && ph.indexOf('+') < 0
               && !(hit.phases || []).some(function (x) { return x.name === ph; })) {
-            CS.viewer.toast('run ' + hit.id + ' 里没有阶段 ' + ph + '：看' + (app._defaultPhase(hit) ? ' ' + app._defaultPhase(hit) : '整个 run'));
-            ph = app._defaultPhase(hit);
+            CS.viewer.toast('run ' + hit.id + ' 里没有阶段 ' + ph + '：看' + (app.defaultPhase(hit) ? ' ' + app.defaultPhase(hit) : '整个 run'));
+            ph = app.defaultPhase(hit);
           }
           p = p.then(function () { return want ? app.selectRun(hit.id, ph) : app.selectRun('', ''); });
         }
@@ -171,13 +176,10 @@ window.CS = window.CS || {};
         if (!same) { CS.laneCut.cuts = cuts; return lanes.show(); }
       }).then(function () {
         if (app.lanesMode() && lanes.L) {
-          var procs = {}, pa = lanes.L.proc_aliases || {};
-          Object.keys(pa).forEach(function (pid) { procs[pa[pid]] = pid; });
           lanes.collapsed = {};
-          v.fold.forEach(function (a) { if (procs[a]) lanes.collapsed[procs[a]] = true; });
+          v.fold.forEach(function (a) { lanes.collapsed[a] = true; });
           CS.focus.set(v.lanes, true);
-          var a = lanes._args;
-          if (a) lanes.draw(a[0], a[1], a[2], a[3]);
+          lanes.redraw();
         }
         // 开关
         s.timeOrder = !!v.order && app.canTimeOrder();
@@ -188,12 +190,15 @@ window.CS = window.CS || {};
         // 选中
         if (v.sel) {
           if (app.lanesMode()) {
-            var k = self.innerSel(v.sel), E = k && lanes.byKey[k];
-            if (E) lanes.open(E, true);
+            var k = self.innerSel(v.sel), E = k && lanes.byKey[k], el = null;
+            if (E) { lanes.open(E, true); el = E.p || E.g; }
             else if (k && (k.indexOf('n:') === 0 || k.indexOf('f:') === 0)) {
               var rest = k.slice(2), j = rest.lastIndexOf('|'), lane = rest.slice(0, j), node = rest.slice(j + 1);
+              var hit = (k.indexOf('f:') === 0 ? lanes.frames : lanes.nodes).filter(function (y) { return y.lane === lane && y.id === node; })[0];
               if (k.indexOf('f:') === 0) lanes.pickFrame(node, lane, true); else lanes.pickNode(node, lane, true);
+              el = hit && (hit.h || hit.g);
             }
+            if (el && !CS.graph.inView(el)) CS.graph.showEl(el, true);   // 选中的在图框外（推来的、粘进来的常这样）：滚过去
           } else if (v.sel.indexOf('n:') === 0) CS.graph.pick(v.sel.slice(2), true);
           else if (v.sel.indexOf('e:') === 0) { var ab = v.sel.slice(2).split('|'); CS.graph.pickEdge(ab[0], ab[1]); }
         } else if (why !== 'boot') CS.graph.clear();
@@ -203,6 +208,7 @@ window.CS = window.CS || {};
         if (CS.viewer) CS.viewer.toast('套用地址里的视图出错：' + e.message);
       }).then(function () {
         self.applying = false;
+        self.booted = true;
         if (CS.viewsync) CS.viewsync.settled(self.format(self.current()));   // 套完的样子：之后再变就是用户改的
         self.write();
       });

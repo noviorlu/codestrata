@@ -95,13 +95,16 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
     aliases = _lanes.run_aliases(r.rd)
     procs = _lanes.proc_aliases(r.rd)
     if a.lanes is not None:
-        v.lanes = [] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
+        try:
+            v.lanes = [] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
+        except CodestrataError:                     # 录了 GPU 的 run：再加上 GPU 的列认一次
+            v.lanes = _laneid.canonical(_laneid.parse_list(a.lanes), _lanes.run_aliases(r.rd, _lanes.gpu_lanes(r.rd, r.run)))
     if a.fold is not None:
-        names = set(procs.values())
-        bad = [x for x in _laneid.parse_list(a.fold) if x not in names and a.fold != "none"]
+        by = {x.lower(): x for x in procs.values()}            # 进程别名不分大小写（同列选择器）
+        bad = [x for x in _laneid.parse_list(a.fold) if x.lower() not in by and a.fold != "none"]
         if bad:
-            raise CodestrataError("lane_not_found", f"没有这些进程：{', '.join(bad)}", candidates=sorted(names))
-        v.fold = [] if a.fold == "none" else sorted(_laneid.parse_list(a.fold))
+            raise CodestrataError("lane_not_found", f"没有这些进程：{', '.join(bad)}", candidates=sorted(by.values()))
+        v.fold = [] if a.fold == "none" else sorted(by[x.lower()] for x in _laneid.parse_list(a.fold))
     keys = _seq.span_index(r.rd)["keys"]
     ran = None                                      # 函数节点 → {列别名: [次数, 首, 末]}（--expand / --focus 要知道它在哪几列跑过）
 
@@ -144,6 +147,12 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
             v.lanes = sorted(lanes_ran, key=lambda ln: order.index(ln) if ln in order else 0)
         first = min(lanes_ran, key=lambda ln: lanes_ran[ln][1])
         sel = f"n:{first}|{key.split('#')[0]}"
+    if a.select and a.select != "none" and a.select[:2] not in ("n:", "e:", "f:", "l:"):
+        key, lanes_ran = where(a.select)                # 选一个函数：选它的文件在最早那一列里的那一份，那一列先展开到它
+        if not lanes_ran:
+            raise CodestrataError("item_not_found", f"{a.select} 这段时间里在哪一列都没跑过，选不中")
+        first = min(lanes_ran, key=lambda ln: lanes_ran[ln][1])
+        expand.append((key, {first: lanes_ran[first]}))
     for key, lanes_ran in expand:
         node = key.split("#")[0].rstrip("/") + ("/" if key.endswith("/") else "")
         base = v.cut if v.cut is not None else (idx.get("default_open") or [])
@@ -167,6 +176,9 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
     if a.order is not None:
         v.order = a.order == "on"
     if a.hide is not None:
+        bad = [x for x in _laneid.parse_list(a.hide) if x not in ("hot", "dyn", "none")]
+        if bad:
+            raise CodestrataError("usage", f"--hide 只认 hot、dyn、none：{', '.join(bad)}", candidates=["hot", "dyn", "none"])
         v.hide = [] if a.hide == "none" else [x for x in _laneid.parse_list(a.hide) if x in ("hot", "dyn")]
     if a.path:
         v.panel = "path"
@@ -175,8 +187,9 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
         what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
     if v.fold:
         what.append("收起 " + ",".join(v.fold))
-    if v.lcut:
-        what.append("展开：" + "；".join(f"{ln} 展开到 {','.join(d[-1:])}" for ln, d in sorted(v.lcut.items())))
+    if expand:
+        what.append("展开：" + "；".join(f"{ln} 展开到 {key.split('#')[0]}" for key, lanes_ran in expand for ln in sorted(lanes_ran)
+                                       if ln in v.lcut))
     if v.mark:
         what.append("标记 " + "、".join(v.mark))
     if v.sel:
@@ -197,9 +210,18 @@ def _url(a) -> out.Result:
     if ref.page:
         prefix = ref.page["url"].split("#", 1)[0]
     elif a.page:
-        prefix = f"http://127.0.0.1:{int(a.page)}/"
+        try:
+            port = int(str(a.page).rsplit(":", 1)[-1].strip("/"))
+        except ValueError:
+            raise CodestrataError("usage", f"--page 要写端口（比如 8900）：{a.page!r}") from None
+        prefix = f"http://127.0.0.1:{port}/"
+        app = _locate.page_app({"host": "127.0.0.1", "port": port}, timeout=1.0)
+        if app is None:
+            c.warnings.append({"code": "page_unknown", "msg": f"127.0.0.1:{port} 上没有 codestrata serve：地址拼了，但用户粘进去打不开"})
+        elif str(app.get("repo")) != str(c.repo):
+            c.warnings.append({"code": "page_mismatch", "msg": f"127.0.0.1:{port} 开的是别的仓库 {app.get('repo')}，不是 {c.repo}"})
     url = f"{prefix}#{frag}" if prefix else f"#{frag}"
-    lines = [f"地址  {out.quote(url)}"] + what
+    lines = ["地址（交给用户粘进浏览器地址栏；不带引号）", f"  {url}"] + what
     if not prefix:
         c.warnings.append({"code": "no_page", "msg": "没给页面：把上面这一段（# 开头）粘到浏览器地址栏里页面地址的后面；"
                                                    "或者加 --page 端口 拼完整的地址"})
@@ -259,7 +281,7 @@ def _pushed(c, pg: dict, d: dict, frag: str, what: list[str], took: float, op: s
         if t.get("n") is not None and st == "applied":
             lines.append(f"  页面上的编号一共 {t['n']} 个（时间顺序开着时）")
         lines.append("  撤销  浏览器后退，或 codestrata view back")
-        lines.append(f"  地址  {out.quote(url)}")
+        lines.append(f"  地址  {url}")
     nxt, exit_ = [], 0
     if st in ("deferred", "queued", "offered", "sent"):
         exit_ = 6

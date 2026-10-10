@@ -69,6 +69,22 @@ def run_aliases(rd: Path, extra: list[dict] = ()) -> dict[str, str]:
     return _laneid.lane_aliases(list(seen.values()), proc_aliases(rd))
 
 
+def aliases_of(rd: Path, built: dict) -> dict[str, str]:
+    """build 的结果里的列别名（线程的列按整个 run 算，加上这一份里的 GPU 列）"""
+    return run_aliases(rd, [ln for ln in built["lanes"] if ln.get("gpu")])
+
+
+def gpu_lanes(rd: Path, run: dict) -> list[dict]:
+    """整个 run 里的 GPU 列（{id, pid, gpu: [设备, 流]}：run_aliases 的 extra）；没录 GPU 的 run 是 []。要读整个 run 的 span"""
+    if not (_seq.span_index(rd).get("gpu") or {}).get("n_kernels"):
+        return []
+    seen: dict[str, dict] = {}
+    for (pid, _tid, _a, _b, dev, stream) in _seq.phase_calls(rd, run, None)["gpu"]:
+        lid = gpu_lane_id(pid, dev, stream)
+        seen.setdefault(lid, {"id": lid, "pid": pid, "gpu": [dev, stream]})
+    return sorted(seen.values(), key=lambda x: (x["pid"], str(x["gpu"][0]), str(x["gpu"][1])))
+
+
 def tid_aliases(rd: Path) -> dict[tuple, str]:
     """{(pid, 线程号): 列别名}：交接的一头、一行 span 落在哪一列（explain 用；切段要列 id，自己建 tid_lane）"""
     ix = _seq.span_index(rd)

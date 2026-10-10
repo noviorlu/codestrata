@@ -109,7 +109,7 @@ def _recent(c: common.Ctx, data: dict, lines: list[str], nxt: list[dict]) -> out
         nxt.insert(0, c.cmd("read", "status", cat[0]["id"] + (f"@{mp}" if mp else "")))
     more = None
     if len(cat) > len(rows):
-        more = {"shown": len(rows), "total": len(cat), "how": out.command("runs", "ls", repo=c.repo)}
+        more = {"shown": len(rows), "total": len(cat), "how": out.command("runs", "ls", repo=c.flag)}
     if c.ref is not None and c.ref.page and c.ref.run is None:
         c.warnings.append({"code": "need_view", "msg": "页面地址里没有 run（页面只开着静态图）"})
     return out.Result(data=data, text=lines, repo=c.repo, next=nxt, warnings=c.warnings, more=more)

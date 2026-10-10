@@ -52,22 +52,18 @@ def run(a) -> out.Result:
     label = common.labeler(idx)
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
     if a.item.startswith("l:"):
-        kind, via, fa, ta, pick = _linkgroups.parse(a.item)
-        built, aliases = _built(c, idx, hot)
-        gid = _linkgroups.group_id(kind, via, fa, ta)
-        gs = _linkgroups.groups(built, aliases, "all")
-        g = next((x for x in gs if x["id"] == gid), None)
-        if g is None:
-            raise CodestrataError("item_not_found", f"这段时间里没有 {gid} 这组连线", candidates=[x["id"] for x in gs if x["kind"] == kind][:20])
-        d = _explain.link(c.repo, r.rd, idx, hot, g, pick, lo, hi, label)
-        lines = _link_text(d, lo)
+        _linkgroups.parse(a.item)                    # 先查写法（写错报 usage，不用先建分列）
+        d, lines = _sel(c, a.item, c.ref)
         nxt = [c.cmd("read", "links", f"{r.run['id']}@t={max(lo, d['from']['t_us'] - 2000)}-{min(hi, d['from']['t_us'] + 2000)}",
                      why="这一刻前后 4 ms 里的交接")]
+    elif a.item[:2] in ("n:", "f:", "e:"):           # 页面上的选中写法（地址栏的 sel=）原样也认
+        d, lines = _sel(c, a.item, c.ref)
+        nxt = []
     else:
         d = _thing(c, r, idx, hot, label, a.item, lo, hi)
-        lines = _fn_text(d, lo)
+        lines = _node_text(d) if d.get("kind") == "node" else _fn_text(d, lo)
         nxt = []
-        if d["lanes"]:
+        if d.get("lanes"):
             nxt.append(c.cmd("read", "path", f"{r.text}/{d['lanes'][0]['lane']}", "--limit", "40", why="它所在那一列的调用树"))
     c.warnings += _stale(c, r, d)
     return out.Result(data=d, text=lines, repo=c.repo, ref=c.ref_json(), next=nxt, warnings=c.warnings)
@@ -82,12 +78,14 @@ def _built(c, idx: dict, hot: dict) -> tuple[dict, dict]:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    return b, _lanes.run_aliases(r.rd, [ln for ln in b["lanes"] if ln.get("gpu")])
+    return b, _lanes.aliases_of(r.rd, b)
 
 
 def _thing(c, r, idx: dict, hot: dict, label, item: str, lo: int, hi: int) -> dict:
-    """一个类或函数：类合它的方法；录到的键里找不到的函数退到 scan 的索引（这段时间里没跑过）"""
+    """一个类、函数、文件或目录：类合它的方法；文件 / 目录讲里面跑过的函数；录到的键里找不到的函数退到 scan 的索引（这段时间里没跑过）"""
     syms = idx.get("symbols") or {}
+    if item in (idx.get("files") or {}) or item in (idx.get("dirs") or {}):
+        return _explain.node(r.rd, r.run, r.phase, label, item, None)
     cls = _funcref.resolve_symbol(item, syms, ("class",))
     if cls:
         return _explain.klass(c.repo, r.rd, r.run, idx, hot, cls, lo, hi, label, r.phase)
@@ -182,9 +180,12 @@ def _link_text(d: dict, lo: int) -> list[str]:
         L += _def(e.get("def"))
     L.append("前后发生了什么（运行时）")
     for verb, e in ((va, a), (vb, b)):
-        if e["outside"] and e["fn"]:
+        if e["outside"] and e["fn"] and e["chain"]:
             L.append(f"  {verb}的一头：{verb}在仓库外的代码里；当时这条线程上还没返回的仓库调用  {_chain(e['chain'])}"
                      + ("（有挂起过的 async 调用：可能是同一条线程上别的 task）" if e.get("maybe_other_task") else ""))
+        elif e["outside"] and e["fn"]:              # 栈底的函数是按它调出去的调用认的，它自己没录到一行：没有链可给
+            L.append(f"  {verb}的一头：{verb}在仓库外的代码里；栈底的仓库函数是 {common.short(e['fn'])}（按它调出去的调用认的），"
+                     "当时它下面没有还在跑的仓库调用")
         elif e is a and not e["outside"]:
             L.append(f"  {verb}的一头的调用链  {_chain(e['chain'])}")
     rh = d.get("recent_handoff")
@@ -256,6 +257,7 @@ def _numbered(a, c) -> out.Result:
     if inner.startswith("l:"):
         k = L["links"][int(inner[2:])]                 # 页面上画的这一条（这两个节点之间的）：只讲它的两头
         g = _linkgroups.groups({"links": [k]}, aliases, "all")[0]
+        g["id"] = order["ids"][n - 1]                  # 稳定写法带两头的节点：explain '…#k' 照着它挑，k 的编法一样
         d = _explain.link(c.repo, r.rd, idx, hot, g, None, lo, hi, label)
         lines = [head] + _link_text(d, lo)
     else:
@@ -294,8 +296,7 @@ def _edge_in(c, idx: dict, L: dict, aliases: dict, lid: str, a_: str, b_: str) -
 
 
 def _selected(a) -> out.Result:
-    """用户在开着的页面上选中的：连线组（l:）、列中的边（e:）、节点 / 框（n: / f:）"""
-    from .. import viewspec as _viewspec
+    """用户在开着的页面上选中的：连线（l:）、列中的边（e:）、节点 / 框（n: / f:）"""
     if a.item and not a.ref:                         # explain --selected '<页面地址>'：那是用来找页面的
         a.ref, a.item = a.item, None
     a.ref = a.in_ or a.ref
@@ -310,39 +311,43 @@ def _selected(a) -> out.Result:
     c.ref, c.res = cur, _locate.resolve(c.repo, cur)
     c.warnings += c.res.warnings
     common.require_events(c)
+    d, lines = _sel(c, sel, cur)
+    d["selected"] = sel
+    d["tab"] = t["tab"]
+    return out.Result(data=d, text=[f"用户在页面上选中的：{sel}（{pages.where(pg, t)}；{c.res.full}）"] + lines, repo=c.repo,
+                      ref=c.ref_json(), warnings=c.warnings)
+
+
+def _sel(c, sel: str, ref) -> tuple[dict, list[str]]:
+    """页面上选中的那种写法（l: 连线、e: 列中的边 / 模块图的边、n: / f: 节点 / 框）→ (原料, 文字)。
+    列中的边按 ref（页面地址或视图）里的切面算；没给切面就是默认的"""
+    from .. import viewspec as _viewspec
     r = c.res
-    lo, hi = r.slices[0][0], r.slices[-1][1]
+    lo = r.slices[0][0]
+    hi = r.slices[-1][1]
     idx = common.index(c)
     label = common.labeler(idx)
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
-    head = f"用户在页面上选中的：{sel}（{pages.where(pg, t)}；{r.full}）"
     if sel.startswith("l:"):
-        kind, via, fa, ta, _ = _linkgroups.parse(sel)
         built, aliases = _built(c, idx, hot)
-        g = next((x for x in _linkgroups.groups(built, aliases, "all") if x["id"] == _linkgroups.group_id(kind, via, fa, ta)), None)
+        g, pick, cands = _linkgroups.find(built, aliases, sel)
         if g is None:
-            raise CodestrataError("item_not_found", f"这段时间里没有 {sel} 这组连线（页面上的选中过时了？）")
-        d = _explain.link(c.repo, r.rd, idx, hot, g, None, lo, hi, label)
-        lines = [head] + _link_text(d, lo)
-    elif sel.startswith("e:") and sel.count("|") >= 2:
-        v = _viewspec.from_keys(cur.run, cur.lanes, cur.view)
+            raise CodestrataError("item_not_found", f"这段时间里没有 {sel.partition('#')[0]} 这条连线", candidates=cands[:20])
+        d = _explain.link(c.repo, r.rd, idx, hot, g, pick, lo, hi, label)
+        return d, _link_text(d, lo)
+    rest = sel[2:]
+    if sel.startswith("e:") and rest.count("|") >= 2:                     # 分列里一列中的边 e:列|a|b
+        v = _viewspec.from_keys(r.text, list(getattr(ref, "lanes", []) or []), dict(getattr(ref, "view", {}) or {}))
         L, aliases, _ = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label))
-        lane, a_, b_ = sel[2:].split("|")[:3]
+        lane, a_, b_ = rest.split("|")[:3]
         lid = next((k for k, al in aliases.items() if al == lane), lane)
         d = _edge_in(c, idx, L, aliases, lid, a_, b_)
-        lines = [head] + _edge_text(d, lo)
-    elif sel[:2] in ("n:", "f:", "e:"):
-        rest = sel[2:]
-        lane, node = (rest.split("|", 1) if "|" in rest else (None, rest))
-        if sel.startswith("e:"):                     # 模块图上的边 e:a|b：讲两头的节点不如讲边，先给两头各跑了什么
-            node = rest.split("|")[0]
-        d = _explain.node(r.rd, r.run, r.phase, label, node, lane)
-        lines = [head] + _node_text(d)
-    else:
-        raise CodestrataError("item_not_found", f"认不出页面上选中的 {sel}")
-    d["selected"] = sel
-    d["tab"] = t["tab"]
-    return out.Result(data=d, text=lines, repo=c.repo, ref=c.ref_json(), warnings=c.warnings)
+        return d, _edge_text(d, lo)
+    lane, node = (rest.split("|", 1) if "|" in rest and not sel.startswith("e:") else (None, rest))
+    if sel.startswith("e:"):                         # 模块图上的边 e:a|b：先讲起点那个节点里跑了什么
+        node = rest.split("|")[0]
+    d = _explain.node(r.rd, r.run, r.phase, label, node, lane)
+    return d, _node_text(d)
 
 
 def _node_text(d: dict) -> list[str]:

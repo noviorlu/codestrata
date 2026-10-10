@@ -46,3 +46,12 @@ def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, hide: s
         items.append((k["first"], k.get("last") or 0, stable, f"l:{i}"))
     items.sort()
     return {"keys": {x[3]: r for r, x in enumerate(items)}, "ids": [x[2] for x in items], "n": len(items)}
+
+
+def rank_view(L: dict, aliases: dict[str, str], proc_aliases: dict, fold: list[str], hide: list[str], lanes: list[str]) -> dict:
+    """按视图描述里的写法算编号（页面的 /api/lanes、命令行的 explain N 共用）：收起的进程写别名、只看的列写选择器；
+    选择器在这一段里一列都对不上时当没选（和页面一样画全部列）。proc_aliases：{pid: 进程别名}（键是数字或字符串都行）"""
+    from . import laneid as _laneid
+    procs = {a: int(pid) for pid, a in proc_aliases.items()}
+    want = (set(_laneid.select(lanes, aliases, strict=False)) or None) if lanes else None
+    return rank(L, aliases, fold={procs[a] for a in fold if a in procs}, hide=set(hide), lanes=want)

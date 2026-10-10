@@ -52,7 +52,6 @@ from pathlib import Path
 from . import align as _align
 from . import cut as _cut
 from . import errors as _errors
-from . import laneid as _laneid
 from . import laneorder as _laneorder
 from . import lanes as _lanes
 from . import path as _path
@@ -312,7 +311,7 @@ class Handler(BaseHandler):
                 L = _lanes.build(self.idx, rd, run, phase, hot, open_, cuts=cuts, proc_order=self._proc_order(rd, run, phase),
                                  text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160])
                 L = _lanesview.decorate(self.idx, hot, L, open_)
-                L["aliases"] = _lanes.run_aliases(rd, [ln for ln in L["lanes"] if ln.get("gpu")])
+                L["aliases"] = _lanes.aliases_of(rd, L)
                 L["proc_aliases"] = {str(k): v for k, v in _lanes.proc_aliases(rd).items()}
                 with Handler._lock:
                     Handler._lane_cache[key] = L
@@ -329,13 +328,10 @@ class Handler(BaseHandler):
             return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
 
     def _order(self, L: dict, q: dict) -> dict:
-        """这个视图（fold / hide / lanes）里时间顺序的编号"""
+        """这个视图（fold / hide / lanes）里时间顺序的编号（laneorder.rank_view：和命令行的 explain N 同一份）"""
         def arg(k: str) -> list[str]:
             return [x for x in ((q.get(k) or [""])[0]).split(",") if x]
-        procs = {v: int(k) for k, v in (L.get("proc_aliases") or {}).items()}
-        fold = {procs[a] for a in arg("fold") if a in procs} | {int(a) for a in arg("fold") if a.isdigit()}
-        lanes = set(_laneid.select(arg("lanes"), L["aliases"])) if arg("lanes") else None
-        return _laneorder.rank(L, L["aliases"], fold=fold, hide=set(arg("hide")), lanes=lanes)
+        return _laneorder.rank_view(L, L["aliases"], L.get("proc_aliases") or {}, arg("fold"), arg("hide"), arg("lanes"))
 
     def _proc_order(self, rd: Path, run: dict, phase: str | None) -> dict:
         """进程的先后：这一段里开始干活的先后（分列和请求路径同一个；轮头按装着这一段的阶段认，和命令行一样）"""
