@@ -583,6 +583,19 @@
   列别名只在 `lanes.run_aliases` 一处按整个 run 算。
 - 在哪：`ref.py`、`locate.py`、`laneid.py`、`errors.py`、`cmdline.py`、`confdir.py`、`cli/`；`lanes.py` 的 `run_aliases`；`serve.py` 的 `/api/app`；测试 `tests/test_agentcli.py`。
 
+### 切段只用通用信号；老 run 拒绝，不猜
+- 决定：`segments` / `steps` 不认识框架，只用 span 的父子、次数、时长和录到的交接认一列的主循环、切轮、判空转、切出每个进程干活的那一段
+  （判法和阈值见 [agent-cli.md](agent-cli.md)「切段」，都能在命令行上改、写进输出的 basis，判法改了升 algo）。
+  2026-10-01 之前录的 run 没录交接，切段直接拒绝并说明（`no_handoffs`），不降级。名字完全一样的进程按启动先后编号（`server-1`），不带 pid。
+  段的名字（thinker、talker）不由 codestrata 给，输出「这段里只有它跑」的文件当证据，由 agent 叫。
+- 为什么：判法在 MiniCPM 的三个 stage、qwen 的单进程脚本、toy 服务上定（2026-10-09），和之前人工核对的数对上（三段的起止、`schedule` ×29 / ×250 / ×1412、
+  stage1 第 1 轮 1392 ms 里 `sample` 自己 1217 ms、save_loop 里调了 `put` 的 10 轮）。设计稿最初的几条在真数据上不对：
+  轮头按整个 run 认会认成加载模型的循环、要求轮头有子调用会漏掉直接进 C++ 的 `decode_step`、按「哪一次调用」分父亲会被每个 token 一个生成器帧打散、
+  只看调用不看时长会把 1.4 秒的首轮当空转。老 run 少了交接，切出来的段是错的（stage1 被认成别的线程）：错的段比没有段更误导 agent（同「交叉引用宁可不跳，也不跳错」）。
+  带 pid 的别名换一次录制就变，agent 记下的名字下次用不了。
+- 放弃的方案：按框架写死（vLLM 的 `schedule`、`run_busy_loop`）；老 run 降级加警告；同名进程带 pid。
+- 在哪：`steps.py`、`segments.py`、`funcref.py`、`laneid.proc_aliases`；`cli/segments.py`、`cli/steps.py`、`cli/links.py`；测试 `tests/test_segments.py`。
+
 ### 读代码的功能冻结，只修 bug
 - 决定：代码窗口、Ctrl+点击跳转和引用列表的界面、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。
   核心（graph：scan × trace、名字和调用的解析（2026-09-30 起，含类型推断）、录制、叠加、时间轴）继续做深。

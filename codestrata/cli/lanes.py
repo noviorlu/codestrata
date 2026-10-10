@@ -49,7 +49,7 @@ def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str]]:
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"]),
                               next=[c.cmd("write", "runs", "merge", r.run["id"])]) from None
-    procs = _laneid.proc_aliases(_lanes.proc_names(r.rd))
+    procs = _lanes.proc_aliases(r.rd)
     return b, _lanes.run_aliases(r.rd, [ln for ln in b["lanes"] if ln.get("gpu")]), procs
 
 

@@ -2,7 +2,7 @@
 
     进程别名  去掉扩展名，再去掉同一族进程（第一个词相同）共有的开头和结尾几个词，取从左往右最短的、
              能唯一认出它的前缀：VLLM::StageEngineCoreProc_stage1_replica0_DP0 → stage1，end2end.py → end2end。
-             名字完全一样的几个进程（几个 python -c）加 -<pid>。整个 run 算一次，和时间段无关。
+             名字完全一样的几个进程（几个 python -c）按启动先后编号：python-1、python-2。整个 run 算一次，和时间段无关。
     列别名    进程别名/线程（线程照 lanes.thread_group 归一）：stage1/MainThread；GPU 列是 stage1/gpu0.7。
              [A-Za-z0-9._-] 以外的字符换成 _，撞了加 -2、-3。
     选择器    进程/线程、进程（这个进程的所有列）、进程/*、*/线程、*/gpu*，也认 pid:线程（页面的列 id）。
@@ -32,8 +32,9 @@ def _base(name: str) -> str:
     return name
 
 
-def proc_aliases(names: dict[int, str]) -> dict[int, str]:
-    """{pid: 进程名}（lanes.proc_names）→ {pid: 别名}"""
+def proc_aliases(names: dict[int, str], starts: dict[int, int] | None = None) -> dict[int, str]:
+    """{pid: 进程名}（lanes.proc_names）→ {pid: 别名}。名字一样的几个进程按启动先后编号（starts：{pid: 启动时刻}，
+    没有就按 pid）：server-1、server-2——换一次录制，同一个位置上的进程名字还一样"""
     base = {pid: _base(n or str(pid)) for pid, n in names.items()}
     words = {pid: [w for w in _SPLIT.split(b) if w] or [b] for pid, b in base.items()}
     fams: dict[str, list[int]] = {}
@@ -43,10 +44,8 @@ def proc_aliases(names: dict[int, str]) -> dict[int, str]:
     for pids in fams.values():
         distinct = sorted({tuple(words[p]) for p in pids})
         if len(distinct) == 1:
-            ws = distinct[0]
-            name = clean(base[pids[0]])
             for p in pids:
-                out[p] = name if len(pids) == 1 else f"{name}-{p}"
+                out[p] = clean(base[pids[0]])
             continue
         # 去掉共有的开头、结尾（至少留一个词）
         n_min = min(len(d) for d in distinct)
@@ -57,25 +56,27 @@ def proc_aliases(names: dict[int, str]) -> dict[int, str]:
         while suf < n_min - pre - 1 and len({d[len(d) - 1 - suf] for d in distinct}) == 1:
             suf += 1
         rest = {d: d[pre:len(d) - suf] for d in distinct}
-        short: dict[tuple, str] = {}
-        for d, r in rest.items():
-            for j in range(1, len(r) + 1):
-                if sum(1 for o in rest.values() if o[:j] == r[:j]) == 1 or j == len(r):
-                    short[d] = clean("_".join(r[:j]))
-                    break
-        groups: dict[tuple, list[int]] = {}
         for p in pids:
-            groups.setdefault(tuple(words[p]), []).append(p)
-        for d, ps in groups.items():
-            for p in ps:
-                out[p] = short[d] if len(ps) == 1 else f"{short[d]}-{p}"
-    # 不同族撞了名（很少见）：后来的加 pid
-    seen: dict[str, int] = {}
-    for pid in sorted(out):
-        a = out[pid]
-        if a in seen and seen[a] != pid:
-            out[pid] = f"{a}-{pid}"
-        seen.setdefault(out[pid], pid)
+            r = rest[tuple(words[p])]
+            j = next(j for j in range(1, len(r) + 1)
+                     if j == len(r) or sum(1 for o in rest.values() if o[:j] == r[:j]) == 1)
+            out[p] = clean("_".join(r[:j]))
+    # 撞名的（名字完全一样的几个进程，或者不同族碰巧撞上）：按启动先后编号
+    order = sorted(out, key=lambda p: ((starts or {}).get(p, float("inf")), p))
+    by: dict[str, list[int]] = {}
+    for p in order:
+        by.setdefault(out[p], []).append(p)
+    taken = {a for a, ps in by.items() if len(ps) == 1}
+    for a, ps in by.items():
+        if len(ps) == 1:
+            continue
+        k = 0
+        for p in ps:
+            k += 1
+            while f"{a}-{k}" in taken:
+                k += 1
+            out[p] = f"{a}-{k}"
+            taken.add(out[p])
     return out
 
 

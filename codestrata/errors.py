@@ -12,7 +12,7 @@ EXIT = {
     **dict.fromkeys(("repo_unknown", "run_not_found", "phase_not_found", "bad_window", "window_out_of_range",
                      "lane_not_found", "ambiguous_lane", "item_not_found", "ambiguous_item"), 3),
     **dict.fromkeys(("not_scanned", "index_old", "no_events", "recording", "interrupted_run", "failed_run",
-                     "not_loadable", "spans_unreadable", "no_loop", "link_mismatch", "need_view"), 4),
+                     "not_loadable", "spans_unreadable", "no_loop", "no_handoffs", "link_mismatch", "need_view"), 4),
     **dict.fromkeys(("no_live_page", "old_serve", "page_failed", "timeout", "interrupted", "superseded",
                      "refused"), 5),
     "pending": 6,

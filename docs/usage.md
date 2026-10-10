@@ -312,7 +312,7 @@ codestrata serve <repo> --hot demo@serving       # 只叠 serving 这一段（�
 
 `serve --hot`、`runs show` 都认这个写法。页面上选的 run 记在地址里（`#run=<id>@<阶段>`），刷新、复制地址再打开都还是它。
 
-给 agent 用的读命令（`codestrata status`、`lanes`）还多收页面地址、`阶段+起s-止s` 和 `/列`（`stage1/MainThread`），见 `codestrata guide` 和 [design/agent-cli.md](design/agent-cli.md)。
+给 agent 用的读命令（`codestrata status`、`lanes`、`segments`、`steps`、`links`）还多收页面地址、`阶段+起s-止s` 和 `/列`（`stage1/MainThread`），见 `codestrata guide` 和 [design/agent-cli.md](design/agent-cli.md)。
 
 ### runs 命令
 
@@ -462,6 +462,9 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 | `path REF` | 打出请求路径：每个进程、每个线程的函数级调用上下文树（要录了时序事件的 run）；老写法 `path <repo> RUN` 也认 | `-C 仓库`<br>`--depth N` 只打前几层<br>`--limit N`<br>`--json` 信封 |
 | `status [REF]` | 仓库、run 的状态、各阶段的时刻；不给 REF 列最近 5 个 run | `-C 仓库`、`--json` |
 | `lanes REF` | 这段时间里有哪几列（进程 · 线程）和它们的稳定写法 | `-C 仓库`、`--limit N`、`--json` |
+| `segments REF` | 按功能切段：每个进程干活的那一段、段之间的交接、缺口（要 2026-10-01 之后录的 run） | `--all`、阈值、`--json` |
+| `steps REF/列` | 一列的主循环一轮轮 | `--with FN`、`--why`、`--round K-M`、`--list`、`--head FN`、阈值、`--json` |
+| `links REF` | 列之间谁交给谁、谁起了谁，两头的函数和那一行 | `--kind`、`--list`、`--json` |
 | `guide` | 给 agent 的一页速查 | `--skill`、`--json` |
 
 RUN 的写法见[管理 run](#管理-run)；REF 是 RUN 再加列、也可以是页面地址，见 [design/agent-cli.md](design/agent-cli.md)。

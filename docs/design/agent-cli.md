@@ -48,7 +48,7 @@ RUN   := 完整 run id | case 名
 - **进程别名**：
   - 先去掉扩展名和 `-m `，再去掉同一族进程（名字第一个词相同）共有的开头和结尾几个词，然后取从左往右最短的、能唯一认出它的前缀。
   - 例：`StageEngineCoreProc_stage1_replica0_DP0` → `stage1`；两个副本时是 `stage1_replica0`、`stage1_replica1`；`end2end.py` → `end2end`。
-  - 名字完全一样的几个进程，各加 `-<pid>`。
+  - 名字完全一样的几个进程，按启动先后编号：`server-1`、`server-2`（换一次录制，同一个位置上的进程名字还一样）。
 - **列别名**：`进程别名/线程`。
   - 线程名先归一：`Thread-3 (save_loop)` → `save_loop`，`worker-0` → `worker`。
   - GPU 的列写成 `gpu<设备>.<流>`，比如 `stage1/gpu0.7`。
@@ -99,6 +99,7 @@ RUN   := 完整 run id | case 名
 | `lane_idle` | 选的列在这段时间里没有活动 |
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
+| `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
 
 ## 错误码和退出码
 
@@ -108,7 +109,7 @@ RUN   := 完整 run id | case 名
 | 1 | `internal` | 意外（老代码里的错误、codestrata 的 bug） |
 | 2 | `usage` | 用法错 |
 | 3 | `repo_unknown` `run_not_found` `phase_not_found` `bad_window` `window_out_of_range` `lane_not_found` `ambiguous_lane` `item_not_found` `ambiguous_item` | 名字写错，都带候选 |
-| 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs wait` 是 read，`runs merge`、`scan` 是 write） |
+| 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `no_handoffs` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs wait` 是 read，`runs merge`、`scan` 是 write） |
 | 5 | `no_live_page` `old_serve` `page_failed` `timeout` `interrupted` `superseded` `refused` | 页面换不了（留给推页面的命令） |
 | 6 | `pending` | 页面还没换（等用户） |
 
@@ -118,7 +119,7 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| read | `status`、`lanes`、`segments`、`steps`、`links`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
 | write | `scan`、`runs tag / untag / note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
 | start | `serve`、`app` | 先问用户（起常驻进程、占端口） |
@@ -138,6 +139,42 @@ RUN   := 完整 run id | case 名
 - 要求 run 录了时序事件（`no_events`）、录完了（`recording` / `interrupted_run`）。
 - `data.lanes[]`：`lane`、`id`、`pid`、`proc`、`proc_name`、`thread`、`thread_names`、`n_threads`、`activity`（busy / idle / external / gpu）、`n_calls`、`first_us`、`last_us`。
 - 下一步给调用最多的那一列的 `path`。
+
+### `codestrata segments REF [--all] [阈值…] [--json]`
+- 按功能切段：请求（`--phase` 的那个函数在这段时间里的每一次调用）、每个进程干活的那一段（stage 段，各给一个 REF）、
+  段之间录到的跨进程交接（组的写法 `l:handoff|通道|起列|终列`）、缺口、只在轮询的背景列。判法见下面「切段」。
+- 持有请求的进程不出段（用「请求」那一行代表；`--all` 也出）；只有一个进程在干活的程序（单进程的脚本），段就是这段时间里它主循环的全部轮。
+- `data`：`requests[]`、`segments[]`（`id`、`kind`、`proc`、`main`（主循环那一列）、`lanes`、`busy_lanes`、`slices_us`、`dur_us`、
+  `rounds`（`first`、`last`、`n`、`fg`、`out`、`head`、`median_us`）、`evidence.own_files`、`gaps`、`truncated`、`ref`）、
+  `handoffs[]`、`handoffs_in_process`、`background`、`basis`（用的阈值）；信封带 `algo`。
+- 段的名字（thinker、talker）不给：agent 看 `own_files` 自己叫、说明依据。
+
+### `codestrata steps REF/列 [--head FN] [--with FN] [--round K[-M]] [--list] [--limit N] [--why] [阈值…] [--json]`
+- 一列的主循环一轮轮。REF 要正好选中一列（写成进程报 `ambiguous_lane`，候选是这个进程的列）。
+- 轮头和轮号在整个 run 上数，REF 的时间段只决定列出哪几轮。默认按「这一轮多调了什么 + 是不是超长」分组，每组给中位、p90、轮号；超长的轮各给 REF。
+- `--with FN`：只列调过 FN 的轮（任意深度）。`--list`：逐轮。`--round K-M`：只看这几轮。
+- `--why`：这几轮里每个函数「自己的时间」（时长减去它直接调的仓库函数；挂起过的 async 调用时长含挂起，不算它自己的），
+  加上「没有仓库函数在跑」的时间。没录 GPU 的 run 提示 GPU 时间算在发起它的 Python 函数里。
+- 函数的写法（`--head`、`--with`）：`路径#限定名`、限定名、唯一的名字；对不上 `item_not_found`、对上几个 `ambiguous_item`，都带候选。
+- 认不出主循环报 `no_loop`，候选是这一列调得最多的函数（拿来给 `--head`）。
+
+### `codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] [--json]`
+- 列之间的连线（和页面的分列同一套），按（种类, 通道, 起列, 终列）合成组，id 是 `l:种类|通道|起列|终列`；
+  每组给次数、首末时刻、次数最多的那一对两头的函数和那一行（放 / 取在仓库外的代码里时写「经仓库外的代码」）。默认只看 handoff，最多 20 组。
+
+### 切段
+
+一列（一个进程里同名的一类线程）的主循环，只用通用的信号认（`steps.py`）：
+- **轮头**：在同一个父函数下面（线程根也算一个父函数；同一个函数的几次调用合在一起看），在这段时间里至少调了 `--min-calls`（5）次、
+  不是合成一行的连续调用的被调方是候选；按次数投票（差不到 10% 算同票），票最多的次数里第一次最早的是轮头；父函数之间取覆盖时间最长的，差不到 10% 取外层的。
+- **轮**：第 k 次轮头开始到第 k+1 次开始；最后一轮到最后一次轮头调用结束。
+- **常规调用**：在 ≥ `--min-share`（0.2）的轮里出现过（这一轮里任意深度的调用都算）。
+- **超长**：比这一列所有轮的中位长 `--long`（5）倍以上。**空转**：只有常规调用、没有交接、也不超长。
+- **忙段**：这段时间里的前景轮（不空转的），在中间空转超过这段时间长度的 `--gap`（0.25）处切开。
+- **stage 段**：一个进程里前景轮最多的那一列是它的主循环，取最大的那块忙段。
+- **缺口**：段开始前后 max(段长 10%, 50 ms) 里没录到别的进程交给它的数据。
+- 要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 报 `no_handoffs`（退出码 4），下一步给 `lanes`、`path`。
+- 阈值都能在命令行上改，用的是哪一套写在 `basis` 里；判法改了时 `algo`（现在 `seg/1`）升版本。
 
 ### `codestrata path REF [--depth N] [--limit N] [--json]`
 - 函数级的请求路径（每个进程、每条线程的调用上下文树）。默认打整棵树；REF 带了列、给了 `--limit` 或 `--json` 时每列截到 60 行（`--limit` 是每列几行，`--depth` 藏掉的不算），截过的列末尾写还有几行，`more` 写一共几行。
