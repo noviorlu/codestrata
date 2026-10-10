@@ -4,13 +4,14 @@ from __future__ import annotations
 import datetime as _dt
 
 from .. import locate as _locate
+from .. import ref as _ref
 from .. import runs as _runs
 from ..ui import source as _source
-from . import common, out
+from . import common, out, pages
 
 NAME = "status"
 EFFECT = "read"
-DOES = "仓库、索引、run 的状态、REF 落在哪几片时间、各阶段的窗口；不给 REF 列最近 5 个 run"
+DOES = "仓库、索引、run 的状态、REF 落在哪几片时间、各阶段的窗口、开着的页面各在看什么；不给 REF 列最近 5 个 run"
 USAGE = "codestrata status [REF|'页面地址'] [-C 目录] [--json]"
 EXAMPLE = "codestrata status 'http://127.0.0.1:8900/#run=20261001-170349-run_single_prompt@serving'"
 
@@ -39,6 +40,7 @@ def run(a) -> out.Result:
         idx_text = "还没 scan"
         nxt.append(out.step("write", "scan", repo=repo, why="建索引"))
     lines = [f"仓库  {repo}（{_HOW[c.how]}；{idx_text}）"]
+    data["pages"] = _pages(c, lines)
     if c.res is None:
         return _recent(c, data, lines, nxt)
 
@@ -69,6 +71,9 @@ def run(a) -> out.Result:
                          "events": bool(ev), "gpu": bool(run_.get("gpu")), "truncated": trunc,
                          "created": run_.get("created"), "end_us": r.end_us},
                  "phases": phases, "lanes": r.lanes})
+    shown = {_ref.parse_fragment(t["view"] or "").run for p in data["pages"] for t in p["tabs"] if t["visible"]}
+    if data["pages"] and shown and not any(x and (x == run_["id"] or x == run_.get("case")) for x in shown):
+        c.warnings.append({"code": "not_on_page", "msg": f"开着的页面上看的不是 {run_['id']}：要给用户看，用 view set（page）推过去"})
     if st == "interrupted":
         nxt.append(c.cmd("write", "runs", "merge", run_["id"], why="录制中断了，从原始数据合并"))
     elif ev and st != "recording":
@@ -77,6 +82,15 @@ def run(a) -> out.Result:
             "/" + ",".join(r.lanes) if r.lanes else "")
         nxt.append(c.cmd("read", "lanes", target, why="这段时间里有哪几列"))
     return out.Result(data=data, text=lines, repo=repo, ref=c.ref_json(), next=nxt, warnings=c.warnings)
+
+
+def _pages(c: common.Ctx, lines: list[str]) -> list[dict]:
+    """这个仓库开着的页面（能推视图的 serve 的标签页），各在看什么"""
+    pg = pages.open_pages(c.repo)
+    for p in pg:
+        for t in p["tabs"]:
+            lines.append(f"页面  {pages.where(p, t)}  {t['view'] or '（静态图）'}")
+    return pg
 
 
 def _recent(c: common.Ctx, data: dict, lines: list[str], nxt: list[dict]) -> out.Result:

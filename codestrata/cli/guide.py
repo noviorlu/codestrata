@@ -36,7 +36,7 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 ## 引号
 命令输出里的每条命令都已经加好引号，原样粘贴就能跑。自己写时：页面地址、带 | 或 # 的、带 * 的列一律加单引号。
 
-## 命令（effect：read 随便跑；write / delete / start / record 先问用户）
+## 命令（effect：read 随便跑；page 只在用户这句话本身就是要看 / 只看 / 标出 / 选中时直接推，回复里说怎么撤销；write / delete / start / record 先问用户）
 {cmds}
 
 ## 输出
@@ -61,7 +61,9 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 4. 「标出 model / 聚焦一个功能」：codestrata find tts RUN@阶段 --kind class（功能 → 代码由你判断；--under 目录 缩小）
 5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄；组里两头有几种时加 #k 挑一种）；
    函数 / 类：explain 限定名 RUN@阶段。只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近
-6. 用户贴来页面地址，问「现在看的是什么」：status '<地址>' → lanes '<地址>' → path '<地址>'（每列 60 行）
+6. 用户问「现在看的是什么」：view get（开着的页面在看什么）或 status '<地址>' → lanes / path；「这根线是什么」：view wait（等用户点一下）→ explain --selected
+6b. 给用户看：view set RUN@阶段 --focus 东西 --note '一句话'（页面先出「agent 接手」的过渡再换；退出码 6 是用户在操作、等他松手，view wait --for applied）；
+   没有开着的页面（no_live_page / old_serve）时用 view url 拼地址交给用户
 7. 一列在调什么：codestrata path RUN@阶段/stage1/MainThread --limit 30（--time 先列最花时间的；--unseen 只列看不出的调用）
 8. 列出所有 run：codestrata runs ls -C 仓库；等还在录的：codestrata runs wait RUN
 

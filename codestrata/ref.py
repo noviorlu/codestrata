@@ -74,14 +74,23 @@ def _parse_url(text: str) -> Ref:
     m = re.match(r"^/v/(\d+)/", u.path or "")
     if m:                                        # 主菜单转发的 /v/<端口>/：图服务自己的端口
         prefix, port = m.group(0), int(m.group(1))
+    page = {"url": text, "host": u.hostname, "port": port, "prefix": prefix}
+    return _from_fragment(u.fragment or "", page, text)
+
+
+def parse_fragment(frag: str) -> Ref:
+    """视图描述（地址栏 # 后面那串，不带页面）→ Ref：推给页面的视图在 serve 那头按它核对"""
+    return _from_fragment((frag or "").lstrip("#"), None, frag)
+
+
+def _from_fragment(frag: str, page: dict | None, text: str) -> Ref:
     keys: dict[str, str] = {}
-    for part in (u.fragment or "").split("&"):
+    for part in frag.split("&"):
         if part:
             k, _, v = part.partition("=")
             keys[_unq(k)] = _unq(v)
     run_text = keys.pop("run", "") or None
     lanes = _list(keys.pop("lanes", ""))
-    page = {"url": text, "host": u.hostname, "port": port, "prefix": prefix}
     if run_text is None:
         return Ref(run=None, lanes=lanes, view=keys, page=page, text=text)
     run, at, rest = run_text.partition("@")

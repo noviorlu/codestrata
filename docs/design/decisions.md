@@ -536,6 +536,17 @@
 - 放弃的方案：只认 run（以前）；没选的列整个藏掉、线画成短头；用 URLSearchParams 解（会把 + 当空格，`阶段+秒` 的写法里有 +）。
 - 在哪：`web/view.js`、`web/lanefocus.js`、`viewspec.py`、`cli/view.py`、`cli/explain.py`（编号）；测试 `tests/web/specs/view.mjs`、`tests/test_segments.py`。
 
+### agent 推视图：直接换、先出过渡，后退就是撤销，用户优先
+- 决定：`view set` 推过来的视图页面直接换（「跟随 agent」默认开），换之前图上出一层「agent 接手」的过渡（至少 0.65 s），换完出横幅「agent 换了视图：<说明> · 撤销 · 跟随 agent」、
+  8 s 后缩成小签；每一步 pushState 进历史，后退就是撤销，`view back` 在用户之后自己改过时拒绝。用户正在操作时等他松手约 1 s，最多 10 s；关了跟随时出提示条等他点；
+  后台标签页回来才换、只换最后一条。
+- 决定：通道是页面来问（`POST /api/view/poll`）：有焦点的标签页挂着等最多 20 s，看得见没焦点的每秒问一次，看不见的不问、回来马上问；页面上一有变化就断掉挂着的那次、
+  带着新的现状再问。页面说「收到了」之前 serve 每次都再交一遍（交出去的那次可能被页面断掉了），页面按版本号去重。serve 起来时在配置目录登记，命令行按仓库找。
+- 为什么：用户要知道「现在是 agent 在动页面」，又不能让 agent 打断他正在做的事；后退是浏览器里人人会用的撤销。不用 SSE / WebSocket：同一个源挂着 6 条长连接，
+  页面自己的请求会卡住；主菜单的转发要等上游整份读完；serve 是 HTTP/1.0。一个浏览器同一时刻只有一个标签页有焦点，挂着的最多一条。
+- 放弃的方案：只给地址让用户粘（还留着：`view url`，老 serve 也能用）；换之前先问用户（跟随关掉时就是这样）；横幅里列出完整的视图描述（太长，地址栏里有）。
+- 在哪：`viewhub.py`、`serves.py`、`serve.py` 的 `do_POST`、`cli/view.py`、`cli/pages.py`、`web/viewsync.js`；测试 `tests/test_view.py`、`tests/web/specs/viewsync.mjs`。
+
 ### 按浏览器里图框的宽度排版
 - 决定：前端把图框实际宽度带给 `/api/graph?w=`，按 40px 取整、夹在 700–4000，放进缓存键；不传时用默认的 1180。画布宽度在图框宽度的几个倍数里挑
   「高度 + 1.5 × 超出图框的宽度」最小的。
@@ -549,11 +560,14 @@
 
 ### serve 只听本机，Host 头必须对，有副作用的 GET 要带自定义头
 - 决定：serve 绑 127.0.0.1；Host 头必须是 `127.0.0.1:端口` 或 `localhost:端口`，否则 403；会起编辑器的 `GET /api/open` 必须带 `X-Codestrata: 1`；
-  文件路径 realpath 后必须在仓库内，静态文件必须在 web/ 下；serve 不接受写（没有 PUT）。
+  文件路径 realpath 后必须在仓库内，静态文件必须在 web/ 下。
+- 决定：serve 只收一种写——agent 推给页面的视图和页面回报的现状（`POST /api/view…`），只放在内存里、重启就清；要 `X-Codestrata` 头、`application/json`、
+  请求体 ≤ 64 KB、视图描述只收认得的键（run 和范围、列、收起的进程对着仓库核对，写错 400 + 候选）。读「用户在看什么」（`GET /api/view…`）也要那个头。没有 PUT，不写仓库。
 - 为什么：防 DNS rebinding——别的域名解析到 127.0.0.1 时浏览器按同源发请求，能读源码、开编辑器，但 Host 还是那个域名。Host 检查挡不住普通的别的网页用
   `<img src=…/api/open>` 发简单 GET；自定义头跨源要先过 CORS 预检，serve 不回 CORS，所以带头的请求一定出自自己的页面。其余 GET 只读，不必加。
-- 放弃的方案：监听 0.0.0.0；只查 Host。
-- 在哪：`serve.py` 的 `BaseHandler._host_ok`、`_from_page`、`HEADER`、`Handler._in_repo`、`asset`、`main`。
+  推视图和 `/api/open` 一个级别：挡得住浏览器里别的网页改你的页面、读你在看什么，挡不住本机进程（本机进程本来就能读全部代码）。
+- 放弃的方案：监听 0.0.0.0；只查 Host；推视图让命令行写 `.codestrata/view.json`、serve 只加 GET（能推，但读不回页面在看什么、确认不了换没换成）。
+- 在哪：`serve.py` 的 `BaseHandler._host_ok`、`_from_page`、`HEADER`、`Handler._in_repo`、`asset`、`do_POST`、`main`；`viewhub.py` 的 `check`。
 
 ### 主菜单能执行命令，所以要口令 cookie + 自定义头 + Host 三道
 - 决定：`codestrata app` 只听 127.0.0.1，查 Host；`/api/` 要口令 cookie（HttpOnly、SameSite=Strict，口令存在配置目录下 0600 的文件里，用启动时打印的 `/?t=` 链接设一次）
@@ -619,7 +633,7 @@
 
 ### 不做模块讲解层，重心是运行路径怎么走
 - 决定：不提供「给每个模块写讲解」的功能（原来的解读层：tasks / pack / note / check、`notes/` 目录、页面右栏的解读和节点上的徽标都去掉）。
-  serve 只读，不接受写。
+  serve 不存任何讲解（推视图的信箱只在内存里，放的是视图描述和横幅上的一行说明）。
 - 为什么：使用方式是拿录下来的运行路径（这次调用按什么顺序走过哪些模块）去问 agent，而不是读逐模块的讲解；重点是运行路径怎么走。实际代价也大：本仓库 19 份讲解钉了 1907 处行号引用，一次拆分要搬 401 处，
   每轮刷新要花几十万 token，写出来的东西人读不下去。
 - 放弃的方案：保留功能、只给本仓库的讲解瘦身；引用改锚定到函数上。

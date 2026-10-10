@@ -168,6 +168,10 @@ def test_view():
     _spec("view")
 
 
+def test_viewsync():
+    _spec("viewsync")
+
+
 def test_viewer():
     _spec("viewer")
 

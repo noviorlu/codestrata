@@ -8,10 +8,12 @@ from .. import explain as _explain
 from .. import funcref as _funcref
 from .. import lanes as _lanes
 from .. import linkgroups as _linkgroups
+from .. import locate as _locate
+from .. import ref as _ref
 from .. import runs as _runs
 from .. import seq as _seq
 from ..errors import CodestrataError
-from . import common, out
+from . import common, out, pages
 
 NAME = "explain"
 EFFECT = "read"
@@ -23,12 +25,20 @@ _NUM = re.compile(r"^#?\d+$")
 
 
 def add_args(p) -> None:
-    p.add_argument("item", metavar="东西", help="连线 'l:种类|通道|起列|终列[#k]'（加引号）、函数或类（路径#限定名、限定名），或页面上的编号（24，配页面地址）")
+    p.add_argument("item", nargs="?", default=None, metavar="东西",
+                   help="连线 'l:种类|通道|起列|终列[#k]'（加引号）、函数或类（路径#限定名、限定名），或页面上的编号（24，配页面地址）")
     p.add_argument("ref", nargs="?", default=None, metavar="REF", help="RUN@范围，或页面地址（加单引号）")
     p.add_argument("--in", dest="in_", default=None, metavar="REF", help="同 REF（写在后面更清楚时用）")
+    p.add_argument("--selected", action="store_true", help="讲用户在开着的页面上选中的那个（连线、列中的边、节点）；view wait 等他点")
+    p.add_argument("--page", default=None, metavar="端口", help="--selected：页面在本机哪个端口（缺省按仓库找开着的）")
+    p.add_argument("--tab", default=None, metavar="ID", help="--selected：哪个标签页（缺省是用户最近在看的那个）")
 
 
 def run(a) -> out.Result:
+    if a.selected:
+        return _selected(a)
+    if a.item is None:
+        raise CodestrataError("usage", "explain 要写讲什么（连线、函数、类、页面上的编号），或者 --selected 讲用户在页面上选中的")
     if a.ref is None and a.in_ is None and (a.item.startswith("http") or "@" in a.item):
         raise CodestrataError("usage", "explain 要先写讲什么（连线、函数），再写 REF；只给了一个 REF")
     a.ref = a.in_ or a.ref
@@ -251,11 +261,7 @@ def _numbered(a, c) -> out.Result:
     else:
         lid, _, rest = inner[2:].partition("|")
         a_, _, b_ = rest.partition("|")
-        ln = next(x for x in L["lanes"] if x["id"] == lid)
-        e = next(x for x in ln["edges"] if x["a"] == a_ and x["b"] == b_)
-        from ..ui import load as _uiload
-        lane_hot = _uiload.load_lane(c.repo, idx, r.text, lid)
-        d = _explain.edge(c.repo, idx, lane_hot, aliases.get(lid, lid), e)
+        d = _edge_in(c, idx, L, aliases, lid, a_, b_)
         lines = [head] + _edge_text(d, lo)
     d["number"] = n
     d["view"] = {"n": order["n"], "id": order["ids"][n - 1]}
@@ -273,4 +279,77 @@ def _edge_text(d: dict, lo: int) -> list[str]:
                  + ("  [代码里看不出]" if p.get("status") == "trace" else ""))
         L += _code(p.get("code"), "      ")
         L += _def(p.get("def"), "      ")
+    return L
+
+
+def _edge_in(c, idx: dict, L: dict, aliases: dict, lid: str, a_: str, b_: str) -> dict:
+    """分列（按某个视图算的）里一列中的一条边 → explain.edge 的原料"""
+    from ..ui import load as _uiload
+    ln = next((x for x in L["lanes"] if x["id"] == lid), None)
+    e = next((x for x in (ln or {}).get("edges") or [] if x["a"] == a_ and x["b"] == b_), None)
+    if e is None:
+        raise CodestrataError("item_not_found", f"这个视图里 {aliases.get(lid, lid)} 这一列没有 {a_} → {b_} 这条边")
+    lane_hot = _uiload.load_lane(c.repo, idx, c.res.text, lid)
+    return _explain.edge(c.repo, idx, lane_hot, aliases.get(lid, lid), e)
+
+
+def _selected(a) -> out.Result:
+    """用户在开着的页面上选中的：连线组（l:）、列中的边（e:）、节点 / 框（n: / f:）"""
+    from .. import viewspec as _viewspec
+    if a.item and not a.ref:                         # explain --selected '<页面地址>'：那是用来找页面的
+        a.ref, a.item = a.item, None
+    a.ref = a.in_ or a.ref
+    c = common.context(a, need_run=False)
+    pg = pages.find(c, a.page)
+    t = pages.tab_of(pg, a.tab)
+    cur = _ref.parse_fragment(t["view"] or "")
+    sel = cur.view.get("sel")
+    if not sel or not cur.run:
+        raise CodestrataError("need_view", "页面上没选中东西：请用户点一下要问的那条线 / 那个节点，再讲（view wait 等他点）",
+                              next=[c.cmd("read", "view", "wait", "--timeout", "60", why="等用户点")])
+    c.ref, c.res = cur, _locate.resolve(c.repo, cur)
+    c.warnings += c.res.warnings
+    common.require_events(c)
+    r = c.res
+    lo, hi = r.slices[0][0], r.slices[-1][1]
+    idx = common.index(c)
+    label = common.labeler(idx)
+    hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
+    head = f"用户在页面上选中的：{sel}（{pages.where(pg, t)}；{r.full}）"
+    if sel.startswith("l:"):
+        kind, via, fa, ta, _ = _linkgroups.parse(sel)
+        built, aliases = _built(c, idx, hot)
+        g = next((x for x in _linkgroups.groups(built, aliases, "all") if x["id"] == _linkgroups.group_id(kind, via, fa, ta)), None)
+        if g is None:
+            raise CodestrataError("item_not_found", f"这段时间里没有 {sel} 这组连线（页面上的选中过时了？）")
+        d = _explain.link(c.repo, r.rd, idx, hot, g, None, lo, hi, label)
+        lines = [head] + _link_text(d, lo)
+    elif sel.startswith("e:") and sel.count("|") >= 2:
+        v = _viewspec.from_keys(cur.run, cur.lanes, cur.view)
+        L, aliases, _ = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label))
+        lane, a_, b_ = sel[2:].split("|")[:3]
+        lid = next((k for k, al in aliases.items() if al == lane), lane)
+        d = _edge_in(c, idx, L, aliases, lid, a_, b_)
+        lines = [head] + _edge_text(d, lo)
+    elif sel[:2] in ("n:", "f:", "e:"):
+        rest = sel[2:]
+        lane, node = (rest.split("|", 1) if "|" in rest else (None, rest))
+        if sel.startswith("e:"):                     # 模块图上的边 e:a|b：讲两头的节点不如讲边，先给两头各跑了什么
+            node = rest.split("|")[0]
+        d = _explain.node(r.rd, r.run, r.phase, label, node, lane)
+        lines = [head] + _node_text(d)
+    else:
+        raise CodestrataError("item_not_found", f"认不出页面上选中的 {sel}")
+    d["selected"] = sel
+    d["tab"] = t["tab"]
+    return out.Result(data=d, text=lines, repo=c.repo, ref=c.ref_json(), warnings=c.warnings)
+
+
+def _node_text(d: dict) -> list[str]:
+    where = f"（{d['lane']} 这一列里）" if d["lane"] else ""
+    L = [f"节点 {d['item']}{where}：这段时间里跑过它里面的 {d['n_fns']} 个函数，共 {d['n']} 次调用"]
+    for x in d["fns"]:
+        L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}  {x['fn'].partition('#')[0]}")
+    if d["n_fns"] > len(d["fns"]):
+        L.append(f"  …还有 {d['n_fns'] - len(d['fns'])} 个")
     return L

@@ -8,12 +8,12 @@ _REPO_POSITIONAL = {"scan", "serve", "trace"}     # 这几个老命令的仓库�
 
 
 def command(*parts: str, repo: Path | None = None) -> str:
-    """codestrata 子命令 [-C 仓库] 参数…；scan / serve / trace 的仓库写成位置参数，runs 的 -C 跟在动作后面"""
+    """codestrata 子命令 [-C 仓库] 参数…；scan / serve / trace 的仓库写成位置参数，runs、view 的 -C 跟在动作后面"""
     head, rest = list(parts[:1]), [str(x) for x in parts[1:]]
     if repo is not None:
         if head and head[0] in _REPO_POSITIONAL:
             rest = [str(repo)] + rest
-        elif head == ["runs"]:
+        elif head in (["runs"], ["view"]):
             rest = rest[:1] + ["-C", str(repo)] + rest[1:]
         else:
             rest = ["-C", str(repo)] + rest

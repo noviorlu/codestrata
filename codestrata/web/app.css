@@ -742,3 +742,37 @@ body.lanesmode .graphonly{display:none}
 .krow .kt{width:72px;text-align:right}
 /* 这种 kernel 是谁发起的（分列里 GPU 列的一份才有） */
 .krow.kcall{border-bottom:none;padding-left:14px}.krow.kcall .kn{color:var(--muted)}
+
+/* agent 推视图（viewsync.js）：接手时盖在图上的一层过渡（让用户知道现在是 agent 在动页面）、换完的横幅、跟随关着时的提示条 */
+.gwrap.agent .gbox{box-shadow:0 0 0 2px var(--sel),var(--shadow);transition:box-shadow .2s}
+.agveil{position:absolute;inset:0;border-radius:11px;z-index:45;display:flex;align-items:center;justify-content:center;
+  background:rgba(127,127,127,.12);background:color-mix(in srgb,var(--card) 62%,transparent);backdrop-filter:blur(1.5px);
+  opacity:0;pointer-events:none;transition:opacity .18s ease-out}
+.agveil.on{opacity:1;pointer-events:auto}
+.agveil.off{opacity:0;transition:opacity .26s ease-in}
+.agcard{display:flex;flex-direction:column;gap:6px;min-width:260px;max-width:min(460px,80%);padding:14px 18px 12px;
+  background:var(--card);border:1px solid var(--sel);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.18);
+  transform:translateY(6px) scale(.98);transition:transform .22s cubic-bezier(.2,.8,.2,1)}
+.agveil.on .agcard{transform:none}
+.agcard b{font-size:14px;color:var(--ink)}
+.agnote{font-size:12.5px;color:var(--body)}
+.agnote:empty{display:none}
+.agk{font:10.5px/1 ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--sel);
+  border:1px solid var(--sel);border-radius:4px;padding:2px 5px;align-self:flex-start}
+.agbarline{display:block;height:2px;border-radius:2px;margin-top:4px;
+  background:linear-gradient(90deg,transparent,var(--sel),transparent) 0 0/40% 100% no-repeat,var(--sel-bg);animation:agsweep 1s linear infinite}
+@keyframes agsweep{from{background-position:-40% 0,0 0}to{background-position:140% 0,0 0}}
+.agbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:42;display:flex;align-items:center;gap:8px;
+  max-width:calc(100% - 140px);padding:7px 10px 7px 12px;background:var(--card);border:1px solid var(--sel);border-radius:10px;
+  box-shadow:var(--shadow);font-size:12.5px;color:var(--body);white-space:nowrap;animation:agdrop .22s ease-out}
+.agbar[hidden]{display:none}
+.agbar b{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;max-width:420px}
+.agbar.offer{border-color:var(--hot)}
+.agbar.offer .agk{color:var(--hot);border-color:var(--hot)}
+.agrn{font-size:11.5px;color:var(--hot)}
+.agx{border:0;background:none;color:var(--muted);font-size:16px;line-height:1;cursor:pointer;padding:0 2px}
+.agbar.mini{padding:4px 7px;cursor:pointer;gap:0;animation:none;opacity:.85}
+.agbar.mini::after{content:'换了视图 ▸';margin-left:6px;font-size:11.5px;color:var(--muted)}
+.agbar.mini > :not(.agk){display:none}
+@keyframes agdrop{from{opacity:0;transform:translate(-50%,-6px)}to{opacity:1;transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){.agveil,.agcard,.agbar,.gwrap.agent .gbox{transition:none;animation:none}.agbarline{animation:none}}

@@ -143,6 +143,9 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 - **列头**写列的稳定写法（`stage1/MainThread`，进程头是 `stage1`），和命令行、地址栏里的一样；悬停看进程全名、pid、线程原名。
 - **地址栏就是视图**：只看几列、收起的进程、各列的展开、选中的、标记、时间顺序都写在 `#` 后面，刷新不丢、复制给别人（或粘给 agent）就是同一个视图；
   把一个这样的地址粘进同一个标签页，页面不刷新就换过去，后退回到上一个。`codestrata view url` 拼这种地址，`codestrata explain 24 '<地址>'` 按地址里的视图讲第 24 号。
+- **agent 推视图**：agent 用 `codestrata view set` 把页面换到它要给你看的地方——图上先出一层「agent 接手」的过渡，换完上方出横幅「agent 换了视图：… · 撤销 · 跟随 agent」；
+  浏览器后退就是撤销。你正按着鼠标或在操作时它等你松手再换；横幅上关掉「跟随 agent」之后，推来的视图改成提示条、你点了才换。
+  `codestrata view get` / `view wait` 让 agent 读到你此刻在看什么、等你点一下要问的那条线（再 `explain --selected` 讲它）。要 serve 是这个版本起来的（老的 serve 重起一次）。
 - **只看几列**（地址里的 `lanes=`）：没选的列每个进程收成一窄列「其他 N 列」，连线照接；工具栏「只看 5 / 12 列 · 全部显示」点了回到全部列。
   搜索到的东西只在没选的列里时，自动回到全部列。
 - **标记**（地址里的 `mark=`，`codestrata view url --mark`）：装着这些文件 / 目录 / 函数的节点描一圈边（各列按自己的切面算，一次最多 20 个）；工具栏「标记 N 个 · 清掉」。
@@ -627,6 +630,7 @@ GET  /api/search-index        搜索栏要的全部名字（模块、文件、�
 GET  /api/reveal?node=&open=  让一个模块在图上露出来要展开哪些目录
 GET  /api/app                 从主菜单打开时主菜单的地址
 GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头）
+POST /api/view…、GET /api/view…  agent 推给页面的视图、页面回报的现状（codestrata view set / get / back / wait；要带 X-Codestrata 头，只在内存里）
 GET  /code/<path>?l=N         整个文件，带行号锚点
 ```
 

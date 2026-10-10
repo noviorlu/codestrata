@@ -8,8 +8,8 @@
  *   hide   藏起的边（hot / dyn）                        panel  详情栏讲请求路径（path）
  *   不认识的键原样留着。
  *
- * 入口：启动、hashchange（把地址粘进同一个标签页）、popstate（后退）都走 apply；用户在页面上改了什么，改的地方调 changed，
- * 100 ms 内的几次合成一次，用 replaceState 写规范的地址（不多出历史记录：后退一次回到上一个视图描述）。 */
+ * 入口：启动、hashchange（把地址粘进同一个标签页）、popstate（后退）、agent 推来的（viewsync.js）都走 apply；用户在页面上改了什么，
+ * 改的地方调 changed，100 ms 内的几次合成一次，用 replaceState 写规范的地址（不多出历史记录：后退一次回到上一个视图描述）。 */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
@@ -116,17 +116,20 @@ window.CS = window.CS || {};
     },
 
     /* 用户改了什么：100 ms 内合成一次，写规范的地址（套用途中不写） */
-    changed: function () {
+    changed: function (why) {
       if (this.applying || !CS.app.data) return;
       var self = this;
+      if (CS.viewsync && why !== 'draw') CS.viewsync.by = 'user';     // 重画（agent 换完之后补的那一次也是）不算用户改的
       clearTimeout(this._t);
       this._t = setTimeout(function () { self.write(); }, 100);
     },
+    /* 按页面真实状态重写地址（history.state 留着：viewsync 靠它认「这一步是 agent 推的」），再告诉 viewsync 现状变了 */
     write: function () {
       if (this.applying || !CS.app.data) return;
       var h = this.format(this.current()), url = location.pathname + location.search + (h ? '#' + h : '');
       this._last = h;
-      if (location.hash.replace(/^#/, '') !== h) history.replaceState(null, '', url);
+      if (location.hash.replace(/^#/, '') !== h) history.replaceState(history.state, '', url);
+      if (CS.viewsync) CS.viewsync.kick();
     },
 
     /* 套用一个视图描述（启动、粘进来的地址、后退）。按固定的顺序：run 和范围 → 共用切面 → 各列切面 → 只看列 + 收起 →
@@ -134,6 +137,11 @@ window.CS = window.CS || {};
     apply: function (v, why) {
       var self = this, app = CS.app, lanes = CS.lanes, s = CS.graph.state;
       this.applying = true;
+      return (this.done = this._apply(v, why, self, app, lanes, s));       // done：最近一次套用的 promise（viewsync 撤销时等它）
+    },
+    /* 地址是页面自己（viewsync 推 agent 的视图时）写的：hashchange / popstate 里认得出，不再套一遍 */
+    own: function (h) { this._last = h; },
+    _apply: function (v, why, self, app, lanes, s) {
       this._rest = v.rest || [];
       var p = Promise.resolve(true);
       var want = v.run || '', id = want.split('@')[0], ph = want.indexOf('@') >= 0 ? want.slice(want.indexOf('@') + 1) : '';
@@ -195,6 +203,7 @@ window.CS = window.CS || {};
         if (CS.viewer) CS.viewer.toast('套用地址里的视图出错：' + e.message);
       }).then(function () {
         self.applying = false;
+        if (CS.viewsync) CS.viewsync.settled(self.format(self.current()));   // 套完的样子：之后再变就是用户改的
         self.write();
       });
     },
@@ -202,10 +211,11 @@ window.CS = window.CS || {};
     init: function () {
       var self = this;
       this._last = location.hash.replace(/^#/, '');
-      function outside() {
+      function outside(ev) {
         var h = location.hash.replace(/^#/, '');
         if (h === self._last || self.applying) return;       // 自己写的
         self._last = h;
+        if (CS.viewsync) CS.viewsync.by = ev.type === 'popstate' ? 'history' : 'url';
         self.apply(self.parse(h), 'url');
       }
       window.addEventListener('hashchange', outside);

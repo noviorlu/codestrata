@@ -100,6 +100,8 @@ RUN   := 完整 run id | case 名
 | `no_lanes` | find：没录时序事件，次数不分列 |
 | `stale` | explain：讲到的文件录制之后改过 |
 | `no_page` | view url：没给页面，只打了 # 后面那一段 |
+| `not_on_page` | status：开着的页面上看的不是这个 run（要给用户看，用 `view set` 推过去） |
+| `many_requests` / `whole_run` / `lanes_ignored` | segments：一段里可能混着几次请求 / 看的是整个 run（下一步给 `@serving`）/ REF 里的列切段时不用 |
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
@@ -113,8 +115,8 @@ RUN   := 完整 run id | case 名
 | 2 | `usage` | 用法错 |
 | 3 | `repo_unknown` `run_not_found` `phase_not_found` `bad_window` `window_out_of_range` `lane_not_found` `ambiguous_lane` `item_not_found` `ambiguous_item` | 名字写错，都带候选 |
 | 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `no_handoffs` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs wait` 是 read，`runs merge`、`scan` 是 write） |
-| 5 | `no_live_page` `old_serve` `page_failed` `timeout` `interrupted` `superseded` `refused` | 页面换不了（留给推页面的命令） |
-| 6 | `pending` | 页面还没换（等用户） |
+| 5 | `no_live_page` `old_serve` `page_failed` `timeout` `interrupted` `superseded` `refused` | 页面换不了：没有开着的页面 / 老 serve / 页面换不过去 / 被后来的一条顶掉 / 撤不了；`next` 给 `view url`（把地址交给用户） |
+| 6 | — | `view set`：推过去了、页面还没换（`data.state` 是 deferred / queued / offered / sent，`ok` 仍是 true）；`next` 给 `view wait --for applied` |
 
 范围写错或越界时，候选是这个 run 的各阶段和整个 run 的 `t=0-终点`，都是能直接用的 REF。
 
@@ -122,7 +124,8 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url / get / wait`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| page | `view set`、`view back` | 用户这句话本身就是「要看 / 只看 / 标出 / 选中 / 聚焦」时直接推，回复里说怎么撤销（浏览器后退或 `view back`）；其余情况先问 |
 | write | `scan`、`runs tag / untag / note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
 | start | `serve`、`app` | 先问用户（起常驻进程、占端口） |
@@ -133,8 +136,9 @@ RUN   := 完整 run id | case 名
 ### `codestrata status [REF] [-C 目录] [--json]`
 - 不给 REF：仓库、索引什么时候 scan 的（`index.scanned` 是带时区的时刻）、最近 5 个 run 和各自的状态（多于 5 个时 `more` 指到 `runs ls`）。
 - 给 REF：run 的状态、问题、有没有时序事件和 GPU、时序事件到没到行数上限；REF 规整成什么、落在哪几片微秒；各阶段的窗口。
+- 开着的页面（这个仓库能推视图的 serve 的标签页）各在看什么；给的 REF 不是页面上那个 run 时警告 `not_on_page`。
 - 下一步：还在录的给 `runs wait`；中断的给 `runs merge`；没给范围、有 `serving` 阶段的，`lanes` 建议看 `@serving`。
-- `data`：`repo`、`found_by`（`C` / `page` / `run` / `cwd`）、`index`，以及 `runs`（没给 REF）或 `run` + `phases` + `lanes`。
+- `data`：`repo`、`found_by`（`C` / `page` / `run` / `cwd`）、`index`、`pages`（`port`、`pid`、`tabs`、`default`），以及 `runs`（没给 REF）或 `run` + `phases` + `lanes`。
 
 ### `codestrata lanes REF [--limit N] [--json]`
 - 这段时间里的列，和页面的分列是同一套。每列：别名、进程全名、线程原名、×N、有调用（轮询也算）/ 只做交接 / 这段没调用 / GPU、调用次数、首末时刻。
@@ -197,7 +201,7 @@ RUN   := 完整 run id | case 名
   没录时序事件的 run 给整个阶段的总数，不分列（警告 `no_lanes`）。
 - `data.items[]`：`kind`、`key`（函数 / 类是 `路径#限定名`，文件 / 目录是路径）、`name`、`file`、`line`、`lanes[]`、`n`。
 
-### `codestrata explain 东西 REF [--json]`
+### `codestrata explain 东西 REF [--json]`、`codestrata explain --selected [--page 端口] [--tab ID] [--json]`
 - 只给原料，「为什么」由 agent 读代码后说。先写讲什么，再写 REF（也可以 `--in REF`）；只给了 REF 报 `usage`。
 - **一组交接** `'l:handoff|通道|起列|终列'`（和 `links` 同一份组）：这段时间里几次、首末时刻；组里两头的（函数, 行）有哪几种、各几次、第一次在什么时候，
   挑一种讲（默认次数最多的，`'…#k'` 挑第 k 种），从它第一次讲起：两头各写列、函数、那一行的原文、所在分支（按 ast 找：装着它的 if / elif / else 的原文，
@@ -211,14 +215,40 @@ RUN   := 完整 run id | case 名
 - **编号**（页面上的 `24`）：按页面地址里的视图算（`explain 24 '<页面地址>'`，地址里要有 `order=1`），和页面上的号牌是同一份（`laneorder.py`）；
   第一行写按哪个视图算、一共几个编号、24 号的稳定写法。只给 RUN 不给地址、或地址里没开时间顺序，报 `need_view`；超出范围报 `item_not_found`。
   编号落在一条交接连线上时只讲页面上画的那一条（那两个节点之间的）；落在列中的一条边上时，讲那一列里这两个节点之间次数最多的几对函数（调用那一行的原文、定义）。
+- **`--selected`**：讲用户在开着的页面上选中的那个（`view get` 读出来的 `sel`）：连线组按上面的讲；列中的边讲那两个节点之间的几对函数（按页面的视图算切面）；
+  节点 / 框讲这段时间里它里面跑过哪些函数、各几次（给了列只算那一列）。页面上没选中东西报 `need_view`，下一步给 `view wait`。`--page`、`--tab` 同 view。
 - 录制之后改过的文件给警告 `stale`（原文可能对不上）。
 
-### `codestrata view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--order on|off] [--hide …] [--path] [--page 端口] [--json]`
+### `codestrata view url | set | get | back | wait …`
+每个动作是一个子命令，`-C`、`--json` 写在动作前后都行。
+
+**`view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--order on|off] [--hide …] [--path] [--page 端口]`**（read）
 - 拼出一个视图的页面地址，不推。用户粘进浏览器地址栏（同一个标签页也行），页面不刷新就换过去；后退回到原来的。
 - REF 定 run、范围和列；给的是页面地址时在它的视图上改（没给的选项沿用地址里的）。前缀取页面地址的，或 `--page 端口`；都没有时只打 `#…` 那一段（警告 `no_page`）。
 - `--focus 东西`：只看它跑过的列 + 在这些列里把切面展开到它的文件 + 标出它 + 选中它在最早那一列里的那一份。`--expand` 在它跑过的每一列里展开。
-- `--mark`：标出这些文件 / 目录 / 函数所在的节点（最多 20 个，页面工具栏「标记 N 个 · 清掉」）。
+- `--mark`：标出这些文件 / 目录 / 函数所在的节点（最多 20 个，页面工具栏「标记 N 个 · 清掉」）；`+东西` 是追加，`none` 清掉。`--select none` 取消选中。
 - `data`：`url`、`fragment`、`view`（各个键）。
+
+**`view set [REF] [和 url 一样的选项] [--note 一句话] [--reset] [--page 端口] [--tab ID] [--timeout 秒]`**（page）
+- 推给开着的页面：页面先在图上出一层「agent 接手」的过渡，再按固定顺序套上（同粘地址），进浏览器历史（后退就是撤销；2 s 内连着推的合成一条），
+  出横幅「agent 换了视图：<note> · 撤销 · 跟随 agent」，8 s 后缩成小签。
+- REF 给了就按它定 run、范围和列；没给沿用页面现在的。REF 以外的键（收起、切面、各列切面、标记、选中、开关、详情栏）没给时沿用页面现在的；换了 run 时选中和各列切面清掉；`--reset` 全部从缺省开始。
+- 页面怎么收：用户正在操作（按着鼠标，或 1.2 s 内按过键 / 滚过轮；输入框里打字不算）时等他松手约 1 s 再换，最多等 10 s、之后改成提示条问；
+  「跟随 agent」关着（页面上的开关，默认开）时出提示条「agent 想换到：… · 换过去 · 不用」；标签页在后台时回来才换，只换最后一条。
+- 等页面回话最多 `--timeout`（缺省 3 s），回当时的状态：`applied`（退出码 0）；`deferred` / `queued` / `offered` / `sent`（退出码 6，`next` 是 `view wait --for applied`）；
+  `failed`（`page_failed`）、`superseded`（被后来的一条顶掉）退出码 5。
+- 输出：状态、哪个端口哪个标签页（用户正看着 / 看得见没焦点 / 在后台）、这个视图是什么、撤销的办法、地址。`data`：`state`、`v`、`tab`、`url`、`fragment`、`port`。
+
+**`view get [--page 端口] [--tab ID]`**（read）：用户此刻看的标签页（缺省是看得见的里面最近有焦点、或用户动过的那个）——视图描述、最后是谁改的
+（`boot` / `user` / `url` / `history` / `agent`）、编号一共几个、agent 最近推的一条和它的状态；同一个 serve 上别的标签页各一行。选中着东西时下一步给 `explain --selected`。
+
+**`view back [--page 端口] [--tab ID] [--timeout 秒]`**（page）：撤销 agent 最近推的那一步（页面后退一条历史）。agent 还没推过、或者那之后用户自己改过视图，报 `refused`（退出码 5）。
+
+**`view wait [--for select|range|lanes|any|applied] [--timeout 60] [--page 端口] [--tab ID]`**（read）：等用户在页面上改。缺省等选中变化（配「点一下你想问的那条线」）；
+`applied` 等 agent 最近推的那一条换好。超时不算错：`data.changed` 是 false，退出码 0。等到了选中时下一步给 `explain --selected`。
+
+**找页面**：给了页面地址（REF）或 `--page 端口` 就问那个端口；否则读这个仓库的 serve 登记（配置目录下 `serves/<端口>.json`，serve 起来时写、退出时删，进程不在的查找时删），
+再问一次 `/api/app` 核对仓库和 pid。都没有报 `no_live_page`；serve 是能推视图之前的版本（`/api/app` 的 `features` 里没有 `view`）报 `old_serve`；两种的下一步都是 `view url`（把地址交给用户）和起一个 serve（start，先问用户）。
 
 ### 视图描述（页面地址 # 后面）
 

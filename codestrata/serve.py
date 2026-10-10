@@ -2,8 +2,8 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
-    GET  /api/app                 {home, repo, pid, port}：home 是从主菜单（codestrata app）打开时主菜单的地址（页面上放回去的链接）；
-                                  命令行拿页面地址当 REF 时问它是哪个仓库
+    GET  /api/app                 {home, repo, pid, port, features, algo}：home 是从主菜单（codestrata app）打开时主菜单的地址
+                                  （页面上放回去的链接）；命令行拿页面地址当 REF 时问它是哪个仓库；features 有 view 才能推视图
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
     GET  /api/lanes?run=&open=&cuts=&fold=&hide=&lanes=
@@ -29,10 +29,12 @@
                                   给了 lane（分列里的列 id）就只算这一列里的调用
     GET  /api/lanehot?run=&lane=  分列里一列的叠加（只算这一列里的调用）：节点详情里的次数、文件树、kernel 表用
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
+    POST /api/view…、GET /api/view…  agent 推给页面的视图、页面回报的现状（viewhub.py：只在内存里）。读写都要 X-Codestrata 头，
+                                  POST 还要 application/json、请求体 ≤ 64 KB
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
 只用标准库。只监听 127.0.0.1，Host 头必须是本机这个端口（防 DNS rebinding）；所有路径 realpath 后
-必须落在仓库内。
+必须落在仓库内。起来之后在配置目录登记（serves.py），退出（含 SIGTERM）时删掉。
 """
 from __future__ import annotations
 
@@ -57,6 +59,9 @@ from . import path as _path
 from . import runs as _runs
 from . import segments as _segments
 from . import seq as _seq
+from . import serves as _serves
+from . import steps as _steps
+from . import viewhub as _viewhub
 from .ui import edge as _edge
 from .ui import graphview as _graphview
 from .ui import lanesview as _lanesview
@@ -382,7 +387,13 @@ class Handler(BaseHandler):
 
         if path == "/api/app":                       # 命令行按页面地址找仓库时也问它（ref.page_app）
             return self._json({"home": self.home, "repo": str(self.repo), "pid": os.getpid(),
-                               "port": self.server.server_address[1]})
+                               "port": self.server.server_address[1], "features": _serves.FEATURES, "algo": _steps.ALGO})
+
+        if path.startswith("/api/view"):             # 用户在看什么：也只给我们自己的页面和命令行
+            if not self._from_page():
+                return self._send(403, b"forbidden", "text/plain")
+            code, obj = _viewhub.get(path, q)
+            return self._json(obj, code)
 
         if path == "/api/runs":
             try:
@@ -509,6 +520,27 @@ class Handler(BaseHandler):
 
         return self._asset(path)
 
+    # ---- POST：只有 /api/view…（viewhub.py） ----
+    def do_POST(self):
+        if not self._host_ok():
+            return self._send(403, b"bad host", "text/plain")
+        path = urllib.parse.urlparse(self.path).path
+        if not path.startswith("/api/view"):
+            return self._send(404, b"not found", "text/plain")
+        if not self._from_page():                    # 别的网页带不了这个头（浏览器的预检会挡住）
+            return self._send(403, b"forbidden", "text/plain")
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+            return self._json({"error": "要 application/json"}, 415)
+        body, err = self._body_json(limit=64_000)
+        if err:
+            return self._json({"error": err}, 400)
+        code, obj = _viewhub.post(self.repo, path, body)
+        return self._json(obj, code)
+
+
+def _stop(*_):
+    """SIGTERM（主菜单停图服务用 terminate）：和 Ctrl+C 一样走到 main 的 finally，删掉登记"""
+    raise KeyboardInterrupt
 
 
 def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | None = None) -> int:
@@ -550,8 +582,17 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | No
         print(f"  默认   run {hm['run_id']}" + (f" @{hm['phase']}" if hm.get("phase") else "")
               + f"（case {hm['case']}，{hm['status']}），{len(h['packages'])} 个模块跑到")
     print("  Ctrl+C 停止", flush=True)
+    _serves.register(port, os.getpid(), repo, _steps.ALGO)
+    try:
+        import signal
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, OSError):               # 不在主线程（测试里）：只是退出时可能留下登记，查找时会按 pid 清掉
+        pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n停止")
+    finally:
+        _serves.unregister(port, os.getpid())
+        srv.server_close()
     return 0

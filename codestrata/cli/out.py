@@ -31,6 +31,7 @@ class Result:
     more: dict | None = None           # {shown, total, how}
     warnings: list[dict] = field(default_factory=list)
     algo: str | None = None
+    exit: int = 0                      # 不是错、但也没做完：view set 页面还没换（6，pending）
 
 
 def emit(cmd: str, res: Result, as_json: bool) -> int:
@@ -40,7 +41,7 @@ def emit(cmd: str, res: Result, as_json: bool) -> int:
         if res.algo:
             env["algo"] = res.algo
         _dump(env)
-        return 0
+        return res.exit
     lines = list(res.text) + _warn_lines(res.warnings)
     if res.more:
         lines.append(f"（给了 {res.more['shown']} / 共 {res.more['total']}；要更多：{res.more['how']}）")
@@ -50,7 +51,7 @@ def emit(cmd: str, res: Result, as_json: bool) -> int:
         for n in res.next:
             lines.append(f"  {n['cmd'].ljust(width)}  （{n['effect']}{'：' + n['why'] if n.get('why') else ''}）")
     print("\n".join(lines))
-    return 0
+    return res.exit
 
 
 def _warn_lines(warnings: list[dict]) -> list[str]:

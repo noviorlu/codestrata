@@ -407,6 +407,33 @@ def klass(repo: Path, rd: Path, run: dict, idx: dict, hot: dict, node: str, lo: 
     return d
 
 
+# ---------------------------------------------------------------- 切面上的一个节点（页面上选中的）
+
+def node(rd: Path, run: dict, phase: str | None, label, item: str, lane: str | None, top: int = 10) -> dict:
+    """切面上的一个节点（目录 d/、本层文件 d/*、文件）：这段时间里它里面跑过哪些函数、各几次（给了列只算这一列）"""
+    from . import finder as _finder
+    pc = _seq.phase_calls(rd, run, phase)
+    aliases = _lanes.run_aliases(rd)
+    per = _finder.node_counts(pc["calls"], pc["keys"], pc["threads"], label,
+                              lambda pid, tname: aliases.get(_lanes.lane_id(pid, tname), f"{pid}:{tname}"))
+
+    def inside(fn: str) -> bool:
+        f = fn.partition("#")[0]
+        if item.endswith("/*"):                      # 本层文件：目录直接装着的文件
+            d = item[:-1]
+            return f.startswith(d) and "/" not in f[len(d):]
+        return f.startswith(item) if item.endswith("/") else f == item
+    fns = []
+    for fn, lanes_ in per.items():
+        if not inside(fn):
+            continue
+        n = lanes_.get(lane, [0])[0] if lane else sum(x[0] for x in lanes_.values())
+        if n:
+            fns.append({"fn": fn, "n": n, "lanes": sorted(lanes_)})
+    fns.sort(key=lambda x: -x["n"])
+    return {"kind": "node", "item": item, "lane": lane, "n": sum(x["n"] for x in fns), "n_fns": len(fns), "fns": fns[:top]}
+
+
 # ---------------------------------------------------------------- 分列里列中的一条边
 
 def edge(repo: Path, idx: dict, lane_hot: dict, lane_alias: str, e: dict, top: int = 5) -> dict:

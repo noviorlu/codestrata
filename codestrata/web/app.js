@@ -74,7 +74,7 @@ window.CS = window.CS || {};
         var v0 = CS.view.parse(location.hash);
         v0.run = CS.ds.run || null;
         CS.view.init();
-        CS.view.apply(v0, 'boot');
+        CS.view.apply(v0, 'boot').then(function () { if (CS.viewsync) CS.viewsync.init(); });   // 画好之后才开始和 agent 同步
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
         self._w = CS.graph.boxWidth();
         var rt = 0;
