@@ -66,7 +66,7 @@ def run_aliases(rd: Path, extra: list[dict] = ()) -> dict[str, str]:
             seen.setdefault(lid, {"id": lid, "pid": int(pid_s), "thread": thread_group(name)})
     for ln in extra:
         seen.setdefault(ln["id"], ln)
-    return _laneid.lane_aliases(list(seen.values()), _laneid.proc_aliases(proc_names(rd)))
+    return _laneid.lane_aliases(list(seen.values()), proc_aliases(rd))
 
 
 def lane_counts(rd: Path, run: dict, phase: str | None, lane: str) -> dict:
@@ -701,6 +701,16 @@ def _only_share(hot: dict, label):
             v = memo[k] = (x["only"] / x["n"]) if x and x.get("n") else 0.0
         return v
     return share
+
+
+def proc_aliases(rd: Path) -> dict[int, str]:
+    """进程别名（stage1、end2end；名字一样的按启动先后编号，见 laneid.proc_aliases）"""
+    try:
+        procs = json.loads((rd / "detail.json").read_text(encoding="utf-8")).get("procs") or []
+    except (OSError, ValueError):
+        procs = []
+    starts = {p["pid"]: p["t0_us"] for p in procs if p.get("t0_us") is not None}
+    return _laneid.proc_aliases(proc_names(rd), starts)
 
 
 def proc_names(rd: Path) -> dict[int, str]:

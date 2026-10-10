@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import sys
+from shlex import quote  # noqa: F401  （文字里的东西按 shell 规矩加引号）
 from dataclasses import dataclass, field
 from pathlib import Path
 

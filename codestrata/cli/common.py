@@ -82,3 +82,39 @@ def phases(run: dict, rd: Path) -> list[dict]:
 def main_phase(run: dict) -> str | None:
     """默认建议看的阶段：有 serving 就是它（启动时的初始化会淹没请求本身）"""
     return "serving" if any(p.get("name") == "serving" for p in run.get("phases") or []) else None
+
+
+def refuse_old(c: Ctx) -> None:
+    """切段要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 切出来是错的，拒绝并说明（用户 10-09 定）"""
+    from .. import segments as _segments
+    if _segments.old_format(c.res.rd):
+        raise CodestrataError("no_handoffs", f"run {c.res.run['id']} 是 2026-10-01 之前录的，没录「谁把数据交给谁」，切段会切错；"
+                              "要重新录一次才能切（trace 是 record，先问用户）。原始的调用还能看：", warnings=c.warnings,
+                              next=[c.cmd("read", "lanes", c.res.full), c.cmd("read", "path", c.res.full, "--limit", "30")])
+
+
+def labeler(idx: dict):
+    """键 rel:行 → 函数级的节点（file#Qual）"""
+    from .. import align as _align
+    return _align.node_labeler(idx)
+
+
+def short(node: str | None) -> str:
+    """节点的短写法：限定名；模块顶层写成 文件名:<module>"""
+    f, _, q = (node or "?").partition("#")
+    return f"{Path(f).name}:{q}" if q.startswith("<module>") else (q or f)
+
+
+def add_params(p) -> None:
+    """切段的阈值（steps.Params），segments / steps 共用"""
+    from .. import steps as _steps
+    d = _steps.Params()
+    p.add_argument("--min-calls", type=int, default=d.min_calls, help="轮头在这段时间里至少调几次（默认 %(default)s）")
+    p.add_argument("--min-share", type=float, default=d.min_share, help="在多少比例的轮里出现算常规调用（默认 %(default)s）")
+    p.add_argument("--long", type=float, default=d.long, help="超过中位几倍算超长（默认 %(default)s）")
+    p.add_argument("--gap", type=float, default=d.gap, help="前景轮之间空转超过这段时间长度的多少就切开（默认 %(default)s）")
+
+
+def params(a):
+    from .. import steps as _steps
+    return _steps.Params(min_calls=a.min_calls, min_share=a.min_share, long=a.long, gap=a.gap)

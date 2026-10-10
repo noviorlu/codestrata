@@ -119,7 +119,7 @@ vllm-omni 的一次请求读得出 main → orchestrator → 各 stage 的收请
 - **读代码**：从图上点进任意文件打开全文窗口，符号大纲、语法高亮、Ctrl+点击跳定义 / 列引用、Ctrl+F 查找，也能一键在本机编辑器打开（截图见 [读代码](docs/usage.md#读代码)）。
 - **复刻**：每个 run 存下原样的命令、所在目录和相关环境变量，一键复制就能再录一次。见[管理 run](docs/usage.md#管理-run)。
 - **主菜单**：`codestrata app` 在浏览器里选文件夹、点按钮扫描、录制、打开图。见[主菜单](docs/usage.md#主菜单-codestrata-app)。
-- **给 AI agent 用的命令**：`codestrata status`、`lanes` 收一个 REF（run、时间段、哪几列，也可以直接是页面地址），先汇总、末尾给能原样粘贴的下一步，`--json` 给固定格式的信封；`codestrata guide` 是给 agent 的一页速查。见[契约](docs/design/agent-cli.md)。
+- **给 AI agent 用的命令**：`codestrata status`、`lanes`、`segments`（按功能切段：一次请求在每个进程里干活的那一段）、`steps`（一个主循环一轮轮、时间花在哪）、`links`（谁把数据交给谁）收一个 REF（run、时间段、哪几列，也可以直接是页面地址），先汇总、末尾给能原样粘贴的下一步，`--json` 给固定格式的信封；`codestrata guide` 是给 agent 的一页速查。见[契约](docs/design/agent-cli.md)。
 
 ## 它是怎么做到的
 

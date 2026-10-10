@@ -54,7 +54,12 @@ def test_proc_aliases():
     names = {1: "end2end.py", 2: "StageEngineCoreProc_stage0_replica0_DP0", 3: "StageEngineCoreProc_stage1_replica0_DP0",
              4: "StageEngineCoreProc_stage2_replica0_DP0", 5: "python", 6: "python", 7: "cpuinfo.py"}
     a = laneid.proc_aliases(names)
-    assert a == {1: "end2end", 2: "stage0", 3: "stage1", 4: "stage2", 5: "python-5", 6: "python-6", 7: "cpuinfo"}, a
+    assert a == {1: "end2end", 2: "stage0", 3: "stage1", 4: "stage2", 5: "python-1", 6: "python-2", 7: "cpuinfo"}, a
+    # 名字一样的按启动先后编号（不按 pid）：换一次录制，同一个位置上的进程名字还一样
+    a = laneid.proc_aliases({5: "python", 6: "python", 9: "python-1"}, starts={5: 200, 6: 100})
+    assert a[6] == "python-1" or a[9] == "python-1", a
+    assert sorted(a.values()) == sorted(set(a.values())) and a[6].startswith("python-") and a[5].startswith("python-"), a
+    assert laneid.proc_aliases({5: "srv", 6: "srv"}, starts={5: 200, 6: 100}) == {6: "srv-1", 5: "srv-2"}
     rep = {1: "X_stage0_replica0_DP0", 2: "X_stage1_replica0_DP0", 3: "X_stage1_replica1_DP0"}
     assert laneid.proc_aliases(rep) == {1: "stage0", 2: "stage1_replica0", 3: "stage1_replica1"}
     assert laneid.proc_aliases({9: "-m my.mod"}) == {9: "my.mod"}
