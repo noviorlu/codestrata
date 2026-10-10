@@ -28,6 +28,7 @@
                                   一条边承载了什么：两端底下函数之间的调用，scan 写的和 trace 录到的；
                                   给了 lane（分列里的列 id）就只算这一列里的调用
     GET  /api/lanehot?run=&lane=  分列里一列的叠加（只算这一列里的调用）：节点详情里的次数、文件树、kernel 表用
+    GET  /api/marklanes?run=&mark= 标记的东西这段时间里在哪几列跑过（页面的标记只描这几列）
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
     POST /api/view…、GET /api/view…  agent 推给页面的视图、页面回报的现状（viewhub.py：只在内存里）。读写都要 X-Codestrata 头，
                                   POST 还要 application/json、请求体 ≤ 64 KB
@@ -52,6 +53,7 @@ from pathlib import Path
 from . import align as _align
 from . import cut as _cut
 from . import errors as _errors
+from . import finder as _finder
 from . import laneorder as _laneorder
 from . import lanes as _lanes
 from . import path as _path
@@ -271,6 +273,22 @@ class Handler(BaseHandler):
         return self._json({"lane": lane, "run": h["run"], "packages": h["packages"], "symbols": h["symbols"],
                            "files": h["files"], "kernels": h["kernels"], "lines_approx": h["lines_approx"]})
 
+    def _marklanes(self, q: dict):
+        """/api/marklanes?run=&mark=a,b：标记的这些东西这段时间里在哪几列跑过 {lanes: {东西: {列 id: 次数}}}（页面只描这几列里装着它的节点）"""
+        ref = (q.get("run") or [""])[0].strip()
+        items = [x for x in ((q.get("mark") or [""])[0]).split(",") if x][:20]
+        if not ref:
+            return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+            per = _finder.ran_per_node(rd, run, phase, self._label(), _lanes.lane_id)
+        except (SystemExit, LookupError) as e:
+            return self._json({"error": str(e)}, 404)
+        except (OSError, ValueError) as e:
+            return self._json({"error": _seq.unreadable(e, ref)}, 500)
+        hit = _finder.ran_lanes(self.idx, per, items)
+        return self._json({"lanes": {it: {ln: x[0] for ln, x in v.items()} for it, v in hit.items()}})
+
     def _path(self, q: dict):
         """/api/path：请求路径（path.request_path）。run 必填，@阶段（或 @t=）决定时间段"""
         ref = (q.get("run") or [""])[0].strip()
@@ -408,6 +426,9 @@ class Handler(BaseHandler):
 
         if path == "/api/lanehot":
             return self._lanehot(q)
+
+        if path == "/api/marklanes":
+            return self._marklanes(q)
 
         hot = hot_meta = hot_key = None
         if path in ("/api/graph", "/api/edge", "/api/refs", "/api/file"):

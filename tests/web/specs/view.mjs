@@ -45,7 +45,11 @@ export default async function (t) {
   await sleep(400);
   const h = await hashNow(page);
   ok(/fold=/.test(h) && /order=1/.test(h) && /mark=fakesvc\/callee\.py/.test(h) && /sel=n:/.test(h), '地址里有收起、时间顺序、标记、选中：' + h);
-  ok(await page.ev(`document.querySelectorAll('#g .nd.mk').length`) >= 1, '标记的文件所在的节点描了边');
+  ok(await page.wait(`document.querySelectorAll('#g .nd.mk').length >= 1`, 3000), '标记的文件所在的节点描了边');
+  const ml = await (await fetch(base + 'api/marklanes?run=' + encodeURIComponent(fx.a) + '&mark=fakesvc/callee.py')).json();
+  const ran = Object.keys(ml.lanes['fakesvc/callee.py'] || {});
+  ok(ran.length && await page.ev(`CS.lanes.nodes.filter(x => x.g.classList.contains('mk')).every(x => ${JSON.stringify(ran)}.includes(x.lane))`),
+     '只描在它这段时间里跑过的列里（' + ran.length + ' 列）');
   await page.goto(base + '#' + h);
   ok(await page.wait(`CS.lanes.ready && !CS.view.applying && document.querySelectorAll('#g .ln-col.fold').length === 1`, 15000), '刷新：收起的进程还收着');
   ok(await page.wait(`CS.graph.state.timeOrder && document.querySelectorAll('#g .tord .tn').length > 0`, 5000), '刷新：时间顺序还开着');

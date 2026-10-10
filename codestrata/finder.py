@@ -75,6 +75,32 @@ def node_counts(calls: dict, keys: list[str], threads: dict, label, lane_of) -> 
     return out
 
 
+def item_kind(idx: dict, item: str) -> str:
+    """标记 / 展开 / 选中用的写法（规范的：目录带结尾的 /、文件路径、路径#限定名）→ 种类 dir / file / class / fn"""
+    if item.endswith("/"):
+        return "dir"
+    if item in (idx.get("files") or {}):
+        return "file"
+    s = (idx.get("symbols") or {}).get(item)
+    return "class" if s and s.get("k") == "class" else "fn"
+
+
+def ran_per_node(rd, run: dict, phase: str | None, label, lane_of) -> dict[str, dict]:
+    """这段时间里每个函数节点在各列的 [次数, 首, 末]（node_counts 的结果；lane_of(pid, 线程名) → 列的写法）"""
+    from . import seq as _seq
+    pc = _seq.phase_calls(rd, run, phase)
+    return node_counts(pc["calls"], pc["keys"], pc["threads"], label, lane_of)
+
+
+def ran_lanes(idx: dict, per_node: dict[str, dict], items: list[str]) -> dict[str, dict]:
+    """这些东西这段时间里在哪几列跑过：{东西: {列: [次数, 首, 末]}}（只留跑过的列）——页面的标记只描这些列（用户 10-10 定）"""
+    out = {}
+    for it in items:
+        hits = hits_of({"kind": item_kind(idx, it), "key": it}, per_node)
+        out[it] = {ln: x for ln, x in hits.items() if x[0]}
+    return out
+
+
 def hits_of(item: dict, per_node: dict[str, dict]) -> dict[str, list]:
     """一个东西（函数 / 类 / 文件 / 目录）在这段时间里各列的 [次数, 首, 末]：类合它的方法，文件 / 目录合里面的函数"""
     k = item["kind"]

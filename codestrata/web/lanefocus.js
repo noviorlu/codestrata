@@ -2,8 +2,8 @@
  *
  * 只看几列（CS.focus）：没选的列每个进程收成一窄列「其他 N 列」，连线照接（用户 10-09 定：信息不丢）；工具栏一个小签
  *   「只看 5 / 12 列 · 全部显示」随时退回。选择器和命令行同一套（laneid.py）：进程/线程、进程、带 * 的通配，不分大小写、按整段配。
- * 标记（CS.mark）：标在装着这些文件 / 目录 / 函数的节点上，各列按自己的切面算；节点描边，一次最多 20 个，
- *   工具栏「标记 N 个 · 清掉」（用户 10-10 定）。模块图上一样。 */
+ * 标记（CS.mark）：标在装着这些文件 / 目录 / 函数的节点上，各列按自己的切面算，只描它这段时间里跑过的列（serve 的 /api/marklanes 给）；
+ *   节点描边，一次最多 20 个，工具栏「标记 N 个 · 清掉」（用户 10-10 定）。模块图上（没有列）装着它就描。 */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
@@ -60,11 +60,25 @@ window.CS = window.CS || {};
   var MAX = 20;
   CS.mark = {
     items: [],
+    where: null,                    // {东西: {列 id: 次数}}：它这段时间里跑过的列（serve 算的；按 run 和这几个东西取，换了就重取）
+    whereKey: null,
 
     set: function (items, quiet) {
       var seen = {};
       this.items = (items || []).filter(function (x) { if (!x || seen[x]) return false; seen[x] = 1; return true; }).slice(0, MAX);
       if (!quiet) this.paint();
+    },
+
+    /* 分列里：取这几个东西跑过的列，到了再描一遍 */
+    fetch: function (key) {
+      var self = this;
+      this.whereKey = key;
+      this.where = null;
+      CS.ds.markLanes(this.items).then(function (r) {
+        if (self.whereKey !== key) return;          // 中间又换了 run / 标记
+        self.where = r.lanes || {};
+        self.paint();
+      }, function () { if (self.whereKey === key) { self.where = {}; self.paint(); } });
     },
     clear: function () { this.set([]); if (CS.app.edgeChips) CS.app.edgeChips(); if (CS.view) CS.view.changed('mark'); },
 
@@ -77,11 +91,15 @@ window.CS = window.CS || {};
       return /\/$/.test(node) && file.indexOf(node) === 0;
     },
 
-    /* 描边：分列里每一份、模块图上的节点。返回标上的个数 */
+    /* 描边：分列里每一份（只在它跑过的列里）、模块图上的节点。返回标上的个数 */
     paint: function () {
-      var items = this.items, self = this, n = 0;
+      var items = this.items, self = this, n = 0, lm = CS.app.lanesMode && CS.app.lanesMode();
+      var key = (CS.ds.run || '') + '\n' + items.join(',');
+      if (lm && items.length && this.whereKey !== key) this.fetch(key);
+      var where = this.where || {};
       function on(id) { return items.some(function (it) { return self.covers(id, it); }); }
-      (CS.lanes.nodes || []).forEach(function (x) { var m = items.length > 0 && on(x.id); x.g.classList.toggle('mk', m); if (m) n++; });
+      function onLane(id, lane) { return items.some(function (it) { return self.covers(id, it) && !!(where[it] || {})[lane]; }); }
+      (CS.lanes.nodes || []).forEach(function (x) { var m = items.length > 0 && onLane(x.id, x.lane); x.g.classList.toggle('mk', m); if (m) n++; });
       var gn = CS.graph.nodes || {};
       Object.keys(gn).forEach(function (id) { var m = items.length > 0 && on(id); gn[id].classList.toggle('mk', m); if (m) n++; });
       this.n = n;
@@ -91,7 +109,7 @@ window.CS = window.CS || {};
     chip: function () {
       if (!this.items.length) return '';
       return '<button class="chip mark" data-mark="clear" title="标出了这些文件 / 目录 / 函数所在的节点：' + esc(this.items.join('、'))
-        + '（各列按自己的切面算）；点了全部清掉">标记 ' + this.items.length + ' 个 · 清掉</button>';
+        + '（只在它这段时间里跑过的列里，各列按自己的切面算）；点了全部清掉">标记 ' + this.items.length + ' 个 · 清掉</button>';
     }
   };
 })(window.CS);

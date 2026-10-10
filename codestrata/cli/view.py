@@ -112,17 +112,14 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
         """一个东西 → (标记 / 展开用的写法, 它跑过的列 {列别名: [次数, 首, 末]})"""
         nonlocal ran
         if ran is None:
-            pc = _seq.phase_calls(r.rd, r.run, r.phase)
-            ran = _finder.node_counts(pc["calls"], pc["keys"], pc["threads"], label,
-                                      lambda pid, t: aliases.get(_lanes.lane_id(pid, t), f"{pid}:{t}"))
+            ran = _finder.ran_per_node(r.rd, r.run, r.phase, label, lambda pid, t: aliases.get(_lanes.lane_id(pid, t), f"{pid}:{t}"))
         if item.endswith("/") and item in (idx.get("dirs") or {}):      # 索引里的目录键带结尾的 /
-            kind, key = "dir", item
+            key = item
         elif item in (idx.get("files") or {}):
-            kind, key = "file", item
+            key = item
         else:
-            kind, key = "fn", _funcref.resolve(item, keys, label)[0]
-        hits = _finder.hits_of({"kind": kind, "key": key}, ran)
-        return key, {ln: x for ln, x in hits.items() if x[0]}
+            key = _funcref.resolve(item, keys, label)[0]
+        return key, _finder.ran_lanes(idx, ran, [key])[key]
 
     marks = list(v.mark)
     if a.mark is not None:

@@ -61,6 +61,10 @@ window.CS = window.CS || {};
     laneHot: function (lane) {
       return j('api/lanehot?run=' + encodeURIComponent(this.run) + '&lane=' + encodeURIComponent(lane));
     },
+    /* 标记的东西这段时间里在哪几列跑过（页面的标记只描这几列） */
+    markLanes: function (items) {
+      return j('api/marklanes?run=' + encodeURIComponent(this.run) + '&mark=' + encodeURIComponent(items.join(',')));
+    },
     refs: function (t) { return j('api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     searchIndex: function () { return j('api/search-index'); },
     reveal: function (node, open) {
