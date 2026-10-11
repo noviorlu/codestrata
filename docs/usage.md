@@ -475,7 +475,7 @@ Ctrl+C 停主菜单时，会等还在跑的扫描、录制收尾，并一起停�
 | `lanes REF` | 这段时间里有哪几列（进程 · 线程）和它们的稳定写法 | `-C 仓库`、`--limit N`、`--json` |
 | `segments REF` | 按功能切段：每个进程每一块干活的时间、段之间的交接、缺口、有调用却没出段的进程（要 2026-10-01 之后录的 run） | `--all`、阈值、`--json` |
 | `steps REF/列` | 一列的主循环一轮轮 | `--with FN`、`--why`、`--round K-M`、`--list`、`--head FN`、阈值、`--json` |
-| `links REF` | 列之间谁交给谁、谁起了谁，两头的函数和那一行；`--follow` 顺着交接走一条链（录到的跳直接连，没录到的要 `--link` 按先后配） | `--kind`、`--list`<br>`--follow 起点`（`列#k`、`FN#k`、`列:FN#k`）<br>`--link 'A列:FN => B列:FN'`<br>`--json` |
+| `links REF` | 列之间谁交给谁、谁起了谁，两头的函数和那一行；`--follow` 顺着交接走一条链（录到的跳直接连，没录到的要 `--link` 按先后配） | `--kind`、`--list`<br>`--follow 起点`（`列#k`、`FN#k`、`列:FN#k`、`列:FN@t=微秒`、`列@t=微秒`）<br>`--link 'A列:FN => B列:FN'`<br>`--json` |
 | `find 文字 [REF]` | 按名字找函数 / 类 / 文件 / 目录，给这段时间里的次数和列 | `--kind`、`--under`、`--all`、`--json` |
 | `explain 东西 REF` | 讲一组交接（`'l:handoff\|…'`，`#k` 挑组里第 k 种两头）、一个函数或类：两头的代码原文和所在分支、定义、调用链、之前最近收到的交接 | `--json` |
 | `guide` | 给 agent 的一页速查 | `--skill`、`--json` |

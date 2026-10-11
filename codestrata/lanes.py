@@ -155,8 +155,79 @@ def in_lane(lane: str):
     return lambda pid, tname: str(pid) == pid_s and thread_group(tname) == name
 
 
+class EndFns:
+    """连线的一头落在哪个仓库函数上（和页面同一个认法：lanes.build、links --follow 共用这一份）：
+    在某个 span 里时是那个 span 的被调方，行号按它；不在任何 span 里（放 / 取发生在仓库外的代码里，比如 vLLM 引擎循环取请求）时是那一刻
+    这条线程最底下在跑的仓库函数——线程名写着的 target（Thread-3 (x)），或者那一刻还没返回的深度 0 调用的调用方（正好一个时）；
+    都没有是 None（仓库外的代码）。录制之后文件改过的，键和行号跟着函数挪（hot 的 keymap）"""
+
+    def __init__(self, idx: dict, rd: Path, hot: dict):
+        ix = _seq.span_index(rd)
+        self.keys, self.threads = ix["keys"], ix["threads"]
+        self.keymap = hot.get("keymap")
+        self.label = _labeler(idx)
+        self.R = _seq.run_rows(rd)               # held：(pid, tid) → {调用方键下标: [最早开始, 最晚结束]}：这条线程最底下的仓库函数
+        self._fn: dict[int, str | None] = {}
+
+    def key_at(self, a: int) -> str:
+        """键下标 → 现在的键（录制之后文件改过的，换成函数现在的行号）；越界是 ?"""
+        ka = self.keys[a] if 0 <= a < len(self.keys) else "?"
+        return self.keymap(ka) if self.keymap is not None else ka
+
+    def fn_of(self, a: int) -> str | None:
+        """键下标 → 函数级的节点（file#Qual），落不到函数上是 None"""
+        if a not in self._fn:
+            ka = self.keys[a] if 0 <= a < len(self.keys) else "?"
+            self._fn[a] = self.label(self.keymap(ka) if self.keymap is not None else ka) if ka != "?" else None
+        return self._fn[a]
+
+    def line_of(self, b: int, ln: int) -> int:
+        """span 被调方（键下标 b）的函数里的第 ln 行 → 现在的行号：录制之后文件改过的，跟着函数整个挪；挪不了是 0"""
+        km = self.keymap
+        if not ln or km is None or not 0 <= b < len(self.keys):
+            return ln
+        kb = self.keys[b]
+        rel, _, old = kb.rpartition(":")
+        if rel not in km.todo:
+            return ln
+        now = int(km(kb).rpartition(":")[2])
+        return ln + now - int(old) if int(old) > 0 and now > 0 else 0
+
+    def root_at(self, pid: int, tid: int, t: int | None) -> int | None:
+        """t 那一刻这条线程最底下的仓库函数（键下标）：正好一个对得上就是它，一个都没有或几个都对得上是 None"""
+        if t is None:
+            return None
+        ks = [k for k, (a, b) in (self.R["held"].get((pid, tid)) or {}).items() if a <= t <= b]
+        return ks[0] if len(ks) == 1 else None
+
+    def named_target(self, pid: int, tid: int) -> tuple[bool, int | None]:
+        """线程名写着 target（Thread-3 (x)）时：(True, x 那个仓库函数的键下标；x 在仓库外就是 None)；没写是 (False, None)。
+        x 在仓库里时它从线程起来到结束一直在栈底，这种线程任何时刻最底下的仓库函数都是它"""
+        m = _TARGET.match((self.threads.get(str(pid)) or {}).get(str(tid)) or "")
+        if not m:
+            return False, None
+        for k in self.R["held"].get((pid, tid)) or {}:
+            f = self.fn_of(k)
+            if f and f.rsplit("#", 1)[-1].rsplit(".", 1)[-1] == m.group(1):
+                return True, k
+        return True, None
+
+    def at(self, pid: int, tid: int, row: int, t: int | None) -> tuple[int | None, bool]:
+        """一头（span 下标 row，-1 是不在任何 span 里）→ (仓库函数的键下标或 None, 在不在 span 里)"""
+        bs = (self.R["rows"].get(pid) or ((), ()))[0]
+        if 0 <= row < len(bs):
+            return bs[row], True
+        k = self.named_target(pid, tid)[1]
+        return (k if k is not None else self.root_at(pid, tid, t)), False
+
+    def end(self, pid: int, tid: int, row: int, t: int | None, line: int = 0) -> dict:
+        """{fn, ext, line}：ext 为真是放 / 取发生在仓库外的代码里（fn 是那一刻栈底的仓库函数，行号不知道）"""
+        k, inspan = self.at(pid, tid, row, t)
+        return {"fn": self.fn_of(k) if k is not None else None, "ext": not inspan, "line": self.line_of(k, line) if inspan else 0}
+
+
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None,
-          cuts: dict | None = None, proc_order: dict | None = None, ends: dict | None = None) -> dict:
+          cuts: dict | None = None, proc_order: dict | None = None) -> dict:
     """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线],
     "units": [各列调到的单元（排好序）]}。open_ 是共用的切面（None 是默认切面）；cuts 是 {列 id: 这一列自己的切面}——
     列里的节点、边、入口，连线在这一列的那一头，都落在这一列的切面上。列按进程启动的先后排，进程里主线程在前。
@@ -188,20 +259,21 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     那一头是线程的入口函数）。text(文件, 行) 给的话，pairs 里带上那一行的代码。
     "out"：整条连线的首末时刻都在这一段之外（before / after），起 / 收的线程在这一段里跑过、起 / 收本身在段外。
     还有 "truncated": [时序事件录到了上限的进程]。没有时序事件、没有这个阶段的时刻抛 LookupError。
-    ends：给一个 dict 就填上这一段里每次交接（index 的 handoffs 的下标）两头的 {lane, node, fn, ext, t, line}（links --follow 用，不进返回值）"""
+    连线的一头落在哪个函数上按 EndFns（links --follow 用同一份）"""
     ix = _seq.span_index(rd)
     segs, win, end = _seq.window_segments(run, rd, phase)
     lo, hi = segs[0][0], segs[-1][1]
     keys, threads = ix["keys"], ix["threads"]
-    keymap, redirect = hot.get("keymap"), hot.get("redirect") or {}
-    label = _labeler(idx)
+    redirect = hot.get("redirect") or {}
+    E = EndFns(idx, rd, hot)
+    key_at, fn_of, line_of, root_at, named_target = E.key_at, E.fn_of, E.line_of, E.root_at, E.named_target
+    label = E.label
     share = _only_share(hot, label)
     names = proc_names(rd)
     cuts = {lid: sorted(_cut.norm_open(idx, o)) for lid, o in (cuts or {}).items()}
     maps: dict = {}                              # 切面的键 → cut_map：这一次请求里每个不同的切面只建一次（不管 cut_map 的缓存怎么挤）
     lane_map: dict[str, tuple] = {}              # 列 → (切面的键, cut_map)
     node_cache: dict[tuple, tuple] = {}          # (切面的键, 键下标) → (节点,)
-    fn_cache: dict[int, str | None] = {}
 
     def map_of(lid: str) -> tuple:
         """一列的切面：(切面的键, cut_map)。cuts 里没有这一列就是共用的切面"""
@@ -213,29 +285,6 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                 maps[k] = _seq.cut_map(idx, o)
             hit = lane_map[lid] = (k, maps[k])
         return hit
-
-    def key_at(a: int) -> str:
-        """键下标 → 现在的键（录制之后文件改过的，换成函数现在的行号）；越界是 ?"""
-        ka = keys[a] if 0 <= a < len(keys) else "?"
-        return keymap(ka) if keymap is not None else ka
-
-    def fn_of(a: int) -> str | None:
-        """键下标 → 函数级的节点（file#Qual），落不到函数上是 None"""
-        if a not in fn_cache:
-            ka = keys[a] if 0 <= a < len(keys) else "?"
-            fn_cache[a] = label(keymap(ka) if keymap is not None else ka) if ka != "?" else None
-        return fn_cache[a]
-
-    def line_of(b: int, ln: int) -> int:
-        """span 被调方（键下标 b）的函数里的第 ln 行 → 现在的行号：录制之后文件改过的，跟着函数整个挪；挪不了是 0"""
-        if not ln or keymap is None or not 0 <= b < len(keys):
-            return ln
-        kb = keys[b]
-        rel, _, old = kb.rpartition(":")
-        if rel not in keymap.todo:
-            return ln
-        now = int(keymap(kb).rpartition(":")[2])
-        return ln + now - int(old) if int(old) > 0 and now > 0 else 0
 
     def nodes_of(a: int, b: int, lid: str):
         """span 两端的键下标 → (调用方节点, 被调方节点（都落在 lid 这一列的切面上）, 被调方是不是定义时的执行,
@@ -264,7 +313,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
 
     # 这一段里每条线程的调用表（seq.phase_calls）和整个 run 读一遍就有的（seq.run_rows）都按 run 缓存：改切面、换一列展开只重新归到节点上
     T = _seq.phase_calls(rd, run, phase)
-    R = _seq.run_rows(rd)
+    R = E.R
     held = R["held"]                             # (pid, tid) → {调用方键下标: [最早开始, 最晚结束]}：这条线程最底下的仓库函数（不限这一段）
     lanes: dict[str, dict] = {}
     tid_lane: dict[tuple, str] = {}
@@ -311,13 +360,6 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                 e["only"] += n * only
                 e["first"], e["last"] = min(e["first"], first), max(e["last"], last)
 
-    def root_at(pid: int, tid: int, t: int | None) -> int | None:
-        """t 那一刻这条线程最底下的仓库函数（键下标）：正好一个对得上就是它，一个都没有或几个都对得上是 None"""
-        if t is None:
-            return None
-        ks = [k for k, (a, b) in (held.get((pid, tid)) or {}).items() if a <= t <= b]
-        return ks[0] if len(ks) == 1 else None
-
     # 阶段 / 时间段里，入口调用在这一段之前就开始了、一直没返回的线程：这一段里它没有深度 0 的调用，入口按那个还在跑的调用补上
     for L in lanes.values():
         if L["entry"] is not None:
@@ -330,18 +372,6 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
                 L["nodes"].setdefault(nd, {"n": 0, "first": L["first"]})
                 L["u"].add(unit_of(k, L["id"]))
                 break
-
-    def named_target(pid: int, tid: int) -> tuple[bool, int | None]:
-        """线程名写着 target（Thread-3 (x)）时：(True, x 那个仓库函数的键下标；x 在仓库外就是 None)；没写是 (False, None)。
-        x 在仓库里时它从线程起来到结束一直在栈底，这种线程任何时刻最底下的仓库函数都是它"""
-        m = _TARGET.match((threads.get(str(pid)) or {}).get(str(tid)) or "")
-        if not m:
-            return False, None
-        for k in held.get((pid, tid)) or {}:
-            f = fn_of(k)
-            if f and f.rsplit("#", 1)[-1].rsplit(".", 1)[-1] == m.group(1):
-                return True, k
-        return True, None
 
     def end_of(pid: int, tid: int, row: int, t: int | None, line: int = 0, create: bool = False) -> dict | None:
         """一条连线的一头：哪一列、哪个节点（span 的被调方；不在任何 span 里就是那一刻在跑的仓库函数）、哪一行。
@@ -371,16 +401,12 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             if inw and L.get("external"):
                 L["ran"].add(tid)
         bs, ts = R["rows"].get(pid) or ((), ())
-        inspan = 0 <= row < len(bs)
+        # 不在任何 span 里（放 / 取发生在仓库外的代码里）：那一刻这条线程最底下在跑的仓库函数（EndFns.at）；
+        # 没有在跑的（vLLM 自己的收发循环）就是仓库外的代码，接在列头上
+        k, inspan = E.at(pid, tid, row, t)
         if inspan:
-            k = bs[row]
             nd, fn = node(k, lid) or lanes[lid]["entry"], fn_of(k)
         else:
-            # 不在任何 span 里（放 / 取发生在仓库外的代码里，比如 vLLM 引擎循环取请求）：那一刻这条线程最底下在跑的仓库函数
-            # （线程名写着的 target，或者 root_at）；没有在跑的（vLLM 自己的收发循环）就是仓库外的代码，接在列头上
-            k = named_target(pid, tid)[1]
-            if k is None:                            # target 在仓库外（asyncio.run 之类）：按那一刻还没返回的深度 0 调用认
-                k = root_at(pid, tid, t)
             nd, fn = (node(k, lid), fn_of(k)) if k is not None else (None, None)
         if create and nd is not None and not L.get("external"):
             # 交接的那个节点这一列里没有（这条线程这一段里没调到它，交接却在这一段里）：放上去，连线接在节点上而不是列头上；
@@ -442,13 +468,11 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     # 先连交接：只跑仓库外代码的线程的列（external）是这时候建的，之后起它、回收它的连线才接得上
     for hx, h in enumerate(ix.get("handoffs") or []):
         t = h["from"][3] if h["from"][3] is not None else h["to"][3]   # 按放 / 发的时刻算在不在这一段里（用户 10-01 定），和连线上写的时刻一致
-        if not any(x <= t <= y for x, y in segs):
+        if not _seq.in_segs(t, segs):
             continue
         a, b = end_of(*h["from"][:4], line=_at(h["from"], 4), create=True), end_of(*h["to"][:4], line=_at(h["to"], 4), create=True)
         if a and b and a["lane"] != b["lane"]:
             link("handoff", h["via"], a, b, raw=hx)
-            if ends is not None:
-                ends[hx] = (a, b)
     tfrom, tend = ix.get("thread_from") or {}, ix.get("thread_end") or {}
     starts: dict[str, list] = {}                 # 列 → [(起的时刻, 起它的列, 守护)]：每列的 start 摘要
     stops: dict[str, list] = {}                  # 列 → [(结束 / 等到的时刻, 等它的列 或 None, 状态)]：stop 摘要

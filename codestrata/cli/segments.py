@@ -28,10 +28,10 @@ def run(a) -> out.Result:
     common.require_events(c)
     common.refuse_old(c)
     r = c.res
-    if len(r.slices) != 1:
+    if len(r.slices) != 1 and not (r.phase or "").startswith("t="):
         raise CodestrataError("bad_window", "这个阶段有几段时间（切走又切回来），切段还只认一段；用 @t=起-止 选其中一段",
                                      candidates=[f"{r.run['id']}@t={x}-{y}" for x, y in r.slices])
-    lo, hi = r.slices[0]
+    lo, hi, rtext, _ = common.span(c, "切段")
     label = common.labeler(common.index(c))
     p = common.params(a)
     A = _seg.analyse(r.rd, lo, hi, p, head_window=common.head_window(c))
@@ -48,7 +48,7 @@ def run(a) -> out.Result:
         s["rounds"]["head"] = label(keys[s["rounds"]["head"]])
         s["ref"] = f"{rid}@t={a_}-{b_}/{s['proc']}"
     base = lo
-    lines = [f"{r.text}（{out.dur(hi - lo)}）：{len(segs)} 段。时刻从这一段开头（t={lo}）算"]
+    lines = [f"{rtext}（{out.dur(hi - lo)}）：{len(segs)} 段。时刻从这一段开头（t={lo}）算"]
     lines += _request_lines(reqs, base)
     for s in segs:
         a_, b_ = s["slices_us"][0]
@@ -106,7 +106,7 @@ def run(a) -> out.Result:
         s = max(segs, key=lambda s: s["dur_us"])
         nxt.append(c.cmd("read", "steps", f"{rid}@t={s['slices_us'][0][0]}-{s['slices_us'][0][1]}/{s['main']}",
                          why=f"最长的 {s['id']} 一轮轮"))
-    nxt.append(c.cmd("read", "links", r.text, why="全部交接，两头的函数和那一行"))
+    nxt.append(c.cmd("read", "links", rtext, why="全部交接，两头的函数和那一行"))
     for e in loose[:2]:
         nxt.append(c.cmd("read", "path", f"{rid}@t={e['first_us']}-{e['last_us']}/{e['proc']}", "--limit", "40",
                          why=f"{e['proc']} 没出段：看它这段时间调了什么"))

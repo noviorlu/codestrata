@@ -1,6 +1,6 @@
-"""链（chain.py，links --follow）：合成的三个进程——stage1 的 save_loop 写共享内存 → stage2 的 recv_loop 收（积压：第 2、3 块等了很久）
-→ 没录到的一跳（commit 之后主线程才跑 model）→ stage2 主线程下一轮把结果放进队列 → 发的线程（只跑仓库外的代码）经 zmq → end2end 的
-orchestrator。测录到的跳、--link 按先后配、拒绝配不上的、停下时的候选、起点的几种写法、段的时间片。
+"""链（chain.py、chainhint.py，links --follow）：合成的三个进程——stage1 的 save_loop 写共享内存 → stage2 的 recv_loop 收（积压：第 2、3 块
+等了很久）→ 没录到的一跳（commit 之后主线程才跑 model）→ stage2 主线程下一轮把结果放进队列 → 发的线程（只跑仓库外的代码）经 zmq → end2end 的
+orchestrator。测录到的跳、--link 按先后配、拒绝配不上的、停下时的候选、在一列里按先后配 / 按时间接、起点的几种写法、段的时间片、次数的数法。
 
     python tests/test_chain.py [名字里的词…]
 """
@@ -11,7 +11,7 @@ import sys
 from common import run_tests, tmpdir  # noqa: E402
 from synth import Script  # noqa: E402
 
-from codestrata import chain, segments  # noqa: E402
+from codestrata import chain, chainhint, segments, seq  # noqa: E402
 from codestrata.errors import CodestrataError  # noqa: E402
 
 FNS = {"eng/save.py:1": "save_loop", "eng/save.py:20": "Save.tick", "eng/shm.py:10": "Shm.put", "eng/recv.py:1": "recv_loop",
@@ -24,8 +24,25 @@ PUTS = [2_000, 4_000, 6_000]
 RECV = [2_500, 9_000, 15_000]           # 第 2、3 块在共享内存里等了很久（stage2 忙）
 
 
-def label(key: str) -> str:
-    return f"{key.split(':')[0]}#{FNS[key]}" if key in FNS else key
+class Ends:
+    """lanes.EndFns 的替身（合成的 run 没有 scan 的索引）：在 span 里是被调方，不在任何 span 里是仓库外的代码"""
+
+    def __init__(self, rd, names: dict):
+        ix = seq.span_index(rd)
+        self.keys = ix["keys"]
+        self.rows = {pid: seq.pid_rows(rd, pid) for pid in {c["pid"] for c in ix["chunks"]}}
+        self.names, self.keymap = names, None
+
+    def label(self, key: str) -> str:
+        return f"{key.split(':')[0]}#{self.names[key]}" if key in self.names else key
+
+    def fn_of(self, b: int) -> str | None:
+        return self.label(self.keys[b]) if 0 <= b < len(self.keys) else None
+
+    def end(self, pid, tid, row, t, line=0) -> dict:
+        rows = self.rows.get(pid) or []
+        r = rows[row] if 0 <= row < len(rows) else None
+        return {"fn": self.fn_of(r[5]) if r else None, "ext": r is None, "line": line if r else 0}
 
 
 def scenario():
@@ -65,8 +82,16 @@ def walker() -> chain.Walker:
     if not _W:
         rd = scenario()
         A = segments.analyse(rd, 0, 40_000)
-        _W.append(chain.Walker(A, {}, label, 0, 40_000))
+        _W.append(chain.Walker(A, Ends(rd, FNS), 0, 40_000))
     return _W[0]
+
+
+def walk(W, start: str, links=()):
+    pos, st = W.start(start, None)
+    ch = W.walk(pos, list(links), (st["t0_us"], st["t1_us"]))
+    if ch["stop"]["reason"] == "none":
+        ch["stop"]["candidates"] = chainhint.hints(W, ch["at"], ch["seen"])
+    return st, ch
 
 
 def code(fn) -> str:
@@ -78,12 +103,11 @@ def code(fn) -> str:
 
 
 def test_recorded_hop_then_stop_with_candidates():
-    """第 2 块：put 里写共享内存（录到的，就在这次调用里）→ recv_loop 收到，之后没交出：停下，候选里 A 边是 commit（一份一次、
-    离交出最近），B 边主线程的 Model.run 配得上，拼成一条能直接用的 --link"""
+    """第 2 块：put 里写共享内存（录到的，就在这次调用里）→ recv_loop 收到，之后没交出：停下。候选：A 边挑 commit（一份一次、离交出最近），
+    B 边在所有列里找和它第 k 次配第 k 次配得上的——主线程的 Model.decode（间隔最稳）、Model.run 都是，warm 第一次早于 commit 不算"""
     W = walker()
-    pos, st = W.start("Shm.put#2", None)
-    assert (st["lane"], st["k"], st["k_lane"], st["t0_us"]) == ("stage1/save_loop", 2, 2, 4_100), st
-    ch = W.walk(pos, [], (st["t0_us"], st["t1_us"]))
+    st, ch = walk(W, "Shm.put#2")
+    assert (st["lane"], st["k"], st["k_lane"], st["t0_us"], st["stable"]) == ("stage1/save_loop", 2, 2, 4_100, "stage1/save_loop:Shm.put@t=4100"), st
     (h,) = ch["hops"]
     assert (h["kind"], h["via"], h["stay"], h["k"], h["n"]) == ("recorded", "shm", "ancestor", 2, 3), h
     assert h["to"]["lane"] == "stage2/recv_loop" and h["to"]["t_us"] == 9_000 and h["to"]["fn"] == "eng/recv.py#Recv.get_by_key", h["to"]
@@ -91,100 +115,129 @@ def test_recorded_hop_then_stop_with_candidates():
     assert stop["reason"] == "none" and stop["until_us"] == 15_000 and stop["next_out"] is None, stop
     c = stop["candidates"]
     assert c["a"]["pick"] == "eng/recv.py#Recv.commit", c["a"]
-    main = next(b for b in c["b"] if b["lane"] == "stage2/MainThread")
-    assert [f["fn"] for f in main["fns"] if f["fits"]][:1] == ["eng/model.py#Model.run"], main
-    assert c["link"] == "stage2/recv_loop:Recv.commit => stage2/MainThread:Model.run", c["link"]
+    (main,) = c["b"]
+    fns = [f["fn"] for f in main["fns"]]
+    assert main["lane"] == "stage2/MainThread" and fns == ["eng/model.py#Model.decode", "eng/model.py#Model.run"], main
+    assert all(f["alternate"] for f in main["fns"]), main
+    assert c["link"] == "stage2/recv_loop:Recv.commit => stage2/MainThread:Model.decode", c["link"]
 
 
 def test_link_carries_the_chain_to_the_end():
-    """加上那条 --link：第 2 次 commit 配第 2 次 Model.run（inferred: order）→ 主线程下一次交出（队列，inferred: time）→ 发的线程 → zmq →
-    orchestrator，停下（之后它再没交出）。四跳都是第 2 份；段是两片时间 × 经过的五列"""
+    """加上 --link：第 2 次 commit 配第 2 次 Model.run（inferred: order）→ 主线程这一组交出也是 3 次：第 2 份配第 2 次（order）→ 发的线程同样 →
+    zmq → orchestrator，停下（之后它再没交出）。四跳都是第 2 份；时间片相隔不到 5 ms 的合成一片"""
     W = walker()
-    pos, st = W.start("Shm.put#2", None)
-    ln = W.link("stage2/recv_loop:Recv.commit => stage2/MainThread:Model.run")
-    ch = W.walk(pos, [ln], (st["t0_us"], st["t1_us"]))
+    st, ch = walk(W, "Shm.put#2", [W.link("stage2/recv_loop:Recv.commit => stage2/MainThread:Model.run")])
     hs = ch["hops"]
     assert [(h["kind"], h["via"]) for h in hs] == [("recorded", "shm"), ("link", "link"), ("recorded", "queue"), ("recorded", "zmq")], hs
-    assert all(h["k"] == 2 for h in hs) and hs[1]["basis"] == "order" and hs[2]["stay"] == "time", hs
+    assert all(h["k"] == 2 for h in hs) and hs[1]["basis"] == "order", hs
+    assert [h["stay"] for h in hs] == ["ancestor", "time", "order", "order"] and hs[2]["stay_k"] == 2, [h["stay"] for h in hs]
     assert hs[1]["to"]["t_us"] == 10_100 and hs[2]["from"]["t_us"] == 11_150 and hs[-1]["to"]["lane"] == "end2end/orchestrator", hs
     assert ch["stop"]["reason"] == "none" and ch["stop"]["next_out"] is None, ch["stop"]
     assert ch["lanes"] == ["stage1/save_loop", "stage2/recv_loop", "stage2/MainThread", "stage2/process_output_sockets",
                            "end2end/orchestrator"], ch["lanes"]
-    assert ch["slices_us"] == [[4_100, 4_400], [9_000, 12_270]], ch["slices_us"]
+    assert ch["slices_us"] == [[4_100, 12_270]], ch["slices_us"]
 
 
 def test_link_over_a_recorded_hop():
     """--link 接的那一跳其实录到了：照 --link 配（agent 明说的），记下 recorded_too（命令行给 link_recorded 警告）"""
     W = walker()
-    pos, st = W.start("Shm.put#2", None)
-    ln = W.link("stage1/save_loop:Shm.put => stage2/recv_loop:Recv.commit")
-    h = W.walk(pos, [ln], (st["t0_us"], st["t1_us"]))["hops"][0]
+    st, ch = walk(W, "Shm.put#2", [W.link("stage1/save_loop:Shm.put => stage2/recv_loop:Recv.commit")])
+    h = ch["hops"][0]
     assert (h["kind"], h["k"], h["stay"], h["to"]["t_us"]) == ("link", 2, "ancestor", 9_150), h
     assert h["recorded_too"] == "l:handoff|shm|stage1/save_loop|stage2/recv_loop", h
 
 
 def test_link_mismatch():
-    """次数不等（每轮都调的 schedule）、第 1 次 B 早于第 1 次 A（Model.warm）都拒绝；候选是 B 列里配得上的"""
+    """次数不等（每轮都调的 schedule）、第 1 次 B 早于第 1 次 A（Model.warm）都拒绝；候选是拼好的 --link。写错的函数说是哪一条 --link 的哪一边"""
     W = walker()
     for b in ("Sched.schedule", "Model.warm"):
         try:
             W.link(f"stage2/recv_loop:Recv.commit => stage2/MainThread:{b}")
         except CodestrataError as e:
-            assert e.code == "link_mismatch" and "stage2/MainThread:Model.run" in e.candidates, (b, e.msg, e.candidates)
+            assert e.code == "link_mismatch" and "stage2/recv_loop:Recv.commit => stage2/MainThread:Model.run" in e.candidates, (b, e.msg, e.candidates)
             assert ("次数不等" if b == "Sched.schedule" else "早于") in e.msg, e.msg
         else:
             raise AssertionError(b)
+    try:
+        W.link("stage2/recv_loop:Model.run => stage2/MainThread:Model.run")
+        raise AssertionError("A 边写错")
+    except CodestrataError as e:
+        assert e.code == "item_not_found" and "的 A 边" in e.msg, e.msg
     assert code(lambda: W.link("stage2/recv_loop:Recv.commit => stage2/recv_loop:Recv.poll")) == "usage"
     assert code(lambda: W.link("stage2/recv_loop Recv.commit")) == "usage"
     assert code(lambda: W.link("stage2:Recv.commit => stage2/MainThread:Model.run")) == "ambiguous_lane"
-    assert code(lambda: W.link("stage2/recv_loop:Model.run => stage2/MainThread:Model.run")) == "item_not_found"
 
 
 def test_start_forms():
-    """列#k 是第 k 轮（主线程第 3 轮里没交出：停下，下一次交出是第 1 块的结果，inferred: time）；列:FN#k 只数这一列；写错的报错"""
+    """列#k 是第 k 轮（主线程第 3 轮里没交出：停下，下一次交出是第 1 块的结果，inferred: time）；列:FN#k 只数这一列；
+    列:FN@t= 是那一刻的那次调用（输出里 stable 的写法，喂回去是同一个起点）；列@t= 从那一刻收到的那一份起（只跑仓库外代码的列也行）；写错的报错"""
     W = walker()
-    pos, st = W.start("stage2/MainThread#3", None)
+    st, ch = walk(W, "stage2/MainThread#3")
     assert st["kind"] == "round" and (st["t0_us"], st["t1_us"]) == (2_000, 3_000), st
-    ch = W.walk(pos, [], (st["t0_us"], st["t1_us"]))
     nxt = ch["stop"]["next_out"]
     assert not ch["hops"] and nxt["t_us"] == 4_150 and nxt["to"] == "stage2/process_output_sockets" and nxt["basis"] == "time", ch["stop"]
-    pos, st = W.start("stage1/save_loop:Shm.put#1", None)
+    st, _ = walk(W, "stage1/save_loop:Shm.put#1")
     assert st["kind"] == "call" and st["t0_us"] == 2_100, st
-    assert code(lambda: W.start("Shm.put#9", None)) == "usage"
-    assert code(lambda: W.start("Shm.put", None)) == "usage"
-    assert code(lambda: W.start("nosuch#1", None)) == "item_not_found"
-    assert code(lambda: W.start("stage2/MainThread#999", None)) == "usage"
-    assert code(lambda: W.start("stage2#1", None)) == "ambiguous_lane"
+    st2, _ = walk(W, "stage1/save_loop:Shm.put@t=4250")                     # 正在跑的那次（第 2 次）
+    assert (st2["k"], st2["t0_us"], st2["stable"]) == (2, 4_100, "stage1/save_loop:Shm.put@t=4100"), st2
+    st3, ch3 = walk(W, "stage2/process_output_sockets@t=11170")              # 第 2 份进到发的线程：按先后配第 2 次 zmq
+    assert st3["kind"] == "lane" and st3["group"] == "l:handoff|queue|stage2/MainThread|stage2/process_output_sockets", st3
+    (h,) = ch3["hops"]
+    assert (h["via"], h["stay"], h["from"]["t_us"], h["k"]) == ("zmq", "order", 11_230, 2), h
+    for bad, want in (("Shm.put#9", "usage"), ("Shm.put", "usage"), ("nosuch#1", "item_not_found"), ("stage2/MainThread#999", "usage"),
+                      ("stage2#1", "ambiguous_lane"), ("stage1/save_loop:Shm.put@t=3000", "usage"), ("stage1/save_loop@t=x", "usage"),
+                      ("stage2/process_output_sockets#1", "no_loop")):
+        assert code(lambda: W.start(bad, None)) == want, (bad, code(lambda: W.start(bad, None)))
 
 
-def test_order_differs_is_flagged():
-    """流水线慢一拍：relay 每收到一份，交出去的是上一份的结果（第 k 份进来之后第一次交出是第 k-1 次）。照旧按时间接（第 1 次），
-    但这一组交出的次数和进来的份数一样，按先后配是第 2 次：写在 alt 里"""
-    K2 = ["eng/src.py:1", "eng/src.py:10", "eng/relay.py:1", "eng/relay.py:10", "eng/sink.py:1"]
-    names = dict(zip(K2, ["src_loop", "emit", "relay_loop", "pump", "sink_loop"]))
+def pipeline(extra: bool):
+    """流水线慢一拍：relay 每收到一份，交出去的是上一份的结果（第 k 份进来之后第一次交出是第 k-1 次）。extra：另有一路数据在中间进到 relay"""
+    K2 = ["eng/src.py:1", "eng/src.py:10", "eng/relay.py:1", "eng/relay.py:10", "eng/sink.py:1", "eng/side.py:1"]
+    names = dict(zip(K2, ["src_loop", "emit", "relay_loop", "pump", "sink_loop", "side_loop"]))
     s = Script(K2)
     s.thread(40, 1, "MainThread", proc="python src.py")
     s.thread(50, 1, "MainThread", proc="python relay.py")
     s.thread(60, 1, "MainThread", proc="python sink.py")
-    src, rel, snk = s.call(40, 1, 0, 10_000, 0), s.call(50, 1, 0, 10_000, 2), s.call(60, 1, 0, 10_000, 4)
+    s.thread(70, 1, "MainThread", proc="python side.py")
+    src, rel, snk, side = s.call(40, 1, 0, 10_000, 0), s.call(50, 1, 0, 10_000, 2), s.call(60, 1, 0, 10_000, 4), s.call(70, 1, 0, 10_000, 5)
     for t in range(500, 9_500, 500):
         s.call(50, 1, t, 20, 3, parent=rel)
-    for i, t in enumerate((1_000, 2_000, 3_000)):
+    for t in (1_000, 2_000, 3_000):
         e = s.call(40, 1, t - 10, 50, 1, parent=src)
         s.handoff("queue", (40, 1, e, t), (50, 1, rel, t + 10))
         s.handoff("zmq", (50, 1, rel, t + 1_500), (60, 1, snk, t + 1_510))      # 第 i 份的结果在下一份进来之后才交出
+    if extra:
+        s.handoff("queue", (70, 1, side, 3_100), (50, 1, rel, 3_200))
     rd = s.write(tmpdir("cs-chain-"), phases=[["start", 0]])
-    A = segments.analyse(rd, 0, 10_000)
-    W = chain.Walker(A, {}, lambda k: f"{k.split(':')[0]}#{names[k]}" if k in names else k, 0, 10_000)
-    pos, st = W.start("emit#2", None)
-    hs = W.walk(pos, [], (st["t0_us"], st["t1_us"]))["hops"]
-    assert [h["via"] for h in hs] == ["queue", "zmq"] and hs[1]["from"]["t_us"] == 2_500, hs
-    assert hs[1]["alt"] == {"basis": "order", "k": 2, "t_us": 3_500, "n": 3, "picked_k": 1}, hs[1]
-    assert "alt" not in hs[0], hs[0]
+    return chain.Walker(segments.analyse(rd, 0, 10_000), Ends(rd, names), 0, 10_000)
+
+
+def test_pairs_by_order_when_counts_match():
+    """relay 交出的那一组和进来的一样多（3 次）：第 2 份配第 2 次交出（t=3500，inferred: order），不是进来之后的第一次（t=2500，上一份的）。
+    中间另有一路数据进到 relay：这一跳记 mixed"""
+    _, ch = walk(pipeline(extra=False), "emit#2")
+    hs = ch["hops"]
+    assert [h["via"] for h in hs] == ["queue", "zmq"] and (hs[1]["from"]["t_us"], hs[1]["stay"], hs[1]["stay_k"]) == (3_500, "order", 2), hs
+    assert "mixed" not in hs[1], hs[1]
+    _, ch = walk(pipeline(extra=True), "emit#2")
+    assert ch["hops"][1]["mixed"] == {"n": 1, "groups": ["l:handoff|queue|side/MainThread|relay/MainThread"]}, ch["hops"][1]
+
+
+def test_counts_like_find():
+    """合成一行的连续调用（rep 次摊在它的时长上）只数落在这段时间里的那几次，和 seq.calls_in（find、分列）一样"""
+    s = Script(["a.py:1", "a.py:10"])
+    s.thread(1, 1, "MainThread", proc="python a.py")
+    root = s.call(1, 1, -1_000, 3_000, 0)
+    s.call(1, 1, -400, 800, 1, parent=root, rep=5)                         # -400、-200、0、200、400
+    rd = s.write(tmpdir("cs-chain-"), phases=[["start", -1_000]])
+    W = chain.Walker(segments.analyse(rd, 0, 1_000), Ends(rd, {"a.py:1": "main", "a.py:10": "leaf"}), 0, 1_000)
+    lid = W.one_lane("a/MainThread")
+    assert [c[0] for c in W.calls(lid, {1})] == [0, 200, 400], W.calls(lid, {1})
+    assert seq.calls_in(-400, 800, 5, 0, 1_000) == (3, 0, 400)
 
 
 def test_merge_and_misfit():
-    assert chain.merge([(10, 5), (0, 3), (3_500, 3_600), (-50, 2)], 0, 3_550) == [[0, 11], [3_500, 3_550]]
+    assert chain.merge([(10, 5), (0, 3), (13_500, 13_600), (-50, 2)], 0, 13_550) == [[0, 11], [13_500, 13_550]]
     assert chain.misfit([(1,), (5,)], [(2,), (6,)]) is None
     assert chain.misfit([(1,), (5,)], [(2,)]) == ("count", 2, 1)
     assert chain.misfit([(1,), (5,)], [(2,), (4,)]) == ("order", 2, 5, 4)

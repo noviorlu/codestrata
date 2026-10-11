@@ -206,7 +206,7 @@ def test_follow_on_toy():
     repo, rid = truth()
     j = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))
     ch = j["data"]["chain"]
-    assert j["ok"] and j["algo"] == "chain/1" and ch["start"]["fn"].endswith("#put_job"), j
+    assert j["ok"] and j["algo"] == "chain/2" and ch["start"]["fn"].endswith("#put_job") and "@t=" in ch["start"]["stable"], j
     h = ch["hops"][0]
     assert (h["kind"], h["via"], h["stay"]) == ("recorded", "queue", "ancestor") and h["from"]["fn"].endswith("#put_job"), h
     seg = ch["segment"]
@@ -219,6 +219,23 @@ def test_follow_on_toy():
                         f"{a}:put_job => {b}:{h['to']['fn'].partition('#')[2]}", "--json"], capture_output=True, text=True, cwd=HERE.parent)
     j = one_json(r)
     assert r.returncode == 4 and j["error"]["code"] == "link_mismatch" and "次数不等" in j["error"]["msg"], j    # put_job 调了几次，取只有一次
+
+
+def test_slices_on_toy():
+    """几片的 REF（t=a-b,c-d）：segments 按整段算、给 spanned 警告（以前直接拒绝）；links 给的下一步切段用整段的 REF；path --time 的「这段」
+    是各片加起来；links --follow 也按整段走（起点按整段数、给 spanned）"""
+    repo, rid = truth()
+    ph = one_json(cs("status", "-C", repo, rid, "--json"))["data"]["phases"]
+    end = max(x["t1_us"] for x in ph)
+    two, whole = f"{rid}@t=0-{end // 3},{2 * end // 3}-{end}", f"{rid}@t=0-{end}"
+    j = one_json(cs("segments", "-C", repo, two, "--json"))
+    assert j["ok"] and any(w["code"] == "spanned" for w in j["warnings"]), j
+    j = one_json(cs("links", "-C", repo, two, "--json"))
+    assert j["ok"] and any(n["cmd"].split()[-1] == whole for n in j["next"]), j["next"]
+    r = cs("path", "-C", repo, two, "--time")
+    assert "2 片加起来" in r.stdout, r.stdout[:400]
+    j = one_json(cs("links", "-C", repo, two, "--follow", "put_job#1", "--json"))
+    assert j["ok"] and any(w["code"] == "spanned" for w in j["warnings"]) and j["data"]["chain"]["hops"], j
 
 
 def test_old_run_refused_by_commands():

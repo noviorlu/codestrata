@@ -25,8 +25,8 @@ RUN   := 完整 run id | case 名
     按先后排好、重叠和挨着的合成一片；
   - `阶段+起s-止s`：从阶段开头算的秒，比如 `serving+0.614s-3.082s`，不能超出这个阶段。
   - 省掉就是整个 run。
-  - 几片的 REF（还有切走又切回来、有几段的阶段）：分列（`lanes`、页面）、`links`、`path` 只算这几片里的调用；
-    `segments`、`steps`、`links --follow` 看的是从第一片的开头到最后一片的结尾。
+  - 几片的 REF：分列（`lanes`、页面）、`links`、`path`（含 `--time`）只算这几片里的调用；`segments`、`steps`、`links --follow` 按整段
+    （第一片的开头到最后一片的结尾）算、给警告 `spanned`，下一步也给整段的 REF。有几段的阶段（切走又切回来）`segments` 照旧只认一段。
   - 页面、`serve --hot`、老命令（`runs.resolve`）认同一套范围写法；页面收超出 run 终点的时间段（时间条放长、照样画选中框），不报越界。
 - **页面地址**：浏览器地址栏里那串，比如 `http://127.0.0.1:8900/#run=<RUN>@<范围>&lanes=stage1`。
   主菜单转发的 `/v/<端口>/` 也认。`lanes=` 是列选择器，别的键原样留着。地址后面不能再接 `/列`。
@@ -109,7 +109,8 @@ RUN   := 完整 run id | case 名
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
-| `link_unused` / `link_recorded` / `order_differs` | links --follow：给的 `--link` 没用上（链没走到 A 列，或者走到时没调 A 函数）/ 这一跳其实录到了，可以不给 / 某一跳按时间接的交出和按先后配的不是同一次（可能接到了别的那一份） |
+| `link_unused` / `link_recorded` / `mixed_inputs` | links --follow：给的 `--link` 没用上（链没走到 A 列，或者走到时没调 A 函数）/ 这一跳其实录到了，可以不给 / 从进来到交出之间这一列还收到了别的路的数据（交出的不一定只是这一份） |
+| `spanned` | 几片的 REF 给了要连续一段时间的命令（segments、steps、links --follow）：按整段 t=起-止 算，下一步也给整段的 REF |
 
 ## 错误码和退出码
 
@@ -182,28 +183,35 @@ RUN   := 完整 run id | case 名
   `--list` 每组列出各种两头（`#k`，`explain '组#k'` 讲第 k 种）。默认只看 handoff，最多 20 组。
 - `data.links[]`：`id`、`kind`、`via`、`from`、`to`、`n`、`first_us`、`last_us`、`cross`、`pairs[]`（`from` / `to`：`fn`、`file`、`line`、`outside`；`n`、`first_us`）、`n_pairs`。
 
-**`--follow 起点 [--link 'A列:FN => B列:FN' …]`：顺着交接走一条链**（`chain.py`，信封带 `algo` `chain/1`）
-- 起点：`列#k`（这一列主循环的第 k 轮，轮号同 `steps`）；`FN#k`（这段时间里第 k 次调用 FN，从 1 数；REF 带了列时只数这几列）；`列:FN#k`（只数这一列的）。
-- 在一列里走的是「这一份」：从进来（起点：那一轮 / 那次调用开始；之后：收到的那一刻）到同一路的下一份进来之前（起点：这一轮结束 /
-  这一列下一次调用 FN；录到的交接：同一组的下一次收到；`--link`：B 边的下一次调用）。这期间：
-  1. 有 `--link` 的 A 边是这一列：A 函数这期间第一次调用（正包着收到那一刻的也算）是这一列的第 j 次，就跳到 B 列 B 函数的第 j 次；
-  2. 否则跟这一列这期间第一次交出（录到的交接）；
-  3. 都没有就停下。
-- 每一跳写明依据（`basis`）：录到的是 `recorded`，`--link` 配的是 `order`。在一列里从进来到交出（`stay`）：交出就在起点那次调用 / `--link` 落到的那次调用里面、
-  或者 A 函数那次调用包着收到的那一处的是 `ancestor`，其余是 `time`（进来之后、下一份进来之前的第一次）。
-  `time` 接的那一组交出的次数正好和进来的份数一样、按先后配（第 k 份配第 k 次）却是另一次时，写在这一跳的 `alt` 里、给警告 `order_differs`，链照旧按时间走
-  （流水线上一份的结果常在下一份进来之后才交出：并发几个请求时就会这样）。
+**`--follow 起点 [--link 'A列:FN => B列:FN' …]`：顺着交接走一条链**（`chain.py`、候选在 `chainhint.py`，信封带 `algo` `chain/2`）
+- 起点：`列#k`（这一列主循环的第 k 轮，轮号同 `steps`）；`FN#k`（这段时间里第 k 次调用 FN，从 1 数；REF 带了列时只数这几列）；`列:FN#k`（只数这一列的）；
+  `列:FN@t=微秒`（这一列在这一刻开始或正在跑的那次 FN）；`列@t=微秒`（这一列这一刻收到的那一份，只跑仓库外代码的列也能起步）。
+  前三种随 REF 的范围变，输出里的 `start.stable` 是不随范围变的写法（`列:FN@t=…`），停在 `range` 时下一步用它放宽范围接着走。
+  调用的次数和 `find`、分列一样数（合成一行的连续调用摊开，只算落在这段时间里的）。
+- 在一列里走的是「这一份」：数据在某一刻进到这一列，是这一路这段时间里 n 份里的第 k 份。按先后看：
+  1. 有 `--link` 的 A 边是这一列：A 函数这一份里的那次（正包着收到那一刻的、或者下一份进来之前开始的第一次）是这一列的第 j 次，就跳到 B 列 B 函数的第 j 次；
+  2. 交出就在这次调用里（起点那次调用 / `--link` 落到的那次调用里面）：跟它；起点是一轮时，这一轮里的第一次交出；
+  3. 这一列交出的哪一组正好也是 n 次：第 k 份配这一组的第 k 次交出（不早于进来的那一刻）；
+  4. 否则同一条线程这期间（到同一路的下一份进来为止）第一次交出；
+  5. 都没有就停下。
+- 每一跳写明依据（`basis`）：录到的是 `recorded`，`--link` 配的是 `order`。在一列里从进来到交出（`stay`）：`ancestor`（就在那次调用里）、`round`（这一轮里）、
+  `order`（第 k 份配第 k 次，`stay_k`；流水线上一份的结果常在下一份进来之后才交出，按时间接会差一份）、`time`（进来之后第一次）。
+  从进来到交出这期间这一列还收到了别的路的数据：这一跳带 `mixed`（几份、哪几组），给警告 `mixed_inputs`。
 - `--link`：没录到的一跳（共享的 dict / deque、管道……）要 agent 读过代码后显式给，可以给几次。这段时间里 A 边第 k 次调用配 B 边第 k 次；
-  两边次数不等、或者有一次 B 早于同一次的 A，报 `link_mismatch`（退出码 4），候选是 B 列里配得上的函数。两头要是两列。
+  两边次数不等、或者有一次 B 早于同一次的 A，报 `link_mismatch`（退出码 4），候选是拼好的 `--link`（B 列里配得上的函数）。两头要是两列；写错的说是哪一条的哪一边。
   攒批的一跳（25 个 token 攒成一块）配不上，从攒好的那一块起走。
-- 停下（`stop.reason`）：`none`（这期间没交出，也没有用得上的 `--link`）、`range`（收到的那一刻出了这段时间）、`hops`（走了 40 跳）。
+- 停下（`stop.reason`）：`none`（这一份没有交出，也没有用得上的 `--link`）、`range`（收到的那一刻出了这段时间）、`hops`（走了 40 跳）。
   `none` 时给这一列下一次交出（时刻、通道、到哪列，`basis` 是 `time`：不一定是同一份数据，不往下走）和 `--link` 的候选：
-  A 边是这一列这期间跑的函数（`per_item`：一份一次），B 边是同一个进程里（不够再别的进程）接下来先干活的几列各自先跑的函数（空转、在等的轮里的和常规的不算），
-  和挑出来的 A 函数次数一样、每次都不早于它的标 `fits`；有的话拼一条能直接用的 `--link`（下一步给加上它的命令）。
-- 走出来的链是一个段（`kind: chain`）：每一列待的那段时间（几片，相隔不到 1 ms 的合起来；最后一列取收到之后 1 ms）× 经过的列，带 `ref`，下一步给 `view set`。
-- `data.chain`：`start`（`kind` call / round、`lane`、`fn`、`k`、`n`、`k_lane`、`n_lane`、`t0_us`、`t1_us`）、`hops[]`（`kind` recorded / link、`via`、`group`、`link`、
-  `basis`、`stay`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`、`alt`（`basis`、`k`、`t_us`、`n`、`picked_k`））、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
-  `candidates`（`a`、`b[]`、`link`））、`total_us`、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`）。
+  A 边是这一列这一份里一份一次的函数（`per_item`），挑结束得最晚的；挑不出就不给 B 边。B 边在所有别的列里找和它第 k 次配第 k 次配得上的函数，
+  没走过的列在前、交替的在前（每一次 B 都在下一次 A 之前）、间隔越稳越前，同一列里每一次都离得不到 1 ms 的算同一处（`same`）。
+  拼好的 `--link` 只在文字和 `candidates.link` 里，不放进「下一步」（要 agent 先读代码）。
+- 走出来的链是一个段（`kind: chain`）：每一列待的那段时间（几片，相隔不到 5 ms 的合起来；最后一列取收到的那一轮，最多 50 ms，没有主循环的取 1 ms）× 经过的列，
+  带 `ref`，下一步给 `view set`（页面上是这几片里这几列的全部连线）。
+- 几片的 REF 给进来时按整段走（警告 `spanned`）。
+- `data.chain`：`start`（`kind` call / round / lane、`lane`、`fn`、`k`、`n`、`k_lane`、`n_lane`、`t0_us`、`t1_us`、`stable`、`group`）、`hops[]`（`kind` recorded / link、`via`、`group`、`link`、
+  `basis`、`stay`、`stay_k`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`、`mixed`）、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
+  `candidates`（`a`：`lane`、`fns`、`pick`、`n_in`；`b[]`：`lane`、`on_chain`、`fns[]`（`fn`、`n`、`gap_us`、`cv`、`alternate`、`same`）；`link`））、`total_us`、
+  `tally`（`recorded`、`link`、`stay`：各几跳）、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`）。
 
 ### 切段
 

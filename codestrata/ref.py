@@ -99,6 +99,11 @@ def _from_fragment(frag: str, page: dict | None, text: str) -> Ref:
 
 # ---------------------------------------------------------------- 范围（对着一个 run 的 run.json）
 
+def join(run_id: str, rng: str | None = None, lanes: list[str] | None = None) -> str:
+    """拼一个规整的 REF：RUN[@范围][/列,…]（范围是阶段名或 t=起-止[,起-止…]，已经规整过的）"""
+    return run_id + (f"@{rng}" if rng else "") + ("/" + ",".join(lanes) if lanes else "")
+
+
 def phase_names(run: dict) -> list[str]:
     names = [p["name"] for p in run.get("phases") or []]
     names += [x[0] for x in run.get("phase_log") or [] if x and x[0] not in names]

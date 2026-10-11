@@ -89,8 +89,9 @@ def run(a) -> out.Result:
     if a.time:
         top = _self_time_top(r, {th["lane"] for th in ths}, aliases, common.labeler(idx))
         p["self_time"] = top
-        lo, hi = r.slices[0][0], r.slices[-1][1]
-        text = [f"自己的时间最多的 {len(top)} 处（时长减去它调的仓库函数；这段 {out.dur(hi - lo)}）："] + [
+        span_us = sum(y - x for x, y in r.slices)
+        text = [f"自己的时间最多的 {len(top)} 处（时长减去它调的仓库函数；这段 {out.dur(span_us)}"
+                + (f"，{len(r.slices)} 片加起来" if len(r.slices) > 1 else "") + "）："] + [
             f"  {out.dur(x['us']):>10}  {x['lane']}  {common.short(x['fn'])}" for x in top] + [""] + text
     nxt = []
     if not r.lanes and len(p.get("procs") or []) > 1:
@@ -100,13 +101,12 @@ def run(a) -> out.Result:
 
 
 def _self_time_top(r, lanes: set[str], aliases: dict[str, str], label, n: int = 5) -> list[dict]:
-    """这几列里「自己的时间」最多的 n 处：[{lane, fn, us}]（每条线程各算，同一列合起来）"""
+    """这几列里「自己的时间」最多的 n 处：[{lane, fn, us}]（每条线程各算、每一片各算，同一列合起来）"""
     from collections import Counter
     from .. import steps as _steps
     ix = _seq.span_index(r.rd)
     keys = ix["keys"]
     want = {lid for lid, al in aliases.items() if al in lanes}
-    lo, hi = r.slices[0][0], r.slices[-1][1]
     tot: Counter = Counter()
     by_pid: dict[int, set] = {}
     for pid_s, ts in ix["threads"].items():
@@ -116,11 +116,12 @@ def _self_time_top(r, lanes: set[str], aliases: dict[str, str], label, n: int = 
     for pid, tids in by_pid.items():
         lr = _steps.lane_rows(_seq.pid_rows(r.rd, pid), tids)
         for tid in tids:
-            own, _, _ = _steps.self_times(lr, tid, lo, hi)
             th = ix["threads"][str(pid)][str(tid)]
             al = aliases.get(_lanes.lane_id(pid, th))
-            for b, us in own.items():
-                tot[(al, keys[b])] += us
+            for lo, hi in r.slices:              # 几片的 REF（还有几段的阶段）：一片一片算再加起来，和树一样只算片里的
+                own, _, _ = _steps.self_times(lr, tid, lo, hi)
+                for b, us in own.items():
+                    tot[(al, keys[b])] += us
     return [{"lane": al, "key": k, "fn": label(k), "us": us} for (al, k), us in tot.most_common(n)]
 
 
