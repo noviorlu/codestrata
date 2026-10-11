@@ -29,7 +29,7 @@ window.CS = window.CS || {};
   // TOP：图框左上角浮着缩放按钮，进程头、列头往下让一点
   // HEAD：列头（线程名、仓库外的代码、起 / 收两行）的底
   var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72;
-  var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue', shm: '共享内存',
+  var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue', shm: '共享内存', link: '推断（--link 按先后配）',
               thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）',
               join: 'join 等它结束', wait: 'waitpid 等子进程退出', cuda: '启动 GPU kernel' };
   var KIND = { handoff: '谁把数据交给谁', spawn: '谁起了谁', join: '谁回收了谁', launch: '谁启动了哪个 GPU kernel' };
@@ -104,6 +104,7 @@ window.CS = window.CS || {};
         CS.laneCut.settle(L);
         self.panelData(L);
         self.draw(svg, L, d.graphHot || d.graph, d.names || {});
+        CS.chain.paint(L, svg);                     // 高亮的链（lanechain.js）：只亮链上的线
         CS.laneCut.after(self.afterCut);
         self.afterCut = null;
         self.ready = ref;                          // 画好了的是哪个 run（@阶段）
@@ -503,12 +504,13 @@ window.CS = window.CS || {};
         var E = { kind: 'link', k: k, key: 'l:' + i, first: k.first, last: k.last, n: k.n, A: a, B: b };
         byIdx[i] = E;
         E.halo = el('path', { d: R.d, class: 'ln-halo' });
-        E.p = el('path', { d: R.d, class: 'ln-link ' + k.kind + ' via-' + k.via + (k.out ? ' out' : '') });
+        E.p = el('path', { d: R.d, class: 'ln-link ' + k.kind + ' via-' + k.via + (k.out ? ' out' : '')
+                                     + (k.chain ? ' ln-chain' : '') + (k.inferred ? ' inferred' : '') });
         var pr = (k.pairs || [])[0], ends = ENDS[k.kind] || ['从', '到'];
         function code(side, fn, ln, tx) {
           return '\n' + side + '：' + (fn ? short(fn) + (ln ? ':' + ln + (tx ? '  ' + tx : '') : '') : '仓库外的代码');
         }
-        E.tipBase = KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
+        E.tipBase = CS.chain.tip(k) + KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
           + '，' + k.n + ' 次\n' + laneName(k.from.lane) + (k.from.node ? '（' + k.from.node + '）' : '')
           + ' → ' + laneName(k.to.lane) + (k.to.node ? '（' + k.to.node + '）' : '')
           + (pr ? code(ends[0], pr.a, pr.la, pr.ta) + code(ends[1], pr.b, pr.lb, pr.tb) : '')
@@ -518,8 +520,9 @@ window.CS = window.CS || {};
           + '\n点击在两头标出那一行代码、看每一对';
         E.tip = el('title', {}); E.tip.textContent = E.tipBase;
         lk.appendChild(E.halo); lk.appendChild(E.p);
-        E.R = R; E.labCls = 'ln-ltxt ' + k.kind;
-        E.labTxt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '')
+        E.R = R; E.labCls = 'ln-ltxt ' + k.kind + (k.chain ? ' chain' : '') + (k.inferred ? ' inferred' : '');
+        E.labTxt = CS.chain.label(k) + (k.via === 'link' ? '推断' : k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起')
+          + (k.n > 1 ? ' ×' + fmtN(k.n) : '')
           + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
         self.wire(E);
         self.links.push(E);

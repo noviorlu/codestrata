@@ -6,7 +6,7 @@
                                   （页面上放回去的链接）；命令行拿页面地址当 REF 时问它是哪个仓库；features 有 view 才能推视图
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
-    GET  /api/lanes?run=&open=&cuts=&fold=&hide=&lanes=
+    GET  /api/lanes?run=&open=&cuts=&fold=&hide=&lanes=&chain=   chain：页面高亮的链（chainview：范围~起点~--link…）
                                   按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
                                   加上节点信息、框、名字、子层（ui/lanesview.py）。open 是共用的切面，
                                   cuts（JSON [{"lanes": [列 id…], "open": [目录…]}…]）是各列自己的切面。
@@ -51,6 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import align as _align
+from . import chainview as _chainview
 from . import cut as _cut
 from . import errors as _errors
 from . import finder as _finder
@@ -314,6 +315,7 @@ class Handler(BaseHandler):
         raw = (q.get("open") or [None])[0]
         open_ = None if raw is None else sorted(_cut.norm_open(self.idx, [o for o in raw.split(",") if o]))
         cuts_raw = (q.get("cuts") or [None])[0]
+        chain_raw = ((q.get("chain") or [""])[0]).strip() or None
         try:
             cuts = _lanesview.parse_cuts(self.idx, cuts_raw)
         except ValueError as e:
@@ -321,14 +323,18 @@ class Handler(BaseHandler):
         run = None
         try:
             run, rd, phase = _runs.resolve(self.repo, ref)
-            key = (ref, tuple(open_ or ()) if open_ is not None else None, cuts_raw, self._run_mtime(rd))
+            key = (ref, tuple(open_ or ()) if open_ is not None else None, cuts_raw, chain_raw, self._run_mtime(rd))
             with Handler._lock:
                 L = Handler._lane_cache.get(key)
             if L is None:
                 hot = self._hot(q)[0]
+                # 高亮的链：在它自己的那一段里走一遍（和 links --follow 同一份），录到的跳标在连线上，推出来的多连一条
+                cinfo, cmarks = _chainview.for_page(self.idx, rd, run, hot, chain_raw) if chain_raw else (None, None)
                 L = _lanes.build(self.idx, rd, run, phase, hot, open_, cuts=cuts, proc_order=self._proc_order(rd, run, phase),
-                                 text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160])
+                                 text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160], chain=cmarks)
                 L = _lanesview.decorate(self.idx, hot, L, open_)
+                if cinfo is not None:
+                    L["chain"] = cinfo
                 L["aliases"] = _lanes.aliases_of(rd, L)
                 L["proc_aliases"] = {str(k): v for k, v in _lanes.proc_aliases(rd).items()}
                 with Handler._lock:

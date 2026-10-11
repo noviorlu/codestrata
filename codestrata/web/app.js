@@ -699,12 +699,13 @@ window.CS = window.CS || {};
            + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
-      // 只看几列、标记（lanefocus.js）：工具栏上的小签，点了退回全部列 / 清掉标记
+      // 只看几列、标记（lanefocus.js）、高亮的链（lanechain.js）：工具栏上的小签，点了退回全部列 / 清掉
       var ec = document.getElementById('edgechips');
-      ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip());
-      var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), self = this;
+      ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip() + (this.lanesMode() ? CS.chain.chip() : ''));
+      var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), cbtn = ec.querySelector('[data-chain]'), self = this;
       if (fbtn) fbtn.onclick = function () { CS.focus.clear(); self.edgeChips(); CS.view.changed('lanes'); };
       if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
+      if (cbtn) cbtn.onclick = function () { CS.chain.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
     },
 

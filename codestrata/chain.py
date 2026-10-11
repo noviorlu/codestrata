@@ -397,9 +397,11 @@ class Walker:
     # ------------------------------------------------------------ 走
 
     def walk(self, pos: Pos, links: list[Link], first: tuple[int, int]) -> dict:
-        """从 pos 走到停下：{hops, stop, slices_us, lanes, at, seen}（at：停下时数据在哪；seen：走过的列 id——给候选用）。
+        """从 pos 走到停下：{hops, stop, slices_us, lanes, at, seen, raw}（at：停下时数据在哪；seen：走过的列 id——给候选用；
+        raw：每一跳原始的那一处——("h", 交接下标) 或 ("l", A 边那次调用, B 边那次调用)，调用写成 (pid, 线程, span 下标, 开始)，页面画链用）。
         first：起点那次调用 / 那一轮的 (开始, 结束)"""
         hops: list[dict] = []
+        raws: list[tuple] = []
         stays = [first]
         lanes = [self.alias(pos.lane)]
         seen = {pos.lane}
@@ -412,8 +414,9 @@ class Walker:
                 stays.append(self._tail(pos))
                 stop = self._stop(pos)
                 break
-            hop, nxt, leave = ex
+            hop, nxt, leave, raw = ex
             hops.append(hop)
+            raws.append(raw)
             stays.append((pos.t, leave))
             pos = nxt
             seen.add(pos.lane)
@@ -422,7 +425,8 @@ class Walker:
             if pos.t > self.hi:
                 stop = {"reason": "range", "lane": self.alias(pos.lane), "t_us": pos.t}
                 break
-        return {"hops": hops, "stop": stop, "slices_us": merge(stays, self.lo, self.hi), "lanes": lanes, "at": pos, "seen": seen}
+        return {"hops": hops, "stop": stop, "slices_us": merge(stays, self.lo, self.hi), "lanes": lanes, "at": pos, "seen": seen,
+                "raw": raws}
 
     def _mixed(self, pos: Pos, t_out: int) -> dict | None:
         """从进来到交出这期间这一列还收到的别的路的数据：{n, groups}（交出的不一定只是这一份）"""
@@ -460,7 +464,8 @@ class Walker:
             hop["mixed"] = mixed
         nxt = Pos(L.b.lane, y[0], L.b.calls[j + 1][0] if j + 1 < len(L.b.calls) else self.hi, len(L.b.calls), j + 1,
                   tid=self.tid_of(y[2], y[3]), call=(y[2], y[3]), fn=L.b.node)
-        return hop, nxt, x[1]
+        raw = ("l", (x[2], self.tid_of(x[2], x[3]), x[3], x[0]), (y[2], nxt.tid, y[3], y[0]))
+        return hop, nxt, x[1], raw
 
     def _timed(self, pos: Pos) -> tuple | None:
         """按时间：同一条线程这期间（到同一路的下一份进来为止）第一次交出 (时刻, 交接下标)；不知道线程时这一列的任何一条"""
@@ -503,7 +508,7 @@ class Walker:
             hop["mixed"] = mixed
         nxt = Pos(tl, t2, arr[j] if j < len(arr) else self.hi, len(arr), hop["k"], tid=h["to"][1],
                   at=(h["to"][0], h["to"][2]) if h["to"][2] >= 0 else None, fn=hop["to"]["fn"], group=g)
-        return hop, nxt, t
+        return hop, nxt, t, ("h", hx)
 
     def _fn_end(self, f: Fn, c: tuple) -> dict:
         return {"lane": self.alias(f.lane), "t_us": c[0], **_linkgroups.end(f.node, 0, False, None)}

@@ -119,6 +119,13 @@ def fixture() -> dict:
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
                a=run_id(repo, "truth"), b=run_id(repo, "offline"), an=run_id(repo, "truthne"), bn=run_id(repo, "offlinene"),
                cutrun=run_id(cut, "cutrun"))
+    # 高亮的链（chain.mjs）：toy 上 put_job 第一次放进队列 → 另一条线程取到；再加上候选里拼好的一条 --link（推出来的那一跳画虚线）
+    a = _FX["a"]
+    fol = json.loads(cs("links", "-C", repo, a, "--follow", "put_job#1", "--json").stdout)["data"]["chain"]
+    cand = fol["stop"]["candidates"]["link"]
+    fol2 = json.loads(cs("links", "-C", repo, a, "--follow", "put_job#1", "--link", cand, "--json").stdout)["data"]["chain"]
+    _FX.update(chain=fol["segment"]["view_chain"], chainref=fol["segment"]["ref"],
+               chain2=fol2["segment"]["view_chain"], chainref2=fol2["segment"]["ref"])
     fx = {k: v for k, v in _FX.items() if k not in ("srv", "srv2", "srv3", "srv4")}
     path = tmpdir("cs-browser-") / "fixture.json"
     path.write_text(json.dumps(fx, ensure_ascii=False))
@@ -166,6 +173,10 @@ def test_timeorder():
 
 def test_view():
     _spec("view")
+
+
+def test_chain():
+    _spec("chain")
 
 
 def test_viewsync():

@@ -227,7 +227,7 @@ class EndFns:
 
 
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None,
-          cuts: dict | None = None, proc_order: dict | None = None) -> dict:
+          cuts: dict | None = None, proc_order: dict | None = None, chain: tuple | None = None) -> dict:
     """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线],
     "units": [各列调到的单元（排好序）]}。open_ 是共用的切面（None 是默认切面）；cuts 是 {列 id: 这一列自己的切面}——
     列里的节点、边、入口，连线在这一列的那一头，都落在这一列的切面上。列按进程启动的先后排，进程里主线程在前。
@@ -259,7 +259,9 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     那一头是线程的入口函数）。text(文件, 行) 给的话，pairs 里带上那一行的代码。
     "out"：整条连线的首末时刻都在这一段之外（before / after），起 / 收的线程在这一段里跑过、起 / 收本身在段外。
     还有 "truncated": [时序事件录到了上限的进程]。没有时序事件、没有这个阶段的时刻抛 LookupError。
-    连线的一头落在哪个函数上按 EndFns（links --follow 用同一份）"""
+    连线的一头落在哪个函数上按 EndFns（links --follow 用同一份）。
+    chain：页面上高亮的链（chainview.for_page 给的 (录到的交接下标 → [第几跳], 推出来的跳)）——装着链上那次交接的连线带 "chain": [第几跳]；
+    推出来的跳（--link）多连一条 via link、"inferred": "order" 的线（两头是 A 边、B 边那两次调用；时间顺序不给它编号）"""
     ix = _seq.span_index(rd)
     segs, win, end = _seq.window_segments(run, rd, phase)
     lo, hi = segs[0][0], segs[-1][1]
@@ -473,6 +475,17 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         a, b = end_of(*h["from"][:4], line=_at(h["from"], 4), create=True), end_of(*h["to"][:4], line=_at(h["to"], 4), create=True)
         if a and b and a["lane"] != b["lane"]:
             link("handoff", h["via"], a, b, raw=hx)
+            if chain and hx in chain[0]:
+                agg[(a["lane"], a["node"], b["lane"], b["node"], "handoff", h["via"])].setdefault("chain", []).extend(chain[0][hx])
+    for x in (chain[1] if chain else ()):        # 链上推出来的跳（--link 按先后配的）：多连一条，只连这一段里的
+        if not (_seq.in_segs(x["from"][3], segs) or _seq.in_segs(x["to"][3], segs)):
+            continue
+        a, b = end_of(*x["from"], create=True), end_of(*x["to"], create=True)
+        if a and b and a["lane"] != b["lane"]:
+            link("handoff", "link", a, b, t=x["from"][3])
+            e = agg[(a["lane"], a["node"], b["lane"], b["node"], "handoff", "link")]
+            e.setdefault("chain", []).append(x["hop"])
+            e["inferred"] = "order"
     tfrom, tend = ix.get("thread_from") or {}, ix.get("thread_end") or {}
     starts: dict[str, list] = {}                 # 列 → [(起的时刻, 起它的列, 守护)]：每列的 start 摘要
     stops: dict[str, list] = {}                  # 列 → [(结束 / 等到的时刻, 等它的列 或 None, 状态)]：stop 摘要

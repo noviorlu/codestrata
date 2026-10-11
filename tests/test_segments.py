@@ -221,6 +221,33 @@ def test_follow_on_toy():
     assert r.returncode == 4 and j["error"]["code"] == "link_mismatch" and "次数不等" in j["error"]["msg"], j    # put_job 调了几次，取只有一次
 
 
+def test_chain_for_page():
+    """页面高亮的链（chainview.for_page → lanes.build 的 chain）：装着链上那次交接的连线带 chain [0]；候选里拼好的 --link 那一跳多连一条
+    via link、inferred 的线，时间顺序不给它编号；view set --chain 原样写进地址；写错的链给 error、分列照画"""
+    from codestrata import chainview, laneorder, lanes as _lanes, runs as _runs
+    from codestrata.ui import load as _load
+    repo, rid = truth()
+    fol = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))["data"]["chain"]
+    cand = fol["stop"]["candidates"]["link"]
+    key = chainview.key(None, fol["start"]["stable"], [cand])
+    idx = _load.load_index(repo)
+    run, rd, _ = _runs.resolve(repo, rid)
+    hot, _ = _runs.load_run(repo, idx, run, rd, None)
+    info, marks = chainview.for_page(idx, rd, run, hot, key)
+    assert info["error"] is None and [h["kind"] for h in info["hops"]] == ["recorded", "link"], info
+    L = _lanes.build(idx, rd, run, None, hot, None, chain=marks)
+    rec = [k for k in L["links"] if k.get("chain") == [0]]
+    inf = [k for k in L["links"] if k.get("inferred")]
+    assert len(rec) == 1 and rec[0]["via"] == "queue", [(k["via"], k.get("chain")) for k in L["links"] if k.get("chain")]
+    assert len(inf) == 1 and inf[0]["via"] == "link" and inf[0]["chain"] == [1], inf
+    aliases = _lanes.aliases_of(rd, L)
+    assert not any("|link|" in x for x in laneorder.rank(L, aliases)["ids"]), "推出来的那条不编号"
+    bad, none = chainview.for_page(idx, rd, run, hot, "~nosuch#1")
+    assert bad["error"] and none is None, bad
+    j = one_json(cs("view", "url", "-C", repo, rid, "--chain", key, "--json"))
+    assert "chain=" in j["data"]["url"] and j["ok"], j
+
+
 def test_slices_on_toy():
     """几片的 REF（t=a-b,c-d）：segments 按整段算、给 spanned 警告（以前直接拒绝）；links 给的下一步切段用整段的 REF；path --time 的「这段」
     是各片加起来；links --follow 也按整段走（起点按整段数、给 spanned）"""

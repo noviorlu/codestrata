@@ -36,7 +36,7 @@ def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, hide: s
         pid = pid_of.get(lid)
         return f"fold:{pid}" if pid in fold or (lanes is not None and lid not in lanes) else lid
     for i, k in enumerate(L.get("links") or []):
-        if k["kind"] != "handoff" or k.get("first") is None or not lo <= k["first"] <= hi:
+        if k["kind"] != "handoff" or k.get("inferred") or k.get("first") is None or not lo <= k["first"] <= hi:
             continue
         ca, cb = col(k["from"]["lane"]), col(k["to"]["lane"])
         if ca == cb and ca.startswith("fold:"):          # 两头在同一个收起的窄列里：页面上不画

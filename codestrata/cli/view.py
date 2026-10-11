@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import time
 
+from .. import chainview as _chainview
 from .. import finder as _finder
 from .. import funcref as _funcref
 from .. import laneid as _laneid
@@ -29,7 +30,7 @@ EFFECT = "page"
 DOES = ("页面的视图描述：view set 推给开着的页面（只看列、收起、标记、选中、展开到函数、时间顺序）、view back 撤销（page）；"
         "view url 只拼地址、view get 读用户在看什么、view wait 等用户点（read）")
 USAGE = ("codestrata view url|set|get|back|wait [REF|'页面地址'] [--lanes 列,…] [--fold 进程,…] [--mark 东西,…] [--expand 东西,…] "
-         "[--focus 东西] [--select 东西] [--order on|off] [--hide hot,dyn|none] [--path] [--reset] [--note 一句话] "
+         "[--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--hide hot,dyn|none] [--path] [--reset] [--note 一句话] "
          "[--page 端口] [--tab ID] [--for select|range|lanes|any|applied] [--timeout 秒] [--json]")
 EXAMPLE = "codestrata view set 20261001-170349-run_single_prompt@serving --focus MiniCPMO45OmniTTSForConditionalGeneration.sample --note 'talker 的采样'"
 
@@ -79,6 +80,8 @@ def _view_opts(q) -> None:
     q.add_argument("--order", choices=["on", "off"], default=None, help="时间顺序开 / 关")
     q.add_argument("--hide", default=None, help="藏起的边：hot、dyn，none 是都不藏")
     q.add_argument("--path", action="store_true", help="详情栏讲请求路径")
+    q.add_argument("--chain", default=None, metavar="范围~起点~--link…",
+                   help="页面高亮一条链（links --follow 的下一步里拼好了）：链上的跳亮出来、推出来的画虚线；none 清掉")
 
 
 def run(a) -> out.Result:
@@ -179,6 +182,12 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
         v.hide = [] if a.hide == "none" else [x for x in _laneid.parse_list(a.hide) if x in ("hot", "dyn")]
     if a.path:
         v.panel = "path"
+    if a.chain is not None:
+        if a.chain == "none":
+            v.chain = None
+        else:
+            _chainview.parse(a.chain)
+            v.chain = a.chain
     what = []
     if v.lanes:
         what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
@@ -189,6 +198,8 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
                                        if ln in v.lcut))
     if v.mark:
         what.append("标记 " + "、".join(v.mark))
+    if v.chain:
+        what.append("高亮链 " + _chainview.parse(v.chain)[1] + "（链上的跳亮出来，推出来的画虚线）")
     if v.sel:
         what.append("选中 " + v.sel)
     if v.order:

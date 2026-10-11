@@ -206,12 +206,12 @@ RUN   := 完整 run id | case 名
   没走过的列在前、交替的在前（每一次 B 都在下一次 A 之前）、间隔越稳越前，同一列里每一次都离得不到 1 ms 的算同一处（`same`）。
   拼好的 `--link` 只在文字和 `candidates.link` 里，不放进「下一步」（要 agent 先读代码）。
 - 走出来的链是一个段（`kind: chain`）：每一列待的那段时间（几片，相隔不到 5 ms 的合起来；最后一列取收到的那一轮，最多 50 ms，没有主循环的取 1 ms）× 经过的列，
-  带 `ref`，下一步给 `view set`（页面上是这几片里这几列的全部连线）。
+  带 `ref`；下一步给 `view set <链的 REF> --chain <范围~起点~--link…>`（`segment.view_chain`）：页面只亮这条链。
 - 几片的 REF 给进来时按整段走（警告 `spanned`）。
 - `data.chain`：`start`（`kind` call / round / lane、`lane`、`fn`、`k`、`n`、`k_lane`、`n_lane`、`t0_us`、`t1_us`、`stable`、`group`）、`hops[]`（`kind` recorded / link、`via`、`group`、`link`、
   `basis`、`stay`、`stay_k`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`、`mixed`）、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
   `candidates`（`a`：`lane`、`fns`、`pick`、`n_in`；`b[]`：`lane`、`on_chain`、`fns[]`（`fn`、`n`、`gap_us`、`cv`、`alternate`、`same`）；`link`））、`total_us`、
-  `tally`（`recorded`、`link`、`stay`：各几跳）、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`）。
+  `tally`（`recorded`、`link`、`stay`：各几跳）、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`、`view_chain`）。
 
 ### 切段
 
@@ -263,13 +263,14 @@ RUN   := 完整 run id | case 名
 ### `codestrata view url | set | get | back | wait …`
 每个动作是一个子命令，`-C`、`--json` 写在动作前后都行。
 
-**`view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--order on|off] [--hide …] [--path] [--page 端口]`**（read）
+**`view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--hide …] [--path] [--page 端口]`**（read）
 - 拼出一个视图的页面地址，不推。用户粘进浏览器地址栏（同一个标签页也行），页面不刷新就换过去；后退回到原来的。地址单独一行、不加引号（原样交给用户）。
 - REF 定 run、范围和列；给的是页面地址时在它的视图上改（没给的选项沿用地址里的）。前缀取页面地址的，或 `--page 端口`（核对那个端口上是不是这个仓库的 serve：
   不是给警告 `page_unknown` / `page_mismatch`）；都没有时只打 `#…` 那一段（警告 `no_page`）。`--select 函数` 先在选中的那一列里展开到它的文件。
 - 列选择器只认 `*` 通配（页面一样）；地址里只看的列在这一段里一列都对不上时，页面和编号都当没选（画全部列，页面提示一句）。
 - `--focus 东西`：只看它跑过的列 + 在这些列里把切面展开到它的文件 + 标出它 + 选中它在最早那一列里的那一份。`--expand` 在它跑过的每一列里展开。
 - `--mark`：标出这些文件 / 目录 / 函数所在的节点，只在它这段时间里跑过的列里（最多 20 个，页面工具栏「标记 N 个 · 清掉」）；`+东西` 是追加，`none` 清掉。`--select none` 取消选中。
+- `--chain`：高亮一条链（`links --follow` 的下一步里拼好了）；只查写法，走不走得通页面上说；`none` 清掉。
 - `data`：`url`、`fragment`、`view`（各个键）。
 
 **`view set [REF] [和 url 一样的选项] [--note 一句话] [--reset] [--page 端口] [--tab ID] [--timeout 秒]`**（page）
@@ -295,13 +296,15 @@ RUN   := 完整 run id | case 名
 
 ### 视图描述（页面地址 # 后面）
 
-`run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & order=1 & hide=hot,dyn & panel=path`
+`run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & chain=范围~起点~--link… & order=1 & hide=hot,dyn & panel=path`
 
 - 页面和命令行同一套（`web/view.js`、`viewspec.py`）。值里 `@ , / ~ | : ; + * =` 不转义；不认识的键原样留着。
 - `lanes`：只看这几列，没选的列每个进程收成一窄列「其他 N 列」，连线照接；`fold`：收起的进程（别名）；`cut`：共用的切面（和默认一样不写）；
   `lcut`：各列自己的切面（列别名 ~ 展开着的目录）；`sel`：选中的（`n:列|节点`、`f:列|框`、`e:列|a|b`、`l:种类|通道|起列|终列`；模块图上 `n:节点`、`e:a|b`）；
-  `mark`：标记；`order=1`：时间顺序开；`hide`：藏起的边；`panel=path`：详情栏讲请求路径。
-- 页面上每改一处，地址按规范写法重写（不多出历史记录）；粘进来的地址、后退按固定的顺序套：run 和范围 → 切面 → 各列的切面 → 只看列和收起 → 开关 → 标记 → 选中 → 详情栏。
+  `mark`：标记；`chain`：高亮的链（`范围~起点[~--link…]`：链在哪一段里走出来的、不随范围变的起点、--link 原样；页面在那一段里重走一遍，
+  链上的连线加粗、标「链 N」，推出来的 --link 那一跳多画一条虚线、标「推断」，别的线变淡，工具栏「链 N 跳 · 清掉」；走不出来时分列照画、页面说一声）；
+  `order=1`：时间顺序开；`hide`：藏起的边；`panel=path`：详情栏讲请求路径。
+- 页面上每改一处，地址按规范写法重写（不多出历史记录）；粘进来的地址、后退按固定的顺序套：run 和范围 → 切面 → 各列的切面和链 → 只看列和收起 → 开关 → 标记 → 选中 → 详情栏。
   地址里阶段写错，退回这个 run 默认的阶段并提示；run 找不到，照旧看现在的并提示。
 
 ### `codestrata path REF [--depth N] [--limit N] [--time] [--unseen] [--json]`

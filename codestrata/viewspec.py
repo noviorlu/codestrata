@@ -1,6 +1,7 @@
 """视图描述（地址栏 # 后面那串）的 Python 一侧：和页面的 web/view.js 同一套键、同一种写法（view url 拼出来、explain 24 按它算编号）。
 
-    run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=… & mark=… & order=1 & hide=hot,dyn & panel=path
+    run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=… & mark=… & chain=范围~起点~--link…
+    & order=1 & hide=hot,dyn & panel=path
 
 也在这里按一个视图算出分列（lanes.build，用视图里的切面）和时间顺序的编号（laneorder.rank），和页面拿到的一样。
 """
@@ -29,6 +30,7 @@ class View:
     lcut: dict[str, list[str]] = field(default_factory=dict)
     sel: str | None = None
     mark: list[str] = field(default_factory=list)
+    chain: str | None = None
     order: bool = False
     hide: list[str] = field(default_factory=list)
     panel: str | None = None
@@ -45,6 +47,7 @@ def from_keys(run: str | None, lanes: list[str], keys: dict[str, str]) -> View:
             v.lcut[lane] = _list(dirs)
     v.sel = keys.get("sel") or None
     v.mark = _list(keys.get("mark"))
+    v.chain = keys.get("chain") or None
     v.order = keys.get("order") in ("1", "on")
     v.hide = _list(keys.get("hide"))
     v.panel = keys.get("panel") or None
@@ -68,6 +71,8 @@ def fragment(v: View) -> str:
         out.append("sel=" + _enc(v.sel))
     if v.mark:
         out.append("mark=" + _enc(",".join(v.mark)))
+    if v.chain:
+        out.append("chain=" + _enc(v.chain))
     if v.order:
         out.append("order=1")
     if v.hide:

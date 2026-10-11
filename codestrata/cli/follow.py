@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from .. import chain as _chain
 from .. import chainhint as _chainhint
-from .. import lanes as _lanes
+from .. import chainview as _chainview
 from .. import linkgroups as _linkgroups
 from .. import ref as _ref
 from .. import runs as _runs
-from .. import segments as _seg
 from .. import seq as _seq
 from ..errors import CodestrataError
 from . import common, out
@@ -19,16 +18,12 @@ _STAY = {"ancestor": "就在这次调用里", "round": "这一轮里交出", "or
 def run(a, c: common.Ctx, idx: dict) -> out.Result:
     common.refuse_old(c)
     r = c.res
-    lo, hi, _, _ = common.span(c, "links --follow ")
+    lo, hi, rtext, _ = common.span(c, "links --follow ")
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, None)       # 只要 keymap（录制之后改过的文件）：和页面认同一个函数
     try:
-        A = _seg.analyse(r.rd, lo, hi, head_window=common.head_window(c))
+        W, start, ch, links = _chainview.walk(idx, r.rd, hot, lo, hi, common.head_window(c), a.follow, a.link, r.lanes)
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    W = _chain.Walker(A, _lanes.EndFns(idx, r.rd, hot), lo, hi)
-    links = [W.link(t) for t in a.link]
-    pos, start = W.start(a.follow, r.lanes)
-    ch = W.walk(pos, links, (start["t0_us"], start["t1_us"]))
     hops, st = ch["hops"], ch["stop"]
     if st["reason"] == "none":
         st["candidates"] = _chainhint.hints(W, ch["at"], ch["seen"])
@@ -40,14 +35,15 @@ def run(a, c: common.Ctx, idx: dict) -> out.Result:
         wider = next((nm for nm, x, y in _seq.phase_segments(r.run, r.end_us or st["t_us"] + 1) if x <= st["t_us"] <= y), None)
         nxt.append(c.cmd("read", "links", _ref.join(r.run["id"], wider), "--follow", start["stable"],
                          *[x for t in a.link for x in ("--link", t)], why="放宽范围接着走（起点同一处）"))
-    nxt.append(c.cmd("page", "view", "set", ref, "--note", f"链：{a.follow}",
-                     why="在页面上看这几片里这几列（画的是全部连线，不只是这条链）"))
+    chain_key = _chainview.key(rtext.partition("@")[2] or None, start["stable"], a.link)    # 页面在原来那一段里重走一遍
+    nxt.append(c.cmd("page", "view", "set", ref, "--chain", chain_key, "--note", f"链：{a.follow}",
+                     why="在页面上看这条链：链上的跳亮出来（推出来的画虚线），别的线变淡"))
     total = hops[-1]["to"]["t_us"] - start["t0_us"] if hops else 0
     data = {"chain": {"start": start, "hops": hops, "stop": st, "total_us": total, "tally": _tally(hops),
                       "links": [{"text": L.text, "a": {"lane": W.alias(L.a.lane), "fn": L.a.node, "n": len(L.a.calls)},
                                  "b": {"lane": W.alias(L.b.lane), "fn": L.b.node, "n": len(L.b.calls)}, "used": L.text in used}
                                 for L in links],
-                      "segment": {"kind": "chain", "slices_us": ch["slices_us"], "lanes": ch["lanes"], "ref": ref}}}
+                      "segment": {"kind": "chain", "slices_us": ch["slices_us"], "lanes": ch["lanes"], "ref": ref, "view_chain": chain_key}}}
     return out.Result(data=data, text=_lines(ch, start, lo, ref), repo=c.repo, ref=c.ref_json(), next=nxt, warnings=warns,
                       algo=_chain.ALGO)
 
