@@ -43,6 +43,8 @@ export default async function (t) {
   ok(s.cols.includes('MainThread') && s.cols.includes('consumer') && s.cols.some(c => /^worker ×2$/.test(c)), '列：主线程、consumer、worker ×2 ' + JSON.stringify(s.cols));
   ok(s.procs >= 2, '按进程分组（fork 出来的进程各一组）' + s.procs);
   ok(s.hand >= 1 && s.spawn >= 1, '列之间有交接、谁起了谁的连线 ' + JSON.stringify(s));
+  const labs = await page.ev(`CS.lanes.links.filter(E => E.k.kind === 'handoff' && E.k.via === 'queue').map(E => E.labTxt)`);
+  ok(labs.some(x => / · put_job$/.test(x)), '交接线的标签上写放的那一头（put_job） ' + JSON.stringify(labs));
 
   // 鼠标停在一个在几列里都有的节点上：副本高亮、连上
   const r = await page.ev(`(() => {

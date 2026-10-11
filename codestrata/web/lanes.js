@@ -35,6 +35,13 @@ window.CS = window.CS || {};
   var KIND = { handoff: '谁把数据交给谁', spawn: '谁起了谁', join: '谁回收了谁', launch: '谁启动了哪个 GPU kernel' };
   // 连线两头的那一行代码是什么：放 / 取，起线程 / 线程入口，线程入口 / join 的那一行
   var ENDS = { handoff: ['放 / 发', '取 / 收'], spawn: ['起', '入口'], join: ['入口', '收'], launch: ['发起', 'kernel'] };
+  /* 交接线的标签上写放 / 发的那一头（用户 10-10 定）：函数名的最后一段；放在仓库外的代码里（那一头只认得出栈底的函数）不写；
+     这条线里几对两头的放的函数不止一个时写「等」。全名、那一行在悬停和详情里 */
+  function sender(k) {
+    var fs = [];
+    (k.pairs || []).forEach(function (p) { if (p.a && !p.xa && fs.indexOf(p.a) < 0) fs.push(p.a); });
+    return fs.length ? short(fs[0]).split('.').pop() + (fs.length > 1 ? ' 等' : '') : '';
+  }
   /* 微秒 → 相对这一段开头的秒数（这一段之前的是负的） */
   function when(us, w0) {
     if (us == null) return '?';
@@ -521,8 +528,9 @@ window.CS = window.CS || {};
         E.tip = el('title', {}); E.tip.textContent = E.tipBase;
         lk.appendChild(E.halo); lk.appendChild(E.p);
         E.R = R; E.labCls = 'ln-ltxt ' + k.kind + (k.chain ? ' chain' : '') + (k.inferred ? ' inferred' : '');
+        var who = k.kind === 'handoff' ? sender(k) : '';
         E.labTxt = CS.chain.label(k) + (k.via === 'link' ? '推断' : k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起')
-          + (k.n > 1 ? ' ×' + fmtN(k.n) : '')
+          + (k.n > 1 ? ' ×' + fmtN(k.n) : '') + (who ? ' · ' + who : '')
           + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
         self.wire(E);
         self.links.push(E);
