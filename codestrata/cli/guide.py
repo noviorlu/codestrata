@@ -19,7 +19,7 @@ def add_args(p) -> None:
 REF_GRAMMAR = """\
 REF = '页面地址' | RUN[@范围][/列,…]
   RUN   完整 run id 或 case 名（case 取最新一次录完的）。不收 run id 前缀
-  范围  阶段名 | t=起-止（从 run 起点算的微秒；也收 t=78.024s-80.492s）| 阶段+起s-止s（从阶段开头算，如 serving+0.614s-3.082s）
+  范围  阶段名 | t=起-止（从 run 起点算的微秒；也收 t=78.024s-80.492s；几片逗号隔开）| 阶段+起s-止s（从阶段开头算，如 serving+0.614s-3.082s）
   列    进程别名/线程（stage1/MainThread）；只写进程 = 这个进程的所有列；进程/*、*/线程、*/gpu* 也行；逗号隔开几个
   例    run_single_prompt@serving    20261001-170349-run_single_prompt@t=78024146-80491567/stage1
   页面地址就是用户浏览器地址栏里那串（http://127.0.0.1:端口/#run=…），原样当 REF 用"""
@@ -36,7 +36,7 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 ## 引号
 命令输出里的每条命令都已经加好引号，原样粘贴就能跑。自己写时：页面地址、带 | 或 # 的、带 * 的列一律加单引号。
 
-## 命令（effect：read 随便跑；write / delete / start / record 先问用户）
+## 命令（effect：read 随便跑；page 只在用户这句话本身就是要看 / 只看 / 标出 / 选中时直接推，回复里说怎么撤销；write / delete / start / record 先问用户）
 {cmds}
 
 ## 输出
@@ -57,20 +57,25 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 1. 「按功能切开」：codestrata segments RUN@serving（或 '<地址>'）→ 每段一个 REF（比如 talker 那段）→
    codestrata steps <那段的 REF>/<主循环那一列>（一轮轮）→ 加 --why 看时间花在哪
 2. 「第 k 块数据在哪一轮」：codestrata steps RUN@阶段/stage1/save_loop --with SharedMemoryConnector.put
-3. 谁把数据交给谁、两头是哪个函数哪一行：codestrata links RUN@阶段（--kind all 连起线程、等结束也列）
+3. 谁把数据交给谁、两头是哪个函数哪一行：codestrata links RUN@阶段（--kind all 连起线程、等结束也列）；
+   跟一块数据走完全程：links RUN@阶段 --follow 'FN#k'（停在没录到的一跳时读过代码再照候选加 --link，是推出来的；下一步的 view set --chain 在页面上只亮这条链）
 4. 「标出 model / 聚焦一个功能」：codestrata find tts RUN@阶段 --kind class（功能 → 代码由你判断；--under 目录 缩小）
-5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄）；函数：explain 限定名 RUN@阶段。
-   只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近
-6. 用户贴来页面地址，问「现在看的是什么」：status '<地址>' → lanes '<地址>' → path '<地址>'（每列 60 行）
+5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄；组里两头有几种时加 #k 挑一种）；
+   函数 / 类：explain 限定名 RUN@阶段。只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近
+6. 用户问「现在看的是什么」：view get 或 status '<地址>'；「这根线是什么」：view wait（等用户点一下）→ explain --selected；
+   「页面上第 24 号是什么」：explain 24 '<地址>'（地址要开着时间顺序）
+6b. 给用户看：view set RUN@阶段 --focus 东西 --note '一句话'（页面先出「agent 接手」的过渡再换；退出码 6 是用户在操作、等他松手，view wait --for applied）；
+   没有开着的页面（no_live_page / old_serve）时用 view url … --page 端口 拼地址交给用户（地址那一行原样给，不带引号）
 7. 一列在调什么：codestrata path RUN@阶段/stage1/MainThread --limit 30（--time 先列最花时间的；--unseen 只列看不出的调用）
 8. 列出所有 run：codestrata runs ls -C 仓库；等还在录的：codestrata runs wait RUN
 
 ## 要知道的坑
 - 别为了看数据去重录（trace 是 record：可能占 GPU、跑几分钟）。数据不够先问用户。
 - `--phase` 切阶段时 codestrata 会停 0.1 s，阶段开头那 0.1 s 不是被录的程序在干活。
-- CUDA graph / torch.compile 替掉的模型 Python 代码不进录制；共享内存、deque、SimpleQueue、线程池 submit 的交接没录。
-- 轮询的列调用多不代表在干活。切段里「空转」= 这一轮只做每轮都做的事、也没交出数据；段 = 一个进程主循环在干活的那一段。
+- CUDA graph / torch.compile 替掉的模型 Python 代码不进录制；deque、SimpleQueue、线程池 submit 的交接没录（共享内存 10-10 之后录的 run 才有）。
+- 轮询的列调用多不代表在干活。切段里「空转」= 这一轮只做便宜的、每轮都做的事、也没交出数据；段 = 一个进程一块干活的时间（先后两次请求就是两段）。
   段的名字（thinker / talker）codestrata 不给：看「这段里只有它跑」的文件自己叫，并说明依据。
+- 切段认不准的形状：每轮都交接一次的循环（心跳）、同名的几条线程各有一个循环、交替得很密的两个进程（调小 --gap）。拿不准时用 steps --list 一轮轮核对。
 - 2026-10-01 之前录的 run 没录交接：segments / steps 拒绝（no_handoffs），lanes / path 还能看。
 - 录到的和推出来的要分开说；codestrata 不生成解释，解释由你读代码后给。
 """

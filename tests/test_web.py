@@ -383,7 +383,7 @@ def test_lane_pack():
 
 def test_timebar_math():
     """时间轴：拖到离阶段 / 整个 run 不到 tol 就吸过去（有几段的阶段、不能选的阶段不吸）；放大到一段时前后留 25%、
-    至少 1 ms 宽、不出 run；放大后还占六成以上就看整个 run；时间段的标签"""
+    至少 1 ms 宽、不出 run；放大后还占六成以上就看整个 run；时间段的标签；几片的时间段"""
     segs = [["start", 0, 1000], ["serving", 1000, 5000], ["shutdown", 5000, 6000], ["start", 6000, 100000]]
     expr = "{" + ",".join([
         "run: CS.timebar.snap(S, 3, 99998, 100000, 5)",
@@ -399,6 +399,7 @@ def test_timebar_math():
         "labelShort: CS.timebar.label('t=1000-1500')",
         "labelPhase: CS.timebar.label('serving')",
         "parse: [CS.timebar.parse('t=5-17'), CS.timebar.parse('serving'), CS.timebar.parse('t=5')]",
+        "multi: [CS.timebar.parse('t=5-17,20-30'), CS.timebar.slices('t=5-17,20-30'), CS.timebar.slices('t=5-17,'), CS.timebar.label('t=1000-1500,3000-4000')]",
     ]) + "}"
     r = js(["timebar.js"], f"(() => {{ const S = {json.dumps(segs)}; return {expr}; }})()")
     if r is None:
@@ -412,6 +413,7 @@ def test_timebar_math():
     assert r["fitBig"] == [0, 100000], r["fitBig"]
     assert r["label"] == "103.72 s – 104.72 s" and r["labelShort"] == "0.001000 s – 0.001500 s", r
     assert r["labelPhase"] == "serving" and r["parse"] == [[5, 17], None, None], r
+    assert r["multi"] == [[5, 30], [[5, 17], [20, 30]], None, "2 片：0.00100 s – 0.00400 s"], r["multi"]     # 几片：起止是第一片开头到最后一片结尾
 
 
 if __name__ == "__main__":

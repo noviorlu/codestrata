@@ -43,6 +43,8 @@ export default async function (t) {
   ok(s.cols.includes('MainThread') && s.cols.includes('consumer') && s.cols.some(c => /^worker ×2$/.test(c)), '列：主线程、consumer、worker ×2 ' + JSON.stringify(s.cols));
   ok(s.procs >= 2, '按进程分组（fork 出来的进程各一组）' + s.procs);
   ok(s.hand >= 1 && s.spawn >= 1, '列之间有交接、谁起了谁的连线 ' + JSON.stringify(s));
+  const labs = await page.ev(`CS.lanes.links.filter(E => E.k.kind === 'handoff' && E.k.via === 'queue').map(E => E.labTxt)`);
+  ok(labs.some(x => / · put_job$/.test(x)), '交接线的标签上写放的那一头（put_job） ' + JSON.stringify(labs));
 
   // 鼠标停在一个在几列里都有的节点上：副本高亮、连上
   const r = await page.ev(`(() => {
@@ -136,7 +138,9 @@ export default async function (t) {
   // 分列时帮助讲分列、工具栏有连线的图例
   ok(await page.ev(`(() => { const v = el => !!el && getComputedStyle(el).display !== 'none';
     return v(document.querySelector('#lede .lanesonly')) && !v(document.querySelector('#lede .graphonly')) && v(document.getElementById('lnlegend'))
-      && document.getElementById('lnlegend').querySelectorAll('line.ln-link').length === 4; })()`), '分列时帮助讲分列、工具栏有四种连线的图例');
+      && document.getElementById('lnlegend').querySelectorAll('.k:not(.chainonly) line.ln-link').length === 4
+      && [...document.querySelectorAll('#lnlegend .chainonly')].every(x => !v(x)); })()`),
+     '分列时帮助讲分列、工具栏有四种连线的图例（链的两项只在高亮链时出现）');
   await page.key('Escape', 'Escape', 27);
 
   // 排线：每条线的路径都不一样；每一条线沿路径取点，离鼠标最近的就是它（点下去选中它）的地方占大多数，没有一条点不到
@@ -262,7 +266,7 @@ export default async function (t) {
                       && [...document.querySelectorAll('#det .lk-code')].some(c => c.textContent === 't.join()')
                       && [...document.querySelectorAll('#det .lk-code')].some(c => c.textContent === 'os.waitpid(pid, 0)')`, 5000),
      '点「■ 收」：这里收的几条都高亮，详情里是 join / waitpid 的那几行');
-  await page.ev(`[...document.querySelectorAll('#det [data-key]')].find(b => b.textContent === 'worker').click()`);
+  await page.ev(`[...document.querySelectorAll('#det [data-key]')].find(b => b.textContent.endsWith('/worker')).click()`);
   ok(await page.wait(`/^l:/.test(CS.lanes.sel || '') && document.querySelectorAll('#g .ln-link.sel').length === 1
                       && /谁回收了谁/.test(document.getElementById('det').textContent)
                       && [...document.querySelectorAll('#g .ln-code text')].some(x => /^收 · s_threads:\\d+ {2}t\\.join\\(\\)$/.test(x.textContent))`, 5000),
@@ -281,10 +285,10 @@ export default async function (t) {
   const n0 = await page.ev(`document.querySelectorAll('#g .ln-col:not(.fold)').length`);
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
-  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 1 && document.querySelectorAll('#g .ln-col:not(.fold)').length < ${n0}`, 3000), '收起一个进程');
+  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 1 && document.querySelectorAll('#g .ln-col:not(.fold)').length < ${n0}`, 3000), '收起一个进程');
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
-  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0`, 3000), '再展开');
+  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 0`, 3000), '再展开');
   // 选着主线程里的 truth.py，收起一个子进程：还选着它、详情还讲它；收起主线程所在的进程：取消选中、详情清掉
   const mainLane = await page.ev(`CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py' && /:MainThread$/.test(x.lane)).lane`);
   const kidPid = await page.ev(`CS.lanes.L.lanes.find(l => l.pid !== CS.lanes.L.lanes[0].pid && l.thread === 'MainThread').pid`);
@@ -346,7 +350,7 @@ export default async function (t) {
   const req = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     return { last: E.k.last, end: CS.app.data.hotMeta.end_us }; })())`));
   const win = (req.last + 1) + '-' + req.end;
-  await page.goto(base + '#run=' + fx.a + '@t=' + win);
+  await page.goto(base + '#run=' + fx.a + '@t=' + win + '&lanes=*');     // req 是线程池，默认收着：看全部列
   ok(await waitRun(page, fx.a + '@t=' + win), '时间段从起 req-3 之后 1 µs 开始 ' + win);
   const rq = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'req');
@@ -364,8 +368,8 @@ export default async function (t) {
     const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'consumer');
     return { life: [...col.querySelectorAll('.ln-life')].map(x => x.textContent), tip: col.querySelector('title').textContent,
              main: CS.lanes.L.lanes.some(l => l.thread === 'MainThread' && l.pid === CS.lanes.L.lanes.find(x => x.thread === 'consumer').pid) }; })())`));
-  ok(/^▶ 起 −[\d.]+ s（段前）$/.test(cl.life[0]) && /^■ 收 \+[\d.]+ s（段后）$/.test(cl.life[1]) && /由 MainThread/.test(cl.tip)
-     && (cl.main || /MainThread（这一段里没跑）/.test(cl.tip)), '起在段前、收在段后，各自标出来 ' + JSON.stringify(cl));
+  ok(/^▶ 起 −[\d.]+ s（段前）$/.test(cl.life[0]) && /^■ 收 \+[\d.]+ s（段后）$/.test(cl.life[1]) && /由 \S*MainThread/.test(cl.tip)
+     && (cl.main || /\S*MainThread（这一段里没跑）/.test(cl.tip)), '起在段前、收在段后，各自标出来 ' + JSON.stringify(cl));
 
   // 一段里一个调用都没有（run 结束很久之后的 1 µs；时间从 run 开始算）：不留一张白图，说清楚为什么空、怎么办；「叠加 run …」清掉
   const empty = '100000000000-100000000001';

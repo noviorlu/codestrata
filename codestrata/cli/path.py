@@ -25,7 +25,8 @@ def add_args(p) -> None:
     p.add_argument("ref", nargs="+", metavar="REF",
                    help="RUN[@范围][/列,…] 或页面地址；老写法 path <repo> RUN 也认（第一个是仓库）")
     p.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
-    p.add_argument("--limit", type=int, default=None, help=f"每列最多几行（给了列或 --json 时默认 {LIMIT}；不算 --depth 藏掉的）")
+    p.add_argument("--limit", type=int, default=None,
+                   help=f"每列最多几行（给了列或 --json 时默认 {LIMIT}；不算 --depth 藏掉的）；和 --unseen 一起时是列几处（默认 40）")
     p.add_argument("--time", action="store_true", help="先列出自己的时间（减去它调的仓库函数）最多的 5 处")
     p.add_argument("--unseen", action="store_true", help="只列代码里看不出会调到它的调用（按次数排）")
 
@@ -47,7 +48,7 @@ def run(a) -> out.Result:
     lane_id = _lanes.lane_id
 
     try:
-        p = _path.request_path(idx, r.rd, r.run, r.phase, hot, max_rows=None)
+        p = _path.request_path(idx, r.rd, r.run, r.phase, hot, max_rows=None, proc_order=common.proc_order(c, common.labeler(idx)))
     except LookupError as e:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
@@ -57,7 +58,8 @@ def run(a) -> out.Result:
     if r.lanes:
         want = set(_laneid.select(r.lanes, aliases))
         keep = lambda pid, tname: lane_id(pid, tname) in want    # noqa: E731
-    cap = a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None)
+    # --unseen 先筛「看不出」的再截（截了树再筛，总数会跟着 --limit 变）；--limit 在这里是列几处
+    cap = None if a.unseen else a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None)
     total_rows = {id(th): len([x for x in th["rows"] if a.depth is None or x["d"] <= a.depth])
                   for pr in p["procs"] for th in pr["threads"]}
     _path.trim(p, None, keep, max_depth=a.depth, per_thread=cap)
@@ -76,15 +78,20 @@ def run(a) -> out.Result:
         for th in ths:                               # 每节末尾写截了几行（format_text 打）
             th["cut"] = total_rows[id(th)] - len(th["rows"])
     if a.unseen:
-        text, p = _unseen(p, a.limit or 40)
-        more = None
+        limit = a.limit or 40
+        text, p = _unseen(p, limit)
+        if p["n_unseen"] > limit:
+            more = {"shown": limit, "total": p["n_unseen"],
+                    "how": out.command("path", r.full, "--unseen", *(["--depth", str(a.depth)] if a.depth is not None else []),
+                                       "--limit", str(p["n_unseen"]), repo=c.flag)}
     else:
         text = _path.format_text(p, a.depth, lane_of=lane_of).split("\n")
     if a.time:
         top = _self_time_top(r, {th["lane"] for th in ths}, aliases, common.labeler(idx))
         p["self_time"] = top
-        lo, hi = r.slices[0][0], r.slices[-1][1]
-        text = [f"自己的时间最多的 {len(top)} 处（时长减去它调的仓库函数；这段 {out.dur(hi - lo)}）："] + [
+        span_us = sum(y - x for x, y in r.slices)
+        text = [f"自己的时间最多的 {len(top)} 处（时长减去它调的仓库函数；这段 {out.dur(span_us)}"
+                + (f"，{len(r.slices)} 片加起来" if len(r.slices) > 1 else "") + "）："] + [
             f"  {out.dur(x['us']):>10}  {x['lane']}  {common.short(x['fn'])}" for x in top] + [""] + text
     nxt = []
     if not r.lanes and len(p.get("procs") or []) > 1:
@@ -94,13 +101,12 @@ def run(a) -> out.Result:
 
 
 def _self_time_top(r, lanes: set[str], aliases: dict[str, str], label, n: int = 5) -> list[dict]:
-    """这几列里「自己的时间」最多的 n 处：[{lane, fn, us}]（每条线程各算，同一列合起来）"""
+    """这几列里「自己的时间」最多的 n 处：[{lane, fn, us}]（每条线程各算、每一片各算，同一列合起来）"""
     from collections import Counter
     from .. import steps as _steps
     ix = _seq.span_index(r.rd)
     keys = ix["keys"]
     want = {lid for lid, al in aliases.items() if al in lanes}
-    lo, hi = r.slices[0][0], r.slices[-1][1]
     tot: Counter = Counter()
     by_pid: dict[int, set] = {}
     for pid_s, ts in ix["threads"].items():
@@ -110,11 +116,12 @@ def _self_time_top(r, lanes: set[str], aliases: dict[str, str], label, n: int = 
     for pid, tids in by_pid.items():
         lr = _steps.lane_rows(_seq.pid_rows(r.rd, pid), tids)
         for tid in tids:
-            own, _, _ = _steps.self_times(lr, tid, lo, hi)
             th = ix["threads"][str(pid)][str(tid)]
             al = aliases.get(_lanes.lane_id(pid, th))
-            for b, us in own.items():
-                tot[(al, keys[b])] += us
+            for lo, hi in r.slices:              # 几片的 REF（还有几段的阶段）：一片一片算再加起来，和树一样只算片里的
+                own, _, _ = _steps.self_times(lr, tid, lo, hi)
+                for b, us in own.items():
+                    tot[(al, keys[b])] += us
     return [{"lane": al, "key": k, "fn": label(k), "us": us} for (al, k), us in tot.most_common(n)]
 
 

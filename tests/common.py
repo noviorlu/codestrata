@@ -40,6 +40,10 @@ def tmpdir(prefix: str) -> Path:
     return t
 
 
+# 测试不碰用户的配置目录（serve 的登记、主菜单的项目清单）：这个进程和它起的子进程都用一个临时的；要别的配置目录的用例自己传 env
+os.environ["XDG_CONFIG_HOME"] = str(tmpdir("cs-cfg-"))
+
+
 def fresh() -> Path:
     """拷一份假仓库并扫描"""
     d = tmpdir("cs-runs-") / "repo"

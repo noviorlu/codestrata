@@ -36,9 +36,18 @@ window.CS = window.CS || {};
     path: function () { return j('api/path?run=' + encodeURIComponent(this.run)); },
     // 按进程 · 线程分列：当前 run（选的阶段）、当前切面上每列的节点和边、列之间的连线（lanes.py）
     /* open：共用的切面；cuts：各列单独的切面 [{lanes, open}]（lanecut.js） */
-    lanes: function (open, cuts) {
-      return j('api/lanes?run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : '')
-               + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : ''));
+    /* view：视图里只影响编号的那几个键（fold=…&hide=…&lanes=…，lanes.js 的 viewQuery） */
+    lanes: function (open, cuts, view) {
+      return j('api/lanes?' + this._laneQ(open, cuts, view));
+    },
+    // 时间顺序的编号（laneorder.py）：收起进程、切开关之后只重取它，不重取整张图
+    laneOrder: function (open, cuts, view) {
+      return j('api/laneorder?' + this._laneQ(open, cuts, view)).then(function (r) { return r.order; });
+    },
+    _laneQ: function (open, cuts, view) {
+      return 'run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : '')
+        + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : '') + (view ? '&' + view : '')
+        + (CS.chain ? CS.chain.query() : '');                // 高亮的链（lanechain.js）：后端多连推出来的那一跳
     },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
     // 叠着 run 时带上它：代码窗口里标出「代码里看不出、这次运行调到了谁」的那几行
@@ -52,6 +61,10 @@ window.CS = window.CS || {};
     /* 分列里一列的叠加（只算这一列里的调用）：节点详情里这一份的次数、文件树、kernel 表 */
     laneHot: function (lane) {
       return j('api/lanehot?run=' + encodeURIComponent(this.run) + '&lane=' + encodeURIComponent(lane));
+    },
+    /* 标记的东西这段时间里在哪几列跑过（页面的标记只描这几列） */
+    markLanes: function (items) {
+      return j('api/marklanes?run=' + encodeURIComponent(this.run) + '&mark=' + encodeURIComponent(items.join(',')));
     },
     refs: function (t) { return j('api/refs?t=' + encodeURIComponent(t) + (this.run ? '&run=' + encodeURIComponent(this.run) : '')); },
     searchIndex: function () { return j('api/search-index'); },

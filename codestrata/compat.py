@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 
 
@@ -52,3 +53,21 @@ def file_lock(f):
             msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
         return
     yield
+
+
+def pid_alive(pid) -> bool:
+    """这个进程还在不在。Unix 用 kill(pid, 0)；别的系统认不出（Windows 上 os.kill 会真的结束进程），当它活着——
+    调用方再问一次那个端口核对"""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True

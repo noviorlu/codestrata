@@ -26,7 +26,7 @@ def label(k: str) -> str:
 
 
 def stage(b: Builder, pid: int, name: str, busy: range, long: int | None = None, start: int = 0):
-    """一个 stage 进程的主线程：30 轮，每 1000 µs 一轮。busy 里的轮多调一次 extra、交出一次数据（给持有请求的进程）"""
+    """一个 stage 进程的主线程：30 轮，每 1000 µs 一轮。busy 里的轮多调一次 extra（多花 300 µs）、交出一次数据（给持有请求的进程）"""
     t = b.thread(pid, 1, "MainThread", start=start)
     b.procs[pid]["title"] = f"VLLM::StageProc_{name}_replica0_DP0"
     outs = []
@@ -34,13 +34,13 @@ def stage(b: Builder, pid: int, name: str, busy: range, long: int | None = None,
         t0 = 1000 + k * 1000 + (5000 if long is not None and k > long else 0)     # 超长的那一轮：到下一轮隔了 6 ms
         t.call(t0, 2, 1)
         t.call(t0 + 5, 2, 1)
-        h = t.call(t0 + 10, 50, 0)
+        h = t.call(t0 + 10, 350 if k in busy else 50, 0)
         e = t.call(t0 + 20, 20, 2, parent=h)
         t.call(t0 + 25, 10, 3, parent=e)
         if k in busy:
-            x = t.call(t0 + 60, 5, 8, parent=h)
-            outs.append((pid, 1, x, t0 + 62))
-        t.call(t0 + 100, 5, 4)
+            x = t.call(t0 + 50, 300, 8, parent=h)
+            outs.append((pid, 1, x, t0 + 340))
+        t.call(t0 + 400, 5, 4)
     return outs
 
 
@@ -52,7 +52,7 @@ def scenario(d, old: bool = False):
         b.handoff("zmq", o, (REQ, 1, req, o[3] + 1))
     b.handoff("zmq", (REQ, 1, req, 11_040), (A, 1, -1, 11_050))          # 交给 stage0（第 11 轮里）：它开始前有交接，没有缺口
     stage(b, B, "stage1", busy=range(24, 29))                             # stage1 开始前没录到交给它的：缺口
-                                                                          # （多调的只在 5 / 30 轮里：不到两成，不算常规）
+                                                                          # （多调 extra 的轮在仓库函数里多花了时间：不是便宜的那类，不算常规）
     p = b.thread(A, 2, "recv")                                            # 只在轮询
     for k in range(40):
         p.call(500 + k * 900, 3, 5)
@@ -65,6 +65,22 @@ def scenario(d, old: bool = False):
     b.truncated = [B]
     run = {"rec": {"phase_at": [{"name": "serving", "file": "app/omni.py", "qualname": "Omni.generate", "line": 5}]}}
     return b.write(d, phases=[["start", 0], ["serving", 400]], old=old), run
+
+
+def test_multi_slice_calls():
+    """几片的时间段（t=a-b,c-d）：每对调用的次数正好是各片加起来（合成一行的连续调用按片摊），时间段的计数（window_counts）也是"""
+    import json as _json
+    from codestrata import seq
+    rd, _ = scenario(tmpdir("cs-seg-"))
+    run = _json.loads((rd / "run.json").read_text())
+    one, two, both = (seq.phase_calls(rd, run, w) for w in ("t=1000-9000", "t=20000-31000", "t=1000-9000,20000-31000"))
+    assert seq.window_segments(run, rd, "t=20000-31000,1000-9000")[0] == [(1000, 9000), (20000, 31000)]
+    keys = set(one["calls"]) | set(two["calls"])
+    assert keys == set(both["calls"]) and all(
+        both["calls"][k][2] == (one["calls"].get(k) or [0, 0, 0])[2] + (two["calls"].get(k) or [0, 0, 0])[2] for k in keys), keys
+    assert both["window"] == [1000, 31000] and both["span_us"] == 8000 + 11000, (both["window"], both["span_us"])
+    c1, c2, c12 = (seq.window_counts(rd, run, w)["funcs"] for w in ("t=1000-9000", "t=20000-31000", "t=1000-9000,20000-31000"))
+    assert c12 == {k: c1.get(k, 0) + c2.get(k, 0) for k in set(c1) | set(c2)}, (c12, c1, c2)
 
 
 def test_rounds_and_kinds():
@@ -86,7 +102,7 @@ def test_rounds_and_kinds():
 
 
 def test_stage_segments():
-    """持有请求的进程不出段；每个进程取主循环最大的忙段；开始前没录到交给它的数据 → 缺口；截断的进程标出来；
+    """持有请求的进程不出段；每块忙段一段；开始前没录到交给它的数据 → 缺口；截断的进程标出来；
     交接按（通道, 起列, 终列）合成组；只在轮询的是背景"""
     rd, run = scenario(tmpdir("cs-seg-"))
     S = segments.analyse(rd, 0, 40_000)
@@ -184,6 +200,74 @@ def test_commands_on_toy():
     assert any(x["kind"] == "spawn" for x in j["data"]["links"]), [x["id"] for x in j["data"]["links"]]
 
 
+def test_follow_on_toy():
+    """links --follow：put_job 里放进队列（录到的，就在这次调用里）→ 另一条线程取到；段的 REF 带着经过的列；--link 不配 --follow 报 usage；
+    --link 两边次数不等报 link_mismatch（退出码 4）"""
+    repo, rid = truth()
+    j = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))
+    ch = j["data"]["chain"]
+    assert j["ok"] and j["algo"] == "chain/2" and ch["start"]["fn"].endswith("#put_job") and "@t=" in ch["start"]["stable"], j
+    h = ch["hops"][0]
+    assert (h["kind"], h["via"], h["stay"]) == ("recorded", "queue", "ancestor") and h["from"]["fn"].endswith("#put_job"), h
+    seg = ch["segment"]
+    assert seg["kind"] == "chain" and seg["ref"].startswith(f"{rid}@t=") and seg["ref"].endswith("/" + ",".join(seg["lanes"])), seg
+    r = subprocess.run([PY, "-m", "codestrata", "links", "-C", str(repo), rid, "--link", "a/b:f => c/d:g", "--json"],
+                       capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 2 and one_json(r)["error"]["code"] == "usage", r.stdout
+    a, b = h["from"]["lane"], h["to"]["lane"]
+    r = subprocess.run([PY, "-m", "codestrata", "links", "-C", str(repo), rid, "--follow", "put_job#1", "--link",
+                        f"{a}:put_job => {b}:{h['to']['fn'].partition('#')[2]}", "--json"], capture_output=True, text=True, cwd=HERE.parent)
+    j = one_json(r)
+    assert r.returncode == 4 and j["error"]["code"] == "link_mismatch" and "次数不等" in j["error"]["msg"], j    # put_job 调了几次，取只有一次
+
+
+def test_chain_for_page():
+    """页面高亮的链（chainview.for_page → lanes.build 的 chain）：装着链上那次交接的连线带 chain [0]；候选里拼好的 --link 那一跳多连一条
+    via link、inferred 的线，时间顺序不给它编号；view set --chain 原样写进地址；写错的链给 error、分列照画"""
+    from codestrata import chainview, laneorder, lanes as _lanes, runs as _runs
+    from codestrata.ui import load as _load
+    repo, rid = truth()
+    fol = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))["data"]["chain"]
+    cand = fol["stop"]["candidates"]["link"]
+    key = chainview.key(None, fol["start"]["stable"], [cand])
+    idx = _load.load_index(repo)
+    run, rd, _ = _runs.resolve(repo, rid)
+    hot, _ = _runs.load_run(repo, idx, run, rd, None)
+    info, marks = chainview.for_page(idx, rd, run, hot, key)
+    assert info["error"] is None and [h["kind"] for h in info["hops"]] == ["recorded", "link"], info
+    L = _lanes.build(idx, rd, run, None, hot, None, chain=marks)
+    rec = [k for k in L["links"] if k.get("chain") == [0]]
+    inf = [k for k in L["links"] if k.get("inferred")]
+    assert len(rec) == 1 and rec[0]["via"] == "queue", [(k["via"], k.get("chain")) for k in L["links"] if k.get("chain")]
+    assert len(inf) == 1 and inf[0]["via"] == "link" and inf[0]["chain"] == [1], inf
+    aliases = _lanes.aliases_of(rd, L)
+    assert not any("|link|" in x for x in laneorder.rank(L, aliases)["ids"]), "推出来的那条不编号"
+    bad, none = chainview.for_page(idx, rd, run, hot, "~nosuch#1")
+    assert bad["error"] and none is None, bad
+    j = one_json(cs("view", "url", "-C", repo, rid, "--chain", key, "--json"))
+    assert "chain=" in j["data"]["url"] and j["ok"], j
+    r = subprocess.run([PY, "-m", "codestrata", "view", "url", "-C", str(repo), rid, "--chain", "~nosuch#1", "--json"],
+                       capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 3 and one_json(r)["error"]["code"] == "item_not_found" and "走不出来" in one_json(r)["error"]["msg"], r.stdout
+
+
+def test_slices_on_toy():
+    """几片的 REF（t=a-b,c-d）：segments 按整段算、给 spanned 警告（以前直接拒绝）；links 给的下一步切段用整段的 REF；path --time 的「这段」
+    是各片加起来；links --follow 也按整段走（起点按整段数、给 spanned）"""
+    repo, rid = truth()
+    ph = one_json(cs("status", "-C", repo, rid, "--json"))["data"]["phases"]
+    end = max(x["t1_us"] for x in ph)
+    two, whole = f"{rid}@t=0-{end // 3},{2 * end // 3}-{end}", f"{rid}@t=0-{end}"
+    j = one_json(cs("segments", "-C", repo, two, "--json"))
+    assert j["ok"] and any(w["code"] == "spanned" for w in j["warnings"]), j
+    j = one_json(cs("links", "-C", repo, two, "--json"))
+    assert j["ok"] and any(n["cmd"].split()[-1] == whole for n in j["next"]), j["next"]
+    r = cs("path", "-C", repo, two, "--time")
+    assert "2 片加起来" in r.stdout, r.stdout[:400]
+    j = one_json(cs("links", "-C", repo, two, "--follow", "put_job#1", "--json"))
+    assert j["ok"] and any(w["code"] == "spanned" for w in j["warnings"]) and j["data"]["chain"]["hops"], j
+
+
 def test_old_run_refused_by_commands():
     """老 run：segments / steps 报 no_handoffs（退出码 4），下一步给 lanes 和 path（还能看原始的调用）"""
     repo, rid = truth()
@@ -204,7 +288,7 @@ def test_finder_match():
                        "a/x.py#Foo.run": {"n": "Foo.run", "k": "method", "f": "a/x.py", "l": 3},
                        "a/y.py#run_all": {"n": "run_all", "k": "func", "f": "a/y.py", "l": 1},
                        "b/z.py#rerun": {"n": "rerun", "k": "func", "f": "b/z.py", "l": 1}},
-           "files": {"a/x.py": "a", "a/y.py": "a", "b/z.py": "b"}, "dirs": {"a": {}, "b": {}}}
+           "files": {"a/x.py": "a", "a/y.py": "a", "b/z.py": "b"}, "dirs": {"a/": {}, "b/": {}}}     # 索引里的目录键带结尾的 /
     names = [x["name"] for x in finder.match(idx, "run", kind="fn")]
     assert names == ["Foo.run", "run_all", "rerun"], names               # 完全一样（短名）> 前缀 > 子串
     assert [x["key"] for x in finder.match(idx, "FOO", kind="class")] == ["a/x.py#Foo"]
@@ -212,6 +296,7 @@ def test_finder_match():
     assert [x["name"] for x in finder.match(idx, "run", kind="fn", under="b")] == ["rerun"]
     assert [x["key"] for x in finder.match(idx, "x.py", kind="file")] == ["a/x.py"]
     assert [x["key"] for x in finder.match(idx, "b", kind="dir")] == ["b/"]
+    assert [x["key"] for x in finder.match(idx, "a", kind="dir", under="a")] == ["a/"]
     per_node = {"a/x.py#Foo.run": {"L1": [3, 10, 20]}, "a/y.py#run_all": {"L1": [1, 5, 5], "L2": [2, 7, 9]}}
     assert finder.hits_of({"kind": "class", "key": "a/x.py#Foo"}, per_node) == {"L1": [3, 10, 20]}
     assert finder.hits_of({"kind": "dir", "key": "a/"}, per_node) == {"L1": [4, 5, 20], "L2": [2, 7, 9]}
@@ -240,6 +325,120 @@ def test_find_explain_path_on_toy():
     assert j["data"]["self_time"] and j["data"]["self_time"][0]["us"] >= j["data"]["self_time"][-1]["us"], j["data"]["self_time"]
     j = one_json(cs("path", "-C", repo, f"{rid}@work", "--unseen", "--json"))
     assert "unseen" in j["data"] and all(x["n"] >= 0 for x in j["data"]["unseen"]), j["data"].keys()
+
+
+def test_laneorder():
+    """时间顺序的编号按视图算：收起的进程、没选的列里的边不编；两头落在同一个收起窄列里的交接不编；
+    「其中代码里看不出」关了不编全是看不出的边；同一时刻的按稳定写法排（和列表下标无关）"""
+    from codestrata import laneorder
+    L = {"window": [0, 100],
+         "lanes": [{"id": "1:Main", "pid": 1, "nodes": {"a": {}, "b": {}}, "edges": [
+                       {"a": "a", "b": "b", "n": 2, "only": 0, "first": 10, "last": 20},
+                       {"a": "b", "b": "a", "n": 1, "only": 1, "first": 10, "last": 10}]},
+                   {"id": "1:w", "pid": 1, "nodes": {"c": {}}, "edges": []},
+                   {"id": "2:Main", "pid": 2, "nodes": {"a": {}, "d": {}}, "edges": [
+                       {"a": "a", "b": "d", "n": 1, "only": 0, "first": 5, "last": 5},
+                       {"a": "a", "b": "x", "n": 1, "only": 0, "first": 1, "last": 1}]}],      # x 不在这一列：不画、不编
+         "links": [{"kind": "handoff", "via": "zmq", "from": {"lane": "1:Main", "node": "a"}, "to": {"lane": "2:Main", "node": "a"},
+                    "first": 30, "last": 30},
+                   {"kind": "handoff", "via": "queue", "from": {"lane": "1:Main", "node": "a"}, "to": {"lane": "1:w", "node": "c"},
+                    "first": 40, "last": 40},
+                   {"kind": "spawn", "via": "thread", "from": {"lane": "1:Main"}, "to": {"lane": "1:w"}, "first": 2, "last": 2},
+                   {"kind": "handoff", "via": "zmq", "from": {"lane": "2:Main"}, "to": {"lane": "1:Main"}, "first": 500, "last": 500}]}
+    al = {"1:Main": "p1/Main", "1:w": "p1/w", "2:Main": "p2/Main"}
+    o = laneorder.rank(L, al)
+    assert [o["keys"][k] for k in ("e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1")] == [0, 1, 2, 3, 4], o
+    assert o["n"] == 5 and o["ids"][1] == "e:p1/Main|b|a", o["ids"]          # 同一时刻 10：先比最后一次，再比稳定写法
+    o = laneorder.rank(L, al, hide={"dyn"})
+    assert "e:1:Main|b|a" not in o["keys"] and o["n"] == 4
+    o = laneorder.rank(L, al, fold={1})
+    assert set(o["keys"]) == {"e:2:Main|a|d", "l:0"}, o["keys"]               # 进程 1 收起：它的边、它里面两头的交接都不编
+    o = laneorder.rank(L, al, lanes={"1:Main", "2:Main"})
+    assert set(o["keys"]) == {"e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1"}, o["keys"]   # 1:w 收进窄列，交接照接
+
+
+def test_view_url_and_numbered_explain():
+    """view url 拼出的地址解析回来是同一个视图（--focus 展开到它的文件、只看它跑过的列、标出、选中）；
+    explain N '<地址>' 按地址里的视图算编号：没开时间顺序报 need_view，超出范围报 item_not_found，第 1 号讲得出来"""
+    from codestrata import ref as R, viewspec
+    repo, rid = truth()
+    j = one_json(cs("view", "url", f"{rid}@work", "-C", repo, "--focus", "slow", "--order", "on", "--page", "1", "--json"))
+    url = j["data"]["url"]
+    assert url.startswith("http://127.0.0.1:1/#run=") and "@work" in url and "%3D" not in url, url
+    p = R.parse(url)
+    v = viewspec.from_keys(p.run + "@" + p.rest, p.lanes, p.view)
+    assert v.order and v.lanes and v.mark == ["fakesvc/callee.py#slow"] and v.sel.startswith("n:"), v    # toy 小，默认切面已经看得到它：不用展开
+    assert viewspec.fragment(v) == url.split("#", 1)[1], (viewspec.fragment(v), url)
+    base = f"http://127.0.0.1:1/#run={rid}@work"
+    r = subprocess.run([PY, "-m", "codestrata", "explain", "1", base, "-C", str(repo), "--json"], capture_output=True, text=True, cwd=HERE.parent)
+    assert one_json(r)["error"]["code"] == "need_view", r.stdout
+    r = subprocess.run([PY, "-m", "codestrata", "explain", "9999", base + "&order=1", "-C", str(repo), "--json"], capture_output=True, text=True,
+                       cwd=HERE.parent)
+    assert one_json(r)["error"]["code"] == "item_not_found", r.stdout
+    j = one_json(cs("explain", "1", base + "&order=1", "-C", repo, "--json"))
+    assert j["ok"] and j["data"]["number"] == 1 and j["data"]["view"]["n"] >= 1, j["data"].get("view")
+    # 编号落在一条交接线上时，它给的稳定写法（组 + 两头的节点）原样喂回 explain：讲的是同一条、同样的次数和 #k
+    from codestrata import laneorder, lanes as _lanes, runs as _runs
+    from codestrata.ui import load
+    idx = load.load_index(repo)
+    rd = repo / ".codestrata" / "runs" / rid
+    run = json.loads((rd / "run.json").read_text())
+    hot, _ = _runs.load_run(repo, idx, run, rd, "work")
+    L = _lanes.build(idx, rd, run, "work", hot, None)
+    order = laneorder.rank(L, _lanes.run_aliases(rd))
+    n = next(i + 1 for i, x in enumerate(order["ids"]) if x.startswith("l:handoff|"))
+    a = one_json(cs("explain", str(n), base + "&order=1", "-C", repo, "--json"))["data"]
+    assert a["item"] == order["ids"][n - 1] and a["item"].count("|") == 5, a["item"]
+    b = one_json(cs("explain", a["item"], f"{rid}@work", "-C", repo, "--json"))["data"]
+    assert (b["n"], [k["n"] for k in b["kinds"]]) == (a["n"], [k["n"] for k in a["kinds"]]), (a["item"], b["n"], a["n"])
+    c = one_json(cs("explain", a["item"] + "#1", f"{rid}@work", "-C", repo, "--json"))["data"]
+    assert c["pick"] == 1 and c["from"]["fn"] == a["from"]["fn"], c
+
+
+def test_procinfo_and_default_lanes():
+    """进程头上的一句（procinfo）：只有它跑的文件在前、占比太低 / 单进程不写、几段写段数、持有请求的写请求；
+    默认收起的列（lanedefault）：收发 socket、只在轮询（调的函数少）、线程池、这段里没调用的收，主线程整段像空转但调了很多别的不收；
+    编号按默认算，lanes=* 是全部、写了没配上也是全部；toy 上 serve 给 procinfo、default_lanes"""
+    from codestrata import laneorder, lanedefault, procinfo
+    seg = lambda pid, a, b, n, own, calls, alone=False: {"pid": pid, "id": "S", "main": f"p{pid}/MainThread", "slices_us": [[a, b]],
+                                                         "rounds": {"n": n}, "evidence": {"own_files": own, "calls": calls, "alone": alone}}
+    S = {"segs": [seg(1, 1_100_000, 1_600_000, 29, [["m/llm.py", 57]], 3000), seg(2, 1_600_000, 4_100_000, 250, [["m/tts.py", 5]], 100),
+                  seg(3, 2_000_000, 2_500_000, 3, [["m/w.py", 500]], 600), seg(3, 3_000_000, 3_500_000, 4, [], 600),
+                  seg(4, 1_000_000, 2_000_000, 9, [["m/x.py", 900]], 900, alone=True)],
+         "reqs": [{"pid": 9, "fn": "e.py#Omni.generate", "t0_us": 900_000, "t1_us": 5_500_000}], "kinds": {}}
+    P = procinfo.summary(S, 1_000_000)
+    assert P[1]["parts"] == ["llm.py", "+0.10→+0.60 s", "29 轮"] and "m/llm.py（57 次调用）" in P[1]["title"], P[1]
+    assert P[2]["parts"] == ["+0.60→+3.10 s", "250 轮"], "只调了 5 次的不写"
+    assert P[3]["parts"] == ["w.py", "+1.00→+2.50 s", "7 轮", "2 段"], P[3]
+    assert P[4]["parts"][0] == "+0.00→+1.00 s", "单进程（没有别的进程可比）不写文件"
+    assert P[9]["parts"] == ["请求 Omni.generate", "−0.10→+4.50 s"], P[9]
+    assert procinfo.summary(None, 0) == {}
+    k = lambda kind, fns=1, i=0, o=0: {"kind": kind, "fns": fns, "in": i, "out": o}
+    S["kinds"] = {"a": k("loop", 40, 1, 3), "b": k("poll", 2), "c": k("poll", 46), "d": k("threads", 33), "e": k("external", 0, 5, 5),
+                  "f": k("few", 2, 1, 1), "g": k("few", 9, 1, 1), "h": k("quiet", 0), "i": k("few", 1, 1, 0)}
+    assert lanedefault.folded(S) == {"b", "d", "e", "f", "h"} and lanedefault.folded(None) == set()
+    L = {"lanes": [{"id": x, "pid": 1, "nodes": {}, "edges": []} for x in "abcdefghi"], "links": [], "window": [0, 1]}
+    assert lanedefault.default_lanes(L, S) == ["a", "c", "g", "i"]
+    assert lanedefault.default_lanes({"lanes": [{"id": "b"}]}, S) is None, "全要收时看全部"
+    L["links"] = [{"kind": "handoff", "via": "queue", "first": 0, "last": 0, "from": {"lane": "a"}, "to": {"lane": "b"}},
+                  {"kind": "handoff", "via": "zmq", "first": 1, "last": 1, "from": {"lane": "b"}, "to": {"lane": "d"}}]
+    L["default_lanes"] = lanedefault.default_lanes(L, S)
+    al = {x: f"p/{x}" for x in "abcdefghi"}
+    assert laneorder.rank_view(L, al, {1: "p"}, [], [], [])["n"] == 1, "默认：两头都收在同一个窄列里的那条不编号"
+    assert laneorder.rank_view(L, al, {1: "p"}, [], [], ["*"])["n"] == 2 and laneorder.rank_view(L, al, {1: "p"}, [], [], ["p/nosuch"])["n"] == 2
+    from codestrata import align, lanes as _lanes, runs as _runs, segments, seq
+    from codestrata.ui import load as _load
+    repo, rid = truth()
+    idx = _load.load_index(repo)
+    run, rd, ph = _runs.resolve(repo, rid)
+    segs, _, end = seq.window_segments(run, rd, ph)
+    lo, hi = segs[0][0], segs[-1][1]
+    nm, hw = segments.head_window(run, end, lo, hi, ph)
+    S = segments.stages(rd, run, nm, lo, hi, align.node_labeler(idx), hw)
+    L = _lanes.build(idx, rd, run, ph, _runs.load_run(repo, idx, run, rd, ph)[0], None)
+    al, keep = _lanes.aliases_of(rd, L), lanedefault.default_lanes(L, S) or []
+    fold = {al[ln["id"]] for ln in L["lanes"] if ln["id"] not in keep}
+    assert "truth-1/req" in fold and "truth-1/MainThread" not in fold and procinfo.summary(S, lo), fold
 
 
 if __name__ == "__main__":

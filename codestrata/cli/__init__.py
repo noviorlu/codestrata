@@ -5,9 +5,9 @@
 """
 from __future__ import annotations
 
-from . import explain, find, guide, lanes, links, out, path, runs, segments, status, steps, trace  # noqa: F401  （runs、trace：__main__ 用）
+from . import explain, find, guide, lanes, links, out, path, runs, segments, status, steps, trace, view  # noqa: F401  （runs、trace：__main__ 用）
 
-COMMANDS = [status, lanes, segments, steps, links, find, explain, path, guide]
+COMMANDS = [status, lanes, segments, steps, links, find, explain, view, path, guide]
 
 # 老命令的 effect（§ 契约「effect」）：guide 和 --help 用
 OLD = [
