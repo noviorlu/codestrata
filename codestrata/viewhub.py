@@ -27,7 +27,7 @@ from pathlib import Path
 from . import ref as _ref
 from .errors import CodestrataError
 
-KEYS = ("run", "lanes", "fold", "cut", "lcut", "sel", "mark", "order", "hide", "panel")
+KEYS = ("run", "lanes", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "hide", "panel")
 STALE_S = 30.0              # 看得见的标签页多久没来问算不在了
 LIVE_S = 3.0                # 看得见、没焦点的页面每秒来问一次：这么久没来问的不当缺省的目标（关了却没来得及说一声的）
 HIDDEN_S = 3600.0           # 看不见的标签页留多久
@@ -77,7 +77,7 @@ def _keys(frag: str) -> dict[str, str]:
 
 
 def _aspects(old: str, new: str) -> list[str]:
-    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（只看的列、收起）"""
+    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（只看的列、收起）、chain（高亮的链）"""
     a, b = _keys(old), _keys(new)
     out = []
     if a.get("sel") != b.get("sel"):
@@ -86,6 +86,8 @@ def _aspects(old: str, new: str) -> list[str]:
         out.append("range")
     if (a.get("lanes"), a.get("fold")) != (b.get("lanes"), b.get("fold")):
         out.append("lanes")
+    if a.get("chain") != b.get("chain"):
+        out.append("chain")
     return out
 
 
@@ -257,6 +259,9 @@ def check(repo: Path, frag: str) -> str:
     bad = sorted(k for k in keys if k not in KEYS)
     if bad:
         raise CodestrataError("usage", f"视图描述里有不认识的键：{', '.join(bad)}", candidates=list(KEYS))
+    if keys.get("chain"):
+        from . import chainview as _chainview
+        _chainview.parse(keys["chain"])
     r = _ref.parse_fragment(frag)
     if r.run:
         res = _locate.resolve(repo, r)

@@ -162,7 +162,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
 /* 标记（视图描述的 mark，lanefocus.js）：独立的一层，不和搜索的 .match、选中的 .sel 混 */
 .nd.mk rect{stroke:var(--mk);stroke-width:3}
-.chip.focus,.chip.mark{border-color:var(--mk);color:var(--mk)}
+.chip.focus,.chip.mark{border-color:var(--mk);color:var(--mk)}.chip.chain{border-color:var(--sel);color:var(--sel)}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
 .nd:focus{outline:none}.nd:focus-visible rect{stroke:var(--sel);stroke-width:2.4}
 /* 阶段的起点 / 终点：写在选中之后，选中了也还看得出是起点 / 终点 */
@@ -661,6 +661,8 @@ body.lanesmode .graphonly{display:none}
 .lnlegend .k{white-space:nowrap}
 .ln-proc rect{fill:var(--sunk);stroke:var(--line)}
 .ln-pname{font:600 11px/1 system-ui,sans-serif;fill:var(--ink);cursor:pointer}
+/* 进程头上名字后面那一句：这个进程在干什么（procinfo） */
+.ln-pinfo{font:400 11px/1 system-ui,sans-serif;fill:var(--muted);pointer-events:none}
 .ln-fold{font:700 12px/1 system-ui,sans-serif;fill:var(--muted);cursor:pointer}
 .ln-band{fill:var(--card);stroke:var(--rule)}
 .ln-col.ext .ln-band{fill:none;stroke-dasharray:4 3}
@@ -719,6 +721,13 @@ body.lanesmode .graphonly{display:none}
 .ln-e.hi{stroke-width:2.6}.ln-link.hi{stroke-width:3;opacity:1}
 .ln-e.tm{stroke-width:2}
 .ln-link.tm{opacity:1}
+/* 高亮的链（lanechain.js）：链上的线加粗，推出来的那一跳画虚线；别的连线、边淡下去 */
+.chainmode .ln-link:not(.ln-chain),.chainmode .ln-e{opacity:.15}.chainmode .ln-ltxt:not(.chain),.chainmode .ecnt{opacity:.25}
+.chainmode .ln-halo{opacity:.3}
+.ln-link.ln-chain{stroke-width:3.4;opacity:1}.ln-link.inferred{stroke:var(--hotb);stroke-dasharray:7 4}
+.ln-ltxt.chain{font-weight:800}.ln-ltxt.inferred{fill:var(--hotb)}
+.chainmode .ln-link.sel,.chainmode .ln-link.hi,.chainmode .ln-link.hover,.chainmode .ln-ltxt.on{opacity:1}
+.lnlegend .chainonly{display:none}body.chainon .lnlegend .chainonly{display:inline-flex}
 .tord .tn.on rect{stroke:var(--sel);stroke-width:2}
 .ln-nd.sel rect{stroke:var(--sel);stroke-width:2.4}
 .lk-end{margin:4px 0;font-size:12.5px;color:var(--body)}

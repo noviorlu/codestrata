@@ -39,16 +39,15 @@ def run(a) -> out.Result:
     common.require_events(c)
     r = c.res
     idx = common.index(c)
+    if a.follow:                                     # 链不用建分列：交接两头的函数按 lanes.EndFns 认（和分列同一份）
+        return follow.run(a, c, idx)
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
-    ends = {} if a.follow else None
     try:
-        b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None, proc_order=common.proc_order(c, common.labeler(idx)), ends=ends)
+        b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None, proc_order=common.proc_order(c, common.labeler(idx)))
     except LookupError as e:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    if a.follow:
-        return follow.run(a, c, idx, ends)
     aliases = _lanes.aliases_of(r.rd, b)
     want = None
     if r.lanes:
@@ -75,6 +74,7 @@ def run(a) -> out.Result:
     if len(gs) > a.limit:
         more = {"shown": a.limit, "total": len(gs), "how": out.command("links", r.full, "--kind", a.kind, "--limit", str(len(gs)),
                                                                        repo=c.flag)}
-    nxt = [c.cmd("read", "segments", r.text, why="按功能切段：每个进程干活的那一段")] if a.kind == "handoff" else []
+    seg_ref = common.span(c, "下一步的切段")[2] if a.kind == "handoff" else r.text   # 几片的 REF：切段按整段
+    nxt = [c.cmd("read", "segments", seg_ref, why="按功能切段：每个进程干活的那一段")] if a.kind == "handoff" else []
     return out.Result(data={"links": data, "kind": a.kind}, text=lines, repo=c.repo, ref=c.ref_json(), next=nxt, more=more,
                       warnings=c.warnings)

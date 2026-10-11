@@ -46,7 +46,8 @@ window.CS = window.CS || {};
     },
     _laneQ: function (open, cuts, view) {
       return 'run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : '')
-        + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : '') + (view ? '&' + view : '');
+        + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : '') + (view ? '&' + view : '')
+        + (CS.chain ? CS.chain.query() : '');                // 高亮的链（lanechain.js）：后端多连推出来的那一跳
     },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },
     // 叠着 run 时带上它：代码窗口里标出「代码里看不出、这次运行调到了谁」的那几行

@@ -60,6 +60,8 @@
         <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link spawn"/></svg>起线程 / 进程</span>
         <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link join"/></svg>回收</span>
         <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link launch"/></svg>启动 GPU kernel</span>
+        <span class="k chainonly"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link handoff ln-chain"/></svg>链上的跳</span>
+        <span class="k chainonly"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link handoff inferred"/></svg>推断（--link）</span>
       </span>
       <span class="lbl" id="viewlbl">视图</span>
       <button class="chip" data-t="onlyhot" aria-pressed="false">只看跑到的</button>
@@ -127,6 +129,7 @@
 <script src="lanecut.js"></script>
 <script src="lanes.js"></script>
 <script src="lanefocus.js"></script>
+<script src="lanechain.js"></script>
 <script src="lanepick.js"></script>
 <script src="lanedetail.js"></script>
 <script src="view.js"></script>

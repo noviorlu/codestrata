@@ -50,7 +50,7 @@ def run(a) -> out.Result:
     common.require_events(c)
     common.refuse_old(c)
     r = c.res
-    lo, hi = r.slices[0][0], r.slices[-1][1]
+    lo, hi, rtext, rfull = common.span(c, "steps ")
     aliases = _lanes.run_aliases(r.rd)
     if not r.lanes:
         raise CodestrataError("usage", "steps 要一列：REF 后面加 /进程/线程", candidates=_loop_lanes(aliases))
@@ -76,7 +76,7 @@ def run(a) -> out.Result:
         top = _calls(ln, lo, hi).most_common(8) if ln else []
         raise CodestrataError("no_loop", f"{lane} 在这段时间里认不出主循环（{ln['kind'] if ln else '没有调用'}）；可以用 --head 指定轮头",
                               candidates=[common.short(label(keys[b])) for b, _ in top], warnings=c.warnings,
-                              next=[c.cmd("read", "path", f"{r.text}/{lane}", "--limit", "30")])
+                              next=[c.cmd("read", "path", f"{rtext}/{lane}", "--limit", "30")])
     rs = ln["rounds"]
     rk = _rounds_arg(a.round)
     sel = [x for x in rs if rk[0] <= x["k"] <= rk[1]] if rk else ln["win"]
@@ -118,7 +118,7 @@ def run(a) -> out.Result:
             lines.append(f"  #{x['k']:<6} {out.secs(x['t0_us'], lo)}  {out.dur(x['dur_us']):>10}  {x['calls']:>5} 次调用"
                          f"  交出 {x['out']}  {tag}" + (f"  多调了 {'、'.join(ex[:3])}" + (f" 等 {len(ex)} 个" if len(ex) > 3 else "") if ex else ""))
         if len(sel) > a.limit:
-            more = {"shown": a.limit, "total": len(sel), "how": out.command("steps", r.full, "--list", "--limit", str(len(sel)),
+            more = {"shown": a.limit, "total": len(sel), "how": out.command("steps", rfull, "--list", "--limit", str(len(sel)),
                                                                             *(["--round", a.round] if a.round else []), repo=c.flag)}
     else:
         groups = _group(sel, names)
@@ -142,13 +142,13 @@ def run(a) -> out.Result:
                              f" · 最长 #{lg['k']} {out.dur(lg['dur_us'])}"
                              f"{'  ' + word if xs[0]['spin'] else ''}{ho}（{shown}）{extra}")
         if len(groups) > a.limit:
-            more = {"shown": a.limit, "total": len(groups), "how": out.command("steps", r.full, "--limit", str(len(groups)), repo=c.flag)}
+            more = {"shown": a.limit, "total": len(groups), "how": out.command("steps", rfull, "--limit", str(len(groups)), repo=c.flag)}
         if any(len(g["rounds"]) > SHOW_ROUNDS for g in groups):
             lines.append("（逐轮看：加 --list）")
     longest = max(sel, key=lambda x: x["dur_us"]) if sel else None
     nxt = []
     if longest and not a.why:                       # 还是原来的 REF：轮头和轮号不变（拿那一轮的时间段当 REF 会换一个循环）
-        nxt.append(c.cmd("read", "steps", r.full, "--round", str(longest["k"]), "--why", why=f"最长的 #{longest['k']} 时间花在哪"))
+        nxt.append(c.cmd("read", "steps", rfull, "--round", str(longest["k"]), "--why", why=f"最长的 #{longest['k']} 时间花在哪"))
     if longest:
         nxt.append(c.cmd("read", "path", rref(longest), "--limit", "40", why=f"#{longest['k']} 的调用树"))
     data = {"lane": lane, "head": head_node, "n_rounds": len(rs), "median_us": int(med_all),

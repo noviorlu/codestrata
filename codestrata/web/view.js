@@ -14,8 +14,6 @@ window.CS = window.CS || {};
 (function (CS) {
   'use strict';
 
-  var KEYS = ['run', 'lanes', 'fold', 'cut', 'lcut', 'sel', 'mark', 'order', 'hide', 'panel'];
-
   /* 地址里的值：只按 %XX 解（不把 + 当空格：阶段 + 秒的写法里有 +）；写回时 @ , / ~ | : ; + * = 留着原样，好读（@t= 不写成 @t%3D） */
   function dec(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
   function enc(s) {
@@ -28,7 +26,7 @@ window.CS = window.CS || {};
     booted: false,                    // 启动时地址里的视图套完了没有
 
     parse: function (hash) {
-      var v = { run: null, lanes: [], fold: [], cut: null, lcut: {}, sel: null, mark: [], order: false, hide: [], panel: null, rest: [] };
+      var v = { run: null, lanes: [], fold: [], cut: null, lcut: {}, sel: null, mark: [], chain: null, order: false, hide: [], panel: null, rest: [] };
       (hash || '').replace(/^#/, '').split('&').forEach(function (part) {
         if (!part) return;
         var i = part.indexOf('='), k = dec(i < 0 ? part : part.slice(0, i)), val = i < 0 ? '' : dec(part.slice(i + 1));
@@ -39,6 +37,7 @@ window.CS = window.CS || {};
           var j = x.indexOf('~'); if (j > 0) v.lcut[x.slice(0, j)] = list(x.slice(j + 1));
         });
         else if (k === 'sel') v.sel = val || null;
+        else if (k === 'chain') v.chain = val || null;
         else if (k === 'order') v.order = val === '1' || val === 'on';
         else if (k === 'panel') v.panel = val || null;
         else if (k !== 'view' && k !== 'cmp') v.rest.push(part);      // view / cmp：老的键，去掉
@@ -56,6 +55,7 @@ window.CS = window.CS || {};
       if (lc.length) out.push('lcut=' + enc(lc.join(';')));
       if (v.sel) out.push('sel=' + enc(v.sel));
       if (v.mark.length) out.push('mark=' + enc(v.mark.join(',')));
+      if (v.chain) out.push('chain=' + enc(v.chain));
       if (v.order) out.push('order=1');
       if (v.hide.length) out.push('hide=' + enc(v.hide.join(',')));
       if (v.panel) out.push('panel=' + enc(v.panel));
@@ -77,6 +77,7 @@ window.CS = window.CS || {};
       }
       if (d && d.open && d.open.slice().sort().join(',') !== (d.defaultOpen || []).slice().sort().join(',')) v.cut = d.open.slice().sort();
       v.mark = CS.mark.items.slice();
+      v.chain = CS.chain ? CS.chain.key : null;
       v.order = !!s.timeOrder;
       if (s.hot === false) v.hide.push('hot');
       if (s.dyn === false) v.hide.push('dyn');
@@ -148,6 +149,7 @@ window.CS = window.CS || {};
     own: function (h) { this._last = h; },
     _apply: function (v, why, self, app, lanes, s) {
       this._rest = v.rest || [];
+      CS.chain.set(v.chain);                         // 高亮的链：换 run 时取数就带上它，下面再核对一次画的是不是这条
       var p = Promise.resolve(true);
       var want = v.run || '', id = want.split('@')[0], ph = want.indexOf('@') >= 0 ? want.slice(want.indexOf('@') + 1) : '';
       if (want !== (CS.ds.run || '')) {
@@ -173,7 +175,7 @@ window.CS = window.CS || {};
         Object.keys(al).forEach(function (lid) { inv[al[lid]] = lid; });
         Object.keys(v.lcut).forEach(function (a) { if (inv[a]) cuts[inv[a]] = v.lcut[a]; });
         var same = JSON.stringify(cuts) === JSON.stringify(CS.laneCut.cuts);
-        if (!same) { CS.laneCut.cuts = cuts; return lanes.show(); }
+        if (!same || CS.chain.drawnKey(lanes.data) !== (CS.chain.key || null)) { CS.laneCut.cuts = cuts; return lanes.show(); }
       }).then(function () {
         if (app.lanesMode() && lanes.L) {
           lanes.collapsed = {};

@@ -29,12 +29,19 @@ window.CS = window.CS || {};
   // TOP：图框左上角浮着缩放按钮，进程头、列头往下让一点
   // HEAD：列头（线程名、仓库外的代码、起 / 收两行）的底
   var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72;
-  var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue', shm: '共享内存',
+  var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue', shm: '共享内存', link: '推断（--link 按先后配）',
               thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）',
               join: 'join 等它结束', wait: 'waitpid 等子进程退出', cuda: '启动 GPU kernel' };
   var KIND = { handoff: '谁把数据交给谁', spawn: '谁起了谁', join: '谁回收了谁', launch: '谁启动了哪个 GPU kernel' };
   // 连线两头的那一行代码是什么：放 / 取，起线程 / 线程入口，线程入口 / join 的那一行
   var ENDS = { handoff: ['放 / 发', '取 / 收'], spawn: ['起', '入口'], join: ['入口', '收'], launch: ['发起', 'kernel'] };
+  /* 交接线的标签上写放 / 发的那一头（用户 10-10 定）：函数名的最后一段；放在仓库外的代码里（那一头只认得出栈底的函数）不写；
+     这条线里几对两头的放的函数不止一个时写「等」。全名、那一行在悬停和详情里 */
+  function sender(k) {
+    var fs = [];
+    (k.pairs || []).forEach(function (p) { if (p.a && !p.xa && fs.indexOf(p.a) < 0) fs.push(p.a); });
+    return fs.length ? short(fs[0]).split('.').pop() + (fs.length > 1 ? ' 等' : '') : '';
+  }
   /* 微秒 → 相对这一段开头的秒数（这一段之前的是负的） */
   function when(us, w0) {
     if (us == null) return '?';
@@ -42,6 +49,33 @@ window.CS = window.CS || {};
     return (s < 0 ? '−' : '+') + Math.abs(s).toFixed(3) + ' s';
   }
   function clip(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+  /* 节点、框的名字放不下时中间省略、留住结尾（用户 10-10 定）：minicpmo_4_5_omni_llm / _tts 截成「minicpm…5_omni_llm」「…_omni_tts」还分得开 */
+  function clipMid(s, n) {
+    if (s.length <= n) return s;
+    var head = Math.max(1, Math.round((n - 1) * 0.4));
+    return s.slice(0, head) + '…' + s.slice(s.length - (n - 1 - head));
+  }
+  /* 文字的宽（画在页面上的才量得出，没画出来按字数估） */
+  function textW(t) {
+    var w = t.getComputedTextLength ? t.getComputedTextLength() : 0;
+    return w || 6.5 * t.textContent.length;
+  }
+  /* 进程头上名字后面那一句（/api/lanes 的 procinfo，用户 10-10 定：这个进程在干什么）：parts 按要紧的先后排，
+     放不下从后往前丢，第一样也放不下时中间省略；right：进程头的右边 */
+  function procInfo(g, name, parts, right) {
+    var x = +name.getAttribute('x') + textW(name) + 10;
+    if (right - x < 48) return;
+    var t = el('text', { x: x, y: name.getAttribute('y'), class: 'ln-pinfo' });
+    g.appendChild(t);
+    t.textContent = parts[0];
+    var w = textW(t);
+    if (w > right - x) t.textContent = clipMid(parts[0], Math.max(6, Math.floor(parts[0].length * (right - x) / w)));
+    for (var i = 1; i < parts.length; i++) {
+      var s = t.textContent;
+      t.textContent = s + ' · ' + parts[i];
+      if (textW(t) > right - x) { t.textContent = s; break; }
+    }
+  }
   /* GPU 上跑了多久（微秒）→ 150 µs / 318 ms / 2.4 s */
   function gpuT(us) { return us >= 1e6 ? (us / 1e6).toFixed(1) + ' s' : us >= 1000 ? (us / 1000).toFixed(us >= 1e4 ? 0 : 1) + ' ms' : Math.round(us) + ' µs'; }
   /* 列头的起 / 收两行：[{kind: start|end, text, title}] */
@@ -103,6 +137,7 @@ window.CS = window.CS || {};
         self.order = L.order; self.orderQ = vq;
         CS.laneCut.settle(L);
         self.panelData(L);
+        CS.chain.paint(L, svg);                     // 高亮的链（lanechain.js）：先认这一份的链（标签、提示要用），只亮链上的线
         self.draw(svg, L, d.graphHot || d.graph, d.names || {});
         CS.laneCut.after(self.afterCut);
         self.afterCut = null;
@@ -245,7 +280,7 @@ window.CS = window.CS || {};
       (G.nodes || []).forEach(function (n) { kindOf[n.id] = n.kind; });
       function contains(X, n) { return X === n || CS.app.homeOf(n, kindOf[n], { nodes: [{ id: X }] }) === X; }
       var ids = [], focus = CS.focus ? CS.focus.lanes(L) : null;   // 只看几列（lanefocus.js）：没选的列不画节点
-      if (CS.focus && CS.focus.sels.length && !focus && this._noFocusL !== L) {   // 地址里只看的列这一段里一列都没有：画全部列，说一声
+      if (CS.focus && CS.focus.missed(L) && this._noFocusL !== L) {   // 地址里只看的列这一段里一列都没有：画全部列，说一声
         this._noFocusL = L;
         if (CS.viewer) CS.viewer.toast('只看的列（' + CS.focus.sels.join(', ') + '）这一段里没有：显示全部列');
       }
@@ -325,9 +360,12 @@ window.CS = window.CS || {};
         g.appendChild(el('rect', { x: P.x, y: TOP + 2, width: Math.max(P.w, 40), height: 22, rx: 6 }));
         var t = el('text', { x: P.x + 22, y: TOP + 17, class: 'ln-pname' });
         t.textContent = alias;
-        var tip = el('title', {}); tip.textContent = alias + '：' + name + '（pid ' + P.pid + '）\n' + P.lanes.length + ' 列；点 '
-          + (fold ? '▸ 展开' : '▾ 收起'); g.appendChild(tip);
+        var info = (L.procinfo || {})[P.pid];
+        var tip = el('title', {}); tip.textContent = alias + '：' + name + '（pid ' + P.pid + '）\n' + (info ? info.title + '\n' : '')
+          + P.lanes.length + ' 列；点 ' + (fold ? '▸ 展开' : '▾ 收起'); g.appendChild(tip);
         g.appendChild(t);
+        lab.appendChild(g);
+        if (info) procInfo(g, t, info.parts, P.x + Math.max(P.w, 40) - 8);
         var b = el('text', { x: P.x + 8, y: TOP + 17, class: 'ln-fold', role: 'button', tabindex: '0',
                              'aria-label': (fold ? '展开 ' : '收起 ') + name });
         b.textContent = fold ? '▸' : '▾';
@@ -335,12 +373,11 @@ window.CS = window.CS || {};
         b.onclick = go; t.onclick = go;
         b.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(ev); } };
         g.appendChild(b);
-        lab.appendChild(g);
       });
 
       this.edges = []; this.links = []; this.nodes = [];
       cols.forEach(function (C, ci) {
-        var col = el('g', { class: 'ln-col' + (C.fold ? ' fold' : '') + (C.lane && C.lane.external ? ' ext' : '') });
+        var col = el('g', { class: 'ln-col' + (C.fold ? ' fold' : '') + (C.part ? ' part' : '') + (C.lane && C.lane.external ? ' ext' : '') });
         col.appendChild(el('rect', { x: C.x, y: TOP + 28, width: C.w, height: Hh - TOP - 32, rx: 8, class: 'ln-band' }));
         var head = el('text', { x: C.x + C.w / 2, y: TOP + 44, 'text-anchor': 'middle', class: 'ln-th' });
         col.appendChild(head);
@@ -383,7 +420,7 @@ window.CS = window.CS || {};
             g.appendChild(el('rect', { x: cx - NW / 2, y: cy - h / 2, width: NW, height: h }));
             var t = el('text', { x: cx, y: cy - 3, class: 'nl', 'text-anchor': 'middle' });
             var nm = self.label(id, ln.id);
-            t.textContent = nm.length > 18 ? nm.slice(0, 17) + '…' : nm; g.appendChild(t);
+            t.textContent = clipMid(nm, 18); g.appendChild(t);
             var s = el('text', { x: cx, y: cy + 9, class: 'ns', 'text-anchor': 'middle' });
             // GPU 的列：kernel 跑了几次、在 GPU 上一共跑了多久（次数多的不一定耗时多）
             s.textContent = info.gpu_us != null ? fmtN(info.n) + ' 次 · ' + gpuT(info.gpu_us)
@@ -471,7 +508,9 @@ window.CS = window.CS || {};
         var m = marks[x.lane + '|' + x.id];
         if (!m) return;
         var p = pos[x.lane + '|' + x.id], row = 0;
-        x.g.classList.add(m.start.length ? 'pstart' : 'pend');
+        // 起 / 收全在这一段之外的不描框（用户 10-10 定：段外的淡掉，不描和「▶ 起点」同色的框）
+        var inS = m.start.some(function (y) { return !y.k.out; }), inE = m.end.some(function (y) { return !y.k.out; });
+        if (inS || inE) x.g.classList.add(inS ? 'pstart' : 'pend');
         [['start', '▶ 起 '], ['end', '■ 收 ']].forEach(function (z) {
           var xs = m[z[0]];
           if (!xs.length) return;
@@ -503,12 +542,14 @@ window.CS = window.CS || {};
         var E = { kind: 'link', k: k, key: 'l:' + i, first: k.first, last: k.last, n: k.n, A: a, B: b };
         byIdx[i] = E;
         E.halo = el('path', { d: R.d, class: 'ln-halo' });
-        E.p = el('path', { d: R.d, class: 'ln-link ' + k.kind + ' via-' + k.via + (k.out ? ' out' : '') });
+        E.p = el('path', { d: R.d, class: 'ln-link ' + k.kind + ' via-' + k.via + (k.out ? ' out' : '')
+                                     + (k.chain ? ' ln-chain' : '') + (k.inferred ? ' inferred' : '') });
         var pr = (k.pairs || [])[0], ends = ENDS[k.kind] || ['从', '到'];
         function code(side, fn, ln, tx) {
           return '\n' + side + '：' + (fn ? short(fn) + (ln ? ':' + ln + (tx ? '  ' + tx : '') : '') : '仓库外的代码');
         }
-        E.tipBase = KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
+        E.tipBase = CS.chain.tip(k, function (us) { return when(us, ((L && L.window) || [0])[0]); })
+          + KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
           + '，' + k.n + ' 次\n' + laneName(k.from.lane) + (k.from.node ? '（' + k.from.node + '）' : '')
           + ' → ' + laneName(k.to.lane) + (k.to.node ? '（' + k.to.node + '）' : '')
           + (pr ? code(ends[0], pr.a, pr.la, pr.ta) + code(ends[1], pr.b, pr.lb, pr.tb) : '')
@@ -518,8 +559,10 @@ window.CS = window.CS || {};
           + '\n点击在两头标出那一行代码、看每一对';
         E.tip = el('title', {}); E.tip.textContent = E.tipBase;
         lk.appendChild(E.halo); lk.appendChild(E.p);
-        E.R = R; E.labCls = 'ln-ltxt ' + k.kind;
-        E.labTxt = (k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起') + (k.n > 1 ? ' ×' + fmtN(k.n) : '')
+        E.R = R; E.labCls = 'ln-ltxt ' + k.kind + (k.chain ? ' chain' : '') + (k.inferred ? ' inferred' : '');
+        var who = k.kind === 'handoff' ? sender(k) : '', hop = CS.chain.hop(k);   // 链上的一跳：写它是这一组的第几次，不写整组的次数
+        E.labTxt = CS.chain.label(k) + (k.via === 'link' ? '推断' : k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起')
+          + (hop && hop.n > 1 ? ' 第 ' + hop.k + '/' + hop.n + ' 次' : k.n > 1 ? ' ×' + fmtN(k.n) : '') + (who ? ' · ' + who : '')
           + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
         self.wire(E);
         self.links.push(E);
@@ -574,7 +617,7 @@ window.CS = window.CS || {};
         h.appendChild(el('rect', { x: F.head.x, y: F.head.y, width: F.head.w, height: F.head.h, class: 'ln-fhit' }));
         fhg.appendChild(h);
         var t = el('text', { x: F.btn.x + 13, y: F.btn.y + 4, class: 'fl' });
-        t.textContent = clip(nm, Math.max(4, Math.floor((F.w - 64) / 7)));
+        t.textContent = clipMid(nm, Math.max(4, Math.floor((F.w - 64) / 7)));
         h.appendChild(t);
         var c = el('text', { x: F.btn.x + 13 + (t.getComputedTextLength ? t.getComputedTextLength() : 7 * t.textContent.length) + 8,
                              y: F.btn.y + 4, class: 'fn' });
@@ -712,8 +755,10 @@ window.CS = window.CS || {};
       if (s.hot === false) hide.push('hot');
       if (s.dyn === false) hide.push('dyn');
       if (hide.length) q.push('hide=' + hide.join(','));
-      var f = CS.focus && CS.focus.lanes();
+      // 只看的列：没写 lanes= 时不带（后端按同一份默认收起算）；写了但看着全部列（lanes=*、一列都没配上）时带 *
+      var F = CS.focus, f = F && F.sels.length ? F.lanes() : null;
       if (f) q.push('lanes=' + encodeURIComponent(Object.keys(f).map(function (id) { return laneName(id); }).sort().join(',')));
+      else if (F && F.sels.length) q.push('lanes=*');
       return q.join('&');
     },
 
@@ -841,7 +886,7 @@ window.CS = window.CS || {};
         E.p.classList.toggle('hi', on && !!nk);
         E.p.classList.toggle('dim', dim);
         E.halo.classList.toggle('dim', dim);
-        if (E.lab) E.lab.classList.toggle('dim', dim);
+        if (E.lab) { E.lab.classList.toggle('dim', dim); E.lab.classList.toggle('on', on); }   // on：只亮链时选中的那条的标签也不淡
         if (on) [E.halo, E.p, E.lab].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
       this.nodes.forEach(function (x) {

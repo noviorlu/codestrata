@@ -58,7 +58,7 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
    codestrata steps <那段的 REF>/<主循环那一列>（一轮轮）→ 加 --why 看时间花在哪
 2. 「第 k 块数据在哪一轮」：codestrata steps RUN@阶段/stage1/save_loop --with SharedMemoryConnector.put
 3. 谁把数据交给谁、两头是哪个函数哪一行：codestrata links RUN@阶段（--kind all 连起线程、等结束也列）；
-   跟一块数据走完全程：links RUN@阶段 --follow 'FN#k'——停在没录到的一跳时，读过代码确认再照候选加 --link（按先后配，是推出来的）
+   跟一块数据走完全程：links RUN@阶段 --follow 'FN#k'（停在没录到的一跳时读过代码再照候选加 --link，是推出来的；下一步的 view set --chain 在页面上只亮这条链）
 4. 「标出 model / 聚焦一个功能」：codestrata find tts RUN@阶段 --kind class（功能 → 代码由你判断；--under 目录 缩小）
 5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄；组里两头有几种时加 #k 挑一种）；
    函数 / 类：explain 限定名 RUN@阶段。只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近

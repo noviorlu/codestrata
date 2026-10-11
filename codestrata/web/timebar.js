@@ -152,7 +152,7 @@ window.CS = window.CS || {};
         var full = a <= 0 && b >= end && parts.length < 2;
         lab.textContent = full ? '全程 ' + sec(end, end)
           : parts.length > 1 ? parts.length + ' 片：' + sec(a, span) + ' – ' + sec(b, span)
-            + '（共 ' + sec(parts.reduce(function (n, p) { return n + p[1] - p[0]; }, 0), span) + '）'
+            + '（共 ' + (function (n) { return sec(n, n); })(parts.reduce(function (n, p) { return n + p[1] - p[0]; }, 0)) + '）'
           : (o.phase && !o.window && a === cur[0] && b === cur[1] ? o.phase + '：' : '')
             + sec(a, span) + ' – ' + sec(b, span) + '（' + sec(span, span) + '）';
         lab.title = parts.length > 1 ? '选的是几片时间（agent 给的链）：调用次数只算这几片里的；在条上拖出一段就换成那一段'

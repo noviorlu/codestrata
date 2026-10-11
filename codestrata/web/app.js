@@ -369,6 +369,7 @@ window.CS = window.CS || {};
 
     selectRun: function (id, phase) {
       var self = this, prev = CS.ds.run;
+      if (CS.chain && !(CS.view && CS.view.applying) && (prev || '').split('@')[0] !== (id || '')) CS.chain.set(null);   // 链是那个 run 的
       CS.ds.run = id ? id + (phase ? '@' + phase : '') : '';
       this._writeHash();
       this.closeRunPop();
@@ -699,12 +700,13 @@ window.CS = window.CS || {};
            + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
-      // 只看几列、标记（lanefocus.js）：工具栏上的小签，点了退回全部列 / 清掉标记
+      // 只看几列、标记（lanefocus.js）、高亮的链（lanechain.js）：工具栏上的小签，点了退回全部列 / 清掉
       var ec = document.getElementById('edgechips');
-      ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip());
-      var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), self = this;
-      if (fbtn) fbtn.onclick = function () { CS.focus.clear(); self.edgeChips(); CS.view.changed('lanes'); };
+      ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip() + (this.lanesMode() ? CS.chain.chip() : ''));
+      var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), cbtn = ec.querySelector('[data-chain]'), self = this;
+      if (fbtn) fbtn.onclick = function () { CS.focus.showAll(); self.edgeChips(); CS.view.changed('lanes'); };
       if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
+      if (cbtn) cbtn.onclick = function () { CS.chain.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
     },
 
@@ -887,7 +889,7 @@ window.CS = window.CS || {};
       })[0];
       if (!ln) { CS.viewer.toast('这一段里哪条线程都没调到它'); return Promise.resolve(null); }
       if (CS.focus.hidden(ln.id)) {                 // 只在没选的列里：退回全部列再找（不改搜索栏，只在这里接住）
-        CS.focus.clear();
+        CS.focus.showAll();
         CS.viewer.toast('它在只看几列时没选的列里：已经改回全部列');
       }
       if (lanes.isFolded(ln.pid)) lanes.fold(ln.pid, false);

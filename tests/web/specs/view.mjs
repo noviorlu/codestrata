@@ -31,7 +31,7 @@ export default async function (t) {
 
   // 后退：回到上一个视图（全部列）
   await page.ev(`history.back()`);
-  ok(await page.wait(`!CS.focus.lanes() && !document.querySelector('#g .ln-col.fold') && !CS.view.applying`, 5000), '后退一次：回到全部列');
+  ok(await page.wait(`!CS.focus.sels.length && !document.querySelector('#g .ln-col.fold:not(.part)') && !CS.view.applying`, 5000), '后退一次：回到没写 lanes= 的视图');
   ok(await page.wait(`CS.lanes.ready && CS.lanes.nodes.length > 0`, 5000), '后退之后图画好了 ' + await page.ev(`JSON.stringify([CS.lanes.nodes.length, CS.lanes.ready, location.hash, CS.lanes.L && CS.lanes.L.lanes.length])`));
 
   // 收起一个进程、开时间顺序、标记一个文件、选中一个节点 → 地址里都有；刷新之后还在（整个 run：有好几个进程）
@@ -51,7 +51,7 @@ export default async function (t) {
   ok(ran.length && await page.ev(`CS.lanes.nodes.filter(x => x.g.classList.contains('mk')).every(x => ${JSON.stringify(ran)}.includes(x.lane))`),
      '只描在它这段时间里跑过的列里（' + ran.length + ' 列）');
   await page.goto(base + '#' + h);
-  ok(await page.wait(`CS.lanes.ready && !CS.view.applying && document.querySelectorAll('#g .ln-col.fold').length === 1`, 15000), '刷新：收起的进程还收着');
+  ok(await page.wait(`CS.lanes.ready && !CS.view.applying && document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 1`, 15000), '刷新：收起的进程还收着');
   ok(await page.wait(`CS.graph.state.timeOrder && document.querySelectorAll('#g .tord .tn').length > 0`, 5000), '刷新：时间顺序还开着');
   ok(await page.ev(`CS.mark.items.join() === 'fakesvc/callee.py' && document.querySelectorAll('#g .nd.mk').length >= 1`), '刷新：标记还在');
   ok(await page.wait(`(CS.lanes.sel || '').indexOf('n:') === 0 && CS.lanes.sel.endsWith('|' + ${JSON.stringify(nd)})`, 5000), '刷新：选中还在');
@@ -85,4 +85,18 @@ export default async function (t) {
   await sleep(300);
   const hc = await hashNow(page);
   ok(hc.startsWith('run=' + fx.a + '@loop') && /order=1/.test(hc), '地址里 run 换成完整 id、别的键还在：' + hc);
+
+  // 没写 lanes=：转一手的列（线程池 req、只在交接两头出现的 stdlib-put）默认收进「其他 N 列」，小签「默认只看」；进程头写它在干什么；
+  // 点「全部显示」写 lanes=*（不写就又是默认）
+  await page.goto(base + '#run=' + fx.a);
+  ok(await waitRun(page, fx.a), '整个 run');
+  ok(await page.wait(`CS.lanes.ready && !CS.view.applying && !!CS.lanes.L.default_lanes`, 15000), '后端给了默认看的列');
+  const d = await page.ev(`JSON.stringify({chip: (document.querySelector('#edgechips [data-focus]') || {}).textContent || '',
+    hidden: CS.lanes.L.lanes.filter(l => CS.focus.hidden(l.id)).map(l => CS.lanes.L.aliases[l.id]),
+    info: [...document.querySelectorAll('#g .ln-pinfo')].map(x => x.textContent)})`).then(JSON.parse);
+  ok(d.chip.startsWith('默认只看') && d.hidden.includes('truth-1/req') && !d.hidden.includes('truth-1/MainThread') && d.info.length > 0,
+     '默认收起转一手的列、进程头有那一句 ' + JSON.stringify(d));
+  await page.click('#edgechips [data-focus]');
+  ok(await page.wait(`!document.querySelector('#edgechips [data-focus]') && !CS.focus.lanes()`, 5000), '点「全部显示」：全部列、小签没了');
+  ok(await page.wait(`decodeURIComponent(location.hash).includes('lanes=*')`, 5000), '地址里写 lanes=* ' + await hashNow(page));
 }

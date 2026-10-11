@@ -241,6 +241,21 @@ def calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = False
     return i1 - i0 + 1, t + round(i0 * step), t + round(i1 * step)
 
 
+def each_call(t: int, dur: int, rep: int, lo: int, hi: int) -> list[int]:
+    """一行 span 里落在 [lo, hi] 的每一次调用的开始时刻：和 calls_in 同一个摊法（折叠行按 rep 次均匀摊在 [开始, 结束] 上，
+    没返回的整行算在开始）。links --follow 数「第 k 次调用」用它，和 find、分列数出来的次数一样"""
+    if rep <= 1 or dur <= 0:
+        return [t] * rep if lo <= t <= hi else []
+    step = dur / (rep - 1)
+    i0, i1 = max(0, math.ceil((lo - t) / step)), min(rep - 1, math.floor((hi - t) / step))
+    return [t + round(i * step) for i in range(i0, i1 + 1)]
+
+
+def in_segs(t: int | None, segs) -> bool:
+    """t 落在不落在这几段时间里（都是闭区间）：交接、起 / 收算不算这一段里的，分列和链用同一个判法"""
+    return t is not None and any(a <= t <= b for a, b in segs)
+
+
 def window_counts(rd: Path, run: dict, window: str, ref_lines: dict | None = None) -> dict:
     """时间段（「t=起-止」，几片的逗号隔开）里的调用（折叠行按 calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges, gpu_us?}
     （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。从 phase_calls 那张表加起来（和分列、请求路径同一份）。

@@ -230,6 +230,10 @@ def test_serve_registration_and_checks():
         assert code == 409 and d["code"] == "no_live_page", d
         code, d = call(port, "POST", "/api/view", {"view": f"run={rid}@t=1000-2000,x"})
         assert code == 400 and d["code"] == "bad_window", d
+        code, d = call(port, "POST", "/api/view", {"view": f"run={rid}@work&chain=work~a/b:f@t=1"})       # 高亮的链：写法对就收（走不走得通页面上说）
+        assert code == 409 and d["code"] == "no_live_page", d
+        code, d = call(port, "POST", "/api/view", {"view": f"run={rid}@work&chain=nosep"})
+        assert code == 400 and d["code"] == "usage", d
         # 一个进程已经不在的登记：查找时删掉
         dead = serves.register(1, 999_999_9, repo, "x")
         assert dead.exists() and all(r["port"] != 1 for r in serves.listed()) and not dead.exists()
