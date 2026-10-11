@@ -30,6 +30,9 @@ def run(a, c: common.Ctx, idx: dict, ends: dict) -> out.Result:
                                 for L in links if L.text not in used]
     warns += [{"code": "link_recorded", "msg": f"--link {out.quote(h['link'])} 这一跳其实录到了（{h['recorded_too']}），可以不给；给了就按 --link 配"}
               for h in hops if h.get("recorded_too")]
+    warns += [{"code": "order_differs", "msg": f"第 {i} 跳：按时间接的是 {h['from']['lane']} 这一组交出的第 {h['alt']['picked_k']} 次，按先后配（第 {h['alt']['k']} 份配第 "
+                                            f"{h['alt']['k']} 次）是 t={h['alt']['t_us']} 那次：链从这里起可能接到了别的那一份"}
+              for i, h in enumerate(hops, 1) if h.get("alt")]
     lines = _lines(ch, start, lo, ref)
     nxt = []
     cand = st.get("candidates") or {}
@@ -79,6 +82,9 @@ def _lines(ch: dict, s: dict, lo: int, ref: str) -> list[str]:
         else:
             va, vb = _linkgroups.verbs(h["via"])
             L.append(f"  {i}. {out.secs(a['t_us'], lo)}  {a['lane']}  {va} {common.end_text(a)}{_stay(h, i == 1)}")
+            if h.get("alt"):
+                L.append(f"       ⚠ 这一组交出的次数和进来的份数一样（{h['alt']['n']}）：按先后配，第 {h['alt']['k']} 份该配第 {h['alt']['k']} 次交出"
+                         f"（{out.secs(h['alt']['t_us'], lo)}），不是这一次——可能接到了别的那一份")
             L.append(f"       ─ {h['via']} · 录到（这一组 ×{h['n']} 里的第 {h['k']} 次）· {_gap(b['t_us'] - a['t_us'])} →")
             L.append(f"     {out.secs(b['t_us'], lo)}  {b['lane']}  {vb} {common.end_text(b)}")
     if st["reason"] == "none":

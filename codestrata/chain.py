@@ -11,7 +11,8 @@
       2. 否则这一列这期间第一次交出（录到的交接）→ 跟过去；
       3. 都没有就停下。
     跳本身：录到的是 recorded，--link 配的是 order。在一列里从进来到交出（stay）：交出发生在起点那次调用 / --link 落到的那次调用里面、
-    或者 A 函数那次调用包着收到的那一处的是 ancestor；其余是 time（进来之后、下一份进来之前的第一次）。
+    或者 A 函数那次调用包着收到的那一处的是 ancestor；其余是 time（进来之后、下一份进来之前的第一次）。time 接的那一组交出的次数正好和
+    进来的份数一样、按先后配（第 k 份配第 k 次）却是另一次时，写在 alt 里（不改走法）。
 --link 'A列:FN => B列:FN'（用户 10-10 定：没录到的跳要 agent 显式给）：这段时间里 A 边第 k 次调用配 B 边第 k 次。两边次数不等、
     或者有一次 B 早于同一次的 A，就拒绝（link_mismatch），候选是 B 列里配得上的函数。
 停下（stop.reason）：
@@ -138,6 +139,7 @@ class Walker:
         self.side: dict[int, tuple] = {}             # 交接下标 → (起列, 终列)
         self.out: dict[str, list] = {}               # 列 → [(交出的时刻, 交接下标)]（整个 run）
         self.arr: dict[tuple, list] = {}             # (通道, 起列, 终列) → [收到的时刻]（交出在这段时间里的）
+        self.dep: dict[tuple, list] = {}             # (通道, 起列, 终列) → [(交出的时刻, 交接下标)]（交出在这段时间里的）
         for hx, h in enumerate(self.hs):
             fl, tl_ = tl.get((h["from"][0], h["from"][1])), tl.get((h["to"][0], h["to"][1]))
             if fl is None or tl_ is None or fl == tl_ or h["from"][3] is None or h["to"][3] is None:
@@ -146,7 +148,8 @@ class Walker:
             self.out.setdefault(fl, []).append((h["from"][3], hx))
             if lo <= h["from"][3] <= hi:
                 self.arr.setdefault((h["via"], fl, tl_), []).append(h["to"][3])
-        for v in (*self.out.values(), *self.arr.values()):
+                self.dep.setdefault((h["via"], fl, tl_), []).append((h["from"][3], hx))
+        for v in (*self.out.values(), *self.arr.values(), *self.dep.values()):
             v.sort()
         self._by_key: dict[str, dict] = {}           # 列 → {键下标: 这段时间里的每一次调用}
         self._counts: dict[str, Counter] = {}
@@ -388,6 +391,12 @@ class Walker:
         hop = {"kind": "recorded", "via": h["via"], "group": _linkgroups.group_id("handoff", h["via"], self.alias(fl), self.alias(tl)),
                "basis": "recorded", "stay": "ancestor" if self._inside(h["from"][0], h["from"][2], pos.call) else "time",
                "k": min(k, len(arr) - 1) + 1, "n": len(arr), "from": self._raw_end(fl, h["from"], ea), "to": self._raw_end(tl, h["to"], eb)}
+        # 按时间接的（进来之后第一次交出）和按先后配的（这一组交出的次数和进来的份数一样时，第 k 份配第 k 次）不是同一次：
+        # 照旧按时间走（用户 10-10 定的），把按先后的那次写出来——流水线上前一份的结果常在这一份进来之后才交出
+        dep = self.dep.get((h["via"], fl, tl)) or []
+        if hop["stay"] == "time" and len(dep) == pos.n and 0 < pos.k <= len(dep) and dep[pos.k - 1][1] != hx:
+            mine = next((i for i, (_, x) in enumerate(dep) if x == hx), None)
+            hop["alt"] = {"basis": "order", "k": pos.k, "t_us": dep[pos.k - 1][0], "n": len(dep), "picked_k": None if mine is None else mine + 1}
         nxt = Pos(tl, t2, arr[j] if j < len(arr) else self.hi, len(arr), hop["k"],
                   at=(h["to"][0], h["to"][2]) if h["to"][2] >= 0 else None, fn=hop["to"]["fn"])
         return hop, nxt, t

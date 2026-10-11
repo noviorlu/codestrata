@@ -109,7 +109,7 @@ RUN   := 完整 run id | case 名
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
-| `link_unused` / `link_recorded` | links --follow：给的 `--link` 没用上（链没走到 A 列，或者走到时没调 A 函数）/ 这一跳其实录到了，可以不给 |
+| `link_unused` / `link_recorded` / `order_differs` | links --follow：给的 `--link` 没用上（链没走到 A 列，或者走到时没调 A 函数）/ 这一跳其实录到了，可以不给 / 某一跳按时间接的交出和按先后配的不是同一次（可能接到了别的那一份） |
 
 ## 错误码和退出码
 
@@ -191,6 +191,8 @@ RUN   := 完整 run id | case 名
   3. 都没有就停下。
 - 每一跳写明依据（`basis`）：录到的是 `recorded`，`--link` 配的是 `order`。在一列里从进来到交出（`stay`）：交出就在起点那次调用 / `--link` 落到的那次调用里面、
   或者 A 函数那次调用包着收到的那一处的是 `ancestor`，其余是 `time`（进来之后、下一份进来之前的第一次）。
+  `time` 接的那一组交出的次数正好和进来的份数一样、按先后配（第 k 份配第 k 次）却是另一次时，写在这一跳的 `alt` 里、给警告 `order_differs`，链照旧按时间走
+  （流水线上一份的结果常在下一份进来之后才交出：并发几个请求时就会这样）。
 - `--link`：没录到的一跳（共享的 dict / deque、管道……）要 agent 读过代码后显式给，可以给几次。这段时间里 A 边第 k 次调用配 B 边第 k 次；
   两边次数不等、或者有一次 B 早于同一次的 A，报 `link_mismatch`（退出码 4），候选是 B 列里配得上的函数。两头要是两列。
   攒批的一跳（25 个 token 攒成一块）配不上，从攒好的那一块起走。
@@ -200,7 +202,7 @@ RUN   := 完整 run id | case 名
   和挑出来的 A 函数次数一样、每次都不早于它的标 `fits`；有的话拼一条能直接用的 `--link`（下一步给加上它的命令）。
 - 走出来的链是一个段（`kind: chain`）：每一列待的那段时间（几片，相隔不到 1 ms 的合起来；最后一列取收到之后 1 ms）× 经过的列，带 `ref`，下一步给 `view set`。
 - `data.chain`：`start`（`kind` call / round、`lane`、`fn`、`k`、`n`、`k_lane`、`n_lane`、`t0_us`、`t1_us`）、`hops[]`（`kind` recorded / link、`via`、`group`、`link`、
-  `basis`、`stay`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`）、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
+  `basis`、`stay`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`、`alt`（`basis`、`k`、`t_us`、`n`、`picked_k`））、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
   `candidates`（`a`、`b[]`、`link`））、`total_us`、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`）。
 
 ### 切段

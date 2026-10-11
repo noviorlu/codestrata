@@ -157,6 +157,32 @@ def test_start_forms():
     assert code(lambda: W.start("stage2#1", None)) == "ambiguous_lane"
 
 
+def test_order_differs_is_flagged():
+    """流水线慢一拍：relay 每收到一份，交出去的是上一份的结果（第 k 份进来之后第一次交出是第 k-1 次）。照旧按时间接（第 1 次），
+    但这一组交出的次数和进来的份数一样，按先后配是第 2 次：写在 alt 里"""
+    K2 = ["eng/src.py:1", "eng/src.py:10", "eng/relay.py:1", "eng/relay.py:10", "eng/sink.py:1"]
+    names = dict(zip(K2, ["src_loop", "emit", "relay_loop", "pump", "sink_loop"]))
+    s = Script(K2)
+    s.thread(40, 1, "MainThread", proc="python src.py")
+    s.thread(50, 1, "MainThread", proc="python relay.py")
+    s.thread(60, 1, "MainThread", proc="python sink.py")
+    src, rel, snk = s.call(40, 1, 0, 10_000, 0), s.call(50, 1, 0, 10_000, 2), s.call(60, 1, 0, 10_000, 4)
+    for t in range(500, 9_500, 500):
+        s.call(50, 1, t, 20, 3, parent=rel)
+    for i, t in enumerate((1_000, 2_000, 3_000)):
+        e = s.call(40, 1, t - 10, 50, 1, parent=src)
+        s.handoff("queue", (40, 1, e, t), (50, 1, rel, t + 10))
+        s.handoff("zmq", (50, 1, rel, t + 1_500), (60, 1, snk, t + 1_510))      # 第 i 份的结果在下一份进来之后才交出
+    rd = s.write(tmpdir("cs-chain-"), phases=[["start", 0]])
+    A = segments.analyse(rd, 0, 10_000)
+    W = chain.Walker(A, {}, lambda k: f"{k.split(':')[0]}#{names[k]}" if k in names else k, 0, 10_000)
+    pos, st = W.start("emit#2", None)
+    hs = W.walk(pos, [], (st["t0_us"], st["t1_us"]))["hops"]
+    assert [h["via"] for h in hs] == ["queue", "zmq"] and hs[1]["from"]["t_us"] == 2_500, hs
+    assert hs[1]["alt"] == {"basis": "order", "k": 2, "t_us": 3_500, "n": 3, "picked_k": 1}, hs[1]
+    assert "alt" not in hs[0], hs[0]
+
+
 def test_merge_and_misfit():
     assert chain.merge([(10, 5), (0, 3), (3_500, 3_600), (-50, 2)], 0, 3_550) == [[0, 11], [3_500, 3_550]]
     assert chain.misfit([(1,), (5,)], [(2,), (6,)]) is None
