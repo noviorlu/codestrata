@@ -143,17 +143,25 @@ def parse_range(run: dict, rng: str, end: int | None, bounds: bool = True) -> tu
     if not rng:
         raise CodestrataError("bad_window", "@ 后面是空的", candidates=hint)
     if rng.startswith("t="):
-        body = rng[2:]
-        if "," in body:
-            raise CodestrataError("bad_window", f"多片时间段（{rng}）还不支持", candidates=hint)
-        m, ms = _T_US.match(body), _T_S.match(body)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-        elif ms:
-            a, b = _secs(ms.group(1)), _secs(ms.group(2))
-        else:
-            raise CodestrataError("bad_window", f"时间段写成 t=起-止（微秒）或 t=78.024s-80.492s：{rng}", candidates=hint)
-        return _window(run, a, b, end if bounds else None, rng, hint)
+        out: list[tuple[int, int]] = []
+        for body in rng[2:].split(","):          # 几片（links --follow 的链）：逗号隔开，按先后排好、重叠和挨着的合成一片
+            m, ms = _T_US.match(body), _T_S.match(body)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+            elif ms:
+                a, b = _secs(ms.group(1)), _secs(ms.group(2))
+            else:
+                raise CodestrataError("bad_window", f"时间段写成 t=起-止（微秒）或 t=78.024s-80.492s，几片用逗号隔开：{rng}",
+                                      candidates=hint)
+            out += _window(run, a, b, end if bounds else None, rng, hint)[1]
+        out.sort()
+        merged: list[tuple[int, int]] = []
+        for a, b in out:
+            if merged and a <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return "t=" + ",".join(f"{a}-{b}" for a, b in merged), merged
     name = next((n for n in sorted(names, key=len, reverse=True) if rng == n or rng.startswith(n + "+")), None)
     if name is None:
         raise CodestrataError("phase_not_found", f"run {run['id']} 里没有阶段 {rng!r}" + _phase_text(run, end),

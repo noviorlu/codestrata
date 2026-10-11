@@ -19,7 +19,7 @@ def add_args(p) -> None:
 REF_GRAMMAR = """\
 REF = '页面地址' | RUN[@范围][/列,…]
   RUN   完整 run id 或 case 名（case 取最新一次录完的）。不收 run id 前缀
-  范围  阶段名 | t=起-止（从 run 起点算的微秒；也收 t=78.024s-80.492s）| 阶段+起s-止s（从阶段开头算，如 serving+0.614s-3.082s）
+  范围  阶段名 | t=起-止（从 run 起点算的微秒；也收 t=78.024s-80.492s；几片逗号隔开）| 阶段+起s-止s（从阶段开头算，如 serving+0.614s-3.082s）
   列    进程别名/线程（stage1/MainThread）；只写进程 = 这个进程的所有列；进程/*、*/线程、*/gpu* 也行；逗号隔开几个
   例    run_single_prompt@serving    20261001-170349-run_single_prompt@t=78024146-80491567/stage1
   页面地址就是用户浏览器地址栏里那串（http://127.0.0.1:端口/#run=…），原样当 REF 用"""

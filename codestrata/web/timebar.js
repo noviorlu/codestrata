@@ -1,10 +1,11 @@
 /* 时间轴：阶段按钮 + 一条从 run 开头到结尾的时间条（阶段是条上一段段的颜色，切走又切回来的阶段有几段）。
  * 点按钮、点条上的一段 = 选这个阶段；拖两头的把手、拖中间平移、在空白处拖出一段 = 选一个时间段
  * （「t=起-止」，微秒，和阶段名放在同一个位置：run 引用的 @ 后面）。拖到和一个阶段、或者整个 run 对得上
- * 就当成它。没录时序事件的 run 只能选阶段（时间段要按事件现算）。
+ * 就当成它。没录时序事件的 run 只能选阶段（时间段要按事件现算）。几片的时间段（「t=起-止,起-止」，agent 给的链）每片画一块、
+ * 没有把手；在条上拖出一段就换成那一段。
  * 条可以缩放：滚轮以鼠标处为中心缩放、Shift+滚轮平移；点阶段按钮时自动放大到这个阶段（前后各留一点）。
  * 用法：CS.timebar.render(容器, {run, names: 阶段名, segs: [[名字, 起, 止]…], end（0：不知道多长，只有按钮）,
- *                                 phase, window, canDrag, tips: {阶段名: 按钮提示}, onSelect(阶段名 | 't=起-止' | '')}) */
+ *                                 phase, window, slices（几片时的各片）, canDrag, tips: {阶段名: 按钮提示}, onSelect(阶段名 | 't=起-止' | '')}) */
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
@@ -23,18 +24,25 @@ window.CS = window.CS || {};
   var pending = null, refocus = null;
   function cancel() { clearTimeout(pending); pending = null; }
 
+  /* 「t=起-止」（几片的逗号隔开）→ [[起, 止]…]；不是时间段是 null */
+  function slices(ref) {
+    var m = /^t=(\d+-\d+(?:,\d+-\d+)*)$/.exec(ref || '');
+    return m ? m[1].split(',').map(function (x) { var p = x.split('-'); return [+p[0], +p[1]]; }) : null;
+  }
+  /* 时间段的起止：几片时是第一片的开头到最后一片的结尾 */
   function parse(ref) {
-    var m = /^t=(\d+)-(\d+)$/.exec(ref || '');
-    return m ? [+m[1], +m[2]] : null;
+    var s = slices(ref);
+    return s ? [s[0][0], s[s.length - 1][1]] : null;
   }
 
   CS.timebar = {
     parse: parse,
+    slices: slices,
 
-    /* 横幅、按钮上给人看的：阶段名原样；时间段写成「起 – 止 s」 */
+    /* 横幅、按钮上给人看的：阶段名原样；时间段写成「起 – 止 s」，几片的写「N 片：起 – 止 s」 */
     label: function (ref) {
-      var w = parse(ref);
-      return w ? sec(w[0], w[1] - w[0]) + ' – ' + sec(w[1], w[1] - w[0]) : ref || '';
+      var w = parse(ref), n = w ? slices(ref).length : 0;
+      return w ? (n > 1 ? n + ' 片：' : '') + sec(w[0], w[1] - w[0]) + ' – ' + sec(w[1], w[1] - w[0]) : ref || '';
     },
 
     /* 一个阶段（可能好几段）从哪到哪；'' 是整个 run */
@@ -74,7 +82,9 @@ window.CS = window.CS || {};
       var self = this, segs = o.segs || [], names = o.names || [], tips = o.tips || {};
       // 地址里的时间段可能超出 run 的终点（手改的、run 重新整理过）：条放长到能画出它
       var end = o.end && Math.max(o.end, o.window ? o.window[1] : 0);
-      var ref = o.window ? 't=' + o.window[0] + '-' + o.window[1] : o.phase || '';
+      var sl = o.window && o.slices && o.slices.length > 1 ? o.slices : null;     // 几片：每片画一块，不能拖把手
+      var ref = sl ? 't=' + sl.map(function (s) { return s[0] + '-' + s[1]; }).join(',')
+        : o.window ? 't=' + o.window[0] + '-' + o.window[1] : o.phase || '';
       var cur = o.window ? o.window.slice() : this.extent(segs, o.phase, end);
       var view = views[o.run];
       if (!view || !(view[1] > view[0]) || view[1] > end) view = views[o.run] = this.fit(cur[0], cur[1], end);
@@ -95,8 +105,12 @@ window.CS = window.CS || {};
               + '" title="' + esc(s[0]) + '：' + sec(s[1], end) + ' – ' + sec(s[2], end)
               + (ix < 0 ? '（这个阶段没录到调用，不能单独选）' : '') + '"><i>' + esc(s[0]) + '</i></span>';
           }).join('')
-        + (o.canDrag ? '<span class="tsel' + (o.window ? ' win' : '') + '"><span class="th l" tabindex="0" role="slider" aria-label="时间段的起点"></span>'
-            + '<span class="th r" tabindex="0" role="slider" aria-label="时间段的终点"></span></span>' : '')
+        + (!o.canDrag ? '' : sl ? sl.map(function (s) {
+            var w = s[1] - s[0];                        // 小数位按这一片的长度（一片可能不到 1 ms）
+            return '<span class="tsel win multi" title="' + esc('这一片：' + sec(s[0], w) + ' – ' + sec(s[1], w) + '（' + sec(w, w) + '）'
+              + '。在条上拖出一段就换成那一段') + '"></span>'; }).join('')
+          : '<span class="tsel' + (o.window ? ' win' : '') + '"><span class="th l" tabindex="0" role="slider" aria-label="时间段的起点"></span>'
+            + '<span class="th r" tabindex="0" role="slider" aria-label="时间段的终点"></span></span>')
         + '</span><span class="tlab"></span>'
         + '<button class="chip tzoom" hidden title="时间条放大了：点这里看整个 run">全程</button>');
       [].forEach.call(box.querySelectorAll('.tph'), function (x) {
@@ -109,6 +123,7 @@ window.CS = window.CS || {};
       });
       if (!end) return;
       var bar = box.querySelector('.tbar'), sel = box.querySelector('.tsel'), lab = box.querySelector('.tlab');
+      var selEls = box.querySelectorAll('.tsel');
       var zoom = box.querySelector('.tzoom'), segEls = box.querySelectorAll('.tseg');
 
       function pct(t) { return 100 * (t - view[0]) / (view[1] - view[0]); }
@@ -120,21 +135,28 @@ window.CS = window.CS || {};
           el.style.left = pct(l) + '%'; el.style.width = (pct(r) - pct(l)) + '%';
         });
         var span = Math.max(0, b - a);
-        if (sel) {
-          var l = Math.max(a, view[0]), r = Math.min(b, view[1]);
-          sel.hidden = r < l;
-          sel.style.left = pct(l) + '%'; sel.style.width = Math.max(0.4, pct(r) - pct(l)) + '%';
+        // 几片、又不在拖：每片一块；拖的时候第一块跟着手走、别的藏起来
+        var parts = sl && a === cur[0] && b === cur[1] ? sl : [[a, b]];
+        [].forEach.call(selEls, function (el, i) {
+          var p = parts[i], l = p ? Math.max(p[0], view[0]) : 0, r = p ? Math.min(p[1], view[1]) : -1;
+          el.hidden = r < l;
+          el.style.left = pct(l) + '%'; el.style.width = Math.max(0.4, pct(r) - pct(l)) + '%';
+        });
+        if (sel && !sl) {
           [[sel.querySelector('.l'), a], [sel.querySelector('.r'), b]].forEach(function (x) {
             x[0].hidden = x[1] < view[0] || x[1] > view[1];
             x[0].setAttribute('aria-valuemin', '0'); x[0].setAttribute('aria-valuemax', String(Math.round(end)));
             x[0].setAttribute('aria-valuenow', String(Math.round(x[1]))); x[0].setAttribute('aria-valuetext', sec(x[1], span));
           });
         }
-        var full = a <= 0 && b >= end;
+        var full = a <= 0 && b >= end && parts.length < 2;
         lab.textContent = full ? '全程 ' + sec(end, end)
+          : parts.length > 1 ? parts.length + ' 片：' + sec(a, span) + ' – ' + sec(b, span)
+            + '（共 ' + sec(parts.reduce(function (n, p) { return n + p[1] - p[0]; }, 0), span) + '）'
           : (o.phase && !o.window && a === cur[0] && b === cur[1] ? o.phase + '：' : '')
             + sec(a, span) + ' – ' + sec(b, span) + '（' + sec(span, span) + '）';
-        lab.title = o.window ? '选的是一段时间：调用次数按这段时间里的时序事件算（2026-10-01 之前录的 run 只有跨文件的调用）' : '';
+        lab.title = parts.length > 1 ? '选的是几片时间（agent 给的链）：调用次数只算这几片里的；在条上拖出一段就换成那一段'
+          : o.window ? '选的是一段时间：调用次数按这段时间里的时序事件算（2026-10-01 之前录的 run 只有跨文件的调用）' : '';
         zoom.hidden = view[0] <= 0 && view[1] >= end;
       }
       function pick(r) { if (r !== ref) select(r); else layout(cur[0], cur[1]); }
@@ -179,7 +201,7 @@ window.CS = window.CS || {};
       bar.onpointerdown = function (ev) {
         if (ev.button !== 0) return;
         var h = ev.target.closest('.th'), x0 = ev.clientX, t0 = at(ev), a = cur[0], b = cur[1], moved = false;
-        var mode = h ? (h.classList.contains('l') ? 'l' : 'r') : sel && ev.target.closest('.tsel') ? 'move' : 'new';
+        var mode = h ? (h.classList.contains('l') ? 'l' : 'r') : sel && !sl && ev.target.closest('.tsel') ? 'move' : 'new';
         cancel();
         bar.setPointerCapture(ev.pointerId);
         hold();

@@ -67,6 +67,22 @@ def scenario(d, old: bool = False):
     return b.write(d, phases=[["start", 0], ["serving", 400]], old=old), run
 
 
+def test_multi_slice_calls():
+    """几片的时间段（t=a-b,c-d）：每对调用的次数正好是各片加起来（合成一行的连续调用按片摊），时间段的计数（window_counts）也是"""
+    import json as _json
+    from codestrata import seq
+    rd, _ = scenario(tmpdir("cs-seg-"))
+    run = _json.loads((rd / "run.json").read_text())
+    one, two, both = (seq.phase_calls(rd, run, w) for w in ("t=1000-9000", "t=20000-31000", "t=1000-9000,20000-31000"))
+    assert seq.window_segments(run, rd, "t=20000-31000,1000-9000")[0] == [(1000, 9000), (20000, 31000)]
+    keys = set(one["calls"]) | set(two["calls"])
+    assert keys == set(both["calls"]) and all(
+        both["calls"][k][2] == (one["calls"].get(k) or [0, 0, 0])[2] + (two["calls"].get(k) or [0, 0, 0])[2] for k in keys), keys
+    assert both["window"] == [1000, 31000] and both["span_us"] == 8000 + 11000, (both["window"], both["span_us"])
+    c1, c2, c12 = (seq.window_counts(rd, run, w)["funcs"] for w in ("t=1000-9000", "t=20000-31000", "t=1000-9000,20000-31000"))
+    assert c12 == {k: c1.get(k, 0) + c2.get(k, 0) for k in set(c1) | set(c2)}, (c12, c1, c2)
+
+
 def test_rounds_and_kinds():
     """轮头按票选（一轮调两次的 has_requests 不当轮头）；超长的轮不算空转；只在轮询的列是 poll；合成一行的叶子不当轮头；
     同名的 5 条线程是 threads；同名进程按启动先后编号"""

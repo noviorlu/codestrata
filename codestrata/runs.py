@@ -828,7 +828,7 @@ def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> t
     counts, names = load_counts(rd, None if win else phase, with_names=True)
     if win:                                      # 时间段：次数按这段时间里的时序事件现算（2026-10-01 之前录的只有跨文件的调用）；
         try:                                     # 调用行按整个 run 记的比例摊（span 不记调用行）
-            counts = _seq.window_counts(rd, run, *win, ref_lines=counts.get("func_lines"))
+            counts = _seq.window_counts(rd, run, phase, ref_lines=counts.get("func_lines"))
         except LookupError as e:
             raise SystemExit(str(e)) from None
         except (OSError, ValueError) as e:
@@ -878,10 +878,10 @@ def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> t
             "env_inherited": {k: _scrub(v) for k, v in (run.get("env_inherited") or {}).items()},
             "phase_at": (run.get("rec") or {}).get("phase_at") or [],
             "phase_log": run.get("phase_log") or [],
-            # 时间轴（页面上的阶段条）：到哪一刻为止、各阶段的一段段；选的是时间段时它的起止
-            # （这时次数按时序事件算：2026-10-01 之前录的只有跨文件的调用）
+            # 时间轴（页面上的阶段条）：到哪一刻为止、各阶段的一段段；选的是时间段时它的起止（几片时从第一片的开头到最后一片的结尾）
+            # 和各片（这时次数按时序事件算：2026-10-01 之前录的只有跨文件的调用）
             "end_us": end, "timeline": [list(s) for s in _seq.phase_segments(run, end)] if end else [],
-            "window": list(win) if win else None}
+            "window": [win[0][0], win[-1][1]] if win else None, "slices": [list(s) for s in win] if win else None}
     return hot, meta
 
 

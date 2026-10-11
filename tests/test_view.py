@@ -207,7 +207,7 @@ def http_page(port):
 
 def test_serve_registration_and_checks():
     """serve 起来登记、SIGTERM 退出时删掉；/api/app 有 features；/api/view… 要 X-Codestrata 头、POST 要 application/json；
-    推来的视图先核对：阶段写错 400 + 候选、不认识的键 400、没有页面 409；进程不在的登记查找时删掉"""
+    推来的视图先核对：阶段写错 400 + 候选、不认识的键 400、几片的时间段照收、写错 400、没有页面 409；进程不在的登记查找时删掉"""
     repo, rid = truth()
     srv, port = serve(repo)
     try:
@@ -226,6 +226,10 @@ def test_serve_registration_and_checks():
         assert code == 400 and d["code"] == "usage", d
         code, d = call(port, "POST", "/api/view", {"view": f"run={rid}@work"})
         assert code == 409 and d["code"] == "no_live_page", d
+        code, d = call(port, "POST", "/api/view", {"view": f"run={rid}@t=1000-2000,5000-6000"})      # 几片（links --follow 的链）照样收
+        assert code == 409 and d["code"] == "no_live_page", d
+        code, d = call(port, "POST", "/api/view", {"view": f"run={rid}@t=1000-2000,x"})
+        assert code == 400 and d["code"] == "bad_window", d
         # 一个进程已经不在的登记：查找时删掉
         dead = serves.register(1, 999_999_9, repo, "x")
         assert dead.exists() and all(r["port"] != 1 for r in serves.listed()) and not dead.exists()

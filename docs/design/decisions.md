@@ -473,14 +473,17 @@
 - 放弃的方案：整行算在开始时刻。
 - 在哪：`seq.py` 的 `calls_in`（`phase_calls` 用它）；测试 `test_calls_in_and_run_end`。
 
-### 任意时间段写成 `@t=起-止`，和阶段名放在同一个位置
+### 任意时间段写成 `@t=起-止`（几片用逗号隔开），和阶段名放在同一个位置
 - 决定：时间轴上拖出的一段时间写成 REF 的 `@t=起-止`（微秒），CLI 的 `--hot`、serve 的缓存键、页面地址都照走；次数由 `seq.window_counts` 从这段时间的调用表（`seq.phase_calls`）加起来，
   形状和 counts.json.gz 一样，后面的 `remap`、`to_package_graph` 不分两种。拖到和整个 run 或某个阶段差不到 4 像素就当成它。
   时间轴终点取最后一条 span 的结束、最后一次切阶段、run 的时长三者最大的。
 - 为什么：不另开通道。counts.json.gz 是按阶段切的，分不出任意一段时间，带时刻的只有时序事件。吸附：拖回原样不会凭空多出一个时间段。
   只按 span 定终点时，被 SIGTERM / SIGKILL 停掉的服务最后的调用没返回，最后一个阶段会倒着走。代价：时间段的次数只算记进时序事件的调用（线程入口被调的那一次、递归调自己的不记；2026-10-01 之前录的 run 只记了跨文件的，横幅上写明）。
 - 放弃的方案：阶段之外另设时间窗参数。理由未另外记录。
-- 在哪：`runs.py` 的 `resolve`、`load`；`seq.py` 的 `parse_window`、`window_counts`、`run_end`、`phase_segments`；`web/timebar.js` 的 `snap`。
+- 几片（`@t=起-止,起-止`）：`links --follow` 走出来的链是「几片时间 × 经过的列」，要能原样交给页面。各片按先后排好、重叠和挨着的合成一片；
+  调用表按片分别算再加起来（`phase_calls` 本来就按阶段的几段算），meta 的 `window` 是第一片的开头到最后一片的结尾、`slices` 是各片；
+  时间条每片画一块、不能拖把手（几片没有「两头」），在条上拖出一段就换成那一段。切段、`steps`、`links --follow` 看的是从第一片的开头到最后一片的结尾。
+- 在哪：`runs.py` 的 `resolve`、`load`；`seq.py` 的 `parse_window`、`window_counts`、`run_end`、`phase_segments`；`ref.py` 的 `parse_range`；`web/timebar.js` 的 `snap`、`slices`。
 
 ### 每条线程的调用表读一遍、缓存，按切面归很多次
 - 决定：`seq.phase_calls` 把一段时间（阶段、时间段、整个 run）里的 span 读一遍，聚合成（进程, 线程, 调用方键, 被调方键）→ 首次 / 末次 / 次数 /

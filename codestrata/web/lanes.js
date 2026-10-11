@@ -541,7 +541,8 @@ window.CS = window.CS || {};
       });
       if (!L.lanes.length) {                         // 这一段里哪条线程都没调到仓库里的代码：说一声，别留一张白图
         var w = L.window, msg = el('text', { x: 12, y: 30, class: 'ln-empty' });
-        msg.textContent = '这一段' + (w ? '（长 ' + ((w[1] - w[0]) / 1e6).toFixed(3) + ' s）' : '')
+        var len = (L.segs && L.segs.length ? L.segs : w ? [w] : []).reduce(function (n, s) { return n + s[1] - s[0]; }, 0);
+        msg.textContent = '这一段' + (w ? '（长 ' + (len / 1e6).toFixed(3) + ' s）' : '')
           + '里哪条线程都没调到仓库里的代码：把时间段拖长一点，或者选一个阶段';
         svg.appendChild(msg);
         svg.setAttribute('viewBox', '0 0 720 60'); CS.graph.G.width = 720; CS.graph.G.height = 60;
