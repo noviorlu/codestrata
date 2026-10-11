@@ -184,6 +184,27 @@ def test_commands_on_toy():
     assert any(x["kind"] == "spawn" for x in j["data"]["links"]), [x["id"] for x in j["data"]["links"]]
 
 
+def test_follow_on_toy():
+    """links --follow：put_job 里放进队列（录到的，就在这次调用里）→ 另一条线程取到；段的 REF 带着经过的列；--link 不配 --follow 报 usage；
+    --link 两边次数不等报 link_mismatch（退出码 4）"""
+    repo, rid = truth()
+    j = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))
+    ch = j["data"]["chain"]
+    assert j["ok"] and j["algo"] == "chain/1" and ch["start"]["fn"].endswith("#put_job"), j
+    h = ch["hops"][0]
+    assert (h["kind"], h["via"], h["stay"]) == ("recorded", "queue", "ancestor") and h["from"]["fn"].endswith("#put_job"), h
+    seg = ch["segment"]
+    assert seg["kind"] == "chain" and seg["ref"].startswith(f"{rid}@t=") and seg["ref"].endswith("/" + ",".join(seg["lanes"])), seg
+    r = subprocess.run([PY, "-m", "codestrata", "links", "-C", str(repo), rid, "--link", "a/b:f => c/d:g", "--json"],
+                       capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 2 and one_json(r)["error"]["code"] == "usage", r.stdout
+    a, b = h["from"]["lane"], h["to"]["lane"]
+    r = subprocess.run([PY, "-m", "codestrata", "links", "-C", str(repo), rid, "--follow", "put_job#1", "--link",
+                        f"{a}:put_job => {b}:{h['to']['fn'].partition('#')[2]}", "--json"], capture_output=True, text=True, cwd=HERE.parent)
+    j = one_json(r)
+    assert r.returncode == 4 and j["error"]["code"] == "link_mismatch" and "次数不等" in j["error"]["msg"], j    # put_job 调了几次，取只有一次
+
+
 def test_old_run_refused_by_commands():
     """老 run：segments / steps 报 no_handoffs（退出码 4），下一步给 lanes 和 path（还能看原始的调用）"""
     repo, rid = truth()

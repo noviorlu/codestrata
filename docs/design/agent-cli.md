@@ -105,6 +105,7 @@ RUN   := 完整 run id | case 名
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
+| `link_unused` / `link_recorded` | links --follow：给的 `--link` 没用上（链没走到 A 列，或者走到时没调 A 函数）/ 这一跳其实录到了，可以不给 |
 
 ## 错误码和退出码
 
@@ -170,12 +171,33 @@ RUN   := 完整 run id | case 名
 - 函数的写法（`--head`、`--with`）：`路径#限定名`、限定名、唯一的名字；对不上 `item_not_found`、对上几个 `ambiguous_item`，都带候选。
 - 认不出主循环报 `no_loop`，候选是这一列调得最多的函数（拿来给 `--head`）。
 
-### `codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] [--json]`
+### `codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] [--follow 起点 [--link 'A列:FN => B列:FN' …]] [--json]`
 - 列之间的连线（和页面的分列同一套），按（种类, 通道, 起列, 终列）合成组，id 是 `l:种类|通道|起列|终列`（和 `explain` 讲的是同一份组；
   页面上画的一条再加 `|起节点|终节点`，页面的选中和时间顺序编号都这么写，`explain` 也认）；
   每组给次数、首末时刻、两头的（函数, 行）有几种、次数最多的那种；放 / 取在仓库外的代码里时，函数是当时栈底的仓库函数（标出来）。
   `--list` 每组列出各种两头（`#k`，`explain '组#k'` 讲第 k 种）。默认只看 handoff，最多 20 组。
 - `data.links[]`：`id`、`kind`、`via`、`from`、`to`、`n`、`first_us`、`last_us`、`cross`、`pairs[]`（`from` / `to`：`fn`、`file`、`line`、`outside`；`n`、`first_us`）、`n_pairs`。
+
+**`--follow 起点 [--link 'A列:FN => B列:FN' …]`：顺着交接走一条链**（`chain.py`，信封带 `algo` `chain/1`）
+- 起点：`列#k`（这一列主循环的第 k 轮，轮号同 `steps`）；`FN#k`（这段时间里第 k 次调用 FN，从 1 数；REF 带了列时只数这几列）；`列:FN#k`（只数这一列的）。
+- 在一列里走的是「这一份」：从进来（起点：那一轮 / 那次调用开始；之后：收到的那一刻）到同一路的下一份进来之前（起点：这一轮结束 /
+  这一列下一次调用 FN；录到的交接：同一组的下一次收到；`--link`：B 边的下一次调用）。这期间：
+  1. 有 `--link` 的 A 边是这一列：A 函数这期间第一次调用（正包着收到那一刻的也算）是这一列的第 j 次，就跳到 B 列 B 函数的第 j 次；
+  2. 否则跟这一列这期间第一次交出（录到的交接）；
+  3. 都没有就停下。
+- 每一跳写明依据（`basis`）：录到的是 `recorded`，`--link` 配的是 `order`。在一列里从进来到交出（`stay`）：交出就在起点那次调用 / `--link` 落到的那次调用里面、
+  或者 A 函数那次调用包着收到的那一处的是 `ancestor`，其余是 `time`（进来之后、下一份进来之前的第一次）。
+- `--link`：没录到的一跳（共享的 dict / deque、管道……）要 agent 读过代码后显式给，可以给几次。这段时间里 A 边第 k 次调用配 B 边第 k 次；
+  两边次数不等、或者有一次 B 早于同一次的 A，报 `link_mismatch`（退出码 4），候选是 B 列里配得上的函数。两头要是两列。
+  攒批的一跳（25 个 token 攒成一块）配不上，从攒好的那一块起走。
+- 停下（`stop.reason`）：`none`（这期间没交出，也没有用得上的 `--link`）、`range`（收到的那一刻出了这段时间）、`hops`（走了 40 跳）。
+  `none` 时给这一列下一次交出（时刻、通道、到哪列，`basis` 是 `time`：不一定是同一份数据，不往下走）和 `--link` 的候选：
+  A 边是这一列这期间跑的函数（`per_item`：一份一次），B 边是同一个进程里（不够再别的进程）接下来先干活的几列各自先跑的函数（空转、在等的轮里的和常规的不算），
+  和挑出来的 A 函数次数一样、每次都不早于它的标 `fits`；有的话拼一条能直接用的 `--link`（下一步给加上它的命令）。
+- 走出来的链是一个段（`kind: chain`）：每一列待的那段时间（几片，相隔不到 1 ms 的合起来；最后一列取收到之后 1 ms）× 经过的列，带 `ref`，下一步给 `view set`。
+- `data.chain`：`start`（`kind` call / round、`lane`、`fn`、`k`、`n`、`k_lane`、`n_lane`、`t0_us`、`t1_us`）、`hops[]`（`kind` recorded / link、`via`、`group`、`link`、
+  `basis`、`stay`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`）、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
+  `candidates`（`a`、`b[]`、`link`））、`total_us`、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`）。
 
 ### 切段
 

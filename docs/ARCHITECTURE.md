@@ -116,14 +116,15 @@ flowchart LR
 | `funcref.py` | 61 | 命令行里写的函数（限定名、路径#限定名、唯一的名字）→ trace 的键；对不上 / 对上几个时给候选；没录到的在 scan 的索引里找（`resolve_symbol`） |
 | `finder.py` | 96 | find：按名字找函数 / 类 / 文件 / 目录（完全一样 > 前缀 > 子串、通配），每个节点在各列的次数和时刻，类 / 文件 / 目录合起来 |
 | `explain.py` | 450 | explain 的原料：一组交接里各种两头和挑出的那种的第一次（两头的代码原文、按 ast 找的所在分支、放 / 取在仓库外时当时还没返回的仓库调用）、函数的签名和 docstring、span 的调用链、之前最近收到的交接（inferred: time）、scan 的说法；函数的谁调它 / 它调谁；类（合它的方法）；切面上的一个节点里跑过的函数；列中的一条边 |
-| `linkgroups.py` | 72 | 分列的连线按（种类, 通道, 起列, 终列）合成组、组里各种两头（函数, 行）合起来按次数排：links 列组、explain 讲一组用同一份 |
+| `linkgroups.py` | 82 | 分列的连线按（种类, 通道, 起列, 终列）合成组、组里各种两头（函数, 行）合起来按次数排：links 列组、explain 讲一组用同一份；两头各叫什么（放 / 取、发 / 收……） |
+| `chain.py` | 501 | links --follow 的链：起点（第 k 轮、第 k 次调用）、在一列里「这一份」从进来到交出（下一份进来之前的第一次交出）、录到的跳、`--link` 按先后配和拒绝、停下的原因和 `--link` 的候选、链的时间片；纯计算（输入是 segments.analyse 和 lanes.build 填的每次交接的两头） |
 | `laneorder.py` | 48 | 分列里时间顺序的编号：按视图（收起的进程、开关、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
 | `viewspec.py` | 95 | 视图描述（页面地址 # 后面）的 Python 一侧：解析、规范写法（和 web/view.js 同一套），按一个视图算分列和时间顺序的编号（explain 24、view url） |
 | `laneid.py` | 147 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`、`stage1/gpu0.7`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
 | `errors.py` | 36 | `CodestrataError`：稳定的错误码、候选、下一步、之前的警告；错误码 → 退出码 |
 | `cmdline.py` | 28 | 输出里能原样粘贴的 codestrata 命令（shlex 加引号、带上仓库）和「下一步」的一条 |
 | `confdir.py` | 21 | 配置目录（`$XDG_CONFIG_HOME/codestrata`）和主菜单记得的仓库 |
-| `cli/` | 2405 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view`、`path`、`guide`）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封；`pages`：找开着的页面、和它的 serve 说话（view set / get / back / wait、explain --selected、status） |
+| `cli/` | 2564 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view`、`path`、`guide`；`follow` 是 links --follow 的文字）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封；`pages`：找开着的页面、和它的 serve 说话（view set / get / back / wait、explain --selected、status） |
 | `serve.py` | 598 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`POST /api/view…` 转给 viewhub；起来时登记、SIGTERM 时注销（serves.py）；`BaseHandler` 给 app 复用 |
 | `viewhub.py` | 315 | serve 内存里的信箱：agent 推给页面的视图（核对、交给目标标签页、等页面回话）、页面来问时回报的现状、撤销、等用户改；`/api/view…` 的处理 |
 | `serves.py` | 70 | 开着的 serve 的登记（配置目录下 `serves/<端口>.json`）：写、删、按仓库找（进程不在的删掉） |
@@ -214,6 +215,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 .venv/bin/python tests/test_agentcli.py
 .venv/bin/python tests/test_segments.py
 .venv/bin/python tests/test_segment_shapes.py
+.venv/bin/python tests/test_chain.py
 .venv/bin/python tests/test_view.py
 .venv/bin/python tests/test_package.py   # 要 uv
 .venv/bin/python tests/test_web.py       # 要 node
@@ -247,6 +249,9 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 - `test_segment_shapes.py`：切段在几种会切错的程序形状上（`synth.Script` 按符号写调用，几条线程交错也好写）：定时循环的不流式流水线（前面加不加启动空转切得一样）、
   阻塞取任务的 worker（内层循环不当主循环；认不出主循环的进程列进「没出段」）、先后两次请求（两段）、一个进程两条循环线程、asyncio 里别的 task、
   两个进程交替、只在忙的轮里调的函数和「一轮调两次」的函数不抢轮头。
+- `test_chain.py`：links --follow 的链（`synth.Script` 造的三个进程：写共享内存 → 收的线程积压 → 没录到的一跳 → 主线程下一轮放进队列 → 只跑仓库外代码的发的线程 → zmq）：
+  录到的跳、停下时的候选（A 边一份一次、B 边配得上的拼成 --link）、--link 接到底、--link 盖住录到的跳、配不上的拒绝（次数、先后）、起点的几种写法、时间片合并。
+  命令行在真录的 toy 上测（`test_segments.py` 的 `test_follow_on_toy`）。
 - `bench/segments_scale.py`：切段在 N 行（默认 300 万）的假 run 上的冷启动时间和峰值内存，不是回归测试。
 - `test_package.py`：wheel 里带着 web/ 每个文件；拿整个工作区（连 .gitignore 挡着的）打的 sdist / wheel 里只有包、README、LICENSE、pyproject 和完整的测试，没有 .gitignore 挡着的文件、`.codestrata/`、构建残留；wheel 装进一个干净的 venv 能跑 scan、trace、serve；公开文档里没有内部内容；↻ 的判法写在图例和文档里的「至少 N 次」和 `seq.REPEAT_MIN` 一致；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签、分列的排线 `test_lane_route`、分列的摆放 `test_lane_pack`：框装得下、不越界、不压别的框，改一列不动别的列）。

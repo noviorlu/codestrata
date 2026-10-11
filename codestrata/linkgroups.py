@@ -40,8 +40,18 @@ def find(built: dict, aliases: dict, item: str) -> tuple[dict | None, int | None
     return hit, k, [g["id"] for g in groups(built, aliases, "all") if g["kind"] == kind]
 
 
-def _end(fn: str | None, line: int, outside: bool, d: dict | None) -> dict:
-    """一头：{fn, file, line, outside}"""
+# 两头各叫什么：放 / 取、发 / 收……（links、explain、links --follow 的文字共用）
+VERB = {"queue": ("放", "取"), "asyncio": ("放", "取"), "janus": ("放", "取"), "zmq": ("发", "收"), "shm": ("写", "读"),
+        "thread": ("起", "线程入口"), "exec": ("起", "子进程"), "fork": ("fork", "子进程"),
+        "join": ("被等的", "等到"), "wait": ("被等的", "等到"), "cuda": ("启动", "kernel")}
+
+
+def verbs(via: str) -> tuple[str, str]:
+    return VERB.get(via, ("从", "到"))
+
+
+def end(fn: str | None, line: int, outside: bool, d: dict | None) -> dict:
+    """一头：{fn, file, line, outside}（d 是定义 {f, l, k}，没有就按节点的文件）"""
     return {"fn": fn, "file": (d or {}).get("f") or (fn or "").partition("#")[0] or None, "line": line or None, "outside": bool(outside)}
 
 
@@ -78,7 +88,7 @@ def merged_pairs(members: list[dict]) -> tuple[list[dict], int]:
             k = (pr["a"], pr["la"], pr["b"], pr["lb"], pr["xa"], pr["xb"])
             x = acc.get(k)
             if x is None:
-                acc[k] = x = {"from": _end(pr["a"], pr["la"], pr["xa"], pr.get("da")), "to": _end(pr["b"], pr["lb"], pr["xb"], pr.get("db")),
+                acc[k] = x = {"from": end(pr["a"], pr["la"], pr["xa"], pr.get("da")), "to": end(pr["b"], pr["lb"], pr["xb"], pr.get("db")),
                               "n": 0, "first_us": pr.get("first"), "h": pr.get("h")}
             x["n"] += pr["n"]
             f = pr.get("first")
