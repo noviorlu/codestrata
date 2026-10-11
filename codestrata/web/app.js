@@ -704,7 +704,7 @@ window.CS = window.CS || {};
       var ec = document.getElementById('edgechips');
       ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip() + (this.lanesMode() ? CS.chain.chip() : ''));
       var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), cbtn = ec.querySelector('[data-chain]'), self = this;
-      if (fbtn) fbtn.onclick = function () { CS.focus.clear(); self.edgeChips(); CS.view.changed('lanes'); };
+      if (fbtn) fbtn.onclick = function () { CS.focus.showAll(); self.edgeChips(); CS.view.changed('lanes'); };
       if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
       if (cbtn) cbtn.onclick = function () { CS.chain.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
@@ -889,7 +889,7 @@ window.CS = window.CS || {};
       })[0];
       if (!ln) { CS.viewer.toast('这一段里哪条线程都没调到它'); return Promise.resolve(null); }
       if (CS.focus.hidden(ln.id)) {                 // 只在没选的列里：退回全部列再找（不改搜索栏，只在这里接住）
-        CS.focus.clear();
+        CS.focus.showAll();
         CS.viewer.toast('它在只看几列时没选的列里：已经改回全部列');
       }
       if (lanes.isFolded(ln.pid)) lanes.fold(ln.pid, false);

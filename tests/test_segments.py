@@ -395,5 +395,51 @@ def test_view_url_and_numbered_explain():
     assert c["pick"] == 1 and c["from"]["fn"] == a["from"]["fn"], c
 
 
+def test_procinfo_and_default_lanes():
+    """进程头上的一句（procinfo）：只有它跑的文件在前、占比太低 / 单进程不写、几段写段数、持有请求的写请求；
+    默认收起的列（lanedefault）：收发 socket、只在轮询（调的函数少）、线程池、这段里没调用的收，主线程整段像空转但调了很多别的不收；
+    编号按默认算，lanes=* 是全部、写了没配上也是全部；toy 上 serve 给 procinfo、default_lanes"""
+    from codestrata import laneorder, lanedefault, procinfo
+    seg = lambda pid, a, b, n, own, calls, alone=False: {"pid": pid, "id": "S", "main": f"p{pid}/MainThread", "slices_us": [[a, b]],
+                                                         "rounds": {"n": n}, "evidence": {"own_files": own, "calls": calls, "alone": alone}}
+    S = {"segs": [seg(1, 1_100_000, 1_600_000, 29, [["m/llm.py", 57]], 3000), seg(2, 1_600_000, 4_100_000, 250, [["m/tts.py", 5]], 100),
+                  seg(3, 2_000_000, 2_500_000, 3, [["m/w.py", 500]], 600), seg(3, 3_000_000, 3_500_000, 4, [], 600),
+                  seg(4, 1_000_000, 2_000_000, 9, [["m/x.py", 900]], 900, alone=True)],
+         "reqs": [{"pid": 9, "fn": "e.py#Omni.generate", "t0_us": 900_000, "t1_us": 5_500_000}], "kinds": {}}
+    P = procinfo.summary(S, 1_000_000)
+    assert P[1]["parts"] == ["llm.py", "+0.10→+0.60 s", "29 轮"] and "m/llm.py（57 次调用）" in P[1]["title"], P[1]
+    assert P[2]["parts"] == ["+0.60→+3.10 s", "250 轮"], "只调了 5 次的不写"
+    assert P[3]["parts"] == ["w.py", "+1.00→+2.50 s", "7 轮", "2 段"], P[3]
+    assert P[4]["parts"][0] == "+0.00→+1.00 s", "单进程（没有别的进程可比）不写文件"
+    assert P[9]["parts"] == ["请求 Omni.generate", "−0.10→+4.50 s"], P[9]
+    assert procinfo.summary(None, 0) == {}
+    k = lambda kind, fns=1, i=0, o=0: {"kind": kind, "fns": fns, "in": i, "out": o}
+    S["kinds"] = {"a": k("loop", 40, 1, 3), "b": k("poll", 2), "c": k("poll", 46), "d": k("threads", 33), "e": k("external", 0, 5, 5),
+                  "f": k("few", 2, 1, 1), "g": k("few", 9, 1, 1), "h": k("quiet", 0), "i": k("few", 1, 1, 0)}
+    assert lanedefault.folded(S) == {"b", "d", "e", "f", "h"} and lanedefault.folded(None) == set()
+    L = {"lanes": [{"id": x, "pid": 1, "nodes": {}, "edges": []} for x in "abcdefghi"], "links": [], "window": [0, 1]}
+    assert lanedefault.default_lanes(L, S) == ["a", "c", "g", "i"]
+    assert lanedefault.default_lanes({"lanes": [{"id": "b"}]}, S) is None, "全要收时看全部"
+    L["links"] = [{"kind": "handoff", "via": "queue", "first": 0, "last": 0, "from": {"lane": "a"}, "to": {"lane": "b"}},
+                  {"kind": "handoff", "via": "zmq", "first": 1, "last": 1, "from": {"lane": "b"}, "to": {"lane": "d"}}]
+    L["default_lanes"] = lanedefault.default_lanes(L, S)
+    al = {x: f"p/{x}" for x in "abcdefghi"}
+    assert laneorder.rank_view(L, al, {1: "p"}, [], [], [])["n"] == 1, "默认：两头都收在同一个窄列里的那条不编号"
+    assert laneorder.rank_view(L, al, {1: "p"}, [], [], ["*"])["n"] == 2 and laneorder.rank_view(L, al, {1: "p"}, [], [], ["p/nosuch"])["n"] == 2
+    from codestrata import align, lanes as _lanes, runs as _runs, segments, seq
+    from codestrata.ui import load as _load
+    repo, rid = truth()
+    idx = _load.load_index(repo)
+    run, rd, ph = _runs.resolve(repo, rid)
+    segs, _, end = seq.window_segments(run, rd, ph)
+    lo, hi = segs[0][0], segs[-1][1]
+    nm, hw = segments.head_window(run, end, lo, hi, ph)
+    S = segments.stages(rd, run, nm, lo, hi, align.node_labeler(idx), hw)
+    L = _lanes.build(idx, rd, run, ph, _runs.load_run(repo, idx, run, rd, ph)[0], None)
+    al, keep = _lanes.aliases_of(rd, L), lanedefault.default_lanes(L, S) or []
+    fold = {al[ln["id"]] for ln in L["lanes"] if ln["id"] not in keep}
+    assert "truth-1/req" in fold and "truth-1/MainThread" not in fold and procinfo.summary(S, lo), fold
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), sys.argv[1:]))

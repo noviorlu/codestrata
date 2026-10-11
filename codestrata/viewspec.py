@@ -82,9 +82,11 @@ def fragment(v: View) -> str:
     return "&".join(out)
 
 
-def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, label, proc_order: dict | None):
-    """按这个视图（切面、各列的切面）算分列，和页面取到的一样：(lanes.build 的结果, 列别名, 编号)"""
+def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, label, proc_order: dict | None, stages: dict | None = None):
+    """按这个视图（切面、各列的切面）算分列，和页面取到的一样：(lanes.build 的结果, 列别名, 编号)。
+    stages：这一段的切段（segments.stages）——没写只看的列时默认收起哪几列按它算，和页面一样"""
     from . import cut as _cut
+    from . import lanedefault as _lanedefault
     from . import laneorder as _laneorder
     from . import lanes as _lanes
     aliases0 = _lanes.run_aliases(rd)
@@ -92,5 +94,6 @@ def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, l
     open_ = sorted(_cut.norm_open(idx, v.cut if v.cut is not None else (idx.get("default_open") or [])))
     cuts = {inv[a]: dirs for a, dirs in v.lcut.items() if a in inv}
     L = _lanes.build(idx, rd, run, phase, hot, open_, cuts=cuts or None, proc_order=proc_order)
+    L["default_lanes"] = _lanedefault.default_lanes(L, stages)
     aliases = _lanes.aliases_of(rd, L)
     return L, aliases, _laneorder.rank_view(L, aliases, _lanes.proc_aliases(rd), v.fold, v.hide, v.lanes)

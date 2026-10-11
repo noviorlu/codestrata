@@ -12,7 +12,9 @@
                                   cuts（JSON [{"lanes": [列 id…], "open": [目录…]}…]）是各列自己的切面。
                                   每列的 names 是图上的名字 {id: 字}，合进来的线程原名在 thread_names；aliases 是列别名、
                                   proc_aliases 是进程别名；order 是这个视图（fold 收起的进程、hide 藏起的边、lanes 只看的列）
-                                  里时间顺序的编号（laneorder.py）。进程按这一段里开始干活的先后排（segments.proc_order）
+                                  里时间顺序的编号（laneorder.py）。进程按这一段里开始干活的先后排（segments.proc_order），
+                                  procinfo 是进程头上「它在干什么」的那一句 {pid: {parts, title}}（procinfo.py），
+                                  default_lanes 是没写 lanes= 时默认看的列（转一手的收起，lanedefault.py；null 是全部）
     GET  /api/laneorder?…         同 /api/lanes 的参数，只回 order（收起进程、切开关时不重取整张图）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
@@ -56,8 +58,10 @@ from . import cut as _cut
 from . import errors as _errors
 from . import finder as _finder
 from . import laneorder as _laneorder
+from . import lanedefault as _lanedefault
 from . import lanes as _lanes
 from . import path as _path
+from . import procinfo as _procinfo
 from . import runs as _runs
 from . import segments as _segments
 from . import seq as _seq
@@ -337,6 +341,10 @@ class Handler(BaseHandler):
                     L["chain"] = cinfo
                 L["aliases"] = _lanes.aliases_of(rd, L)
                 L["proc_aliases"] = {str(k): v for k, v in _lanes.proc_aliases(rd).items()}
+                S, lo, multi = self._stages(rd, run, phase)
+                # 进程头上的一句（几片的时间段不写：切段要连续的一段，按整段算的时刻和画着的几片对不上）、默认收起的列
+                L["procinfo"] = {} if multi else {str(pid): v for pid, v in _procinfo.summary(S, lo).items()}
+                L["default_lanes"] = _lanedefault.default_lanes(L, S)
                 with Handler._lock:
                     Handler._lane_cache[key] = L
                     while len(Handler._lane_cache) > 4:
@@ -359,10 +367,21 @@ class Handler(BaseHandler):
 
     def _proc_order(self, rd: Path, run: dict, phase: str | None) -> dict:
         """进程的先后：这一段里开始干活的先后（分列和请求路径同一个；轮头按装着这一段的阶段认，和命令行一样）"""
-        segs, _, end = _seq.window_segments(run, rd, phase)
+        segs, name, hw = self._scope(rd, run, phase)
+        return _segments.proc_order(rd, run, name, segs[0][0], segs[-1][1], self._label(), hw)
+
+    def _stages(self, rd: Path, run: dict, phase: str | None) -> tuple:
+        """这一段的切段（segments.stages，和进程的先后同一份、缓存着）、这一段的开头、是不是几片"""
+        segs, name, hw = self._scope(rd, run, phase)
         lo, hi = segs[0][0], segs[-1][1]
-        name, hw = _segments.head_window(run, end, lo, hi, phase)
-        return _segments.proc_order(rd, run, name, lo, hi, self._label(), hw)
+        return _segments.stages(rd, run, name, lo, hi, self._label(), hw), lo, len(segs) > 1
+
+    @staticmethod
+    def _scope(rd: Path, run: dict, phase: str | None) -> tuple:
+        """这一段的时间片、REF 所在的阶段名、认轮头用的那段（segments.head_window）"""
+        segs, _, end = _seq.window_segments(run, rd, phase)
+        name, hw = _segments.head_window(run, end, segs[0][0], segs[-1][1], phase)
+        return segs, name, hw
 
     def _label(self):
         """键 → 函数级的节点（按 index 缓存一个）"""

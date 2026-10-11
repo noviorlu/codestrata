@@ -167,3 +167,11 @@ def proc_order(c: Ctx, label) -> dict:
     r = c.res
     lo, hi = (r.slices[0][0], r.slices[-1][1]) if r.slices else (0, 0)
     return _segments.proc_order(r.rd, r.run, phase_name(c), lo, hi, label, head_window(c))
+
+
+def stages(c: Ctx, label) -> dict | None:
+    """这一段的切段（segments.stages，和 proc_order 同一份、缓存着）：默认收起哪几列按它算，和页面一样"""
+    from .. import segments as _segments
+    r = c.res
+    lo, hi = (r.slices[0][0], r.slices[-1][1]) if r.slices else (0, 0)
+    return _segments.stages(r.rd, r.run, phase_name(c), lo, hi, label, head_window(c))

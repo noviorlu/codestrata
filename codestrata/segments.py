@@ -129,9 +129,18 @@ def stage_segments(A: dict, lo: int, hi: int, skip_pids: set[int]) -> list[dict]
     files = _files_by_pid(A, lo, hi)
     for n, s in enumerate(segs, 1):
         s["id"] = f"S{n}"
-        s["evidence"] = {"own_files": _own_files(A, s, files), "alone": alone}   # alone：没有别的进程可比，own_files 只是调得最多的
+        own, calls = _own_files(A, s, files)
+        s["evidence"] = {"own_files": own, "calls": calls, "alone": alone}   # alone：没有别的进程可比，own_files 只是调得最多的；calls：这一段这个进程一共几次调用
         s["gaps"] = [] if alone else _gaps(A, s, lo, segs)
     return segs
+
+
+def lane_kinds(A: dict, lo: int, hi: int) -> dict[str, dict]:
+    """每一列在这段时间里是什么样：{列 id: {kind（steps.kind；只在交接两头出现的是 external）, fns（调到几个不同的仓库函数）,
+    in, out（收到 / 交出几次交接）}}"""
+    return {lid: {"kind": ln["kind"], "fns": len({r[5] for _, r in ln["lr"] if lo <= r[0] < hi}),
+                  "in": sum(1 for x in ln["ho_in"] if lo <= x[2] < hi), "out": sum(1 for x in ln["ho_out"] if lo <= x[2] < hi)}
+            for lid, ln in A["lanes"].items()}
 
 
 def _process_segments(A: dict, lns: list[dict], lo: int, hi: int) -> list[dict]:
@@ -200,8 +209,8 @@ def _files_by_pid(A: dict, lo: int, hi: int) -> dict[int, Counter]:
     return out
 
 
-def _own_files(A: dict, s: dict, files: dict[int, Counter], top: int = 3) -> list[list]:
-    """这段时间里这个进程调到、整个 REF 时间里别的进程都没调到的文件，按次数排"""
+def _own_files(A: dict, s: dict, files: dict[int, Counter], top: int = 3) -> tuple[list[list], int]:
+    """这段时间里这个进程调到、整个 REF 时间里别的进程都没调到的文件，按次数排；和这一段这个进程一共几次调用"""
     keys = A["ix"]["keys"]
     a, b = s["slices_us"][0]
     others = set().union(*(set(c) for pid, c in files.items() if pid != s["pid"])) if len(files) > 1 else set()
@@ -209,7 +218,7 @@ def _own_files(A: dict, s: dict, files: dict[int, Counter], top: int = 3) -> lis
     for r in A["rows"].get(s["pid"]) or []:
         if r is not None and len(r) <= 9 and a <= r[0] < b:
             mine[keys[r[5]].rpartition(":")[0]] += r[6]
-    return [[f, n] for f, n in mine.most_common() if f not in others and f != "?"][:top]
+    return [[f, n] for f, n in mine.most_common() if f not in others and f != "?"][:top], sum(mine.values())
 
 
 def _gaps(A: dict, s: dict, lo: int, segs: list[dict]) -> list[dict]:
@@ -281,36 +290,45 @@ def background(A: dict, segs: list[dict]) -> list[str]:
     return sorted(ln["alias"] for ln in A["lanes"].values() if ln["kind"] == "poll" and ln["alias"] not in mains)
 
 
-_ORDER: "OrderedDict[tuple, dict]" = OrderedDict()   # (span 目录, index 的 mtime, 时间段) → proc_order 的结果（最近 8 个）
-_ORDER_LOCK = threading.Lock()
+_STAGES: "OrderedDict[tuple, dict | None]" = OrderedDict()   # (span 目录, index 的 mtime, 时间段, 阶段, 认轮头的那段) → stages 的结果（最近 8 个）
+_STAGES_LOCK = threading.Lock()
 
 
-def proc_order(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict[int, int]:
-    """进程的先后（用户 10-10 定：按这一段里开始干活的先后）：{pid: 开始干活的时刻}。持有请求的进程从请求开始算，
-    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。切段靠不住时是空的（调用方退回按启动的先后）：
-    老 run（没录交接）、这段时间里一次交接都没录到；只有一轮的段不算。phase 是 REF 所在的阶段名
-    按 (run, 时间段) 缓存：分列改切面、收起进程都不再算"""
+def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict | None:
+    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments, "kinds": lane_kinds}，调用方只读。
+    切段靠不住时是 None：老 run（没录交接）、这段时间里一次交接都没录到。phase 是 REF 所在的阶段名。
+    按 (run, 时间段) 缓存：分列改切面、收起进程都不再算；进程的先后（proc_order）、进程头上的一句（procinfo）、
+    默认收起哪几列（lanedefault）用同一份"""
     spans = rd / "events" / "spans"
     try:
         key = (str(spans), (spans / "index.json").stat().st_mtime_ns, lo, hi, phase, head_window)
     except OSError:
-        return {}
-    with _ORDER_LOCK:
-        hit = _ORDER.get(key)
-    if hit is not None:
-        return hit
-    out: dict[int, int] = {}
+        return None
+    with _STAGES_LOCK:
+        if key in _STAGES:
+            return _STAGES[key]
+    out = None
     ho = [] if old_format(rd) else [h for h in _seq.span_index(rd).get("handoffs") or [] if lo <= h["from"][3] < hi]
     if ho:
         A = analyse(rd, lo, hi, head_window=head_window)
         reqs = requests(A, run, phase, lo, hi, label)
-        for q in reqs:
-            out[q["pid"]] = min(out.get(q["pid"], q["t0_us"]), max(q["t0_us"], lo))
-        for sg in stage_segments(A, lo, hi, {q["pid"] for q in reqs}):      # 按开始排好了：同一个进程取最早的一段
-            if sg["rounds"]["n"] >= 2:
-                out.setdefault(sg["pid"], sg["slices_us"][0][0])
-    with _ORDER_LOCK:
-        _ORDER[key] = out
-        while len(_ORDER) > 8:
-            _ORDER.popitem(last=False)
+        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}), "kinds": lane_kinds(A, lo, hi)}
+    with _STAGES_LOCK:
+        _STAGES[key] = out
+        while len(_STAGES) > 8:
+            _STAGES.popitem(last=False)
+    return out
+
+
+def proc_order(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict[int, int]:
+    """进程的先后（用户 10-10 定：按这一段里开始干活的先后）：{pid: 开始干活的时刻}。持有请求的进程从请求开始算，
+    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。切段靠不住时（stages 是 None）是空的
+    （调用方退回按启动的先后）；只有一轮的段不算。phase 是 REF 所在的阶段名"""
+    S = stages(rd, run, phase, lo, hi, label, head_window) or {"reqs": [], "segs": []}
+    out: dict[int, int] = {}
+    for q in S["reqs"]:
+        out[q["pid"]] = min(out.get(q["pid"], q["t0_us"]), max(q["t0_us"], lo))
+    for sg in S["segs"]:                      # 按开始排好了：同一个进程取最早的一段
+        if sg["rounds"]["n"] >= 2:
+            out.setdefault(sg["pid"], sg["slices_us"][0][0])
     return out

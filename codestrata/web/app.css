@@ -661,6 +661,8 @@ body.lanesmode .graphonly{display:none}
 .lnlegend .k{white-space:nowrap}
 .ln-proc rect{fill:var(--sunk);stroke:var(--line)}
 .ln-pname{font:600 11px/1 system-ui,sans-serif;fill:var(--ink);cursor:pointer}
+/* 进程头上名字后面那一句：这个进程在干什么（procinfo） */
+.ln-pinfo{font:400 11px/1 system-ui,sans-serif;fill:var(--muted);pointer-events:none}
 .ln-fold{font:700 12px/1 system-ui,sans-serif;fill:var(--muted);cursor:pointer}
 .ln-band{fill:var(--card);stroke:var(--rule)}
 .ln-col.ext .ln-band{fill:none;stroke-dasharray:4 3}

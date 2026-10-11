@@ -65,11 +65,11 @@ export default async function (t) {
   // 收起一个进程：开关上的数 = 剩下的序号牌
   await page.ev(`document.querySelector('#g .ln-proc .ln-fold').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
   ok(await page.wait(`+document.querySelector('${chip} .n').textContent === document.querySelectorAll('#g .tord .tn').length
-                      && document.querySelectorAll('#g .ln-col.fold').length === 1`, 3000),
+                      && document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 1`, 3000),
      '收起一个进程：开关上的数跟着序号牌变 ' + await chipN());
   ok(await page.wait(`CS.lanes.orderQ === CS.lanes.viewQuery()`, 3000) && await sameAsBackend(page), '收起进程之后：序号牌还是 = 后端的名次');
   await page.ev(`document.querySelector('#g .ln-proc .ln-fold').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
-  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0 && +document.querySelector('${chip} .n').textContent === ${n}`, 3000), '再展开：回到 ' + n);
+  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 0 && +document.querySelector('${chip} .n').textContent === ${n}`, 3000), '再展开：回到 ' + n);
 
   // 关掉「其中代码里看不出」：编号按新的视图重排，还是 = 后端的
   const dyn = '#edgechips [data-t="dyn"]';

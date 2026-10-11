@@ -285,10 +285,10 @@ export default async function (t) {
   const n0 = await page.ev(`document.querySelectorAll('#g .ln-col:not(.fold)').length`);
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
-  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 1 && document.querySelectorAll('#g .ln-col:not(.fold)').length < ${n0}`, 3000), '收起一个进程');
+  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 1 && document.querySelectorAll('#g .ln-col:not(.fold)').length < ${n0}`, 3000), '收起一个进程');
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
   await page.click('#g .ln-proc .ln-fold');
-  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold').length === 0`, 3000), '再展开');
+  ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 0`, 3000), '再展开');
   // 选着主线程里的 truth.py，收起一个子进程：还选着它、详情还讲它；收起主线程所在的进程：取消选中、详情清掉
   const mainLane = await page.ev(`CS.lanes.nodes.find(x => x.id === 'fakesvc/truth.py' && /:MainThread$/.test(x.lane)).lane`);
   const kidPid = await page.ev(`CS.lanes.L.lanes.find(l => l.pid !== CS.lanes.L.lanes[0].pid && l.thread === 'MainThread').pid`);
@@ -350,7 +350,7 @@ export default async function (t) {
   const req = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     return { last: E.k.last, end: CS.app.data.hotMeta.end_us }; })())`));
   const win = (req.last + 1) + '-' + req.end;
-  await page.goto(base + '#run=' + fx.a + '@t=' + win);
+  await page.goto(base + '#run=' + fx.a + '@t=' + win + '&lanes=*');     // req 是线程池，默认收着：看全部列
   ok(await waitRun(page, fx.a + '@t=' + win), '时间段从起 req-3 之后 1 µs 开始 ' + win);
   const rq = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'req');

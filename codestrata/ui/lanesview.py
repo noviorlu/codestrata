@@ -101,7 +101,9 @@ def decorate(idx: dict, hot: dict | None, L: dict, base) -> dict:
     pre = _cut.root_label(idx)
     for ln in lanes:
         fs = lane_frames[ln["id"]]
-        alias = alias_of(ln["open"])
+        # 图上的名字：撞名只在这一列画着的节点、框里算（用户 10-10 定）——切面上没画出来的节点（默认切面开着的 vllm_omni/diffusion/ 里
+        # 也有 distributed/、worker/）不再让画着的那个补上「vllm_omni.」前缀、再被截断。面板、搜索栏的短名照旧按切面算（short）
+        alias = _cut.disambiguate(idx, set(ln["nodes"]) | set(fs))
         names = {n: _layout.name_in(info, alias, pre, n, info[n]["frame"] if info[n]["frame"] in fs else None)
                  for n in ln["nodes"]}
         names.update((f, _layout.name_in(info, alias, pre, f, x["parent"])) for f, x in fs.items())

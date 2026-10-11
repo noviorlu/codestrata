@@ -2728,11 +2728,18 @@ def test_lanes_percut():
         assert all(set(x["names"]) == set(x["nodes"]) | set(x["frames"]) for x in D["lanes"])
 
     def like_graph(ln):
-        """这一列图上的名字、框头同模块图在它的切面上的写法（框里写相对于框的名字，撞名按整个切面算）"""
+        """这一列图上的名字、框头同模块图在它的切面上的写法（框里写相对于框的名字）；撞名只按这一列画着的节点、框算（用户 10-10 定）：
+        切面上撞了名、这一列里只画了其中一个的，不补父目录段（模块图上补），名字是模块图那个的结尾"""
         g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=ln["open"])
         lab = {**{n["id"]: n["label"] for n in g["graph"]["nodes"]}, **{f["id"]: f["label"] for f in g["graph"]["frames"]}}
-        assert {n: ln["names"][n] for n in ln["nodes"]} == {n: lab[n] for n in ln["nodes"]}, (ln["names"], lab)
-        assert {f: x["label"] for f, x in ln["frames"].items()} == {f: lab[f] for f in ln["frames"]}, (ln["frames"], lab)
+        here = cut.disambiguate(idx, set(ln["nodes"]) | set(ln["frames"]))       # 这一列里撞了名的
+        whole = ui_graphview.cut_alias(idx, cut.view(idx, ln["open"]))          # 整个切面上撞了名的
+        names = {**ln["names"], **{f: x["label"] for f, x in ln["frames"].items()}}
+        for n in list(ln["nodes"]) + list(ln["frames"]):
+            if (n in here) == (n in whole):
+                assert names[n] == lab[n], (n, names[n], lab[n])
+            else:                                   # 只在整个切面上撞名：这一列里不补父目录段
+                assert n in whole and n not in here and lab[n].endswith(names[n]) and names[n] != lab[n], (n, names[n], lab[n])
         return g
     # side 展开 cx/ops/：它的 util / kernels/ 比 base 的 cx/ops/ 细，挂在 cx/ops/ 里；cx/ops/ 里跑到的 util → k2 → k 分三层，
     # kernels/ 取它里面跑到的单元（k2、k）里最靠上的那层
@@ -2788,12 +2795,12 @@ def test_lanes_percut():
     # sansio 的 util 只 import hooks、不调它，也排在 hooks 上面
     assert {n: D4["place"][n] for n in ("cx/sansio/util.py", "cx/sansio/hooks.py", "cx/sansio/app.py")} == \
         {"cx/sansio/util.py": ["cx/sansio/", 0], "cx/sansio/hooks.py": ["cx/sansio/", 1000], "cx/sansio/app.py": ["cx/sansio/", 2000]}, D4["place"]
-    # 撞名按这一列的切面算，同模块图：side 展开 sansio/ 只画了 sansio 的 app（cx/app.py 只有主线程调），切面上撞了名，
-    # 照样写 sansio.app，面板上的短名也是；主线程那一列一点不变
+    # 撞名只按这一列画着的算（用户 10-10 定）：side 展开 sansio/ 只画了 sansio 的 app（cx/app.py 只有主线程调），切面上撞了名、这一列里没撞，
+    # 图上写 app；面板上的短名照旧按切面算，写 sansio.app；主线程那一列一点不变
     D5, by5 = lanes_of({side: ["cx/", "cx/sansio/"]})
     covered(D5)
     assert "cx/app.py" not in by5["side"]["nodes"] and like_graph(by5["side"])
-    assert by5["side"]["names"]["cx/sansio/app.py"] == "sansio.app" == D5["info"]["cx/sansio/app.py"]["name"], by5["side"]["names"]
+    assert (by5["side"]["names"]["cx/sansio/app.py"], D5["info"]["cx/sansio/app.py"]["name"]) == ("app", "sansio.app"), by5["side"]["names"]
     assert by5["MainThread"] == by0["MainThread"]
     # 主线程展开 sansio/、side 展开 ops/：两个 util 不在同一个切面上，各写 util（图上、面板上）；side 展开 ops/ 改不了主线程那一列的名字
     D7, by7 = lanes_of({main: ["cx/", "cx/sansio/"], side: ["cx/", "cx/ops/"]})

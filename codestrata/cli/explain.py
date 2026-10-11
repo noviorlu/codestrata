@@ -246,13 +246,15 @@ def _numbered(a, c) -> out.Result:
     idx = common.index(c)
     label = common.labeler(idx)
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
-    L, aliases, order = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label))
+    L, aliases, order = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label), common.stages(c, label))
     if not 1 <= n <= order["n"]:
         raise CodestrataError("item_not_found", f"这个视图里一共 {order['n']} 个编号，没有 {n}",
                               candidates=[str(k) for k in range(1, min(order["n"], 10) + 1)])
     inner = next(k for k, rk in order["keys"].items() if rk == n - 1)
     lo, hi = r.slices[0][0], r.slices[-1][1]
+    dflt = not v.lanes and L.get("default_lanes")       # 地址里没写 lanes=：页面默认把转一手的列收起（lanedefault）
     head = (f"按这个视图算：{r.full}" + (f" · 收起 {','.join(v.fold)}" if v.fold else "") + (f" · 藏起 {','.join(v.hide)}" if v.hide else "")
+            + (f" · 默认收起转一手的 {len(L['lanes']) - len(dflt)} 列" if dflt else "")
             + f" · 时间顺序开 · 共 {order['n']} 个编号；{n} 号是 {order['ids'][n - 1]}")
     if inner.startswith("l:"):
         k = L["links"][int(inner[2:])]                 # 页面上画的这一条（这两个节点之间的）：只讲它的两头
