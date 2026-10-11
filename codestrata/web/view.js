@@ -14,8 +14,6 @@ window.CS = window.CS || {};
 (function (CS) {
   'use strict';
 
-  var KEYS = ['run', 'lanes', 'fold', 'cut', 'lcut', 'sel', 'mark', 'chain', 'order', 'hide', 'panel'];
-
   /* 地址里的值：只按 %XX 解（不把 + 当空格：阶段 + 秒的写法里有 +）；写回时 @ , / ~ | : ; + * = 留着原样，好读（@t= 不写成 @t%3D） */
   function dec(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
   function enc(s) {

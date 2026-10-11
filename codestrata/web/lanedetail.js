@@ -149,8 +149,14 @@ window.CS = window.CS || {};
              : line ? '' : '<span class="hint">（' + bare(end) + '）</span>')
           + (ext ? '<span class="hint">（经仓库外的代码，在它里面）</span>' : '') + '</div>';
       }
-      var kind = KIND[k.kind] || k.kind;
-      var h = '<p class="hint">' + kind + '：' + esc(VIA[k.via] || k.via) + '，<b>' + k.n + '</b> 次'
+      var kind = KIND[k.kind] || k.kind, hop = CS.chain.hop(k);
+      if (k.inferred) ends = ['A 边', 'B 边'];
+      var h = (k.chain ? '<p class="hint"><b>链上的第 ' + k.chain.map(function (i) { return i + 1; }).join('、') + ' 跳</b>：'
+          + (k.inferred ? '推出来的——这一跳没录到，是 --link 按先后配的（这段时间里 A 边第 k 次调用配 B 边第 k 次）'
+                        : '录到的交接')
+          + (hop ? '，这一组的第 <b>' + hop.k + ' / ' + hop.n + '</b> 次，' + whenW(hop.t_from, L) + ' → ' + whenW(hop.t_to, L)
+                 + '（下面的次数、时刻是这一组合起来的）' : '') + '</p>' : '')
+        + '<p class="hint">' + kind + '：' + esc(VIA[k.via] || k.via) + '，<b>' + k.n + '</b> 次'
         + (k.gpu_us != null ? '，GPU 上共 <b>' + gpuT(k.gpu_us) + '</b>' : '')
         + (k.first != null ? '；第一次 ' + whenW(k.first, L, late) + (k.last != null && k.last !== k.first ? '，最后 ' + whenW(k.last, L, late) : '') : '')
         + '（从这一段的开头算）' + (k.out ? '；<b>整条发生在这一段' + (k.out === 'before' ? '开始之前' : '结束之后') + '</b>（这一段里跑过的线程）' : '') + '</p>'
@@ -162,7 +168,8 @@ window.CS = window.CS || {};
             + site(ends[0], p.a, p.da, p.la, p.ta, p.xa, 'a') + '<div class="arr">↓</div>' + site(ends[1], p.b, p.db, p.lb, p.tb, p.xb, 'b') + '</div>';
         }).join('') + '</div>'
         + (k.n_pairs > (k.pairs || []).length ? '<p class="hint">还有 ' + (k.n_pairs - k.pairs.length) + ' 对（次数更少）</p>' : '')
-        + (k.kind === 'handoff' ? '<p class="hint">配对：进程内的队列按「同一个队列里的同一个对象」，ZMQ 按消息内容的指纹；'
+        + (k.inferred ? '<p class="hint">两头是 A 边、B 边配上的那两次调用；交接发生在哪一行不知道（没录到）。</p>'
+           : k.kind === 'handoff' ? '<p class="hint">配对：进程内的队列按「同一个队列里的同一个对象」，ZMQ 按消息内容的指纹；'
            + '代码是放 / 取、发 / 收那一刻最里层的仓库函数里正执行的那一行（经仓库外的代码转了一道的，是调进去的那一行）；'
            + '发生在仓库外的代码里时写那一刻这条线程最底下在跑的仓库函数，那一刻没有在跑的仓库函数就是仓库外的代码。</p>'
            : k.kind === 'join' ? '<p class="hint">线程从入口函数返回就结束了；收的那一行是 join（线程池的 shutdown 也是逐个 join）或 '

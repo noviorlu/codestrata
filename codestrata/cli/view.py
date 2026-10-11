@@ -19,6 +19,7 @@ from .. import laneid as _laneid
 from .. import lanes as _lanes
 from .. import locate as _locate
 from .. import ref as _ref
+from .. import runs as _runs
 from .. import seq as _seq
 from .. import viewspec as _viewspec
 from ..errors import CodestrataError
@@ -186,7 +187,10 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
         if a.chain == "none":
             v.chain = None
         else:
-            _chainview.parse(a.chain)
+            hot = _runs.load_run(c.repo, idx, r.run, r.rd, None)[0]
+            info, _ = _chainview.for_page(idx, r.rd, r.run, hot, a.chain)
+            if info.get("error"):
+                raise CodestrataError(info.get("code") or "usage", f"--chain 在这个 run 上走不出来：{info['error']}")
             v.chain = a.chain
     what = []
     if v.lanes:

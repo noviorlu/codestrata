@@ -369,6 +369,7 @@ window.CS = window.CS || {};
 
     selectRun: function (id, phase) {
       var self = this, prev = CS.ds.run;
+      if (CS.chain && !(CS.view && CS.view.applying) && (prev || '').split('@')[0] !== (id || '')) CS.chain.set(null);   // 链是那个 run 的
       CS.ds.run = id ? id + (phase ? '@' + phase : '') : '';
       this._writeHash();
       this.closeRunPop();

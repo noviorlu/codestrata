@@ -77,7 +77,7 @@ def _keys(frag: str) -> dict[str, str]:
 
 
 def _aspects(old: str, new: str) -> list[str]:
-    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（只看的列、收起）"""
+    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（只看的列、收起）、chain（高亮的链）"""
     a, b = _keys(old), _keys(new)
     out = []
     if a.get("sel") != b.get("sel"):
@@ -86,6 +86,8 @@ def _aspects(old: str, new: str) -> list[str]:
         out.append("range")
     if (a.get("lanes"), a.get("fold")) != (b.get("lanes"), b.get("fold")):
         out.append("lanes")
+    if a.get("chain") != b.get("chain"):
+        out.append("chain")
     return out
 
 

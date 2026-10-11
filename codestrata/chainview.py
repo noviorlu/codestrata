@@ -42,16 +42,16 @@ def walk(idx: dict, rd, hot: dict, lo: int, hi: int, head_window: tuple, start: 
 
 def for_page(idx: dict, rd, run: dict, hot: dict, text: str) -> tuple[dict, tuple | None]:
     """页面要的：({key, start, hops, stop, lanes, error}, 给 lanes.build 的 chain=(录到的交接下标 → [第几跳], 推出来的跳) 或 None)。
-    走不出来（写错、配不上）时 error 是说明，分列照画"""
+    走不出来（写错、配不上）时 error 是说明（code 是错误码），分列照画"""
     try:
         window, start, links = parse(text)
         segs, _, end = _seq.window_segments(run, rd, window)
         lo, hi = segs[0][0], segs[-1][1]
         _, st, ch, _ = walk(idx, rd, hot, lo, hi, _segments.head_window(run, end, lo, hi, window)[1], start, links)
     except CodestrataError as e:
-        return {"key": text, "error": e.msg}, None
+        return {"key": text, "error": e.msg, "code": e.code}, None
     except (LookupError, ValueError) as e:
-        return {"key": text, "error": str(e)}, None
+        return {"key": text, "error": str(e), "code": "bad_window"}, None
     marks: dict[int, list] = {}
     extra = []
     for i, raw in enumerate(ch["raw"]):

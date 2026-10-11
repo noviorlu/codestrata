@@ -110,8 +110,8 @@ window.CS = window.CS || {};
         self.order = L.order; self.orderQ = vq;
         CS.laneCut.settle(L);
         self.panelData(L);
+        CS.chain.paint(L, svg);                     // 高亮的链（lanechain.js）：先认这一份的链（标签、提示要用），只亮链上的线
         self.draw(svg, L, d.graphHot || d.graph, d.names || {});
-        CS.chain.paint(L, svg);                     // 高亮的链（lanechain.js）：只亮链上的线
         CS.laneCut.after(self.afterCut);
         self.afterCut = null;
         self.ready = ref;                          // 画好了的是哪个 run（@阶段）
@@ -517,7 +517,8 @@ window.CS = window.CS || {};
         function code(side, fn, ln, tx) {
           return '\n' + side + '：' + (fn ? short(fn) + (ln ? ':' + ln + (tx ? '  ' + tx : '') : '') : '仓库外的代码');
         }
-        E.tipBase = CS.chain.tip(k) + KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
+        E.tipBase = CS.chain.tip(k, function (us) { return when(us, ((L && L.window) || [0])[0]); })
+          + KIND[k.kind] + '：' + (k.kind === 'handoff' ? '经 ' : '') + (VIA[k.via] || k.via)
           + '，' + k.n + ' 次\n' + laneName(k.from.lane) + (k.from.node ? '（' + k.from.node + '）' : '')
           + ' → ' + laneName(k.to.lane) + (k.to.node ? '（' + k.to.node + '）' : '')
           + (pr ? code(ends[0], pr.a, pr.la, pr.ta) + code(ends[1], pr.b, pr.lb, pr.tb) : '')
@@ -528,9 +529,9 @@ window.CS = window.CS || {};
         E.tip = el('title', {}); E.tip.textContent = E.tipBase;
         lk.appendChild(E.halo); lk.appendChild(E.p);
         E.R = R; E.labCls = 'ln-ltxt ' + k.kind + (k.chain ? ' chain' : '') + (k.inferred ? ' inferred' : '');
-        var who = k.kind === 'handoff' ? sender(k) : '';
+        var who = k.kind === 'handoff' ? sender(k) : '', hop = CS.chain.hop(k);   // 链上的一跳：写它是这一组的第几次，不写整组的次数
         E.labTxt = CS.chain.label(k) + (k.via === 'link' ? '推断' : k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起')
-          + (k.n > 1 ? ' ×' + fmtN(k.n) : '') + (who ? ' · ' + who : '')
+          + (hop && hop.n > 1 ? ' 第 ' + hop.k + '/' + hop.n + ' 次' : k.n > 1 ? ' ×' + fmtN(k.n) : '') + (who ? ' · ' + who : '')
           + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
         self.wire(E);
         self.links.push(E);
@@ -852,7 +853,7 @@ window.CS = window.CS || {};
         E.p.classList.toggle('hi', on && !!nk);
         E.p.classList.toggle('dim', dim);
         E.halo.classList.toggle('dim', dim);
-        if (E.lab) E.lab.classList.toggle('dim', dim);
+        if (E.lab) { E.lab.classList.toggle('dim', dim); E.lab.classList.toggle('on', on); }   // on：只亮链时选中的那条的标签也不淡
         if (on) [E.halo, E.p, E.lab].forEach(function (x) { if (x) x.parentNode.appendChild(x); });
       });
       this.nodes.forEach(function (x) {

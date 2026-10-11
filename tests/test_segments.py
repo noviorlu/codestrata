@@ -246,6 +246,9 @@ def test_chain_for_page():
     assert bad["error"] and none is None, bad
     j = one_json(cs("view", "url", "-C", repo, rid, "--chain", key, "--json"))
     assert "chain=" in j["data"]["url"] and j["ok"], j
+    r = subprocess.run([PY, "-m", "codestrata", "view", "url", "-C", str(repo), rid, "--chain", "~nosuch#1", "--json"],
+                       capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 3 and one_json(r)["error"]["code"] == "item_not_found" and "走不出来" in one_json(r)["error"]["msg"], r.stdout
 
 
 def test_slices_on_toy():
