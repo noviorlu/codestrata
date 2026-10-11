@@ -108,6 +108,14 @@ def short(node: str | None) -> str:
     return q or f
 
 
+def end_text(e: dict) -> str:
+    """连线的一头（linkgroups.end：fn、file、line、outside）的文字：函数（文件:行）"""
+    if not e["fn"]:
+        return "（仓库外的代码）"
+    loc = f"{e['file']}:{e['line']}" if e["line"] else e["file"]
+    return f"{short(e['fn'])}（{loc}）" + ("（栈底的仓库函数；放 / 取在仓库外的代码里）" if e["outside"] else "")
+
+
 def add_params(p) -> None:
     """切段的阈值（steps.Params），segments / steps 共用"""
     from .. import steps as _steps

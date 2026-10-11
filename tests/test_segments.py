@@ -67,6 +67,22 @@ def scenario(d, old: bool = False):
     return b.write(d, phases=[["start", 0], ["serving", 400]], old=old), run
 
 
+def test_multi_slice_calls():
+    """几片的时间段（t=a-b,c-d）：每对调用的次数正好是各片加起来（合成一行的连续调用按片摊），时间段的计数（window_counts）也是"""
+    import json as _json
+    from codestrata import seq
+    rd, _ = scenario(tmpdir("cs-seg-"))
+    run = _json.loads((rd / "run.json").read_text())
+    one, two, both = (seq.phase_calls(rd, run, w) for w in ("t=1000-9000", "t=20000-31000", "t=1000-9000,20000-31000"))
+    assert seq.window_segments(run, rd, "t=20000-31000,1000-9000")[0] == [(1000, 9000), (20000, 31000)]
+    keys = set(one["calls"]) | set(two["calls"])
+    assert keys == set(both["calls"]) and all(
+        both["calls"][k][2] == (one["calls"].get(k) or [0, 0, 0])[2] + (two["calls"].get(k) or [0, 0, 0])[2] for k in keys), keys
+    assert both["window"] == [1000, 31000] and both["span_us"] == 8000 + 11000, (both["window"], both["span_us"])
+    c1, c2, c12 = (seq.window_counts(rd, run, w)["funcs"] for w in ("t=1000-9000", "t=20000-31000", "t=1000-9000,20000-31000"))
+    assert c12 == {k: c1.get(k, 0) + c2.get(k, 0) for k in set(c1) | set(c2)}, (c12, c1, c2)
+
+
 def test_rounds_and_kinds():
     """轮头按票选（一轮调两次的 has_requests 不当轮头）；超长的轮不算空转；只在轮询的列是 poll；合成一行的叶子不当轮头；
     同名的 5 条线程是 threads；同名进程按启动先后编号"""
@@ -182,6 +198,27 @@ def test_commands_on_toy():
     j = one_json(cs("links", "-C", repo, f"{rid}@work", "--kind", "all", "--json"))
     assert j["ok"] and all(x["id"].startswith(f"l:{x['kind']}|{x['via']}|") for x in j["data"]["links"]), j["data"]["links"][:2]
     assert any(x["kind"] == "spawn" for x in j["data"]["links"]), [x["id"] for x in j["data"]["links"]]
+
+
+def test_follow_on_toy():
+    """links --follow：put_job 里放进队列（录到的，就在这次调用里）→ 另一条线程取到；段的 REF 带着经过的列；--link 不配 --follow 报 usage；
+    --link 两边次数不等报 link_mismatch（退出码 4）"""
+    repo, rid = truth()
+    j = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))
+    ch = j["data"]["chain"]
+    assert j["ok"] and j["algo"] == "chain/1" and ch["start"]["fn"].endswith("#put_job"), j
+    h = ch["hops"][0]
+    assert (h["kind"], h["via"], h["stay"]) == ("recorded", "queue", "ancestor") and h["from"]["fn"].endswith("#put_job"), h
+    seg = ch["segment"]
+    assert seg["kind"] == "chain" and seg["ref"].startswith(f"{rid}@t=") and seg["ref"].endswith("/" + ",".join(seg["lanes"])), seg
+    r = subprocess.run([PY, "-m", "codestrata", "links", "-C", str(repo), rid, "--link", "a/b:f => c/d:g", "--json"],
+                       capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 2 and one_json(r)["error"]["code"] == "usage", r.stdout
+    a, b = h["from"]["lane"], h["to"]["lane"]
+    r = subprocess.run([PY, "-m", "codestrata", "links", "-C", str(repo), rid, "--follow", "put_job#1", "--link",
+                        f"{a}:put_job => {b}:{h['to']['fn'].partition('#')[2]}", "--json"], capture_output=True, text=True, cwd=HERE.parent)
+    j = one_json(r)
+    assert r.returncode == 4 and j["error"]["code"] == "link_mismatch" and "次数不等" in j["error"]["msg"], j    # put_job 调了几次，取只有一次
 
 
 def test_old_run_refused_by_commands():

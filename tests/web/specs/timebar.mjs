@@ -1,4 +1,4 @@
-// 时间轴：阶段按钮、条上的色段、拖把手 / 平移出时间段、键盘、滚轮缩放、「全程」、点色段、超出终点的时间段
+// 时间轴：阶段按钮、条上的色段、拖把手 / 平移出时间段、键盘、滚轮缩放、「全程」、点色段、超出终点的时间段、几片的时间段
 import { hash, hotEdges, sleep, waitRun } from '../lib.mjs';
 
 const st = page => page.ev(`JSON.stringify({pressed: [...document.querySelectorAll('.tph[aria-pressed=true]')].map(b => b.dataset.ph),
@@ -78,4 +78,27 @@ export default async function (t) {
   await page.goto(base + '#run=' + fx.a + '@t=' + (end + 1000) + '-' + (end + 5000));
   ok(await page.ev(`!!CS.app.data.hotMeta.window && !document.querySelector('.tsel').hidden && document.querySelector('.tsel').getBoundingClientRect().width > 0`),
      '超出终点的时间段：选中框照样画出来');
+
+  // 几片的时间段（links --follow 走出来的链）：每片画一块、没有把手，标签写几片；分列里的次数正好是各片加起来（只算这几片里的调用）；
+  // 在条上拖出一段就换成那一段
+  const f = x => Math.round(end * x), s1 = `t=${f(0.05)}-${f(0.35)}`, s2 = `t=${f(0.55)}-${f(0.85)}`, two = `t=${f(0.05)}-${f(0.35)},${f(0.55)}-${f(0.85)}`;
+  const edgesOf = async ref => {
+    await page.goto(base + '#run=' + fx.a + '@' + ref);
+    ok(await waitRun(page, fx.a + '@' + ref), '打开 ' + ref);
+    return hotEdges(page);
+  };
+  const e1 = await edgesOf(s1), e2 = await edgesOf(s2), e12 = await edgesOf(two);
+  const sum = { ...e1 };
+  Object.entries(e2).forEach(([k, n]) => { sum[k] = (sum[k] || 0) + n; });
+  const keys = [...new Set([...Object.keys(sum), ...Object.keys(e12)])].sort();
+  ok(keys.length > 0 && keys.every(k => sum[k] === e12[k]), '两片：分列里每条边的次数 = 两片各自的加起来 ' + JSON.stringify([e12, sum]));
+  const m2 = await page.ev(`JSON.stringify({slices: CS.app.data.hotMeta.slices, segs: CS.lanes.L.segs, blocks: [...document.querySelectorAll('.tsel.multi')].filter(b => !b.hidden && b.getBoundingClientRect().width > 0).length,
+    handles: document.querySelectorAll('.th').length, lab: document.querySelector('.tlab').textContent, pressed: document.querySelectorAll('.tph[aria-pressed=true]').length})`).then(JSON.parse);
+  ok(JSON.stringify(m2.slices) === JSON.stringify([[f(0.05), f(0.35)], [f(0.55), f(0.85)]]) && JSON.stringify(m2.segs) === JSON.stringify(m2.slices),
+     '两片：hotMeta.slices 和分列的 segs 都是这两片 ' + JSON.stringify(m2));
+  ok(m2.blocks === 2 && m2.handles === 0 && m2.lab.startsWith('2 片：') && m2.pressed === 0, '两片：条上画两块、没有把手，标签写「2 片」 ' + JSON.stringify(m2));
+  const tb = await page.rect('.tbar');
+  await page.drag(tb.l + tb.w * 0.40, tb.y, tb.l + tb.w * 0.50);
+  ok(await page.wait(`CS.app.data.hotMeta.slices && CS.app.data.hotMeta.slices.length === 1 && !decodeURIComponent(location.hash).includes(',')`, 15000),
+     '在两片中间拖出一段：换成那一段 ' + await hash(page));
 }

@@ -188,6 +188,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .tseg.on{font-weight:700}
 .tsel{position:absolute;top:0;bottom:0;border:1.5px solid var(--sel);border-radius:3px;cursor:grab;
   background:color-mix(in srgb,var(--sel) 16%,transparent)}
+.tsel.multi{cursor:default}
 .th{position:absolute;top:-1px;bottom:-1px;width:7px;background:var(--sel);cursor:ew-resize}
 .th.l{left:-4px}.th.r{right:-4px}
 .th:focus-visible{outline:2px solid var(--ink);outline-offset:1px}

@@ -79,7 +79,7 @@ def window_segments(run: dict, rd: Path, phase: str | None) -> tuple[list, bool,
     end = run_end(run, rd) or 0
     win = parse_window(phase)
     if win:
-        return [win], True, end
+        return list(win), True, end
     iv = phase_intervals(run, end)
     if phase not in iv:
         raise LookupError(f"这个 run 里没有阶段 {phase} 的时刻：不知道它从什么时候开始")
@@ -181,18 +181,22 @@ def phase_intervals(run: dict, end_us: int) -> dict:
     return out
 
 
-def parse_window(phase: str | None) -> tuple[int, int] | None:
+def parse_window(phase: str | None) -> list[tuple[int, int]] | None:
     """「t=起-止」（微秒，相对 run 起点）是时间段，不是阶段名：页面上时间轴拖出来的范围，和阶段名放在
-    同一个位置（run 引用的 @ 后面），加载、缓存、地址栏都照走。别的（阶段名、None）→ None"""
+    同一个位置（run 引用的 @ 后面），加载、缓存、地址栏都照走。几片（「t=起-止,起-止」，links --follow 的链）逗号隔开。
+    → 各片 [(起, 止)]（按先后）；别的（阶段名、None）→ None"""
     if not phase or not phase.startswith("t="):
         return None
-    try:
-        a, b = (int(x) for x in phase[2:].split("-", 1))
-    except ValueError:
-        raise ValueError(f"时间段写成 t=起-止（微秒）：{phase}") from None
-    if a < 0 or b <= a:
-        raise ValueError(f"时间段的起点要小于终点：{phase}")
-    return a, b
+    out = []
+    for part in phase[2:].split(","):
+        try:
+            a, b = (int(x) for x in part.split("-", 1))
+        except ValueError:
+            raise ValueError(f"时间段写成 t=起-止（微秒），几片用逗号隔开：{phase}") from None
+        if a < 0 or b <= a:
+            raise ValueError(f"时间段的起点要小于终点：{phase}")
+        out.append((a, b))
+    return sorted(out)
 
 
 def run_end(run: dict, rd: Path) -> int | None:
@@ -237,8 +241,8 @@ def calls_in(t: int, dur: int, rep: int, lo: int, hi: int, open_hi: bool = False
     return i1 - i0 + 1, t + round(i0 * step), t + round(i1 * step)
 
 
-def window_counts(rd: Path, run: dict, t0: int, t1: int, ref_lines: dict | None = None) -> dict:
-    """时间段里的调用（折叠行按 calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges, gpu_us?}
+def window_counts(rd: Path, run: dict, window: str, ref_lines: dict | None = None) -> dict:
+    """时间段（「t=起-止」，几片的逗号隔开）里的调用（折叠行按 calls_in 摊开）→ 和 counts.json.gz 同样形状的 {funcs, func_edges, gpu_us?}
     （键都是 文件:首行），交给 align.to_package_graph，模块图照常叠加。从 phase_calls 那张表加起来（和分列、请求路径同一份）。
     老 run 的时序事件只记了跨文件的调用：那种 run 上同一个文件里的调用这里没有，函数的次数会比按阶段看的少（前端注明）。
     span 读不出来时抛 OSError / ValueError。ref_lines：整个 run 的调用行（counts.json.gz 的 func_lines）。span 不记调用行，
@@ -246,7 +250,7 @@ def window_counts(rd: Path, run: dict, t0: int, t1: int, ref_lines: dict | None 
     spans = rd / "events" / "spans"
     if not (spans / "index.json").is_file():
         raise LookupError("这个 run 没有录时序事件（录的时候用了 --no-events，或者被录的 Python 低于 3.12）：只能按阶段看，不能选时间段")
-    pc = phase_calls(rd, run, f"t={t0}-{t1}")
+    pc = phase_calls(rd, run, window)
     keys, funcs, edges, gpu = pc["keys"], {}, {}, {}
     ok = lambda a, b: 0 <= a < len(keys) and 0 <= b < len(keys)    # noqa: E731
     for (_, _, a, b), (_, _, n, _) in pc["calls"].items():

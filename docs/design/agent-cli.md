@@ -13,20 +13,24 @@ codestrata 的读命令是给 AI agent（也给人）用的：输入一个 REF�
 ```
 REF   := 页面地址 | RUN [ "@" 范围 ] [ "/" 列选择器 { "," 列选择器 } ]
 RUN   := 完整 run id | case 名
-范围  := 阶段名 | "t=" 起 "-" 止 | 阶段名 "+" 秒 "s-" 秒 "s"
+范围  := 阶段名 | "t=" 片 { "," 片 } | 阶段名 "+" 秒 "s-" 秒 "s"
+片    := 起 "-" 止
 ```
 
 - **RUN**：完整 run id，或 case 名（取它最新一次 ok 的；没有就取最新的 partial）。不收 run id 前缀（前 8 位是日期，同一天的会撞），
   写错时以它开头的完整 id 会列进候选。
 - **范围**：
   - 阶段名：按这个 run 里实际有的阶段名做最长匹配；
-  - `t=起-止`：从 run 起点算的整数微秒，也收 `t=78.024s-80.492s`；
+  - `t=起-止`：从 run 起点算的整数微秒，也收 `t=78.024s-80.492s`；几片用逗号隔开（`t=a-b,c-d`，`links --follow` 走出来的链就是这样），
+    按先后排好、重叠和挨着的合成一片；
   - `阶段+起s-止s`：从阶段开头算的秒，比如 `serving+0.614s-3.082s`，不能超出这个阶段。
-  - 省掉就是整个 run。多片（`t=a-b,c-d`）还不支持。
+  - 省掉就是整个 run。
+  - 几片的 REF（还有切走又切回来、有几段的阶段）：分列（`lanes`、页面）、`links`、`path` 只算这几片里的调用；
+    `segments`、`steps`、`links --follow` 看的是从第一片的开头到最后一片的结尾。
   - 页面、`serve --hot`、老命令（`runs.resolve`）认同一套范围写法；页面收超出 run 终点的时间段（时间条放长、照样画选中框），不报越界。
 - **页面地址**：浏览器地址栏里那串，比如 `http://127.0.0.1:8900/#run=<RUN>@<范围>&lanes=stage1`。
   主菜单转发的 `/v/<端口>/` 也认。`lanes=` 是列选择器，别的键原样留着。地址后面不能再接 `/列`。
-- **输出里只给规整过的 REF**：`<完整 id>@<阶段>` 或 `<完整 id>@t=起-止`（阶段 + 秒的写法规整成 `t=`），带列时后面是 `/列,…`。
+- **输出里只给规整过的 REF**：`<完整 id>@<阶段>` 或 `<完整 id>@t=起-止[,起-止…]`（阶段 + 秒的写法规整成 `t=`），带列时后面是 `/列,…`。
   列对着整个 run 的列核对过：大小写不同、写重了的合成一个标准写法；一列都对不上的报 `lane_not_found`（没录时序事件的 run 核对不了，给警告 `lanes_unchecked`）。
 
 ### 仓库怎么找
@@ -105,6 +109,7 @@ RUN   := 完整 run id | case 名
 | `truncated` | 有进程的时序事件录到了行数上限 |
 | `need_view` | 页面地址里没有 run（页面只开着静态图） |
 | `handoffs_empty` | 这段时间里一次交接都没录到（单进程的程序）：空转只能按调用和时长判 |
+| `link_unused` / `link_recorded` / `order_differs` | links --follow：给的 `--link` 没用上（链没走到 A 列，或者走到时没调 A 函数）/ 这一跳其实录到了，可以不给 / 某一跳按时间接的交出和按先后配的不是同一次（可能接到了别的那一份） |
 
 ## 错误码和退出码
 
@@ -170,12 +175,35 @@ RUN   := 完整 run id | case 名
 - 函数的写法（`--head`、`--with`）：`路径#限定名`、限定名、唯一的名字；对不上 `item_not_found`、对上几个 `ambiguous_item`，都带候选。
 - 认不出主循环报 `no_loop`，候选是这一列调得最多的函数（拿来给 `--head`）。
 
-### `codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] [--json]`
+### `codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] [--follow 起点 [--link 'A列:FN => B列:FN' …]] [--json]`
 - 列之间的连线（和页面的分列同一套），按（种类, 通道, 起列, 终列）合成组，id 是 `l:种类|通道|起列|终列`（和 `explain` 讲的是同一份组；
   页面上画的一条再加 `|起节点|终节点`，页面的选中和时间顺序编号都这么写，`explain` 也认）；
   每组给次数、首末时刻、两头的（函数, 行）有几种、次数最多的那种；放 / 取在仓库外的代码里时，函数是当时栈底的仓库函数（标出来）。
   `--list` 每组列出各种两头（`#k`，`explain '组#k'` 讲第 k 种）。默认只看 handoff，最多 20 组。
 - `data.links[]`：`id`、`kind`、`via`、`from`、`to`、`n`、`first_us`、`last_us`、`cross`、`pairs[]`（`from` / `to`：`fn`、`file`、`line`、`outside`；`n`、`first_us`）、`n_pairs`。
+
+**`--follow 起点 [--link 'A列:FN => B列:FN' …]`：顺着交接走一条链**（`chain.py`，信封带 `algo` `chain/1`）
+- 起点：`列#k`（这一列主循环的第 k 轮，轮号同 `steps`）；`FN#k`（这段时间里第 k 次调用 FN，从 1 数；REF 带了列时只数这几列）；`列:FN#k`（只数这一列的）。
+- 在一列里走的是「这一份」：从进来（起点：那一轮 / 那次调用开始；之后：收到的那一刻）到同一路的下一份进来之前（起点：这一轮结束 /
+  这一列下一次调用 FN；录到的交接：同一组的下一次收到；`--link`：B 边的下一次调用）。这期间：
+  1. 有 `--link` 的 A 边是这一列：A 函数这期间第一次调用（正包着收到那一刻的也算）是这一列的第 j 次，就跳到 B 列 B 函数的第 j 次；
+  2. 否则跟这一列这期间第一次交出（录到的交接）；
+  3. 都没有就停下。
+- 每一跳写明依据（`basis`）：录到的是 `recorded`，`--link` 配的是 `order`。在一列里从进来到交出（`stay`）：交出就在起点那次调用 / `--link` 落到的那次调用里面、
+  或者 A 函数那次调用包着收到的那一处的是 `ancestor`，其余是 `time`（进来之后、下一份进来之前的第一次）。
+  `time` 接的那一组交出的次数正好和进来的份数一样、按先后配（第 k 份配第 k 次）却是另一次时，写在这一跳的 `alt` 里、给警告 `order_differs`，链照旧按时间走
+  （流水线上一份的结果常在下一份进来之后才交出：并发几个请求时就会这样）。
+- `--link`：没录到的一跳（共享的 dict / deque、管道……）要 agent 读过代码后显式给，可以给几次。这段时间里 A 边第 k 次调用配 B 边第 k 次；
+  两边次数不等、或者有一次 B 早于同一次的 A，报 `link_mismatch`（退出码 4），候选是 B 列里配得上的函数。两头要是两列。
+  攒批的一跳（25 个 token 攒成一块）配不上，从攒好的那一块起走。
+- 停下（`stop.reason`）：`none`（这期间没交出，也没有用得上的 `--link`）、`range`（收到的那一刻出了这段时间）、`hops`（走了 40 跳）。
+  `none` 时给这一列下一次交出（时刻、通道、到哪列，`basis` 是 `time`：不一定是同一份数据，不往下走）和 `--link` 的候选：
+  A 边是这一列这期间跑的函数（`per_item`：一份一次），B 边是同一个进程里（不够再别的进程）接下来先干活的几列各自先跑的函数（空转、在等的轮里的和常规的不算），
+  和挑出来的 A 函数次数一样、每次都不早于它的标 `fits`；有的话拼一条能直接用的 `--link`（下一步给加上它的命令）。
+- 走出来的链是一个段（`kind: chain`）：每一列待的那段时间（几片，相隔不到 1 ms 的合起来；最后一列取收到之后 1 ms）× 经过的列，带 `ref`，下一步给 `view set`。
+- `data.chain`：`start`（`kind` call / round、`lane`、`fn`、`k`、`n`、`k_lane`、`n_lane`、`t0_us`、`t1_us`）、`hops[]`（`kind` recorded / link、`via`、`group`、`link`、
+  `basis`、`stay`、`k`、`n`、`from` / `to`（`lane`、`t_us`、`fn`、`file`、`line`、`outside`）、`recorded_too`、`alt`（`basis`、`k`、`t_us`、`n`、`picked_k`））、`stop`（`reason`、`lane`、`t_us`、`until_us`、`next_out`、
+  `candidates`（`a`、`b[]`、`link`））、`total_us`、`links[]`（`text`、`a`、`b`、`used`）、`segment`（`kind`、`slices_us`、`lanes`、`ref`）。
 
 ### 切段
 

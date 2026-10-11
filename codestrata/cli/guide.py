@@ -19,7 +19,7 @@ def add_args(p) -> None:
 REF_GRAMMAR = """\
 REF = '页面地址' | RUN[@范围][/列,…]
   RUN   完整 run id 或 case 名（case 取最新一次录完的）。不收 run id 前缀
-  范围  阶段名 | t=起-止（从 run 起点算的微秒；也收 t=78.024s-80.492s）| 阶段+起s-止s（从阶段开头算，如 serving+0.614s-3.082s）
+  范围  阶段名 | t=起-止（从 run 起点算的微秒；也收 t=78.024s-80.492s；几片逗号隔开）| 阶段+起s-止s（从阶段开头算，如 serving+0.614s-3.082s）
   列    进程别名/线程（stage1/MainThread）；只写进程 = 这个进程的所有列；进程/*、*/线程、*/gpu* 也行；逗号隔开几个
   例    run_single_prompt@serving    20261001-170349-run_single_prompt@t=78024146-80491567/stage1
   页面地址就是用户浏览器地址栏里那串（http://127.0.0.1:端口/#run=…），原样当 REF 用"""
@@ -57,7 +57,8 @@ codestrata 录一个程序真实跑过的调用（trace），按进程 · 线程
 1. 「按功能切开」：codestrata segments RUN@serving（或 '<地址>'）→ 每段一个 REF（比如 talker 那段）→
    codestrata steps <那段的 REF>/<主循环那一列>（一轮轮）→ 加 --why 看时间花在哪
 2. 「第 k 块数据在哪一轮」：codestrata steps RUN@阶段/stage1/save_loop --with SharedMemoryConnector.put
-3. 谁把数据交给谁、两头是哪个函数哪一行：codestrata links RUN@阶段（--kind all 连起线程、等结束也列）
+3. 谁把数据交给谁、两头是哪个函数哪一行：codestrata links RUN@阶段（--kind all 连起线程、等结束也列）；
+   跟一块数据走完全程：links RUN@阶段 --follow 'FN#k'——停在没录到的一跳时，读过代码确认再照候选加 --link（按先后配，是推出来的）
 4. 「标出 model / 聚焦一个功能」：codestrata find tts RUN@阶段 --kind class（功能 → 代码由你判断；--under 目录 缩小）
 5. 「这根线是什么、为什么被调」：codestrata explain 'l:handoff|…' RUN@阶段（连线的写法从 links 抄；组里两头有几种时加 #k 挑一种）；
    函数 / 类：explain 限定名 RUN@阶段。只给原料，「为什么」你读代码后说；「之前最近收到的交接」只是时间上最近

@@ -430,7 +430,7 @@ window.CS = window.CS || {};
       });
       CS.timebar.render(pc, { run: m.run_id, names: phases.map(function (p) { return p.name; }),
                               segs: phases.length ? m.timeline || [] : [], end: m.end_us || 0,
-                              phase: m.window ? '' : m.phase || '', window: m.window, canDrag: canDrag, tips: tips,
+                              phase: m.window ? '' : m.phase || '', window: m.window, slices: m.slices, canDrag: canDrag, tips: tips,
                               onSelect: function (ref) { self.selectRun(m.run_id, ref); } });
       // 选了阶段：写明从哪个函数开始、到哪个函数结束（图上对应的节点标成绿 ▶ / 红 ■）
       var bd = this.phaseBounds();
@@ -474,8 +474,9 @@ window.CS = window.CS || {};
       if (!m.phase || m.window) {
         var t0 = Object.create(null);                 // 各阶段第一次开始的时刻
         (m.timeline || []).forEach(function (x) { if (!(x[0] in t0)) t0[x[0]] = x[1]; });
+        var inWin = function (t) { return (m.slices || [m.window]).some(function (s) { return t >= s[0] && t <= s[1]; }); };
         ((d && d.phaseMarks) || []).forEach(function (x) {
-          if (m.window && !(t0[x.name] >= m.window[0] && t0[x.name] <= m.window[1])) return;
+          if (m.window && !inWin(t0[x.name])) return;
           if (x.node) out.push({ node: x.node, kind: 'start', label: '▶ ' + x.name,
                                  title: x.name + ' 阶段从第一次进入 ' + where(x) + ' 开始' });
         });

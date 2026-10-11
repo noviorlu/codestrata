@@ -1398,8 +1398,8 @@ def test_time_window():
     没录事件的 run 选时间段要说清楚"""
     from codestrata import seq
     assert seq.parse_window("serving") is None and seq.parse_window(None) is None
-    assert seq.parse_window("t=5-17") == (5, 17)
-    for bad in ("t=17-5", "t=5-5", "t=x-2", "t=5", "t=-1-5"):
+    assert seq.parse_window("t=5-17") == [(5, 17)] and seq.parse_window("t=20-30,5-17") == [(5, 17), (20, 30)]    # 几片：按先后
+    for bad in ("t=17-5", "t=5-5", "t=x-2", "t=5", "t=-1-5", "t=5-17,", "t=5-17,x"):
         try:
             seq.parse_window(bad)
             raise AssertionError(bad)
@@ -1409,7 +1409,7 @@ def test_time_window():
         spans, _ = _spans(rd)
         end = seq.run_end(run, rd)
         assert end and end >= max(x["t0"] + max(x["dur"], 0) for x in spans)
-        c = seq.window_counts(rd, run, t0, t1)
+        c = seq.window_counts(rd, run, f"t={t0}-{t1}")
         want_f, want_e = {}, {}
         for x in spans:                                # 折叠行展开成一次次调用，数落在窗口里的
             n = sum(1 for c_ in _calls(x) if t0 <= c_ <= t1)
@@ -1421,7 +1421,7 @@ def test_time_window():
         assert c == {"funcs": want_f, "func_edges": want_e} and want_e, (rd, t0, t1, diff, c["funcs"], want_f)
         ref = f"{run['id']}@t={t0}-{t1}"
         hot, meta = ui_load.load_hot(repo, idx, ref)
-        assert meta["phase"] == f"t={t0}-{t1}" and meta["window"] == [t0, t1] and hot["run"] == ref, meta["phase"]
+        assert meta["phase"] == f"t={t0}-{t1}" and meta["window"] == [t0, t1] and meta["slices"] == [[t0, t1]] and hot["run"] == ref, meta["phase"]
         assert meta["end_us"] == end and meta["timeline"] == [list(s) for s in seq.phase_segments(run, end)]
         he = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta)["hot"]["edges"]
         te, L = _lane_edges(idx, rd, run, f"t={t0}-{t1}", hot, None)
