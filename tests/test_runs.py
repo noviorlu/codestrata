@@ -1398,8 +1398,8 @@ def test_time_window():
     没录事件的 run 选时间段要说清楚"""
     from codestrata import seq
     assert seq.parse_window("serving") is None and seq.parse_window(None) is None
-    assert seq.parse_window("t=5-17") == (5, 17)
-    for bad in ("t=17-5", "t=5-5", "t=x-2", "t=5", "t=-1-5"):
+    assert seq.parse_window("t=5-17") == [(5, 17)] and seq.parse_window("t=20-30,5-17") == [(5, 17), (20, 30)]    # 几片：按先后
+    for bad in ("t=17-5", "t=5-5", "t=x-2", "t=5", "t=-1-5", "t=5-17,", "t=5-17,x"):
         try:
             seq.parse_window(bad)
             raise AssertionError(bad)
@@ -1409,7 +1409,7 @@ def test_time_window():
         spans, _ = _spans(rd)
         end = seq.run_end(run, rd)
         assert end and end >= max(x["t0"] + max(x["dur"], 0) for x in spans)
-        c = seq.window_counts(rd, run, t0, t1)
+        c = seq.window_counts(rd, run, f"t={t0}-{t1}")
         want_f, want_e = {}, {}
         for x in spans:                                # 折叠行展开成一次次调用，数落在窗口里的
             n = sum(1 for c_ in _calls(x) if t0 <= c_ <= t1)
@@ -1421,7 +1421,7 @@ def test_time_window():
         assert c == {"funcs": want_f, "func_edges": want_e} and want_e, (rd, t0, t1, diff, c["funcs"], want_f)
         ref = f"{run['id']}@t={t0}-{t1}"
         hot, meta = ui_load.load_hot(repo, idx, ref)
-        assert meta["phase"] == f"t={t0}-{t1}" and meta["window"] == [t0, t1] and hot["run"] == ref, meta["phase"]
+        assert meta["phase"] == f"t={t0}-{t1}" and meta["window"] == [t0, t1] and meta["slices"] == [[t0, t1]] and hot["run"] == ref, meta["phase"]
         assert meta["end_us"] == end and meta["timeline"] == [list(s) for s in seq.phase_segments(run, end)]
         he = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta)["hot"]["edges"]
         te, L = _lane_edges(idx, rd, run, f"t={t0}-{t1}", hot, None)
@@ -2728,11 +2728,18 @@ def test_lanes_percut():
         assert all(set(x["names"]) == set(x["nodes"]) | set(x["frames"]) for x in D["lanes"])
 
     def like_graph(ln):
-        """这一列图上的名字、框头同模块图在它的切面上的写法（框里写相对于框的名字，撞名按整个切面算）"""
+        """这一列图上的名字、框头同模块图在它的切面上的写法（框里写相对于框的名字）；撞名只按这一列画着的节点、框算（用户 10-10 定）：
+        切面上撞了名、这一列里只画了其中一个的，不补父目录段（模块图上补），名字是模块图那个的结尾"""
         g = ui_graphview.graph_payload(repo, idx, hot=hot, hot_meta=meta, open_=ln["open"])
         lab = {**{n["id"]: n["label"] for n in g["graph"]["nodes"]}, **{f["id"]: f["label"] for f in g["graph"]["frames"]}}
-        assert {n: ln["names"][n] for n in ln["nodes"]} == {n: lab[n] for n in ln["nodes"]}, (ln["names"], lab)
-        assert {f: x["label"] for f, x in ln["frames"].items()} == {f: lab[f] for f in ln["frames"]}, (ln["frames"], lab)
+        here = cut.disambiguate(idx, set(ln["nodes"]) | set(ln["frames"]))       # 这一列里撞了名的
+        whole = ui_graphview.cut_alias(idx, cut.view(idx, ln["open"]))          # 整个切面上撞了名的
+        names = {**ln["names"], **{f: x["label"] for f, x in ln["frames"].items()}}
+        for n in list(ln["nodes"]) + list(ln["frames"]):
+            if (n in here) == (n in whole):
+                assert names[n] == lab[n], (n, names[n], lab[n])
+            else:                                   # 只在整个切面上撞名：这一列里不补父目录段
+                assert n in whole and n not in here and lab[n].endswith(names[n]) and names[n] != lab[n], (n, names[n], lab[n])
         return g
     # side 展开 cx/ops/：它的 util / kernels/ 比 base 的 cx/ops/ 细，挂在 cx/ops/ 里；cx/ops/ 里跑到的 util → k2 → k 分三层，
     # kernels/ 取它里面跑到的单元（k2、k）里最靠上的那层
@@ -2788,12 +2795,12 @@ def test_lanes_percut():
     # sansio 的 util 只 import hooks、不调它，也排在 hooks 上面
     assert {n: D4["place"][n] for n in ("cx/sansio/util.py", "cx/sansio/hooks.py", "cx/sansio/app.py")} == \
         {"cx/sansio/util.py": ["cx/sansio/", 0], "cx/sansio/hooks.py": ["cx/sansio/", 1000], "cx/sansio/app.py": ["cx/sansio/", 2000]}, D4["place"]
-    # 撞名按这一列的切面算，同模块图：side 展开 sansio/ 只画了 sansio 的 app（cx/app.py 只有主线程调），切面上撞了名，
-    # 照样写 sansio.app，面板上的短名也是；主线程那一列一点不变
+    # 撞名只按这一列画着的算（用户 10-10 定）：side 展开 sansio/ 只画了 sansio 的 app（cx/app.py 只有主线程调），切面上撞了名、这一列里没撞，
+    # 图上写 app；面板上的短名照旧按切面算，写 sansio.app；主线程那一列一点不变
     D5, by5 = lanes_of({side: ["cx/", "cx/sansio/"]})
     covered(D5)
     assert "cx/app.py" not in by5["side"]["nodes"] and like_graph(by5["side"])
-    assert by5["side"]["names"]["cx/sansio/app.py"] == "sansio.app" == D5["info"]["cx/sansio/app.py"]["name"], by5["side"]["names"]
+    assert (by5["side"]["names"]["cx/sansio/app.py"], D5["info"]["cx/sansio/app.py"]["name"]) == ("app", "sansio.app"), by5["side"]["names"]
     assert by5["MainThread"] == by0["MainThread"]
     # 主线程展开 sansio/、side 展开 ops/：两个 util 不在同一个切面上，各写 util（图上、面板上）；side 展开 ops/ 改不了主线程那一列的名字
     D7, by7 = lanes_of({main: ["cx/", "cx/sansio/"], side: ["cx/", "cx/ops/"]})
@@ -3010,6 +3017,73 @@ _FH = {
                    "    for p in kids:\n        os.waitpid(p, 0)\n\n\n"
                    "if __name__ == '__main__':\n    main()\n"),
 }
+
+
+_SHM = {
+    "shmapp/__init__.py": "",
+    "shmapp/main.py": """import os
+from multiprocessing import shared_memory
+
+
+def put_block(name, data):        # 建一块共享内存、写进去（vllm-omni 的 stage 之间那样：每块一个新名字）
+    s = shared_memory.SharedMemory(create=True, size=len(data), name=name)
+    s.buf[:len(data)] = data
+    s.close()
+
+
+def take_block(name, n):          # 别的进程按名字连上、读走、删掉
+    s = shared_memory.SharedMemory(name=name)
+    out = bytes(s.buf[:n])
+    s.close()
+    s.unlink()
+    return out
+
+
+def main():
+    name = "cs_test_shm_%d" % os.getpid()
+    put_block(name, b"x" * 64)
+    pid = os.fork()
+    if pid == 0:
+        take_block(name, 64)
+        os._exit(0)
+    os.waitpid(pid, 0)
+
+
+if __name__ == "__main__":
+    main()
+""",
+}
+
+
+def test_shm_handoff():
+    """跨进程的共享内存交接（multiprocessing.shared_memory，按名字配）：父进程 put_block 里建一块的那一行 → fork 的子进程
+    take_block 里按名字连上的那一行，handoffs 里一条 via shm；分列里是两个进程之间的一条交接线"""
+    from codestrata import events, lanes
+    repo = tmpdir("cs-runs-shm-") / "repo"
+    for rel, src in _SHM.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(src)
+    cs("scan", repo)
+    cs("trace", repo, "--case", "shm", "--events", "--", PY, "-m", "shmapp.main")
+    run, rd, phase = runs.resolve(repo, "shm")
+    sd = rd / "events" / "spans"
+    ix, kj = json.loads((sd / "index.json").read_text()), json.loads((sd / "keys.json").read_text())
+    hs = [h for h in ix["handoffs"] if h["via"] == "shm"]
+    assert len(hs) == 1, ix["handoffs"]
+    h = hs[0]
+    code = _SHM["shmapp/main.py"].splitlines()
+    ln = lambda s: next(i for i, x in enumerate(code, 1) if x.strip() == s)      # noqa: E731
+    assert h["from"][0] != h["to"][0], h
+    assert h["from"][4] == ln("s = shared_memory.SharedMemory(create=True, size=len(data), name=name)"), h
+    assert h["to"][4] == ln("s = shared_memory.SharedMemory(name=name)"), h
+    rows = {p: events.read_spans(sd, p) for p in (h["from"][0], h["to"][0])}
+    fn = lambda side: kj["keys"][rows[side[0]][side[2]][5]]                       # noqa: E731
+    assert fn(h["from"]) == _line(repo, "shmapp/main.py", "def put_block(") and fn(h["to"]) == _line(repo, "shmapp/main.py", "def take_block("), h
+    idx = ui_load.load_index(repo)
+    hot, _ = runs.load_run(repo, idx, run, rd, None)
+    L = lanes.build(idx, rd, run, None, hot, None)
+    assert any(k["kind"] == "handoff" and k["via"] == "shm" and k["from"]["lane"].split(":")[0] != k["to"]["lane"].split(":")[0]
+               for k in L["links"]), [(k["kind"], k["via"]) for k in L["links"]]
 
 
 def test_handoff_in_folded_calls():

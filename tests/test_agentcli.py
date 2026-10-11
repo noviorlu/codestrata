@@ -116,7 +116,7 @@ def test_parse_ref_and_url():
 
 
 def test_ranges():
-    """范围：阶段名按最长匹配（serve 和 serve-2 都在）、t= 的微秒和秒、阶段 + 秒；越界、反了、写错都带候选"""
+    """范围：阶段名按最长匹配（serve 和 serve-2 都在）、t= 的微秒和秒、几片、阶段 + 秒；越界、反了、写错都带候选"""
     run = {"id": "R", "phases": [{"name": "start"}, {"name": "serve"}, {"name": "serve-2"}],
            "phase_log": [["start", 0, "start"], ["serve", 1_000_000, "hook"], ["serve-2", 3_000_000, "hook"]]}
     assert ref.split_range(run, "serve-2/stage1") == ("serve-2", ["stage1"])
@@ -127,7 +127,10 @@ def test_ranges():
     assert ref.parse_range(run, "t=10-20", end) == ("t=10-20", [(10, 20)])
     assert ref.parse_range(run, "t=1.5s-2.25s", end) == ("t=1500000-2250000", [(1_500_000, 2_250_000)])
     assert ref.parse_range(run, "serve+0.5s-1.5s", end) == ("t=1500000-2500000", [(1_500_000, 2_500_000)])
-    for rng, code in (("t=0-6000000", "window_out_of_range"), ("t=5-3", "bad_window"), ("t=1-2,3-4", "bad_window"),
+    # 几片（links --follow 的链）：按先后排好，重叠和挨着的合成一片，秒的写法也收
+    assert ref.parse_range(run, "t=30-40,1-2,35-50,50-60,0.1s-0.2s", end) == ("t=1-2,30-60,100000-200000", [(1, 2), (30, 60), (100_000, 200_000)])
+    for rng, code in (("t=0-6000000", "window_out_of_range"), ("t=5-3", "bad_window"), ("t=1-2,x", "bad_window"),
+                      ("t=1-2,4-3", "bad_window"), ("t=1-2,0-6000000", "window_out_of_range"),
                       ("servng", "phase_not_found"), ("serve+1s-3s", "window_out_of_range"), ("t=x", "bad_window")):
         try:
             ref.parse_range(run, rng, end)

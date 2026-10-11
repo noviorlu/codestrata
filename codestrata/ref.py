@@ -74,14 +74,23 @@ def _parse_url(text: str) -> Ref:
     m = re.match(r"^/v/(\d+)/", u.path or "")
     if m:                                        # 主菜单转发的 /v/<端口>/：图服务自己的端口
         prefix, port = m.group(0), int(m.group(1))
+    page = {"url": text, "host": u.hostname, "port": port, "prefix": prefix}
+    return _from_fragment(u.fragment or "", page, text)
+
+
+def parse_fragment(frag: str) -> Ref:
+    """视图描述（地址栏 # 后面那串，不带页面）→ Ref：推给页面的视图在 serve 那头按它核对"""
+    return _from_fragment((frag or "").lstrip("#"), None, frag)
+
+
+def _from_fragment(frag: str, page: dict | None, text: str) -> Ref:
     keys: dict[str, str] = {}
-    for part in (u.fragment or "").split("&"):
+    for part in frag.split("&"):
         if part:
             k, _, v = part.partition("=")
             keys[_unq(k)] = _unq(v)
     run_text = keys.pop("run", "") or None
     lanes = _list(keys.pop("lanes", ""))
-    page = {"url": text, "host": u.hostname, "port": port, "prefix": prefix}
     if run_text is None:
         return Ref(run=None, lanes=lanes, view=keys, page=page, text=text)
     run, at, rest = run_text.partition("@")
@@ -89,6 +98,11 @@ def _parse_url(text: str) -> Ref:
 
 
 # ---------------------------------------------------------------- 范围（对着一个 run 的 run.json）
+
+def join(run_id: str, rng: str | None = None, lanes: list[str] | None = None) -> str:
+    """拼一个规整的 REF：RUN[@范围][/列,…]（范围是阶段名或 t=起-止[,起-止…]，已经规整过的）"""
+    return run_id + (f"@{rng}" if rng else "") + ("/" + ",".join(lanes) if lanes else "")
+
 
 def phase_names(run: dict) -> list[str]:
     names = [p["name"] for p in run.get("phases") or []]
@@ -134,17 +148,25 @@ def parse_range(run: dict, rng: str, end: int | None, bounds: bool = True) -> tu
     if not rng:
         raise CodestrataError("bad_window", "@ 后面是空的", candidates=hint)
     if rng.startswith("t="):
-        body = rng[2:]
-        if "," in body:
-            raise CodestrataError("bad_window", f"多片时间段（{rng}）还不支持", candidates=hint)
-        m, ms = _T_US.match(body), _T_S.match(body)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-        elif ms:
-            a, b = _secs(ms.group(1)), _secs(ms.group(2))
-        else:
-            raise CodestrataError("bad_window", f"时间段写成 t=起-止（微秒）或 t=78.024s-80.492s：{rng}", candidates=hint)
-        return _window(run, a, b, end if bounds else None, rng, hint)
+        out: list[tuple[int, int]] = []
+        for body in rng[2:].split(","):          # 几片（links --follow 的链）：逗号隔开，按先后排好、重叠和挨着的合成一片
+            m, ms = _T_US.match(body), _T_S.match(body)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+            elif ms:
+                a, b = _secs(ms.group(1)), _secs(ms.group(2))
+            else:
+                raise CodestrataError("bad_window", f"时间段写成 t=起-止（微秒）或 t=78.024s-80.492s，几片用逗号隔开：{rng}",
+                                      candidates=hint)
+            out += _window(run, a, b, end if bounds else None, rng, hint)[1]
+        out.sort()
+        merged: list[tuple[int, int]] = []
+        for a, b in out:
+            if merged and a <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return "t=" + ",".join(f"{a}-{b}" for a, b in merged), merged
     name = next((n for n in sorted(names, key=len, reverse=True) if rng == n or rng.startswith(n + "+")), None)
     if name is None:
         raise CodestrataError("phase_not_found", f"run {run['id']} 里没有阶段 {rng!r}" + _phase_text(run, end),

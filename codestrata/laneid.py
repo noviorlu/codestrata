@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import fnmatch
 import re
 
 from .errors import CodestrataError
@@ -98,6 +97,11 @@ def lane_aliases(lanes: list[dict], procs: dict[int, str]) -> dict[str, str]:
     return out
 
 
+def _glob(pat: str, s: str) -> bool:
+    """只有 * 是通配（和页面的 lanefocus.js 一样：? [ ] 都按字面认）"""
+    return re.fullmatch(".*".join(re.escape(x) for x in pat.split("*")), s) is not None
+
+
 def _match(sel: str, alias: str, lane_id: str) -> bool:
     s = sel.lower()
     if s == lane_id.lower():
@@ -105,16 +109,17 @@ def _match(sel: str, alias: str, lane_id: str) -> bool:
     proc, _, th = alias.lower().partition("/")
     sp, slash, st = s.partition("/")
     if not slash:                               # 只写进程：这个进程的所有列
-        return fnmatch.fnmatchcase(proc, sp)
-    return fnmatch.fnmatchcase(proc, sp) and fnmatch.fnmatchcase(th, st)
+        return _glob(sp, proc)
+    return _glob(sp, proc) and _glob(st, th)
 
 
-def select(selectors: list[str], aliases: dict[str, str]) -> list[str]:
-    """选择器 → 列 id（按 aliases 的先后，去重）。哪个选择器一列都没配上就报 lane_not_found，带候选"""
+def select(selectors: list[str], aliases: dict[str, str], strict: bool = True) -> list[str]:
+    """选择器 → 列 id（按 aliases 的先后，去重）。哪个选择器一列都没配上：strict 时报 lane_not_found（带候选），
+    否则跳过它（页面和编号那边：地址里只看的列这一段里没有，就当没选，画全部列）"""
     out: list[str] = []
     for sel in selectors:
         hit = [lid for lid, a in aliases.items() if _match(sel, a, lid)]
-        if not hit:
+        if not hit and strict:
             raise CodestrataError("lane_not_found", f"没有和 {sel!r} 对上的列", candidates=_near(sel, aliases))
         out += [h for h in hit if h not in out]
     return [lid for lid in aliases if lid in out]

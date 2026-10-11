@@ -6,6 +6,8 @@
     t.call(t0 + 5, 3, callee2, parent=root)
     b.handoff("queue", (pid, tid, row, t), (pid2, tid2, row2, t2))
     rd = b.write(dir)
+
+几条线程交错、不方便按时间先后加的场景用 Script：按符号写调用，写盘前按 (t0, depth) 排好、把父亲换成下标。
 """
 from __future__ import annotations
 
@@ -46,8 +48,9 @@ class Builder:
         """a / b：(pid, tid, span 下标, t_us)"""
         self.handoffs.append({"via": via, "from": [*a, 0], "to": [*b, 0]})
 
-    def write(self, d: Path, run_id: str = "20991231-000000-synth", phases: list | None = None, old: bool = False) -> Path:
-        """写成 d/.codestrata/runs/<run_id>；old：老格式（没有 handoffs、span 没有 parent）"""
+    def write(self, d: Path, run_id: str = "20991231-000000-synth", phases: list | None = None, old: bool = False,
+              rec: dict | None = None) -> Path:
+        """写成 d/.codestrata/runs/<run_id>；old：老格式（没有 handoffs、span 没有 parent）；rec：run.json 的 rec（phase_at 等）"""
         rd = Path(d) / ".codestrata" / "runs" / run_id
         sp = rd / "events" / "spans"
         sp.mkdir(parents=True, exist_ok=True)
@@ -72,6 +75,62 @@ class Builder:
         run = {"schema": 3, "id": run_id, "case": run_id.split("-", 2)[2], "status": "ok", "problems": [],
                "phase_log": [[n, t, "hook"] for n, t in phases], "duration_s": end / 1e6,
                "phases": [{"name": n, "t_us": t, "n_funcs": 1, "n_calls": 1} for n, t in phases],
-               "events": {"n_spans": ix["n_spans"], "truncated": self.truncated}, "rec": {}}
+               "events": {"n_spans": ix["n_spans"], "truncated": self.truncated}, "rec": rec or {}}
         (rd / "run.json").write_text(json.dumps(run))
         return rd
+
+
+class Script:
+    """按符号写调用（不用按时间先后加）：
+
+        s = Script(keys)
+        s.thread(pid, tid, "MainThread", proc="python -m eng", title="StageProc_stage0")
+        root = s.call(pid, tid, t0, dur, callee)                  # 返回符号（不是下标）
+        s.call(pid, tid, t0 + 5, 3, callee2, parent=root)
+        s.handoff("zmq", (pid, tid, 符号或 None, t), (pid2, tid2, 符号或 None, t2))
+        rd = s.write(dir, phases=[...], rec={...})
+    """
+
+    def __init__(self, keys: list[str]):
+        self.keys = list(keys)
+        self.calls: dict[int, dict] = {}
+        self.threads: list[tuple] = []
+        self.hand: list[tuple] = []
+
+    def thread(self, pid: int, tid: int, name: str, proc: str = "python app.py", start: int = 0, title: str | None = None) -> None:
+        self.threads.append((pid, tid, name, proc, start, title))
+
+    def call(self, pid: int, tid: int, t0: int, dur: int, callee: int, parent: int | None = None, rep: int = 1,
+             susp: int = 0, caller: int = 0) -> int:
+        s = len(self.calls) + 1
+        depth = 0 if parent is None else self.calls[parent]["depth"] + 1
+        self.calls[s] = {"pid": pid, "tid": tid, "t0": t0, "dur": dur, "callee": callee, "parent": parent, "rep": rep,
+                         "susp": susp, "depth": depth, "caller": caller}
+        return s
+
+    def handoff(self, via: str, a: tuple, b: tuple) -> None:
+        self.hand.append((via, a, b))
+
+    def write(self, d: Path, phases: list | None = None, rec: dict | None = None,
+              run_id: str = "20991231-000000-synth") -> Path:
+        b = Builder(self.keys)
+        for pid, tid, name, proc, start, title in self.threads:
+            b.thread(pid, tid, name, proc=proc, start=start)
+            if title:
+                b.procs[pid]["title"] = title
+        idx: dict[int, int] = {}
+        by_pid: dict[int, list[int]] = {}
+        for s, c in self.calls.items():
+            by_pid.setdefault(c["pid"], []).append(s)
+        for pid, ss in by_pid.items():
+            ss.sort(key=lambda s: (self.calls[s]["t0"], self.calls[s]["depth"], s))
+            for i, s in enumerate(ss):
+                idx[s] = i
+            rows = b.rows.setdefault(pid, [])
+            for s in ss:
+                c = self.calls[s]
+                rows.append([c["t0"], c["dur"], c["tid"], c["depth"], c["caller"], c["callee"], c["rep"], c["susp"],
+                             idx[c["parent"]] if c["parent"] is not None else -1])
+        for via, x, y in self.hand:
+            b.handoff(via, (x[0], x[1], idx[x[2]] if x[2] else -1, x[3]), (y[0], y[1], idx[y[2]] if y[2] else -1, y[3]))
+        return b.write(Path(d), run_id=run_id, phases=phases, rec=rec)

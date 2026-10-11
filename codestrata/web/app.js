@@ -34,7 +34,7 @@ window.CS = window.CS || {};
     data: null,
 
     boot: function () {
-      var self = this;
+      var self = this, hash0 = location.hash;        // 地址里的视图先记下（套完之前页面不写地址：view.js 的 booted）
       // 先定叠哪个 run（URL hash → serve --hot → 只看静态图），再取图
       this.initRuns().then(function () {
         return CS.ds.graph(null, CS.graph.boxWidth());
@@ -43,10 +43,11 @@ window.CS = window.CS || {};
         CS.laneCut.adopt(d);
         self.header(d);
         CS.panel.init(document.getElementById('det'), d);
-        CS.graph.onPick = function (id) { CS.panel.showPkg(id); self.drawerTitle(id); };
-        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); self.drawerTitle(null, a, b); };
+        // 模块图上的选中也写进地址（分列里的在 lanes.js 里写）
+        CS.graph.onPick = function (id) { CS.panel.showPkg(id); self.drawerTitle(id); if (!self.lanesMode()) CS.view.changed('sel'); };
+        CS.graph.onPickEdge = function (a, b) { CS.panel.showEdge(a, b); self.drawerTitle(null, a, b); if (!self.lanesMode()) CS.view.changed('sel'); };
         CS.graph.onCollapse = function (f) { self.collapseFrame(f); };
-        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); if (CS.lanes) CS.lanes.unselect(); };
+        CS.graph.onClear = function () { CS.panel.reset(); self.drawerTitle(); if (CS.lanes) CS.lanes.unselect(); CS.view.changed('sel'); };
         // 时间顺序的颜色是画的时候按当前主题的 --tm0/1/2 算好写死的：换了亮 / 暗（系统设置或页面上的切换）要重画
         var retint = function () { if (CS.graph.state.timeOrder) self.repaint(); };   // 分列或模块图
         if (window.matchMedia) {
@@ -70,6 +71,11 @@ window.CS = window.CS || {};
         self.footer(d);
         if (self._runMissing && CS.viewer) CS.viewer.toast(self._runMissing);
         if (CS.search) CS.search.init();
+        // 地址里的视图描述（只看列、收起、切面、选中、标记、开关…）：run 已经按它选好了，其余的画好之后套上；之后粘进来的地址、后退也套
+        var v0 = CS.view.parse(hash0);
+        v0.run = CS.ds.run || null;                   // run 按后端认好的完整 id（地址里写的可能是 case 名）
+        CS.view.init();
+        CS.view.apply(v0, 'boot').then(function () { if (CS.viewsync) CS.viewsync.init(); });   // 画好之后才开始和 agent 同步
         // 窗口宽度变了不少：按新的宽度重新排版（切面、选中、缩放都不变）
         self._w = CS.graph.boxWidth();
         var rt = 0;
@@ -315,9 +321,7 @@ window.CS = window.CS || {};
     },
 
     _writeHash: function () {
-      var rest = (location.hash || '').replace(/^#/, '').split('&').filter(function (x) { return x && !/^(run|view|cmp)=/.test(x); });
-      if (CS.ds.run) rest.unshift('run=' + encodeURIComponent(CS.ds.run).replace(/%40/g, '@'));
-      history.replaceState(null, '', location.pathname + location.search + (rest.length ? '#' + rest.join('&') : ''));
+      if (CS.view) CS.view.write();                   // 地址按页面真实状态整个重写（view.js）；换 run 立刻写，不等合并
     },
 
     initRuns: function () {
@@ -335,6 +339,14 @@ window.CS = window.CS || {};
             self._runMissing = '地址里的 run ' + want + (hit ? ' 还没有计数（还在录，或录制中断了要 runs merge）'
                                                            : ' 找不到了（删了？）') + '，先只看静态图';
             want = '';
+          } else {
+            // 阶段写错（以前整页「加载失败」）：退回这个 run 默认看的阶段，并提示
+            var ph = want.indexOf('@') >= 0 ? want.slice(want.indexOf('@') + 1) : '';
+            if (ph && ph.indexOf('t=') !== 0 && ph.indexOf('+') < 0 && !(hit.phases || []).some(function (x) { return x.name === ph; })) {
+              var dp = self.defaultPhase(hit);
+              self._runMissing = 'run ' + hit.id + ' 里没有阶段 ' + ph + '，看的是' + (dp ? ' ' + dp : '整个 run');
+              want = hit.id + (dp ? '@' + dp : '');
+            }
           }
         }
         CS.ds.run = want;
@@ -343,12 +355,21 @@ window.CS = window.CS || {};
     },
 
     /* 列表里某个 run 默认看哪个阶段：有 serving 就只看 serving（启动时的初始化会淹没请求本身） */
-    _defaultPhase: function (x) {
+    defaultPhase: function (x) {
       return (x.phases || []).some(function (p) { return p.name === 'serving'; }) ? 'serving' : '';
+    },
+
+    /* 地址里写的 run（完整 id 或 case 名）→ 列表里的那一个；case 名和后端（runs.pick）一样挑：最新一次 ok 的，没有就最新的 partial，再没有最新的 */
+    pickRun: function (name) {
+      var L = this.runList || [], mine = L.filter(function (x) { return x.case === name; });
+      return L.filter(function (x) { return x.id === name; })[0]
+        || mine.filter(function (x) { return x.status === 'ok'; })[0]
+        || mine.filter(function (x) { return x.status === 'partial'; })[0] || mine[0] || null;
     },
 
     selectRun: function (id, phase) {
       var self = this, prev = CS.ds.run;
+      if (CS.chain && !(CS.view && CS.view.applying) && (prev || '').split('@')[0] !== (id || '')) CS.chain.set(null);   // 链是那个 run 的
       CS.ds.run = id ? id + (phase ? '@' + phase : '') : '';
       this._writeHash();
       this.closeRunPop();
@@ -410,7 +431,7 @@ window.CS = window.CS || {};
       });
       CS.timebar.render(pc, { run: m.run_id, names: phases.map(function (p) { return p.name; }),
                               segs: phases.length ? m.timeline || [] : [], end: m.end_us || 0,
-                              phase: m.window ? '' : m.phase || '', window: m.window, canDrag: canDrag, tips: tips,
+                              phase: m.window ? '' : m.phase || '', window: m.window, slices: m.slices, canDrag: canDrag, tips: tips,
                               onSelect: function (ref) { self.selectRun(m.run_id, ref); } });
       // 选了阶段：写明从哪个函数开始、到哪个函数结束（图上对应的节点标成绿 ▶ / 红 ■）
       var bd = this.phaseBounds();
@@ -454,8 +475,9 @@ window.CS = window.CS || {};
       if (!m.phase || m.window) {
         var t0 = Object.create(null);                 // 各阶段第一次开始的时刻
         (m.timeline || []).forEach(function (x) { if (!(x[0] in t0)) t0[x[0]] = x[1]; });
+        var inWin = function (t) { return (m.slices || [m.window]).some(function (s) { return t >= s[0] && t <= s[1]; }); };
         ((d && d.phaseMarks) || []).forEach(function (x) {
-          if (m.window && !(t0[x.name] >= m.window[0] && t0[x.name] <= m.window[1])) return;
+          if (m.window && !inWin(t0[x.name])) return;
           if (x.node) out.push({ node: x.node, kind: 'start', label: '▶ ' + x.name,
                                  title: x.name + ' 阶段从第一次进入 ' + where(x) + ' 开始' });
         });
@@ -549,7 +571,7 @@ window.CS = window.CS || {};
         el.onclick = function () {
           var id = el.dataset.run, x = list.filter(function (r) { return r.id === id; })[0];
           if (id === cur) { self.closeRunPop(); return; }
-          self.selectRun(id, x ? self._defaultPhase(x) : '');
+          self.selectRun(id, x ? self.defaultPhase(x) : '');
         };
       });
       var first = pop.querySelector('[aria-current=true]') || pop.querySelector('.rr');
@@ -678,6 +700,13 @@ window.CS = window.CS || {};
            + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
+      // 只看几列、标记（lanefocus.js）、高亮的链（lanechain.js）：工具栏上的小签，点了退回全部列 / 清掉
+      var ec = document.getElementById('edgechips');
+      ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip() + (this.lanesMode() ? CS.chain.chip() : ''));
+      var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), cbtn = ec.querySelector('[data-chain]'), self = this;
+      if (fbtn) fbtn.onclick = function () { CS.focus.showAll(); self.edgeChips(); CS.view.changed('lanes'); };
+      if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
+      if (cbtn) cbtn.onclick = function () { CS.chain.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
     },
 
@@ -859,7 +888,11 @@ window.CS = window.CS || {};
         return (x.u || []).some(function (i) { return units[i] === id || self.homeOf(units[i], 'unit', under) === id; });
       })[0];
       if (!ln) { CS.viewer.toast('这一段里哪条线程都没调到它'); return Promise.resolve(null); }
-      if (lanes.collapsed[ln.pid]) lanes.fold(ln.pid, false);
+      if (CS.focus.hidden(ln.id)) {                 // 只在没选的列里：退回全部列再找（不改搜索栏，只在这里接住）
+        CS.focus.showAll();
+        CS.viewer.toast('它在只看几列时没选的列里：已经改回全部列');
+      }
+      if (lanes.isFolded(ln.pid)) lanes.fold(ln.pid, false);
       function home() { return self.homeOf(id, kind, lanes.asGraph(ln.id)); }
       function opened() { return CS.laneCut.of(ln.id).indexOf(id) >= 0; }
       function done() {
@@ -974,6 +1007,7 @@ window.CS = window.CS || {};
           else if (key === 'timeOrder') self.applyTimes();
           else if (key === 'hot') { self.repaint(); self.edgeChips(); self.controls(); }   // 「其中代码里看不出」跟着它能不能点
           else { self.repaint(); if (self.lanesMode()) { self.edgeChips(); self.controls(); } }
+          CS.view.changed('toggle');
         };
       });
       var rc = document.getElementById('resetcut');

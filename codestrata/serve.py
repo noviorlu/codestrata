@@ -2,15 +2,20 @@
 
     GET  /                        前端（codestrata/web/index.html）
     GET  /<asset>                 前端静态资源（app.css、*.js）
-    GET  /api/app                 {home, repo, pid, port}：home 是从主菜单（codestrata app）打开时主菜单的地址（页面上放回去的链接）；
-                                  命令行拿页面地址当 REF 时问它是哪个仓库
+    GET  /api/app                 {home, repo, pid, port, features, algo}：home 是从主菜单（codestrata app）打开时主菜单的地址
+                                  （页面上放回去的链接）；命令行拿页面地址当 REF 时问它是哪个仓库；features 有 view 才能推视图
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
-    GET  /api/lanes?run=&open=&cuts=
+    GET  /api/lanes?run=&open=&cuts=&fold=&hide=&lanes=&chain=   chain：页面高亮的链（chainview：范围~起点~--link…）
                                   按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
                                   加上节点信息、框、名字、子层（ui/lanesview.py）。open 是共用的切面，
                                   cuts（JSON [{"lanes": [列 id…], "open": [目录…]}…]）是各列自己的切面。
-                                  每列的 names 是图上的名字 {id: 字}，合进来的线程原名在 thread_names
+                                  每列的 names 是图上的名字 {id: 字}，合进来的线程原名在 thread_names；aliases 是列别名、
+                                  proc_aliases 是进程别名；order 是这个视图（fold 收起的进程、hide 藏起的边、lanes 只看的列）
+                                  里时间顺序的编号（laneorder.py）。进程按这一段里开始干活的先后排（segments.proc_order），
+                                  procinfo 是进程头上「它在干什么」的那一句 {pid: {parts, title}}（procinfo.py），
+                                  default_lanes 是没写 lanes= 时默认看的列（转一手的收起，lanedefault.py；null 是全部）
+    GET  /api/laneorder?…         同 /api/lanes 的参数，只回 order（收起进程、切开关时不重取整张图）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
@@ -25,11 +30,14 @@
                                   一条边承载了什么：两端底下函数之间的调用，scan 写的和 trace 录到的；
                                   给了 lane（分列里的列 id）就只算这一列里的调用
     GET  /api/lanehot?run=&lane=  分列里一列的叠加（只算这一列里的调用）：节点详情里的次数、文件树、kernel 表用
+    GET  /api/marklanes?run=&mark= 标记的东西这段时间里在哪几列跑过（页面的标记只描这几列）
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
+    POST /api/view…、GET /api/view…  agent 推给页面的视图、页面回报的现状（viewhub.py：只在内存里）。读写都要 X-Codestrata 头，
+                                  POST 还要 application/json、请求体 ≤ 64 KB
     GET  /code/<path>?l=N         整个文件，带行号锚点
 
 只用标准库。只监听 127.0.0.1，Host 头必须是本机这个端口（防 DNS rebinding）；所有路径 realpath 后
-必须落在仓库内。
+必须落在仓库内。起来之后在配置目录登记（serves.py），退出（含 SIGTERM）时删掉。
 """
 from __future__ import annotations
 
@@ -44,11 +52,22 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import align as _align
+from . import chainview as _chainview
 from . import cut as _cut
+from . import errors as _errors
+from . import finder as _finder
+from . import laneorder as _laneorder
+from . import lanedefault as _lanedefault
 from . import lanes as _lanes
 from . import path as _path
+from . import procinfo as _procinfo
 from . import runs as _runs
+from . import segments as _segments
 from . import seq as _seq
+from . import serves as _serves
+from . import steps as _steps
+from . import viewhub as _viewhub
 from .ui import edge as _edge
 from .ui import graphview as _graphview
 from .ui import lanesview as _lanesview
@@ -259,6 +278,22 @@ class Handler(BaseHandler):
         return self._json({"lane": lane, "run": h["run"], "packages": h["packages"], "symbols": h["symbols"],
                            "files": h["files"], "kernels": h["kernels"], "lines_approx": h["lines_approx"]})
 
+    def _marklanes(self, q: dict):
+        """/api/marklanes?run=&mark=a,b：标记的这些东西这段时间里在哪几列跑过 {lanes: {东西: {列 id: 次数}}}（页面只描这几列里装着它的节点）"""
+        ref = (q.get("run") or [""])[0].strip()
+        items = [x for x in ((q.get("mark") or [""])[0]).split(",") if x][:20]
+        if not ref:
+            return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
+        try:
+            run, rd, phase = _runs.resolve(self.repo, ref)
+            per = _finder.ran_per_node(rd, run, phase, self._label(), _lanes.lane_id)
+        except (SystemExit, LookupError) as e:
+            return self._json({"error": str(e)}, 404)
+        except (OSError, ValueError) as e:
+            return self._json({"error": _seq.unreadable(e, ref)}, 500)
+        hit = _finder.ran_lanes(self.idx, per, items)
+        return self._json({"lanes": {it: {ln: x[0] for ln, x in v.items()} for it, v in hit.items()}})
+
     def _path(self, q: dict):
         """/api/path：请求路径（path.request_path）。run 必填，@阶段（或 @t=）决定时间段"""
         ref = (q.get("run") or [""])[0].strip()
@@ -267,36 +302,99 @@ class Handler(BaseHandler):
         try:
             run, rd, phase = _runs.resolve(self.repo, ref)
             hot = self._hot(q)[0]
-            return self._json(_path.request_path(self.idx, rd, run, phase, hot))
+            return self._json(_path.request_path(self.idx, rd, run, phase, hot, proc_order=self._proc_order(rd, run, phase)))
         except (SystemExit, LookupError) as e:
             return self._json({"error": str(e)}, 404)
         except (OSError, ValueError) as e:
             return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 
-    def _lanes(self, q: dict):
-        """/api/lanes：按进程 · 线程分列（lanes.build + lanesview.decorate）。run 必填，@阶段（或 @t=）决定时间段，
-        open 是共用的切面，cuts 是各列自己的切面"""
+    def _lanes(self, q: dict, order_only: bool = False):
+        """/api/lanes：按进程 · 线程分列（lanes.build + lanesview.decorate），加上每列的别名（aliases）、进程别名（proc_aliases）、
+        这个视图里时间顺序的编号（order，laneorder.py）。run 必填，@阶段（或 @t=）决定时间段，open 是共用的切面，
+        cuts 是各列自己的切面；fold（收起的进程，别名）、hide（藏起的边：hot / dyn）、lanes（只看的列，选择器）只影响编号。
+        order_only（/api/laneorder）：只回编号——收起进程、切开关时页面不用重取整张图"""
         ref = (q.get("run") or [""])[0].strip()
         if not ref:
             return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
         raw = (q.get("open") or [None])[0]
         open_ = None if raw is None else sorted(_cut.norm_open(self.idx, [o for o in raw.split(",") if o]))
+        cuts_raw = (q.get("cuts") or [None])[0]
+        chain_raw = ((q.get("chain") or [""])[0]).strip() or None
         try:
-            cuts = _lanesview.parse_cuts(self.idx, (q.get("cuts") or [None])[0])
+            cuts = _lanesview.parse_cuts(self.idx, cuts_raw)
         except ValueError as e:
             return self._json({"error": str(e)}, 400)
         run = None
         try:
             run, rd, phase = _runs.resolve(self.repo, ref)
-            hot = self._hot(q)[0]
-            L = _lanes.build(self.idx, rd, run, phase, hot, open_, cuts=cuts,
-                             text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160])
-            return self._json(_lanesview.decorate(self.idx, hot, L, open_))
+            key = (ref, tuple(open_ or ()) if open_ is not None else None, cuts_raw, chain_raw, self._run_mtime(rd))
+            with Handler._lock:
+                L = Handler._lane_cache.get(key)
+            if L is None:
+                hot = self._hot(q)[0]
+                # 高亮的链：在它自己的那一段里走一遍（和 links --follow 同一份），录到的跳标在连线上，推出来的多连一条
+                cinfo, cmarks = _chainview.for_page(self.idx, rd, run, hot, chain_raw) if chain_raw else (None, None)
+                L = _lanes.build(self.idx, rd, run, phase, hot, open_, cuts=cuts, proc_order=self._proc_order(rd, run, phase),
+                                 text=lambda f, l: _source.line_text(self.repo, f, l).strip()[:160], chain=cmarks)
+                L = _lanesview.decorate(self.idx, hot, L, open_)
+                if cinfo is not None:
+                    L["chain"] = cinfo
+                L["aliases"] = _lanes.aliases_of(rd, L)
+                L["proc_aliases"] = {str(k): v for k, v in _lanes.proc_aliases(rd).items()}
+                S, lo, multi = self._stages(rd, run, phase)
+                # 进程头上的一句（几片的时间段不写：切段要连续的一段，按整段算的时刻和画着的几片对不上）、默认收起的列
+                L["procinfo"] = {} if multi else {str(pid): v for pid, v in _procinfo.summary(S, lo).items()}
+                L["default_lanes"] = _lanedefault.default_lanes(L, S)
+                with Handler._lock:
+                    Handler._lane_cache[key] = L
+                    while len(Handler._lane_cache) > 4:
+                        Handler._lane_cache.pop(next(iter(Handler._lane_cache)))
+            order = self._order(L, q)
+            return self._json({"order": order} if order_only else dict(L, order=order))
         except (SystemExit, LookupError) as e:
             return self._json({"error": str(e)}, 404)
+        except _errors.CodestrataError as e:
+            return self._json({"error": e.msg, "code": e.code, "candidates": e.candidates}, 400)
         except (OSError, ValueError) as e:
             # 还没认出是哪个 run 就出错（读 runs 目录失败）：没有 run id 可写
             return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
+
+    def _order(self, L: dict, q: dict) -> dict:
+        """这个视图（fold / hide / lanes）里时间顺序的编号（laneorder.rank_view：和命令行的 explain N 同一份）"""
+        def arg(k: str) -> list[str]:
+            return [x for x in ((q.get(k) or [""])[0]).split(",") if x]
+        return _laneorder.rank_view(L, L["aliases"], L.get("proc_aliases") or {}, arg("fold"), arg("hide"), arg("lanes"))
+
+    def _proc_order(self, rd: Path, run: dict, phase: str | None) -> dict:
+        """进程的先后：这一段里开始干活的先后（分列和请求路径同一个；轮头按装着这一段的阶段认，和命令行一样）"""
+        segs, name, hw = self._scope(rd, run, phase)
+        return _segments.proc_order(rd, run, name, segs[0][0], segs[-1][1], self._label(), hw)
+
+    def _stages(self, rd: Path, run: dict, phase: str | None) -> tuple:
+        """这一段的切段（segments.stages，和进程的先后同一份、缓存着）、这一段的开头、是不是几片"""
+        segs, name, hw = self._scope(rd, run, phase)
+        lo, hi = segs[0][0], segs[-1][1]
+        return _segments.stages(rd, run, name, lo, hi, self._label(), hw), lo, len(segs) > 1
+
+    @staticmethod
+    def _scope(rd: Path, run: dict, phase: str | None) -> tuple:
+        """这一段的时间片、REF 所在的阶段名、认轮头用的那段（segments.head_window）"""
+        segs, _, end = _seq.window_segments(run, rd, phase)
+        name, hw = _segments.head_window(run, end, segs[0][0], segs[-1][1], phase)
+        return segs, name, hw
+
+    def _label(self):
+        """键 → 函数级的节点（按 index 缓存一个）"""
+        if Handler._labeler is None:
+            Handler._labeler = _align.node_labeler(self.idx)
+        return Handler._labeler
+
+    @staticmethod
+    def _run_mtime(rd: Path) -> int:
+        try:
+            return (rd / "events" / "spans" / "index.json").stat().st_mtime_ns
+        except OSError:
+            return 0
 
     def _runs(self) -> dict:
         """/api/runs：下拉列表要的摘要，新的在前。「录制后改过几个文件」要读 detail.json 和当前
@@ -328,7 +426,13 @@ class Handler(BaseHandler):
 
         if path == "/api/app":                       # 命令行按页面地址找仓库时也问它（ref.page_app）
             return self._json({"home": self.home, "repo": str(self.repo), "pid": os.getpid(),
-                               "port": self.server.server_address[1]})
+                               "port": self.server.server_address[1], "features": _serves.FEATURES, "algo": _steps.ALGO})
+
+        if path.startswith("/api/view"):             # 用户在看什么：也只给我们自己的页面和命令行
+            if not self._from_page():
+                return self._send(403, b"forbidden", "text/plain")
+            code, obj = _viewhub.get(path, q)
+            return self._json(obj, code)
 
         if path == "/api/runs":
             try:
@@ -342,8 +446,14 @@ class Handler(BaseHandler):
         if path == "/api/lanes":
             return self._lanes(q)
 
+        if path == "/api/laneorder":
+            return self._lanes(q, order_only=True)
+
         if path == "/api/lanehot":
             return self._lanehot(q)
+
+        if path == "/api/marklanes":
+            return self._marklanes(q)
 
         hot = hot_meta = hot_key = None
         if path in ("/api/graph", "/api/edge", "/api/refs", "/api/file"):
@@ -452,12 +562,34 @@ class Handler(BaseHandler):
 
         return self._asset(path)
 
+    # ---- POST：只有 /api/view…（viewhub.py） ----
+    def do_POST(self):
+        if not self._host_ok():
+            return self._send(403, b"bad host", "text/plain")
+        path = urllib.parse.urlparse(self.path).path
+        if not path.startswith("/api/view"):
+            return self._send(404, b"not found", "text/plain")
+        if not self._from_page():                    # 别的网页带不了这个头（浏览器的预检会挡住）
+            return self._send(403, b"forbidden", "text/plain")
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+            return self._json({"error": "要 application/json"}, 415)
+        body, err = self._body_json(limit=64_000)
+        if err:
+            return self._json({"error": err}, 400)
+        code, obj = _viewhub.post(self.repo, path, body)
+        return self._json(obj, code)
+
+
+def _stop(*_):
+    """SIGTERM（主菜单停图服务用 terminate）：和 Ctrl+C 一样走到 main 的 finally，删掉登记"""
+    raise KeyboardInterrupt
 
 
 def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | None = None) -> int:
     idx = _load.load_index(repo)
     Handler.repo, Handler.idx, Handler.home = repo, idx, home
     Handler._graphs, Handler._hots, Handler._stale, Handler._lanehots = {}, {}, {}, {}
+    Handler._lane_cache, Handler._labeler = {}, None
     Handler._search = None
     # --hot 只决定页面打开时先选哪个 run（页面上随时能换）；启动时先加载一遍：写错了当场报出来
     h = hm = None
@@ -492,8 +624,17 @@ def main(repo: Path, *, port: int = 8900, hot: str | None = None, home: str | No
         print(f"  默认   run {hm['run_id']}" + (f" @{hm['phase']}" if hm.get("phase") else "")
               + f"（case {hm['case']}，{hm['status']}），{len(h['packages'])} 个模块跑到")
     print("  Ctrl+C 停止", flush=True)
+    _serves.register(port, os.getpid(), repo, _steps.ALGO)
+    try:
+        import signal
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, OSError):               # 不在主线程（测试里）：只是退出时可能留下登记，查找时会按 pid 清掉
+        pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n停止")
+    finally:
+        _serves.unregister(port, os.getpid())
+        srv.server_close()
     return 0

@@ -3,7 +3,7 @@
   --ink:#11161f; --body:#39424f; --muted:#6b7686; --faint:#9aa4b2;
   --paper:#f6f7f9; --card:#fff; --sunk:#eef0f4; --line:#dde1e8; --rule:#e6e9ef;
   --hot:#b4690e; --hot-bg:#fdf3e2; --cool:#0f7b74; --cool-bg:#e6f4f2; --hotb:#7c3aed; --hotb-bg:#f1ebfd;
-  --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd;
+  --stale:#a8761b; --stale-bg:#fbf1dd; --gap:#8a94a3; --sel:#2563eb; --sel-bg:#e8effd; --mk:#c026d3;
   --pstart:#15803d; --pend:#b91c1c;
   --tm0:#1d4ed8; --tm1:#9333ea; --tm2:#ea580c; --tmtext:#fff;
   --edge:#c3cad5; --shadow:0 1px 2px rgba(17,22,31,.06),0 8px 24px rgba(17,22,31,.05);
@@ -18,7 +18,7 @@
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
-  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
+  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a; --mk:#e879f9;
   --pstart:#4ade80; --pend:#f87171;
   --tm0:#60a5fa; --tm1:#c084fc; --tm2:#fb923c; --tmtext:#111;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
@@ -32,7 +32,7 @@
   --ink:#e6eaf1; --body:#b6bfcc; --muted:#8792a3; --faint:#697485;
   --paper:#10141b; --card:#171c25; --sunk:#1d232e; --line:#2a3140; --rule:#242b37;
   --hot:#e8a33d; --hot-bg:#2a2113; --cool:#4db6ac; --cool-bg:#12262a; --hotb:#b197fc; --hotb-bg:#241b3a;
-  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a;
+  --stale:#d7a548; --stale-bg:#2b2415; --gap:#6d7889; --sel:#6ea8ff; --sel-bg:#16223a; --mk:#e879f9;
   --pstart:#4ade80; --pend:#f87171;
   --tm0:#60a5fa; --tm1:#c084fc; --tm2:#fb923c; --tmtext:#111;
   --edge:#39424f; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.28);
@@ -160,6 +160,9 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .nd.warm rect{fill:var(--hot-bg);stroke:var(--hot)}
 /* 选中必须写在 warm 后面，否则跑到过的节点选中了也还是橙框 */
 .nd.sel rect,.nd.end rect{stroke:var(--sel);stroke-width:2.4}
+/* 标记（视图描述的 mark，lanefocus.js）：独立的一层，不和搜索的 .match、选中的 .sel 混 */
+.nd.mk rect{stroke:var(--mk);stroke-width:3}
+.chip.focus,.chip.mark{border-color:var(--mk);color:var(--mk)}.chip.chain{border-color:var(--sel);color:var(--sel)}
 .nd.cold rect{stroke-dasharray:3 2;opacity:.75}
 .nd:focus{outline:none}.nd:focus-visible rect{stroke:var(--sel);stroke-width:2.4}
 /* 阶段的起点 / 终点：写在选中之后，选中了也还看得出是起点 / 终点 */
@@ -185,6 +188,7 @@ svg.g text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .tseg.on{font-weight:700}
 .tsel{position:absolute;top:0;bottom:0;border:1.5px solid var(--sel);border-radius:3px;cursor:grab;
   background:color-mix(in srgb,var(--sel) 16%,transparent)}
+.tsel.multi{cursor:default}
 .th{position:absolute;top:-1px;bottom:-1px;width:7px;background:var(--sel);cursor:ew-resize}
 .th.l{left:-4px}.th.r{right:-4px}
 .th:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
@@ -657,6 +661,8 @@ body.lanesmode .graphonly{display:none}
 .lnlegend .k{white-space:nowrap}
 .ln-proc rect{fill:var(--sunk);stroke:var(--line)}
 .ln-pname{font:600 11px/1 system-ui,sans-serif;fill:var(--ink);cursor:pointer}
+/* 进程头上名字后面那一句：这个进程在干什么（procinfo） */
+.ln-pinfo{font:400 11px/1 system-ui,sans-serif;fill:var(--muted);pointer-events:none}
 .ln-fold{font:700 12px/1 system-ui,sans-serif;fill:var(--muted);cursor:pointer}
 .ln-band{fill:var(--card);stroke:var(--rule)}
 .ln-col.ext .ln-band{fill:none;stroke-dasharray:4 3}
@@ -715,6 +721,13 @@ body.lanesmode .graphonly{display:none}
 .ln-e.hi{stroke-width:2.6}.ln-link.hi{stroke-width:3;opacity:1}
 .ln-e.tm{stroke-width:2}
 .ln-link.tm{opacity:1}
+/* 高亮的链（lanechain.js）：链上的线加粗，推出来的那一跳画虚线；别的连线、边淡下去 */
+.chainmode .ln-link:not(.ln-chain),.chainmode .ln-e{opacity:.15}.chainmode .ln-ltxt:not(.chain),.chainmode .ecnt{opacity:.25}
+.chainmode .ln-halo{opacity:.3}
+.ln-link.ln-chain{stroke-width:3.4;opacity:1}.ln-link.inferred{stroke:var(--hotb);stroke-dasharray:7 4}
+.ln-ltxt.chain{font-weight:800}.ln-ltxt.inferred{fill:var(--hotb)}
+.chainmode .ln-link.sel,.chainmode .ln-link.hi,.chainmode .ln-link.hover,.chainmode .ln-ltxt.on{opacity:1}
+.lnlegend .chainonly{display:none}body.chainon .lnlegend .chainonly{display:inline-flex}
 .tord .tn.on rect{stroke:var(--sel);stroke-width:2}
 .ln-nd.sel rect{stroke:var(--sel);stroke-width:2.4}
 .lk-end{margin:4px 0;font-size:12.5px;color:var(--body)}
@@ -739,3 +752,37 @@ body.lanesmode .graphonly{display:none}
 .krow .kt{width:72px;text-align:right}
 /* 这种 kernel 是谁发起的（分列里 GPU 列的一份才有） */
 .krow.kcall{border-bottom:none;padding-left:14px}.krow.kcall .kn{color:var(--muted)}
+
+/* agent 推视图（viewsync.js）：接手时盖在图上的一层过渡（让用户知道现在是 agent 在动页面）、换完的横幅、跟随关着时的提示条 */
+.gwrap.agent .gbox{box-shadow:0 0 0 2px var(--sel),var(--shadow);transition:box-shadow .2s}
+.agveil{position:absolute;inset:0;border-radius:11px;z-index:45;display:flex;align-items:center;justify-content:center;
+  background:rgba(127,127,127,.12);background:color-mix(in srgb,var(--card) 62%,transparent);backdrop-filter:blur(1.5px);
+  opacity:0;pointer-events:none;transition:opacity .18s ease-out}
+.agveil.on{opacity:1;pointer-events:auto}
+.agveil.off{opacity:0;transition:opacity .26s ease-in}
+.agcard{display:flex;flex-direction:column;gap:6px;min-width:260px;max-width:min(460px,80%);padding:14px 18px 12px;
+  background:var(--card);border:1px solid var(--sel);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.18);
+  transform:translateY(6px) scale(.98);transition:transform .22s cubic-bezier(.2,.8,.2,1)}
+.agveil.on .agcard{transform:none}
+.agcard b{font-size:14px;color:var(--ink)}
+.agnote{font-size:12.5px;color:var(--body)}
+.agnote:empty{display:none}
+.agk{font:10.5px/1 ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--sel);
+  border:1px solid var(--sel);border-radius:4px;padding:2px 5px;align-self:flex-start}
+.agbarline{display:block;height:2px;border-radius:2px;margin-top:4px;
+  background:linear-gradient(90deg,transparent,var(--sel),transparent) 0 0/40% 100% no-repeat,var(--sel-bg);animation:agsweep 1s linear infinite}
+@keyframes agsweep{from{background-position:-40% 0,0 0}to{background-position:140% 0,0 0}}
+.agbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:42;display:flex;align-items:center;gap:8px;
+  max-width:calc(100% - 140px);padding:7px 10px 7px 12px;background:var(--card);border:1px solid var(--sel);border-radius:10px;
+  box-shadow:var(--shadow);font-size:12.5px;color:var(--body);white-space:nowrap;animation:agdrop .22s ease-out}
+.agbar[hidden]{display:none}
+.agbar b{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;max-width:420px}
+.agbar.offer{border-color:var(--hot)}
+.agbar.offer .agk{color:var(--hot);border-color:var(--hot)}
+.agrn{font-size:11.5px;color:var(--hot)}
+.agx{border:0;background:none;color:var(--muted);font-size:16px;line-height:1;cursor:pointer;padding:0 2px}
+.agbar.mini{padding:4px 7px;cursor:pointer;gap:0;animation:none;opacity:.85}
+.agbar.mini::after{content:'换了视图 ▸';margin-left:6px;font-size:11.5px;color:var(--muted)}
+.agbar.mini > :not(.agk){display:none}
+@keyframes agdrop{from{opacity:0;transform:translate(-50%,-6px)}to{opacity:1;transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){.agveil,.agcard,.agbar,.gwrap.agent .gbox{transition:none;animation:none}.agbarline{animation:none}}
