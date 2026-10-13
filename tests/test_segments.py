@@ -446,6 +446,7 @@ def test_procinfo_and_default_lanes():
     al = {x: f"p/{x}" for x in "abcdefghi"}
     assert laneorder.rank_view(L, al, {1: "p"}, [], [], [])["n"] == 1, "默认：两头都收在同一个窄列里的那条不编号"
     assert laneorder.rank_view(L, al, {1: "p"}, [], [], ["*"])["n"] == 2 and laneorder.rank_view(L, al, {1: "p"}, [], [], ["p/nosuch"])["n"] == 2
+    assert laneorder.rank_view(L, al, {1: "p"}, [], [], ["+p"])["n"] == 2, "默认 + 整个进程 p：等于全部列"
     from codestrata import align, lanes as _lanes, runs as _runs, seq
     from codestrata.ui import load as _load
     repo, rid = truth()

@@ -127,13 +127,17 @@ def _self_time_top(r, lanes: set[str], aliases: dict[str, str], label, n: int = 
 
 
 def _unseen(p: dict, limit: int) -> tuple[list[str], dict]:
-    """只留代码里看不出会调到它的行，按次数排：(文字, 换掉了 procs 的 path)"""
-    rows = []
+    """只留代码里看不出会调到它的行，按次数排：(文字, 换掉了 procs 的 path)。GPU kernel 不列，单说一句有几处
+    （Python 经扩展 / PyTorch 转几道才启动它，本来就看不出是哪一行；用户 10-13 定）"""
+    rows, gpu = [], 0
     for pr in p["procs"]:
         for th in pr["threads"]:
             for x in th["rows"]:
                 ln = x.get("line") or {}
                 if ln.get("status") == "trace" and not x.get("before"):
+                    if (ln.get("note") or {}).get("k") == "gpu":
+                        gpu += 1
+                        continue
                     rows.append({"lane": th["lane"], "fn": x["fn"], "from": x.get("from"), "n": x.get("n") or 0,
                                  "line": {"f": ln.get("f"), "l": ln.get("l")}, "note": ln.get("note"),
                                  "why": _align.note_short(ln.get("note"))})
@@ -143,4 +147,6 @@ def _unseen(p: dict, limit: int) -> tuple[list[str], dict]:
         where = f"  ← {x['line']['f']}:{x['line']['l']}" if x["line"]["l"] else ""
         text.append(f"  ×{x['n']:<6} {x['lane']}  {common.short(x['from'])} → {common.short(x['fn'])}{where}"
                     + (f"  （{x['why']}）" if x["why"] else ""))
-    return text, {k: v for k, v in p.items() if k != "procs"} | {"unseen": rows[:limit], "n_unseen": len(rows)}
+    if gpu:
+        text.append(f"另有 {gpu} 处是 GPU kernel（Python 经扩展 / PyTorch 转几道才启动它，本来就看不出是哪一行；不列在上面）")
+    return text, {k: v for k, v in p.items() if k != "procs"} | {"unseen": rows[:limit], "n_unseen": len(rows), "n_unseen_gpu": gpu}

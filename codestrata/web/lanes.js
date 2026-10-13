@@ -387,11 +387,11 @@ window.CS = window.CS || {};
           var ft = el('title', {});
           // 窄列：一列一列写，默认会收起的写为什么（用户 10-13 定；写了 lanes= 也照写）
           var why = C.lns.map(function (l) { var w = CS.focus.why(l.id); return '  ' + laneName(l.id) + (w ? ' —— ' + w : ''); }).join('\n');
-          ft.textContent = C.part ? (CS.focus.sels.length ? '只看几列时没选的：\n' : '默认收起（转一手的列）：\n') + why + '\n点一下展开这个进程收起的列'
+          ft.textContent = C.part ? (CS.focus.byDefaultView() ? '默认收起（转一手的列）：\n' : '只看几列时没选的：\n') + why + '\n点一下展开这个进程收起的列'
             : '收起了：' + C.lns.map(function (l) { return laneName(l.id); }).join('、');
           col.appendChild(ft);
           if (C.part) {
-            var go = function () { CS.focus.expand(C.lanes); };
+            var go = function () { CS.focus.expand(C.lanes, self.procAlias(C.pid)); };
             col.setAttribute('role', 'button');
             col.setAttribute('tabindex', '0');
             col.setAttribute('aria-label', '其他 ' + C.lns.length + ' 列，展开这个进程收起的列：' + C.lns.map(function (l) { return laneName(l.id); }).join('、'));

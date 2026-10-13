@@ -122,13 +122,13 @@ flowchart LR
 | `chainview.py` | 66 | 链的取数：在一段时间里把链走出来（links --follow 和页面共用）、视图描述里 chain 键的写法，给分列画链要的（录到的交接标第几跳、推出来的那一跳多连一条） |
 | `procinfo.py` | 57 | 分列进程头上那一句：只有它跑的文件、干活的时段、主循环几轮，持有请求的写请求（`segments.stages` 同一份） |
 | `lanedefault.py` | 65 | 分列默认看哪几列：转一手的列（收发 socket、只在轮询、线程池、没调用）默认收起，每列的原因（`reasons`）；页面、编号、`explain N`、`lanes` 命令共用 |
-| `laneorder.py` | 61 | 分列里时间顺序的编号：按视图（收起的进程、开关、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
+| `laneorder.py` | 59 | 分列里时间顺序的编号：按视图（收起的进程、开关、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
 | `viewspec.py` | 100 | 视图描述（页面地址 # 后面）的 Python 一侧：解析、规范写法（和 web/view.js 同一套），按一个视图算分列和时间顺序的编号（explain 24、view url） |
-| `laneid.py` | 152 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`、`stage1/gpu0.7`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
+| `laneid.py` | 173 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`、`stage1/gpu0.7`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
 | `errors.py` | 36 | `CodestrataError`：稳定的错误码、候选、下一步、之前的警告；错误码 → 退出码 |
 | `cmdline.py` | 28 | 输出里能原样粘贴的 codestrata 命令（shlex 加引号、带上仓库）和「下一步」的一条 |
 | `confdir.py` | 21 | 配置目录（`$XDG_CONFIG_HOME/codestrata`）和主菜单记得的仓库 |
-| `cli/` | 2677 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view`、`path`、`guide`；`follow` 是 links --follow 的文字）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封；`pages`：找开着的页面、和它的 serve 说话（view set / get / back / wait、explain --selected、status） |
+| `cli/` | 2690 | 给 agent 的命令：命令表（`__init__`）、信封 / 文字 / 错误兜底（`out`）、REF → 仓库 + run（`common`），每个命令一个模块（`status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view`、`path`、`guide`；`follow` 是 links --follow 的文字）；`runs`：`runs ls / show / wait`（文字和 JSON 同一份数据）；`trace`：`trace --json` 的信封；`pages`：找开着的页面、和它的 serve 说话（view set / get / back / wait、explain --selected、status） |
 | `serve.py` | 642 | 本地 HTTP：静态文件 + `/api/*`、安全检查、缓存；`POST /api/view…` 转给 viewhub；起来时登记、SIGTERM 时注销（serves.py）；`BaseHandler` 给 app 复用 |
 | `viewhub.py` | 327 | serve 内存里的信箱：agent 推给页面的视图（核对、交给目标标签页、等页面回话）、页面来问时回报的现状、撤销、等用户改；`/api/view…` 的处理 |
 | `serves.py` | 70 | 开着的 serve 的登记（配置目录下 `serves/<端口>.json`）：写、删、按仓库找（进程不在的删掉） |
@@ -138,7 +138,7 @@ flowchart LR
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 37 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 79 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 1057 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/app.js` | 1059 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
 | `web/graph.js` | 568 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 721 | 详情面板：节点的事实和源码（GPU kernel 的次数和 GPU 时间），边上实际调了哪些函数（可按先后排）；分列里选中的是一列里的一份时，次数、文件树、kernel 表换成只算这一列的（`asCopy`，`/api/lanehot`），列里的边的详情也只算这一列（`/api/edge?lane=`）；GPU 列的一份的 kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久 |
 | `web/viewer.js` | 455 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
@@ -147,7 +147,7 @@ flowchart LR
 | `web/timebar.js` | 259 | 时间轴：阶段按钮 + 可拖的时间段；几片的时间段每片画一块 |
 | `web/view.js` | 233 | 视图描述 ⇄ 地址栏：解析 / 规范写法、页面此刻的视图（`current`）、按固定顺序套用（`apply`：启动、粘进来的地址、后退、agent 推的）、改了就重写地址（`changed`） |
 | `web/viewsync.js` | 243 | 和 agent 同步视图：来问 serve（有焦点挂着等、没焦点每秒、看不见不问）、回报现状和是谁改的；推来的视图等用户松手、跟随关着出提示条，换之前出「agent 接手」的过渡、换完出横幅（撤销、跟随开关），pushState 进历史 |
-| `web/lanefocus.js` | 150 | 只看几列（`CS.focus`：选择器和命令行同一套，没选的列收成「其他 N 列」；没写 lanes= 按后端的默认收起，点窄列展开这个进程，全部显示之后能回到默认）、标记（`CS.mark`：描边、工具栏的小签） |
+| `web/lanefocus.js` | 178 | 只看几列（`CS.focus`：选择器和命令行同一套，没选的列收成「其他 N 列」；没写 lanes= 按后端的默认收起，`+进程` 是默认再放出它，点窄列展开这个进程，全部显示之后能回到默认）、标记（`CS.mark`：描边、工具栏的小签） |
 | `web/lanechain.js` | 73 | 分列里高亮的一条链（视图的 chain 键）：只亮链上的线、推出来的画虚线标「推断」，工具栏「链 N 跳 · 清掉」 |
 | `web/lanes.js` | 1050 | 按进程 · 线程分列（`/api/lanes`）：列按进程分组、节点放在哪一行由 lanepack 排、每列展开着的目录画框、悬停连各列里的它（同一个、展开成的框、装着它的）、进程收起；起 / 收的标记、选中高亮（只算点的那一份）、标签、选中连线时两头标出那一行代码；改切面后接着选、搜索的描边和选中；缩放拖动借 graph.js 的图框 |
 | `web/lanepack.js` | 167 | 分列的摆放（纯函数）：每个节点在第几行只看它自己（公共切面上的高度、在哪个节点里面的子行），一列换了切面不动别的列；一列里横着怎么排——展开的目录画成框，照模块图的轨道排法（框在左、散节点在右居中） |

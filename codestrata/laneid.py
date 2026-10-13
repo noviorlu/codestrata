@@ -6,7 +6,8 @@
     列别名    进程别名/线程（线程照 lanes.thread_group 归一）：stage1/MainThread；GPU 列是 stage1/gpu0.7。
              [A-Za-z0-9._-] 以外的字符换成 _，撞了加 -2、-3。
     选择器    进程/线程、进程（这个进程的所有列）、进程/*、*/线程、*/gpu*，也认 pid:线程（页面的列 id）。
-             不分大小写，按整段匹配（stage1 不配 stage10）。
+             不分大小写，按整段匹配（stage1 不配 stage10）。前面加 + 的（+stage0）在页面上是「默认之外再放出它」（view_lanes）；
+             当过滤用时（命令行 REF 里的列）+ 不算数。
 """
 from __future__ import annotations
 
@@ -113,11 +114,30 @@ def _match(sel: str, alias: str, lane_id: str) -> bool:
     return _glob(sp, proc) and _glob(st, th)
 
 
+def plus_only(selectors: list[str]) -> bool:
+    """全是 + 开头的选择器（lanes=+stage0）：页面在默认（转一手的列收起）上再放出它们配上的列（用户 10-13 定）"""
+    return bool(selectors) and all(s.startswith("+") for s in selectors)
+
+
+def view_lanes(selectors: list[str], aliases: dict[str, str], default: list[str] | None) -> set[str] | None:
+    """视图里画哪些列（列 id 的集合，None 是全部）：没写 → 默认（default，lanedefault.default_lanes；None 是全部）；
+    全是 +选择器 → 默认再加上它们配上的；别的 → 只看配上的，一列都没配上画全部（同 lanes=*）。页面的 lanefocus.js 是同一份"""
+    if not selectors:
+        return set(default) if default else None
+    if plus_only(selectors):
+        if not default:
+            return None
+        want = set(default) | set(select(selectors, aliases, strict=False))
+        return None if want >= set(aliases) else want
+    return set(select(selectors, aliases, strict=False)) or None
+
+
 def select(selectors: list[str], aliases: dict[str, str], strict: bool = True) -> list[str]:
-    """选择器 → 列 id（按 aliases 的先后，去重）。哪个选择器一列都没配上：strict 时报 lane_not_found（带候选），
+    """选择器 → 列 id（按 aliases 的先后，去重；前面的 + 不算数）。哪个选择器一列都没配上：strict 时报 lane_not_found（带候选），
     否则跳过它（页面和编号那边：地址里只看的列这一段里一列都没有，画全部列，同 lanes=*）"""
     out: list[str] = []
     for sel in selectors:
+        sel = sel[1:] if sel.startswith("+") else sel
         hit = [lid for lid, a in aliases.items() if _match(sel, a, lid)]
         if not hit and strict:
             raise CodestrataError("lane_not_found", f"没有和 {sel!r} 对上的列", candidates=_near(sel, aliases))
@@ -146,7 +166,8 @@ def canonical(selectors: list[str], aliases: dict[str, str]) -> list[str]:
     out: list[str] = []
     for sel in selectors:
         select([sel], aliases)
-        s = by.get(sel.lower()) or procs.get(sel.lower()) or sel
+        plus, bare = ("+", sel[1:]) if sel.startswith("+") else ("", sel)
+        s = plus + (by.get(bare.lower()) or procs.get(bare.lower()) or bare)
         if s not in out:
             out.append(s)
     return out

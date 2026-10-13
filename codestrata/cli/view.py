@@ -71,7 +71,8 @@ def add_args(p) -> None:
 
 
 def _view_opts(q) -> None:
-    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 或 * 是全部列，不写是页面默认收起转一手的列）")
+    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 或 * 是全部列，不写是页面默认收起转一手的列，"
+                                                  "+进程 是在默认上再放出这个进程的列）")
     q.add_argument("--fold", default=None, help="收起这些进程（别名，逗号隔开；none 是都不收）")
     q.add_argument("--mark", default=None, help="标出这些文件 / 目录 / 函数所在的节点（逗号隔开，最多 20；none 清掉；+东西 是追加）")
     q.add_argument("--expand", default=None, help="把切面展开到这些文件 / 函数所在的文件：在它跑过的每一列里")
@@ -201,6 +202,8 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
     what = []
     if v.lanes == ["*"]:
         what.append("全部列（不收起转一手的）")
+    elif _laneid.plus_only(v.lanes):
+        what.append("默认收起转一手的列，再放出 " + ",".join(x[1:] for x in v.lanes))
     elif v.lanes:
         what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
     else:

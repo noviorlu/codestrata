@@ -325,6 +325,10 @@ def test_url_lanes_all():
         assert "全部列" in t and "收成一窄列" not in t, t
     d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--json"))
     assert "lanes=" not in d["data"]["fragment"], d["data"]
+    # +进程：默认收起之外再放出这个进程（地址里原样写 +，不转义成空格）
+    d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "+truth-4", "--json"))
+    assert "lanes=+truth-4" in d["data"]["fragment"] and d["data"]["view"]["lanes"] == ["+truth-4"], d["data"]
+    assert "再放出 truth-4" in cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "+truth-4").stdout
 
 
 def test_old_serve():

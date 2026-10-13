@@ -135,9 +135,16 @@ export default async function (t) {
      && await page.ev(`${JSON.stringify(want)}.every(id => !CS.focus.hidden(id)) && Object.keys(CS.focus.lanes()).length === ${nDef} + ${want.length}`)
      && await page.ev(`Object.keys(CS.focus.lanes()).length`) <= nAll,
      '点窄列的列头：只放出这个进程收起的列，地址里写 lanes= ' + await hashNow(page));
+  ok(/lanes=\+[^&,]+/.test(decodeURIComponent(await hashNow(page))) && await page.ev(`CS.focus.plusOnly()`),
+     '地址里记成「默认 + 这个进程」（lanes=+进程） ' + await hashNow(page));
   ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(pick)} && location.hash.includes('sel=')`, 5000), '点窄列之后选中还在、地址里有 sel= ' + await hashNow(page));
-  ok((await page.ev(`(document.querySelector('#edgechips [data-focus]') || {}).textContent || ''`)).includes('全部显示'), '小签变成「只看 n / N 列 · 全部显示」');
-  await page.click('#edgechips [data-focus]');
+  const c2 = await page.ev(`[...document.querySelectorAll('#edgechips [data-focus]')].map(b => b.dataset.focus + ':' + b.textContent)`);
+  ok(c2.length === 2 && c2[0].startsWith('default:默认只看') && c2[0].includes('回到默认') && c2[1] === 'all:全部显示',
+     '小签：「默认只看 n / N 列（加 进程）· 回到默认」+「全部显示」 ' + JSON.stringify(c2));
+  // 窄列悬停照样写「默认收起」和原因
+  ok(((await page.ev(`(document.querySelector('#g .ln-col.part title') || {}).textContent || ''`)) || '').startsWith('默认收起') || !await page.ev(`!!document.querySelector('#g .ln-col.part')`),
+     '默认 + 进程时别的窄列照样写「默认收起」');
+  await page.click('#edgechips [data-focus="all"]');
   ok(await page.wait(`!CS.focus.lanes() && decodeURIComponent(location.hash).includes('lanes=*')`, 5000), '点「全部显示」：全部列，地址里写 lanes=* ' + await hashNow(page));
   ok(await page.wait(`((document.querySelector('#edgechips [data-focus="default"]') || {}).textContent || '').includes('回到默认')`, 5000),
      '小签留着：「全部 N 列 · 回到默认」');
@@ -146,4 +153,11 @@ export default async function (t) {
      && await page.ev(`CS.lanes.sel === ${JSON.stringify(pick)}`)
      && (await page.ev(`(document.querySelector('#edgechips [data-focus]') || {}).textContent || ''`)).startsWith('默认只看'),
      '点「回到默认」：又是默认收起、地址里没有 lanes= ' + await hashNow(page));
+
+  // 地址里只看的列这一段里一列都没有：画全部列，小签给「选的列这一段里没有 · 回到默认」（用户 10-13 定）
+  await page.ev(`location.hash = 'run=${fx.a}&lanes=nosuch/lane'`);
+  ok(await page.wait(`!CS.view.applying && CS.focus.missed(CS.lanes.L) && ((document.querySelector('#edgechips [data-focus="default"]') || {}).textContent || '').includes('选的列这一段里没有')`, 5000),
+     '选的列这一段里没有：小签给「回到默认」 ' + await page.ev(`JSON.stringify([...document.querySelectorAll('#edgechips [data-focus]')].map(b => b.textContent))`));
+  await page.click('#edgechips [data-focus="default"]');
+  ok(await page.wait(`!CS.view.applying && !CS.focus.sels.length && !/lanes=/.test(location.hash)`, 5000), '点了回到默认 ' + await hashNow(page));
 }
