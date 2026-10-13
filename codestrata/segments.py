@@ -83,7 +83,7 @@ def analyse(rd, lo: int, hi: int, p: _steps.Params | None = None, head: dict | N
             ln["win"] = _steps.in_window(ln["rounds"], lo, hi)
         else:
             ln["rounds"], ln["regular"], ln["win"] = [], set(), []
-        has = any(lo <= r[0] < hi for _, r in lr)
+        has = any(_n_in(r, lo, hi) for _, r in lr)
         ln["kind"] = "external" if not lr and (ln["ho_out"] or ln["ho_in"]) else _steps.kind(len(ln["tids"]), has, loop, ln["win"])
     return {"lanes": lanes, "rows": rows, "tid_lane": tid_lane, "aliases": aliases, "procs": _lanes.proc_aliases(rd), "ix": ix,
             "window": (lo, hi), "head_window": (hlo, hhi), "handoffs_any": bool(ix.get("handoffs")), "p": p}
@@ -137,10 +137,20 @@ def stage_segments(A: dict, lo: int, hi: int, skip_pids: set[int]) -> list[dict]
 
 def lane_kinds(A: dict, lo: int, hi: int) -> dict[str, dict]:
     """每一列在这段时间里是什么样：{列 id: {kind（steps.kind；只在交接两头出现的是 external）, fns（调到几个不同的仓库函数）,
-    in, out（收到 / 交出几次交接）}}"""
-    return {lid: {"kind": ln["kind"], "fns": len({r[5] for _, r in ln["lr"] if lo <= r[0] < hi}),
-                  "in": sum(1 for x in ln["ho_in"] if lo <= x[2] < hi), "out": sum(1 for x in ln["ho_out"] if lo <= x[2] < hi)}
-            for lid, ln in A["lanes"].items()}
+    repeat（这一段里的调用全在折叠行里：录制时把连着的同一调用折成了一行，只是在反复调同一两个函数）, in, out（收到 / 交出几次交接）}}"""
+    out = {}
+    for lid, ln in A["lanes"].items():
+        rows = [r for _, r in ln["lr"] if _n_in(r, lo, hi)]
+        out[lid] = {"kind": ln["kind"], "fns": len({r[5] for r in rows}), "repeat": bool(rows) and all(r[6] >= 2 for r in rows),
+                    "in": sum(1 for x in ln["ho_in"] if lo <= x[2] < hi), "out": sum(1 for x in ln["ho_out"] if lo <= x[2] < hi)}
+    return out
+
+
+def _n_in(r, lo: int, hi: int) -> int:
+    """一行 span 在 [lo, hi) 里有几次调用：折叠行（rep 次连着的同级调用合成的一行）按 seq.calls_in 摊开，和 lanes、phase_calls 同一个数法。
+    只看开始时刻的话，从这段之前就在反复调的一行（save_loop 隔 100 ms 清一次共享内存，一行 186 次横跨 18 s）在这段里算 0 次"""
+    got = _seq.calls_in(r[0], r[1], r[6], lo, hi, open_hi=True)
+    return got[0] if got else 0
 
 
 def _process_segments(A: dict, lns: list[dict], lo: int, hi: int) -> list[dict]:
@@ -185,7 +195,7 @@ def _describe(A: dict, main: dict, part: list[dict], a: int, b: int) -> dict:
     pid = main["pid"]
     longest = max(part, key=lambda x: x["dur_us"])
     mine = [ln for ln in A["lanes"].values() if ln["pid"] == pid]
-    busy = [ln["alias"] for ln in mine if any(a <= r[0] < b for _, r in ln["lr"])
+    busy = [ln["alias"] for ln in mine if any(_n_in(r, a, b) for _, r in ln["lr"])
             or any(a <= t < b for _, _, t in ln["ho_out"] + ln["ho_in"])]
     return {"kind": "stage", "pid": pid, "proc": A["procs"].get(pid, str(pid)), "main": main["alias"],
             "lanes": sorted(ln["alias"] for ln in mine), "busy_lanes": sorted(busy),
@@ -204,8 +214,9 @@ def _files_by_pid(A: dict, lo: int, hi: int) -> dict[int, Counter]:
     for pid, rows in A["rows"].items():
         c = out.setdefault(pid, Counter())
         for r in rows:
-            if r is not None and len(r) <= 9 and lo <= r[0] < hi:
-                c[keys[r[5]].rpartition(":")[0]] += r[6]
+            n = _n_in(r, lo, hi) if r is not None and len(r) <= 9 else 0
+            if n:
+                c[keys[r[5]].rpartition(":")[0]] += n
     return out
 
 
@@ -216,8 +227,9 @@ def _own_files(A: dict, s: dict, files: dict[int, Counter], top: int = 3) -> tup
     others = set().union(*(set(c) for pid, c in files.items() if pid != s["pid"])) if len(files) > 1 else set()
     mine: Counter = Counter()
     for r in A["rows"].get(s["pid"]) or []:
-        if r is not None and len(r) <= 9 and a <= r[0] < b:
-            mine[keys[r[5]].rpartition(":")[0]] += r[6]
+        n = _n_in(r, a, b) if r is not None and len(r) <= 9 else 0
+        if n:
+            mine[keys[r[5]].rpartition(":")[0]] += n
     return [[f, n] for f, n in mine.most_common() if f not in others and f != "?"][:top], sum(mine.values())
 
 
