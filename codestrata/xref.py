@@ -63,8 +63,8 @@ import json
 import os
 from pathlib import Path
 
-from .xtypes import (TypeResolver, ann_class, builtin_call, if_value, is_none, is_stub, iter_types, method_call, rebound,
-                     returns, subscript, typed)
+from .xtypes import (TypeResolver, ann_class, builtin_call, if_value, is_none, iter_types, method_call, rebound, returns,
+                     subscript, typed)
 
 REF, CALL, IMPORT, DEF = 0, 1, 2, 3
 HOW_CALL, HOW_DECO, HOW_PROP, HOW_STR = "call", "deco", "prop", "str"
@@ -805,14 +805,10 @@ class _Collect:
                 sp = self.type_spec(st.returns, env, st.lineno)
                 if sp:
                     types.ret_specs[key] = (self.m, *sp)
-            elif type(st) is ast.FunctionDef:          # 没标：按 return 的值；留给子类写的按子类
-                if is_stub(st):
-                    types.stubs.add(key)
-                else:
-                    rets = returns(st)
-                    if rets:
-                        types.ret_vals[key] = [(self.m, *(self.value_spec(r.value, fenv, r.lineno) or (None, None)))
-                                               for r in rets]
+            elif type(st) is ast.FunctionDef:          # 没标：按 return 的值
+                rets = returns(st)
+                if rets:
+                    types.ret_vals[key] = [(self.m, *(self.value_spec(r.value, fenv, r.lineno) or (None, None))) for r in rets]
             self.func_body(st.body, q + ".", fenv, _first_param(st, cls), cls)
 
     def first(self, key: str, line: int) -> None:

@@ -336,11 +336,6 @@ _TI_SRC = {
         "    def build(self):\n        \"\"\"子类写\"\"\"\n        raise NotImplementedError\n\n"
         "    def go(self):\n        self.out.step()  # stub\n\n\n"
         "class RealMaker(Maker):\n    def build(self):\n        return make()\n\n\n"
-        "class Maker2:\n    def __init__(self):\n        self.out = self.build()\n\n"
-        "    def build(self):\n        ...\n\n"
-        "    def go(self):\n        self.out.step()  # stub-mixed\n\n\n"
-        "class A2(Maker2):\n    def build(self):\n        return Engine()\n\n\n"
-        "class B2(Maker2):\n    def build(self):\n        return Slow()\n\n\n"
         "def refs(e: Engine):\n    h = getattr(e, 'step', None)\n    if h is not None:\n        h()  # fnref\n"
         "    g = e.step\n    g()  # alias\n\n\n"
         "class Holder:\n    @property\n    def model(self):\n        return Engine()\n\n"
@@ -360,7 +355,7 @@ def test_type_inference():
     """scan 推一点类型：x = C(…) 之后的 x.m()、C().m()、self.x = C(…)（含 C(…) if … else None）之后的 self.x.m()、
     参数标注 C / Optional[C] / "C | None" 的 x.m()、类体里的 x: C、self.x = 标了类型的参数、list[C] / dict[K, C] 的
     下标 / 循环 / enumerate / .items() / .get() / 推导式、getattr(self, "x")、函数 / 方法 / property 的返回值标注都定下被调方；
-    没标返回值类型的函数按 return 的值、留给子类写的方法按子类、getattr(obj, "m") / obj.m 存进局部变量再调也定下；
+    没标返回值类型的函数按 return 的值、getattr(obj, "m") / obj.m 存进局部变量再调也定下（不从子类推）；
     self.x 赋的是推不出的调用结果、几处赋的推不一样、局部变量在函数里绑定过不止一次（不管分支和先后），就不猜。
     MRO 上隔着仓库外基类的 mixin 方法：graph 的调用记录按它算（近似），跳转不给（宁可不跳也不跳错）"""
     d = tmpdir("cs-graph-") / "repo"
@@ -379,11 +374,11 @@ def test_type_inference():
     assert (ln("mixin"), f"{M}Mixin.helper") in got, sorted(got)
     for tag in ("unknown", "mixed", "rebound", "async", "pick2"):   # 推不出 / 赋了别的 / 协程 / 两个 return 不一样：不猜
         assert (ln(tag), f"{M}Engine.step") not in got, (tag, sorted(got))
-    # 留给子类写的方法按子类的 return 推（子类推出来不一样就不猜）；getattr(obj, "m") / obj.m 存进局部变量再调
+    # getattr(obj, "m") / obj.m 存进局部变量再调；只 raise NotImplementedError 的方法不从子类推
     calls = {(l, g["callees"][i]) for xs in g["calls"].values() for i, l, _, _ in xs}
-    for tag in ("stub", "fnref", "alias"):
+    for tag in ("fnref", "alias"):
         assert (ln(tag), f"{M}Engine.step") in calls, (tag, sorted(calls))
-    assert not any(l == ln("stub-mixed") for l, c in calls), sorted(calls)
+    assert not any(l == ln("stub") and c.endswith(".step") for l, c in calls), sorted(calls)
     assert not any(l == ln("propref") and c.endswith("Holder.model") for l, c in calls), sorted(calls)   # 拿的是 property 的值
     # 局部变量在函数里绑定过不止一次（分支、try、循环里先用后赋、参数被重新赋值）：不管先后都不推
     for tag in ("branchy", "tried", "loopy", "reparam"):

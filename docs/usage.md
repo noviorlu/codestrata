@@ -419,7 +419,7 @@ codestrata path <RUN>@serving --json              # JSON 信封，data 和 /api/
 
 - 点一个名字跳到它的定义，「← 返回」回到点的地方。
 - 点一个定义，旁边一栏列出所有引用它的地方（调用在前，同一行的几处合成一条，按文件分组），点哪条跳哪条。
-- 名字指向哪由 scan 时写下的 `.codestrata/xref.json` 给出：import（包括经 `__init__.py` 再导出的，追到真正定义的地方）、`模块.函数`、`类.方法`、`self.` / `cls.` / `super()`（按 C3 MRO 在仓库里的基类里找）、`self.x = …` 定义的实例属性；局部变量会遮住同名的全局名字。接收者的类型按代码里写明的推：`x = C(…)`、`self.x = C(…)`（含 `C(…) if … else None`）、参数 / 属性 / 类体字段的类型标注（`Optional[C]`、`C | None`、字符串的前向引用都认）、函数 / 方法 / property 的返回值标注（`async def` 的不算），没标的按它 return 的值（每个 return 都推得出、推出来一样才算；只有 `raise NotImplementedError` / `pass` / `...` 的方法按仓库里重写了它的方法推）、`list[C]` / `dict[K, C]` 这类容器取出来的元素（下标、`for`、`enumerate`、`.items()`、`.get()`、推导式）、`getattr(obj, "x")`；`f = obj.m` / `f = getattr(obj, "m", None)` 之后的 `f()` 按 `obj.m()` 算（property 不算）；一个属性几处赋的推不一样就当不知道，有标注的只按标注；函数里的局部变量只在这个函数里绑定过一次时才推（参数：没被重新赋值），不管分支和先后——`e = Slow()`、`if flag: e = Fast()` 之后的 `e.run()` 不推。不在包里的脚本（`examples/` 下、根目录的）之间 `import helpers` 指同目录的 `helpers.py`（Python 跑脚本时就是这么找的）；`from __future__ import annotations` 下，方法签名里的类型名不会被类里同名的方法挡住。
+- 名字指向哪由 scan 时写下的 `.codestrata/xref.json` 给出：import（包括经 `__init__.py` 再导出的，追到真正定义的地方）、`模块.函数`、`类.方法`、`self.` / `cls.` / `super()`（按 C3 MRO 在仓库里的基类里找）、`self.x = …` 定义的实例属性；局部变量会遮住同名的全局名字。接收者的类型按代码里写明的推：`x = C(…)`、`self.x = C(…)`（含 `C(…) if … else None`）、参数 / 属性 / 类体字段的类型标注（`Optional[C]`、`C | None`、字符串的前向引用都认）、函数 / 方法 / property 的返回值标注（`async def` 的不算），没标的按它 return 的值（每个 return 都推得出、推出来一样才算；不从子类推）、`list[C]` / `dict[K, C]` 这类容器取出来的元素（下标、`for`、`enumerate`、`.items()`、`.get()`、推导式）、`getattr(obj, "x")`；`f = obj.m` / `f = getattr(obj, "m", None)` 之后的 `f()` 按 `obj.m()` 算（property 不算）；一个属性几处赋的推不一样就当不知道，有标注的只按标注；函数里的局部变量只在这个函数里绑定过一次时才推（参数：没被重新赋值），不管分支和先后——`e = Slow()`、`if flag: e = Fast()` 之后的 `e.run()` 不推。不在包里的脚本（`examples/` 下、根目录的）之间 `import helpers` 指同目录的 `helpers.py`（Python 跑脚本时就是这么找的）；`from __future__ import annotations` 下，方法签名里的类型名不会被类里同名的方法挡住。
 - **确定不了的不给链接——宁可不跳，也不跳错。** 推不出对象类型的方法调用（`engine = load(name); engine.generate()`），引用列表里单列一组「同名的 `.generate`（没确认对象类型）」。继承了仓库外类（如 torch）的，`self.xxx` 走到那个基类就放弃；调用图例外：MRO 上排在仓库外基类后面的 mixin 定义了这个方法时，调用记录按 mixin 的算（仓库外的基类多半没有它），跳转仍不给。
 - 文件在 scan 之后改过，行列号就对不上了：那个文件不给 Ctrl+点击，重新 scan 即可。
 - **叠着运行时**：代码里看不出调到谁、这次运行却调到了的那一行，行尾标出调到了谁、几次（橙色虚框），点了跳过去；窗口头上写着有几行。之前录的 run 没有调用行，不标。
@@ -598,7 +598,7 @@ scan、serve、trace 不往 `~/.config` 写东西。
 | 中 | **时序事件的整理成本随调用次数增长**，调用密集的负载上可能比程序本身还久（见[实测数字](#实测数字)）。 |
 | 中 | **`--phase` 每个阶段整个 run 只切一次**，同一个函数不能反复切，也切不回早先的阶段（case 脚本写 PHASE 可以）；每切一次让触发的线程停 0.1 s。 |
 | 中 | **节点会挪位置。** 分层跟着叠的 run 变，换 run 时节点会上下挪；同一个切面在不同窗口宽度下排版也不同。 |
-| 中 | **scan 的几个盲点：** 类型只推构造、标注和 return 写明的（按配置挑类的工厂、只在子类里赋的属性、`async def` 的返回值、`with C() as x` 的 `x`、`x or C()` 都推不出，在它们上面调的方法定不下被调方）；`from x import *` 的 x 在仓库外、或者 `__all__` 不是字面量时不知道带进了哪些名字；只认 `if TYPE_CHECKING:` 的 if 分支。这些调用这次跑了的话都画成「代码里看不出」（假阳性）。 |
+| 中 | **scan 的几个盲点：** 类型只推构造、标注和 return 写明的（按配置挑类的工厂、只在子类里赋的属性、只 `raise NotImplementedError` 留给子类写的方法、`return self.x` / `return 局部变量`、`async def` 的返回值、`with C() as x` 的 `x`、`x or C()` 都推不出，在它们上面调的方法定不下被调方）；`from x import *` 的 x 在仓库外、或者 `__all__` 不是字面量时不知道带进了哪些名字；只认 `if TYPE_CHECKING:` 的 if 分支。这些调用这次跑了的话都画成「代码里看不出」（假阳性）。 |
 | 中 | **默认切面的阈值**（10% / 30 / 80 / 12）只在少数几个仓库上调过；自动拆分只看代码行数，不看依赖结构。 |
 | 中 | **trace 注入的 `sitecustomize.py` 会遮住环境里原有的 `sitecustomize`**（不会接着调用它），依赖它的程序（有些 conda / HPC 环境）录制时行为可能不同。 |
 | 中 | **复刻不是万能的**：环境变量只记白名单里的；密钥只按名字的形状认；换一台机器照抄不一定能跑。 |
