@@ -115,7 +115,7 @@ def _match(sel: str, alias: str, lane_id: str) -> bool:
 
 def select(selectors: list[str], aliases: dict[str, str], strict: bool = True) -> list[str]:
     """选择器 → 列 id（按 aliases 的先后，去重）。哪个选择器一列都没配上：strict 时报 lane_not_found（带候选），
-    否则跳过它（页面和编号那边：地址里只看的列这一段里没有，就当没选，画全部列）"""
+    否则跳过它（页面和编号那边：地址里只看的列这一段里一列都没有，画全部列，同 lanes=*）"""
     out: list[str] = []
     for sel in selectors:
         hit = [lid for lid, a in aliases.items() if _match(sel, a, lid)]

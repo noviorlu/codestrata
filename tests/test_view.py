@@ -315,6 +315,18 @@ class _OldApp(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def test_url_lanes_all():
+    """view url --lanes all（或 *）拼出 lanes=*：不写 lanes= 是页面默认（转一手的列收起），不是全部列"""
+    repo, rid = truth()
+    for sel in ("all", "*"):
+        d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", sel, "--json"))
+        assert "lanes=*" in d["data"]["fragment"] and d["data"]["view"]["lanes"] == ["*"], (sel, d["data"])
+        t = cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", sel).stdout
+        assert "全部列" in t and "收成一窄列" not in t, t
+    d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--json"))
+    assert "lanes=" not in d["data"]["fragment"], d["data"]
+
+
 def test_old_serve():
     """推视图之前的老 serve（/api/app 没有 features）：old_serve（退出码 5），下一步给 view url"""
     repo, rid = truth()

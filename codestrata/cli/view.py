@@ -71,7 +71,7 @@ def add_args(p) -> None:
 
 
 def _view_opts(q) -> None:
-    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 是全部）")
+    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 或 * 是全部列，不写是页面默认收起转一手的列）")
     q.add_argument("--fold", default=None, help="收起这些进程（别名，逗号隔开；none 是都不收）")
     q.add_argument("--mark", default=None, help="标出这些文件 / 目录 / 函数所在的节点（逗号隔开，最多 20；none 清掉；+东西 是追加）")
     q.add_argument("--expand", default=None, help="把切面展开到这些文件 / 函数所在的文件：在它跑过的每一列里")
@@ -100,7 +100,8 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
     procs = _lanes.proc_aliases(r.rd)
     if a.lanes is not None:
         try:
-            v.lanes = [] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
+            # all 写成 *：不写 lanes= 是默认（转一手的列收起），不是全部
+            v.lanes = ["*"] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
         except CodestrataError:                     # 录了 GPU 的 run：再加上 GPU 的列认一次
             v.lanes = _laneid.canonical(_laneid.parse_list(a.lanes), _lanes.run_aliases(r.rd, _lanes.gpu_lanes(r.rd, r.run)))
     if a.fold is not None:
@@ -193,7 +194,9 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
                 raise CodestrataError(info.get("code") or "usage", f"--chain 在这个 run 上走不出来：{info['error']}")
             v.chain = a.chain
     what = []
-    if v.lanes:
+    if v.lanes == ["*"]:
+        what.append("全部列（不收起转一手的）")
+    elif v.lanes:
         what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
     if v.fold:
         what.append("收起 " + ",".join(v.fold))

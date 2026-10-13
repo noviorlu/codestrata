@@ -50,7 +50,7 @@ def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, hide: s
 
 def rank_view(L: dict, aliases: dict[str, str], proc_aliases: dict, fold: list[str], hide: list[str], lanes: list[str]) -> dict:
     """按视图描述里的写法算编号（页面的 /api/lanes、命令行的 explain N 共用）：收起的进程写别名、只看的列写选择器；
-    没写只看的列时按 L 的 default_lanes（转一手的列默认收起，lanedefault.py）；选择器在这一段里一列都对不上时当没写。
+    没写只看的列时按 L 的 default_lanes（转一手的列默认收起，lanedefault.py）；选择器在这一段里一列都对不上时画全部列（同 lanes=*）。
     proc_aliases：{pid: 进程别名}（键是数字或字符串都行）"""
     from . import laneid as _laneid
     procs = {a: int(pid) for pid, a in proc_aliases.items()}
