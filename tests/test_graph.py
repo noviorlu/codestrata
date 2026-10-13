@@ -336,6 +336,19 @@ _TI_SRC = {
         "    def build(self):\n        \"\"\"子类写\"\"\"\n        raise NotImplementedError\n\n"
         "    def go(self):\n        self.out.step()  # stub\n\n\n"
         "class RealMaker(Maker):\n    def build(self):\n        return make()\n\n\n"
+        "def rec(n):\n    if n:\n        return rec(n - 1)\n    return Engine()\n\n\n"
+        "def ping(n):\n    return pong(n)\n\n\n"
+        "def pong(n):\n    return ping(n)\n\n\n"
+        "def gen():\n    yield 1\n    return Engine()\n\n\n"
+        "def outer_only():\n    def inner():\n        return Engine()\n    inner()\n\n\n"
+        "async def later2():\n    return Engine()\n\n\n"
+        "try:\n    import json\n\n    def get_engine():\n        return Fast()\nexcept ImportError:\n    def get_engine():\n        return Slow()\n\n\n"
+        "def coerce(e: Fast):\n    e = Slow()\n    return e\n\n\n"
+        "class Model2:\n    def __call__(self, x):\n        return Slow()\n\n    def run(self):\n        return 1\n\n\n"
+        "class PropHolder:\n    @property\n    def model(self):\n        return Model2()\n\n    def go(self):\n        self.model(1).run()  # propcall\n\n\n"
+        "def swapper():\n    g = Fast().run\n\n    def swap():\n        nonlocal g\n        g = Slow().run\n    swap()\n    g()  # nonlocal-ref\n\n\n"
+        "def uses():\n    rec(3).step()  # rec\n    ping(1).step()  # ping\n    gen().step()  # gen\n    outer_only().step()  # outeronly\n"
+        "    get_engine().run()  # dupdef\n    coerce(Fast()).run()  # coerce\n\n\n"
         "def refs(e: Engine):\n    h = getattr(e, 'step', None)\n    if h is not None:\n        h()  # fnref\n"
         "    g = e.step\n    g()  # alias\n\n\n"
         "class Holder:\n    @property\n    def model(self):\n        return Engine()\n\n"
@@ -380,6 +393,12 @@ def test_type_inference():
         assert (ln(tag), f"{M}Engine.step") in calls, (tag, sorted(calls))
     assert not any(l == ln("stub") and c.endswith(".step") for l, c in calls), sorted(calls)
     assert not any(l == ln("propref") and c.endswith("Holder.model") for l, c in calls), sorted(calls)   # 拿的是 property 的值
+    # 推不出、或者推出来不一样的不猜：递归 / 互相调用、生成器、只有里层 def 有 return、同名的 def 有两个（try / except 的备选）推出来不一样、
+    # 被重新赋值过的标注参数、调 property 的值（self.p(x) 的结果不是 getter 返回的那个）、里层用 nonlocal 改过的方法引用
+    for tag in ("rec", "ping", "gen", "outeronly", "dupdef", "coerce", "propcall", "nonlocal-ref"):
+        assert not any(l == ln(tag) and (c.endswith(".step") or c.endswith(".run")) for l, c in calls), (tag, sorted(c for l, c in calls if l == ln(tag)))
+    sites = {(nm, l) for nm, l, _, _ in g["sites"].get(f"{M}uses", [])}
+    assert ("step", ln("rec")) in sites and ("step", ln("ping")) in sites, sorted(sites)    # 递归推到自己：这一行的调用照样记着（只是定不下）
     # 局部变量在函数里绑定过不止一次（分支、try、循环里先用后赋、参数被重新赋值）：不管先后都不推
     for tag in ("branchy", "tried", "loopy", "reparam"):
         assert not any(l == ln(tag) and c.endswith(".run") for l, c in calls), (tag, sorted(calls))

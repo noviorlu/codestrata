@@ -707,6 +707,7 @@ class _Collect:
         self.stars: list = []
         self.all = None                               # 字面量的 __all__；没有或不是字面量时 None
         self._locals: dict = {}                       # 外层函数的局部名字（嵌套类的基类用；按需算）
+        self._rebound: dict = {}                      # 函数节点的 id → 绑定过不止一次的名字（rebound_in）
 
     def run(self, tree) -> None:
         repo, m = self.repo, self.m
@@ -807,8 +808,9 @@ class _Collect:
                     types.ret_specs[key] = (self.m, *sp)
             elif type(st) is ast.FunctionDef:          # 没标：按 return 的值
                 rets = returns(st)
-                if rets:
-                    types.ret_vals[key] = [(self.m, *(self.value_spec(r.value, fenv, r.lineno) or (None, None))) for r in rets]
+                if rets:                               # 同名的 def 有几个（try / except、if / else 的备选）：都推出一样才算
+                    types.ret_vals.setdefault(key, []).extend(
+                        (self.m, *(self.value_spec(r.value, fenv, r.lineno) or (None, None))) for r in rets)
             self.func_body(st.body, q + ".", fenv, _first_param(st, cls), cls)
 
     def first(self, key: str, line: int) -> None:
@@ -917,9 +919,16 @@ class _Collect:
         elif t is ast.Name:
             i = next((i for i in range(len(env) - 1, -1, -1) if env[i][0] == "f"), None)
             a = next((x for x in _all_args(env[i][1].args) if x.arg == v.id), None) if i is not None else None
-            if a is not None and a.annotation is not None:
+            if a is not None and a.annotation is not None and v.id not in self.rebound_in(env[i][1]):   # 参数被重新赋值过：不按标注
                 return self.type_spec(a.annotation, env[:i], line)     # 标注在 def 外面求值
         return None
+
+    def rebound_in(self, fn) -> set:
+        """函数 fn 里绑定过不止一次的名字（xtypes.rebound，按函数缓存）"""
+        r = self._rebound.get(id(fn))
+        if r is None:
+            r = self._rebound[id(fn)] = rebound(fn)
+        return r
 
     def type_spec(self, ann, env: list, line: int):
         """标注推得出类型时（类的解析线索, 种类），见 xtypes.ann_class"""
@@ -1493,6 +1502,8 @@ class _Walk:
             vals = [self.ex(x) for x in n.args]
             for k in n.keywords:
                 self.ex(k.value)
+            if r and r[:2] == "s:" and _is_property(self.symbols.get(r[2:])):
+                return None                           # self.p(x)：调的是 property 的值，结果不是 getter 返回的那个
             return self.repo.types.call_value(r) or self.call_type(n, r, recv, vals)
         if t is ast.Subscript:                        # 序列 / 映射里取出来的是元素的实例；切片还是序列
             v = self.ex(n.value)

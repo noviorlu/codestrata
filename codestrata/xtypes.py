@@ -80,7 +80,8 @@ _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
 def rebound(fn) -> set:
     """函数 fn 里绑定过不止一次的名字（参数算一次；赋值、for / with / except 的目标、del、import、:=、里面的 def / class 各算一次；
-    global / nonlocal 的名字也算在里面）：它们的类型不推。不进里层的函数、类、lambda（它们的名字算一次）。
+    global / nonlocal 的名字也算在里面）：它们的类型不推。不进里层的函数、类、lambda（它们的名字算一次）；里层用 nonlocal 写的名字
+    （`def swap(): nonlocal g; g = …`，什么时候调不知道）也算。
     推导式的循环变量也数进来（多数一点只会少推，不会推错）"""
     n: dict[str, int] = {}
 
@@ -99,6 +100,10 @@ def rebound(fn) -> set:
             if t is not ast.Lambda:
                 bind(x.name)
                 stack.extend(x.decorator_list)
+                for y in ast.walk(x):                # 里层改外面的名字：多算只会少推
+                    if type(y) is ast.Nonlocal:
+                        for name in y.names:
+                            bind(name, 2)
             continue
         if t is ast.Name:
             if type(x.ctx) is not ast.Load:

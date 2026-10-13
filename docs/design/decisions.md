@@ -91,6 +91,9 @@
   `self.connector` 按工厂的 return 推到基类 `OmniConnectorBase`，1,642 次从「只知道名字」变成「写的是基类、跑的是子类」，仍算看不出）。全仓新定下 17 处，逐条读过；
   第一版把 `m = self.p`（property）之后的 `m()` 当成调 property，读的时候发现、改掉。剩下的大头是 vllm 的 `run_busy_loop` 回调进仓库、
   加载器按架构名给的 `self.model`、基类里只赋 `None`、子类里才赋真值的 `self.connector`（394 次）。
+- 审查后补的几条（都是少推）：同名的 def 有几个（try / except、if / else 的备选）时几个都推出一样才算；被重新赋值过的标注参数不按标注推
+  （`self.x = 参数`、`return 参数` 和局部变量一个规矩：vllm-omni 全仓因此少定下 3 处，sana_video 的 `transformer` 参数又被加载器重新赋值了）；
+  里层函数用 `nonlocal` 改过的名字算重新赋值；`self.p(x)` 调的是 property 的值，结果不按 getter 的返回值推。
 - 不从子类推：只在子类里赋的属性、只 `raise NotImplementedError` 的方法都不按子类推——第一版推了后一种，在 vllm-omni 上一次也没起作用，
   还和前一种不推成了两种口径，删了。
 - 放弃的方案：接 pyright / jedi 这类类型检查器（多一个重依赖，大仓库上慢，还要配好被分析的环境）；按名字猜接收者（同名方法很多，猜错比不猜糟）；
