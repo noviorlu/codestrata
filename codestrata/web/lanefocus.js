@@ -3,7 +3,7 @@
  * 只看几列（CS.focus）：没选的列每个进程收成一窄列「其他 N 列」，连线照接（用户 10-09 定：信息不丢）；工具栏一个小签
  *   「只看 5 / 12 列 · 全部显示」随时退回。选择器和命令行同一套（laneid.py）：进程/线程、进程、带 * 的通配，不分大小写、按整段配。
  *   没写 lanes= 时按后端给的默认看（default_lanes，lanedefault.py；用户 10-10 定：转一手的列默认收起），小签写「默认只看」；
- *   「全部显示」这时写 lanes=*（不写就又是默认）。
+ *   「全部显示」这时写 lanes=*（不写就又是默认），小签留着写「全部 N 列 · 回到默认」；点「其他 N 列」只展开这个进程收起的列（用户 10-13 定）。
  * 标记（CS.mark）：标在装着这些文件 / 目录 / 函数的节点上，各列按自己的切面算，只描它这段时间里跑过的列（serve 的 /api/marklanes 给）；
  *   节点描边，一次最多 20 个，工具栏「标记 N 个 · 清掉」（用户 10-10 定）。模块图上（没有列）装着它就描。 */
 window.CS = window.CS || {};
@@ -55,6 +55,19 @@ window.CS = window.CS || {};
     hidden: function (id) { var f = this.lanes(); return !!f && !f[id]; },
     /* 全部显示：有默认收起的列时写 lanes=*，没有时清掉 */
     showAll: function () { this.set(CS.lanes.L && CS.lanes.L.default_lanes ? ['*'] : []); },
+    /* 再多看这几列（点了「其他 N 列」：这个进程收起的列）：地址里写现在看的加上它们；加完是全部列时同「全部显示」 */
+    expand: function (ids) {
+      var L = CS.lanes.L, f = this.lanes();
+      if (!L || !f) return;
+      var want = {}, al = L.aliases || {};
+      Object.keys(f).concat(ids).forEach(function (id) { want[id] = 1; });
+      var keep = L.lanes.filter(function (ln) { return want[ln.id]; });
+      if (keep.length >= L.lanes.length) this.showAll();
+      else this.set(keep.map(function (ln) { return al[ln.id] || ln.id; }));
+      if (CS.view) CS.view.changed('lanes');
+    },
+    /* 默认收起的列为什么收（后端的 default_folded）；不是默认收起的是空串 */
+    why: function (id) { var L = CS.lanes.L; return ((L && L.default_folded) || {})[id] || ''; },
 
     set: function (sels, quiet) {
       this.sels = (sels || []).filter(Boolean);
@@ -66,10 +79,14 @@ window.CS = window.CS || {};
       if (CS.app.lanesChanged) CS.app.lanesChanged();
     },
 
-    /* 工具栏上的小签：只看 5 / 12 列 · 全部显示（默认收起的：默认只看 8 / 19 列 · 全部显示） */
+    /* 工具栏上的小签：只看 5 / 12 列 · 全部显示（默认收起的：默认只看 8 / 19 列 · 全部显示；lanes=* 时：全部 19 列 · 回到默认） */
     chip: function () {
       var L = CS.lanes.L, f = this.lanes();
-      if (!f || !L || !CS.app.lanesMode()) return '';
+      if (!L || !CS.app.lanesMode()) return '';
+      if (!f && this.sels.length && !this.missed(L) && L.default_lanes && L.default_lanes.length)
+        return '<button class="chip focus" data-focus="default" title="地址里写了 lanes=*（或选的列配上了全部）：全部列都画着；'
+          + '点了回到默认（转一手的列每个进程收成一窄列「其他 N 列」）">全部 ' + L.lanes.length + ' 列 · 回到默认</button>';
+      if (!f) return '';
       if (!this.sels.length)
         return '<button class="chip focus" data-focus="all" title="转一手的列（收发 socket、只在轮询、线程池、这一段里没有调用的）默认每个进程收成一窄列'
           + '「其他 N 列」，线照连；点了全部显示（地址里写 lanes=*）">默认只看 ' + Object.keys(f).length + ' / ' + L.lanes.length + ' 列 · 全部显示</button>';

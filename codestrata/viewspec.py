@@ -95,5 +95,6 @@ def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, l
     cuts = {inv[a]: dirs for a, dirs in v.lcut.items() if a in inv}
     L = _lanes.build(idx, rd, run, phase, hot, open_, cuts=cuts or None, proc_order=proc_order)
     L["default_lanes"] = _lanedefault.default_lanes(L, stages)
+    L["default_folded"] = _lanedefault.default_folded(L, stages)
     aliases = _lanes.aliases_of(rd, L)
     return L, aliases, _laneorder.rank_view(L, aliases, _lanes.proc_aliases(rd), v.fold, v.hide, v.lanes)

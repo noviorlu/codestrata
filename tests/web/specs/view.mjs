@@ -87,7 +87,7 @@ export default async function (t) {
   ok(hc.startsWith('run=' + fx.a + '@loop') && /order=1/.test(hc), '地址里 run 换成完整 id、别的键还在：' + hc);
 
   // 没写 lanes=：转一手的列（线程池 req、只在交接两头出现的 stdlib-put）默认收进「其他 N 列」，小签「默认只看」；进程头写它在干什么；
-  // 点「全部显示」写 lanes=*（不写就又是默认）
+  // 窄列悬停一列一列写为什么收；点窄列只展开这个进程；点「全部显示」写 lanes=*（不写就又是默认），小签留着「全部 N 列 · 回到默认」
   await page.goto(base + '#run=' + fx.a);
   ok(await waitRun(page, fx.a), '整个 run');
   ok(await page.wait(`CS.lanes.ready && !CS.view.applying && !!CS.lanes.L.default_lanes`, 15000), '后端给了默认看的列');
@@ -96,7 +96,21 @@ export default async function (t) {
     info: [...document.querySelectorAll('#g .ln-pinfo')].map(x => x.textContent)})`).then(JSON.parse);
   ok(d.chip.startsWith('默认只看') && d.hidden.includes('truth-1/req') && !d.hidden.includes('truth-1/MainThread') && d.info.length > 0,
      '默认收起转一手的列、进程头有那一句 ' + JSON.stringify(d));
+  const tip = await page.ev(`(document.querySelector('#g .ln-col.part title') || {}).textContent || ''`);
+  ok(tip.startsWith('默认收起') && tip.includes('——') && tip.includes('点一下展开'), '默认收起的窄列悬停写每列为什么收 ' + JSON.stringify(tip));
+  const nAll = await page.ev(`CS.lanes.L.lanes.length`), nDef = await page.ev(`Object.keys(CS.focus.lanes()).length`);
+  const part = await page.ev(`(() => { const c = [...document.querySelectorAll('#g .ln-col.part')][0]; const ids = CS.lanes.L.lanes.filter(l => CS.focus.hidden(l.id)).map(l => l.id);
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true })); return ids.length; })()`);
+  ok(await page.wait(`!CS.view.applying && CS.focus.sels.length > 0 && CS.focus.lanes() && /lanes=/.test(location.hash)`, 5000)
+     && await page.ev(`Object.keys(CS.focus.lanes()).length`) > nDef && await page.ev(`Object.keys(CS.focus.lanes()).length`) <= nAll,
+     '点窄列：这个进程收起的列放出来，地址里写 lanes= ' + await hashNow(page) + ' 收起的原有 ' + part);
+  ok((await page.ev(`(document.querySelector('#edgechips [data-focus]') || {}).textContent || ''`)).includes('全部显示'), '小签变成「只看 n / N 列 · 全部显示」');
   await page.click('#edgechips [data-focus]');
-  ok(await page.wait(`!document.querySelector('#edgechips [data-focus]') && !CS.focus.lanes()`, 5000), '点「全部显示」：全部列、小签没了');
-  ok(await page.wait(`decodeURIComponent(location.hash).includes('lanes=*')`, 5000), '地址里写 lanes=* ' + await hashNow(page));
+  ok(await page.wait(`!CS.focus.lanes() && decodeURIComponent(location.hash).includes('lanes=*')`, 5000), '点「全部显示」：全部列，地址里写 lanes=* ' + await hashNow(page));
+  ok(await page.wait(`((document.querySelector('#edgechips [data-focus="default"]') || {}).textContent || '').includes('回到默认')`, 5000),
+     '小签留着：「全部 N 列 · 回到默认」');
+  await page.click('#edgechips [data-focus]');
+  ok(await page.wait(`!CS.view.applying && !CS.focus.sels.length && !!CS.focus.lanes() && !/lanes=/.test(location.hash)`, 5000)
+     && (await page.ev(`(document.querySelector('#edgechips [data-focus]') || {}).textContent || ''`)).startsWith('默认只看'),
+     '点「回到默认」：又是默认收起、地址里没有 lanes= ' + await hashNow(page));
 }

@@ -17,19 +17,45 @@ FEW_FNS = 3
 
 def folded(S: dict | None) -> set[str]:
     """默认收起的列 id（S：segments.stages 的结果；None 时不收）"""
+    return set(reasons(S))
+
+
+def reasons(S: dict | None) -> dict[str, str]:
+    """默认收起的列 → 为什么收（页面的窄列悬停时一列一列写出来）"""
     if not S:
-        return set()
-    return {lid for lid, k in S["kinds"].items() if _relay(k)}
+        return {}
+    out = {}
+    for lid, k in S["kinds"].items():
+        why = _relay(k)
+        if why:
+            out[lid] = why
+    return out
 
 
-def _relay(k: dict) -> bool:
-    if k["kind"] in ("external", "threads", "quiet"):
-        return True
-    if k["kind"] == "poll":
-        return k["fns"] <= FEW_FNS
-    if k["kind"] == "few" and k.get("repeat") and not k["in"] and not k["out"]:     # 收了数据再反复处理的不算：它在链上
-        return k["fns"] <= FEW_FNS
-    return k["kind"] == "few" and bool(k["in"] and k["out"]) and k["fns"] <= FEW_FNS
+def _relay(k: dict) -> str | None:
+    """转一手的列：为什么（大白话）；不是是 None"""
+    few = k["fns"] <= FEW_FNS
+    if k["kind"] == "external":
+        return "只在交接两头出现（收发 socket）"
+    if k["kind"] == "threads":
+        return "线程池（同名的线程很多、没有主循环）"
+    if k["kind"] == "quiet":
+        return "这一段里没有调用"
+    if k["kind"] == "poll" and few:
+        return "只在轮询（每轮空转）"
+    if k["kind"] == "few" and k.get("repeat") and not k["in"] and not k["out"] and few:    # 收了数据再反复处理的不算：它在链上
+        return "只在反复调同一两个函数"
+    if k["kind"] == "few" and k["in"] and k["out"] and few:
+        return "又收又交、只调了几个函数（转一手）"
+    return None
+
+
+def default_folded(L: dict, S: dict | None) -> dict[str, str]:
+    """画着的列里默认收起的 → 为什么收；default_lanes 是 None（不收）时是空的"""
+    if default_lanes(L, S) is None:
+        return {}
+    why = reasons(S)
+    return {ln["id"]: why[ln["id"]] for ln in L["lanes"] if ln["id"] in why}
 
 
 def default_lanes(L: dict, S: dict | None) -> list[str] | None:

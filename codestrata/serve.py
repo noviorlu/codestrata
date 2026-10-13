@@ -14,7 +14,8 @@
                                   proc_aliases 是进程别名；order 是这个视图（fold 收起的进程、hide 藏起的边、lanes 只看的列）
                                   里时间顺序的编号（laneorder.py）。进程按这一段里开始干活的先后排（segments.proc_order），
                                   procinfo 是进程头上「它在干什么」的那一句 {pid: {parts, title}}（procinfo.py），
-                                  default_lanes 是没写 lanes= 时默认看的列（转一手的收起，lanedefault.py；null 是全部）
+                                  default_lanes 是没写 lanes= 时默认看的列（转一手的收起，lanedefault.py；null 是全部），
+                                  default_folded 是默认收起的列 → 为什么收
     GET  /api/laneorder?…         同 /api/lanes 的参数，只回 order（收起进程、切开关时不重取整张图）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
@@ -345,6 +346,7 @@ class Handler(BaseHandler):
                 # 进程头上的一句（几片的时间段不写：切段要连续的一段，按整段算的时刻和画着的几片对不上）、默认收起的列
                 L["procinfo"] = {} if multi else {str(pid): v for pid, v in _procinfo.summary(S, lo).items()}
                 L["default_lanes"] = _lanedefault.default_lanes(L, S)
+                L["default_folded"] = _lanedefault.default_folded(L, S)
                 with Handler._lock:
                     Handler._lane_cache[key] = L
                     while len(Handler._lane_cache) > 4:

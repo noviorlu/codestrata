@@ -385,8 +385,15 @@ window.CS = window.CS || {};
         if (C.fold) {
           head.textContent = C.part ? '其他 ' + C.lns.length + ' 列' : C.lns.length + ' 列（收起）';
           var ft = el('title', {});
-          ft.textContent = (C.part ? '只看几列时没选的：' : '收起了：') + C.lns.map(function (l) { return laneName(l.id); }).join('、');
+          if (!C.part) ft.textContent = '收起了：' + C.lns.map(function (l) { return laneName(l.id); }).join('、');
+          else if (!CS.focus.sels.length)              // 没写 lanes=：默认收起的，一列一列写为什么（用户 10-13 定）
+            ft.textContent = '默认收起（转一手的列）：\n' + C.lns.map(function (l) {
+              var w = CS.focus.why(l.id);
+              return '  ' + laneName(l.id) + (w ? ' —— ' + w : '');
+            }).join('\n') + '\n点一下展开这个进程收起的列';
+          else ft.textContent = '只看几列时没选的：' + C.lns.map(function (l) { return laneName(l.id); }).join('、') + '\n点一下展开这个进程收起的列';
           col.appendChild(ft);
+          if (C.part) col.onclick = function (ev) { ev.stopPropagation(); CS.focus.expand(C.lanes); };
           C.lns.forEach(function (ln) { laneOf[ln.id] = { x: C.x, w: C.w, fold: true, ci: ci }; });
           return;
         }

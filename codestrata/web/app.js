@@ -704,7 +704,10 @@ window.CS = window.CS || {};
       var ec = document.getElementById('edgechips');
       ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip() + (this.lanesMode() ? CS.chain.chip() : ''));
       var fbtn = ec.querySelector('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), cbtn = ec.querySelector('[data-chain]'), self = this;
-      if (fbtn) fbtn.onclick = function () { CS.focus.showAll(); self.edgeChips(); CS.view.changed('lanes'); };
+      if (fbtn) fbtn.onclick = function () {
+        if (fbtn.getAttribute('data-focus') === 'default') CS.focus.clear(); else CS.focus.showAll();
+        self.edgeChips(); CS.view.changed('lanes');
+      };
       if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
       if (cbtn) cbtn.onclick = function () { CS.chain.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
