@@ -11,6 +11,7 @@ import functools
 import re
 from pathlib import Path
 
+from . import align as _align
 from . import lanes as _lanes
 from . import seq as _seq
 from .errors import CodestrataError
@@ -369,12 +370,24 @@ def function(repo: Path, rd: Path, run: dict, idx: dict, hot: dict, node: str, k
 
     def pair(fn: str, v: dict) -> dict:
         st = {ln.get("status") for ln in v.get("lines") or []}
+        status = "trace" if st == {"trace"} else "both"
+        note = _align.top_note(v) if status == "trace" else None
         return {"fn": fn, "n": v["n"], "lines": [ln.get("l") for ln in v.get("lines") or [] if ln.get("l")][:3],
-                "status": "trace" if st == {"trace"} else "both"}
+                "status": status, "note": note, "why": _align.note_short(note)}
+    # 代码里写成调它、跑的是子类覆盖的（override）：explain 一个基类的方法时，它自己可能一次也没跑
+    ran_as: dict[str, dict] = {}
+    for k, v in calls.items():
+        for ln in v.get("lines") or []:
+            nt = ln.get("note") or {}
+            if nt.get("k") == "override" and nt.get("w") == node:
+                caller, _, callee = k.partition("|")
+                x = ran_as.setdefault(callee, {"fn": callee, "n": 0, "callers": []})
+                x["n"] += ln.get("n") or 0
+                x["callers"].append({"fn": caller, "line": ln.get("l")})
     out = {"item": node, "kind": "function", "def": definition(repo, idx, node), "ran": bool(per_lane),
            "lanes": [{"lane": k, "n": v[0], "first_us": v[1], "last_us": v[2]} for k, v in sorted(per_lane.items(), key=lambda kv: -kv[1][0])],
            "callers": [pair(f, v) for f, v in callers[:5]], "callees": [pair(f, v) for f, v in callees[:5]],
-           "first": None, "recent_handoff": None}
+           "ran_as": sorted(ran_as.values(), key=lambda x: -x["n"])[:5], "first": None, "recent_handoff": None}
     if first:
         t0, pid, i, rows = first
         r = rows[i]
@@ -443,7 +456,9 @@ def edge(repo: Path, idx: dict, lane_hot: dict, lane_alias: str, e: dict, top: i
     pairs = []
     for c in (d.get("calls") or [])[:top]:
         ln = next(iter(c.get("lines") or []), None)
+        note = _align.top_note(c) if c.get("status") != "both" else None
         pairs.append({"caller": c["caller"], "callee": c["callee"], "n": c["n"], "status": c.get("status"),
+                      "note": note, "why": _align.note_short(note),
                       "code": code_at(repo, ln["f"], ln["l"]) if ln and ln.get("l") else None,
                       "def": definition(repo, idx, c["callee"])})
     return {"kind": "edge", "lane": lane_alias, "a": e["a"], "b": e["b"], "n": e.get("n"), "only": e.get("only"),

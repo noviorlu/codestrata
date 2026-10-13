@@ -388,6 +388,34 @@ def judge(recs: list, callee: str, whole: bool = False, *, fn: list | None = Non
     return "trace", {"k": "line", **seen} if seen else {"k": "none"}
 
 
+def note_short(note: dict | None) -> str:
+    """只有 trace 的那一行为什么代码里看不出（note，见 judge）的短说法：命令行写在「代码里看不出」后面（页面的长说法是 panel.js 的 noteText）"""
+    k = (note or {}).get("k")
+    q = lambda t: (t or "").partition("#")[2] or t or ""
+    if k == "override":
+        return f"写的是 {q(note.get('w'))}，跑的是子类"
+    if k == "name":
+        return "只知道名字 " + "、".join(note.get("names") or [])
+    if k == "prop":
+        return f"读属性 {note.get('name')}（property），接收者定不下"
+    if k == "getattr":
+        return "走了 __getattr__"
+    if k == "line":
+        via = [q(x) for x in note.get("c") or []] + list(note.get("ext") or []) + [x for x in note.get("names") or [] if x]
+        return "经 " + "、".join(via[:3]) + " 转了一道" if via else "经别的调用转了一道"
+    if k == "none":
+        return "这一行没看到调用"
+    if k == "nomatch":
+        return "调用方里没有同名的调用"
+    return ""
+
+
+def top_note(x: dict) -> dict | None:
+    """一对调用（hot 的 calls 里的一条）里只有 trace、次数最多的那一行的 note；老 run（没有调用行）用整对的"""
+    tl = max((ln for ln in x.get("lines") or [] if ln.get("status") == "trace"), key=lambda ln: ln.get("n") or 0, default=None)
+    return tl.get("note") if tl else x.get("note")
+
+
 def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
     """给 to_package_graph 的函数对填上和 scan 比的结果，返回 (函数对, moved)。每个函数对 {a, b, n, only, lines, guessed}：
       only     其中「只有 trace」的次数（代码里看不出会调到它）

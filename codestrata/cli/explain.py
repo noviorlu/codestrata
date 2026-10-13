@@ -202,6 +202,11 @@ def _link_text(d: dict, lo: int) -> list[str]:
     return L
 
 
+def _unseen_tag(x: dict) -> str:
+    """「代码里看不出」带上为什么（align.note_short：写的是基类的方法、只知道名字、经别的转了一道……）"""
+    return "  [代码里看不出" + (" · " + x["why"] if x.get("why") else "") + "]"
+
+
 def _fn_text(d: dict, lo: int) -> list[str]:
     word = "类" if d.get("kind") == "class" else "函数"
     L = [f"{word} {d['item']}。时刻从这一段开头（t={lo}）算"]
@@ -220,7 +225,12 @@ def _fn_text(d: dict, lo: int) -> list[str]:
             for x in xs:
                 ln = "、".join(map(str, x["lines"]))
                 L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}" + (f"  行 {ln}" if ln else "")
-                         + ("  [代码里看不出]" if x["status"] == "trace" else ""))
+                         + (_unseen_tag(x) if x["status"] == "trace" else ""))
+    if d.get("ran_as"):
+        L.append("代码里写成调它、跑的是子类覆盖的")
+        for x in d["ran_as"]:
+            by = "；".join(f"{common.short(y['fn'])} 行 {y['line']}" for y in x["callers"][:3])
+            L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}  ← {by}")
     f = d.get("first")
     if f:
         L.append(f"第一次  {out.secs(f['t_us'], lo)} 在 {f['lane']}：{_chain(f['chain'])}")
@@ -280,7 +290,7 @@ def _edge_text(d: dict, lo: int) -> list[str]:
     L.append("底下次数最多的几对函数：")
     for p in d["pairs"]:
         L.append(f"  ×{p['n']:<6} {common.short(p['caller'])} → {common.short(p['callee'])}"
-                 + ("  [代码里看不出]" if p.get("status") == "trace" else ""))
+                 + (_unseen_tag(p) if p.get("status") == "trace" else ""))
         L += _code(p.get("code"), "      ")
         L += _def(p.get("def"), "      ")
     return L

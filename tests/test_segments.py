@@ -183,8 +183,14 @@ def test_commands_on_toy():
     j = one_json(cs("segments", "-C", repo, f"{rid}@work", "--json"))
     assert j["ok"] and j["algo"] == steps.ALGO and "min_calls" in j["data"]["basis"], j
     assert j["data"]["requests"] and j["data"]["requests"][0]["fn"].endswith("#s_threads"), j["data"]["requests"]
-    lanes = one_json(cs("lanes", "-C", repo, f"{rid}@work", "--json"))["data"]["lanes"]
+    ld = one_json(cs("lanes", "-C", repo, f"{rid}@work", "--json"))["data"]
+    lanes = ld["lanes"]
     main = next(x for x in lanes if x["lane"].endswith("/MainThread"))
+    # 页面默认收起的列也标出来（和页面同一份）：stdlib-put 只在交接两头出现、bg-loop 只是反复调同一个函数
+    pf = {x["lane"]: x["page_folded"] for x in lanes if x["page_folded"]}
+    assert "交接两头" in pf.get("truth-1/stdlib-put", "") and "反复" in pf.get("truth-4/bg-loop", "") and "truth-1/MainThread" not in pf, pf
+    assert ld["page_default"] == {"shown": len(lanes) - len(pf), "total": len(lanes)}, ld["page_default"]
+    assert "页面默认只看" in cs("lanes", "-C", repo, f"{rid}@work").stdout
     r = subprocess.run([PY, "-m", "codestrata", "steps", "-C", str(repo), f"{rid}@work", "--json"], capture_output=True, text=True,
                        cwd=HERE.parent)
     assert r.returncode == 2 and one_json(r)["error"]["code"] == "usage", r.stdout

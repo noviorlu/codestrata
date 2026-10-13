@@ -2349,6 +2349,16 @@ def test_trace_only_notes():
     assert [(y["l"], y["note"]) for y in sr] == [(ln("make().run()"), {"k": "name", "names": ["run"]})], sr
     rt = ui_source.runtime_lines(idx, "nt/app.py", hot)
     assert sorted(rt) == [ln("make().run()"), ln("return work(1)")], rt
+    # 命令行写出为什么看不出；explain 基类的方法时列出跑到的子类
+    d = json.loads(cs("explain", "nt/base.py#Sub.step", "nt", "-C", repo, "--json").stdout)["data"]
+    c0 = d["callers"][0]
+    assert c0["status"] == "trace" and c0["note"]["k"] == "override" and "Base.step" in c0["why"] and "子类" in c0["why"], c0
+    d = json.loads(cs("explain", "nt/base.py#Base.step", "nt", "-C", repo, "--json").stdout)["data"]
+    assert [x["fn"] for x in d["ran_as"]] == ["nt/base.py#Sub.step"] and d["ran_as"][0]["callers"][0]["fn"] == "nt/base.py#Base.run", d["ran_as"]
+    t = cs("explain", "nt/base.py#Base.step", "nt", "-C", repo).stdout
+    assert "跑的是子类覆盖的" in t and "Sub.step" in t, t
+    u = json.loads(cs("path", "nt", "-C", repo, "--unseen", "--json").stdout)["data"]
+    assert u["unseen"] and all(x["why"] for x in u["unseen"]), u["unseen"]
     assert rt[ln("return work(1)")][0]["def"] == {"f": "nt/deco.py", "l": 2}, rt
     rb = ui_source.runtime_lines(idx, "nt/base.py", hot)
     assert [(l, [r["callee"] for r in v]) for l, v in rb.items()] == [(3, ["nt/base.py#Sub.step"])], rb

@@ -91,6 +91,10 @@ def run(a) -> out.Result:
 
 # ---------------------------------------------------------------- 拼视图（url、set 共用）
 
+# 没写 lanes= 的视图：页面默认收起转一手的列（lanedefault）。说一句，哪几列、为什么在 lanes 命令里
+_DEFAULT_LANES = "列：没写 lanes=，分列里默认收起转一手的列（哪几列、为什么见 codestrata lanes；--lanes all 看全部）"
+
+
 def _compose(c, a, v: _viewspec.View) -> list[str]:
     """把命令行的选项套到视图 v 上（v.run、v.lanes 已经按 REF 定好）；返回说明「这个视图是什么」的几行"""
     r = c.res
@@ -198,6 +202,8 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
         what.append("全部列（不收起转一手的）")
     elif v.lanes:
         what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
+    else:
+        what.append(_DEFAULT_LANES)
     if v.fold:
         what.append("收起 " + ",".join(v.fold))
     if expand:
@@ -309,6 +315,8 @@ def _get(a) -> out.Result:
     c, pg, t = _page(a)
     lines = [f"{pages.where(pg, t)}  最后是{_BY.get(t['by'], t['by'])}改的",
              f"  视图  {t['view'] or '（静态图）'}"]
+    if t["view"] and t["view"].startswith("run=") and "lanes=" not in t["view"]:
+        lines.append("  " + _DEFAULT_LANES)
     if t.get("n") is not None:
         lines.append(f"  编号  一共 {t['n']} 个")
     if t.get("last"):

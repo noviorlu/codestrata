@@ -4,6 +4,7 @@
 --time：先列出「自己的时间」最多的 5 处（和 steps --why 同一个算法）；--unseen：只列代码里看不出会调到它的调用，按次数排。"""
 from __future__ import annotations
 
+from .. import align as _align
 from .. import lanes as _lanes
 from .. import laneid as _laneid
 from .. import path as _path
@@ -134,10 +135,12 @@ def _unseen(p: dict, limit: int) -> tuple[list[str], dict]:
                 ln = x.get("line") or {}
                 if ln.get("status") == "trace" and not x.get("before"):
                     rows.append({"lane": th["lane"], "fn": x["fn"], "from": x.get("from"), "n": x.get("n") or 0,
-                                 "line": {"f": ln.get("f"), "l": ln.get("l")}})
+                                 "line": {"f": ln.get("f"), "l": ln.get("l")}, "note": ln.get("note"),
+                                 "why": _align.note_short(ln.get("note"))})
     rows.sort(key=lambda x: -x["n"])
     text = [f"代码里看不出会调到它的调用 {len(rows)} 处（按次数排，给了前 {min(limit, len(rows))} 处）："]
     for x in rows[:limit]:
         where = f"  ← {x['line']['f']}:{x['line']['l']}" if x["line"]["l"] else ""
-        text.append(f"  ×{x['n']:<6} {x['lane']}  {common.short(x['from'])} → {common.short(x['fn'])}{where}")
+        text.append(f"  ×{x['n']:<6} {x['lane']}  {common.short(x['from'])} → {common.short(x['fn'])}{where}"
+                    + (f"  （{x['why']}）" if x["why"] else ""))
     return text, {k: v for k, v in p.items() if k != "procs"} | {"unseen": rows[:limit], "n_unseen": len(rows)}
