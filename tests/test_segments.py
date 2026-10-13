@@ -459,6 +459,10 @@ def test_procinfo_and_default_lanes():
     al, keep = _lanes.aliases_of(rd, L), lanedefault.default_lanes(L, S) or []
     fold = {al[ln["id"]] for ln in L["lanes"] if ln["id"] not in keep}
     assert "truth-1/req" in fold and "truth-1/MainThread" not in fold and procinfo.summary(S, lo), fold
+    # 看的是整个 run（有 serving 阶段）：进程按启动的先后（每个进程映像的起点），不按第一次活动
+    run2 = dict(run, phases=list(run.get("phases") or []) + [{"name": "serving"}])
+    po = segments.proc_order(rd, run2, None, 0, seq.run_end(run2, rd), align.node_labeler(idx), None)
+    assert po and po == _lanes.proc_starts(seq.span_index(rd)), po
 
 
 if __name__ == "__main__":

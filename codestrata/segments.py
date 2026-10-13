@@ -147,8 +147,9 @@ def lane_kinds(A: dict, lo: int, hi: int) -> dict[str, dict]:
 
 
 def _n_in(r, lo: int, hi: int) -> int:
-    """一行 span 在 [lo, hi) 里有几次调用：折叠行（rep 次连着的同级调用合成的一行）按 seq.calls_in 摊开，和 lanes、phase_calls 同一个数法。
-    只看开始时刻的话，从这段之前就在反复调的一行（save_loop 隔 100 ms 清一次共享内存，一行 186 次横跨 18 s）在这段里算 0 次"""
+    """一行 span 在 [lo, hi) 里有几次调用：折叠行（rep 次连着的同级调用合成的一行）按 seq.calls_in 摊开，和 lanes、phase_calls 同一个摊法。
+    只看开始时刻的话，从这段之前就在反复调的一行（save_loop 隔 100 ms 清一次共享内存，一行 186 次横跨 18 s）在这段里算 0 次。
+    右端是开的：phase_calls 对 t= 时间段、到 run 终点的最后一段是闭的，正好落在右端那一刻的一次调用这里不算（只差右端那一次）"""
     got = _seq.calls_in(r[0], r[1], r[6], lo, hi, open_hi=True)
     return got[0] if got else 0
 
@@ -342,10 +343,13 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
 
 def proc_order(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict[int, int]:
     """进程的先后（用户 10-10 定：按这一段里开始干活的先后）：{pid: 开始干活的时刻}。持有请求的进程从请求开始算，
-    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。切段靠不住时（stages 是 None）、
-    看的是整个 run 时（用户 10-13 定）是空的（调用方按第一次活动排：整个 run 里就是启动的先后）；只有一轮的段不算。phase 是 REF 所在的阶段名"""
+    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。看的是整个 run 时（whole_run，用户 10-13 定）
+    是各进程启动的时刻（lanes.proc_starts：按启动的先后）；切段靠不住时（stages 是 None）是空的（调用方按第一次活动排）；只有一轮的段不算。
+    phase 是 REF 所在的阶段名"""
+    if whole_run(run, lo, hi, _seq.run_end(run, rd)):
+        return _lanes.proc_starts(_seq.span_index(rd))
     S = stages(rd, run, phase, lo, hi, label, head_window)
-    if not S or S["whole"]:
+    if not S:
         return {}
     out: dict[int, int] = {}
     for q in S["reqs"]:
