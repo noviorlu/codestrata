@@ -146,7 +146,7 @@ def test_wheel_installs_and_runs():
 def test_public_docs_no_internal_content():
     """公开文档（README、docs/usage、ARCHITECTURE、design/）不写内部内容：对话原话、「用户…定的」、评审、内部标记、
     也不链接内部文档（它们在 .gitignore 里，发布出去的仓库里没有）"""
-    pat = re.compile(r"用户 ?(?:20\d\d-)?\d\d-\d\d|用户：「|用户的原话|外部评审|critic|xiaochun|主会话|子 agent|\bP0\b|设计稿第|设计稿 \d"
+    pat = re.compile(r"用户 ?(?:20\d\d-)?\d\d-\d\d|（用户(?:没选|没定|定|选)|用户：「|用户的原话|外部评审|critic|xiaochun|主会话|子 agent|\bP0\b|设计稿第|设计稿 \d"
                      r"|STATUS\.md|TODO\.md|FINDINGS\.md|CLAUDE\.md|docs/log/|docs/archive|docs/plans")
     bad = []
     # git 管着的 .md 就是公开的（内部文档在 .gitignore 里）；没有 git（从 sdist 跑测试）时按公开文档的清单
