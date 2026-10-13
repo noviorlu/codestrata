@@ -132,7 +132,7 @@ codestrata serve --hot demo                          # 4. 同一张图上叠这�
 
 ![vllm-omni 的一次 MiniCPM 请求：orchestrator 这一列展开了 engine/，画成一个框，框头写名字、框里几个模块；process_input_sockets、MainThread 两列的 engine/ 还收着一个节点；彩色实线是跨线程 / 跨进程的交接](images/lanes.png)
 
-- **一列是一类线程**，按进程分组（进程头写进程标题和 pid，▾ 把整个进程收成一条）。名字归一之后同名的合成一列：`Thread-3 (save_loop)` 写成 save_loop，线程池的 `ThreadPoolExecutor-3_0…_3` 合成 `ThreadPoolExecutor-3 ×4`，每步新开的 249 个 `omni-async-output-builder` 合成一列 ×249（悬停列头看合进来的原名）。
+- **一列是一类线程**，按进程分组（进程头写别名和它在干什么，悬停看进程标题和 pid；▾ 把整个进程收成一条）。名字归一之后同名的合成一列：`Thread-3 (save_loop)` 写成 save_loop，线程池的 `ThreadPoolExecutor-3_0…_3` 合成 `ThreadPoolExecutor-3 ×4`，每步新开的 249 个 `omni-async-output-builder` 合成一列 ×249（悬停列头看合进来的原名）。
 - **列里**只放这条线程调到的节点（当前切面上的文件 / 目录），边是这条线程里的调用，标次数；全是代码里看不出的画虚线。
 - **同一个节点在几列里各有一份，放在同一高度**（纵坐标沿用「只看跑到的」那张图的分层），横着一看就是同一个；鼠标停在一份上（或点它）时，它在别的列里的副本高亮、用蓝色虚线连上——这多半就是几条线程共用的对象、队列、共享内存通道所在的地方。
 - **列之间的连线**：粗的是**谁把数据交给谁**，标通道和次数——进程内的 `queue.Queue` / `asyncio.Queue` / janus 队列按「同一个队列里的同一个对象」配对，跨进程的 ZMQ 按消息内容的指纹配对；绿色细虚线是**谁起了谁**（在哪一行 `Thread.start`、起子进程），红色细虚线是**谁回收了谁**（从被回收的那一列连到 `join` / `waitpid` 等到它结束的那一行；线程池的 `shutdown(wait=True)`、`Popen.wait`、`Process.join` 都算）。只跑仓库外代码、但是交接一头的线程（vLLM 收发 ZMQ 的输出线程）给一列空的，标「仓库外的代码」，交接链才不断。
