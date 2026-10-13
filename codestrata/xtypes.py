@@ -2,7 +2,9 @@
 
 只推代码里写明的：构造 `C(…)`（含 `C(…) if … else None`）；类型标注（参数、`x: C`、类体里的字段、`self.x: C`，
 `Optional[C]`、`C | None`、字符串的前向引用也认）；函数 / 方法 / property 的返回值标注（`async def` 不算：调了是协程）；
-`list[C]`、`dict[K, C]` 这类容器取出来的元素；`getattr(obj, "x")`。属性在几处赋的推不一样、有一处推不出的，就当不知道
+`list[C]`、`dict[K, C]` 这类容器取出来的元素；`getattr(obj, "x")`。没标返回值类型的函数按它 return 的值
+（每个 return 都推得出、推出来一样才算；生成器不算）；只有 `raise NotImplementedError` / `pass` / `...` 的方法（留给子类写的）
+按仓库里重写了它的方法推，都推出一样才算。属性在几处赋的推不一样、有一处推不出的，就当不知道
 （留给 trace）；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推（参数：没被重新赋值），
 不管分支、循环、try 的先后——`e = Slow(); if flag: e = Fast()` 之后的 `e.run()` 不推（rebound）。
 
@@ -122,6 +124,39 @@ def rebound(fn) -> set:
     return {k for k, v in n.items() if v > 1}
 
 
+def returns(fn):
+    """函数 fn 里 return 的值（`return` / `return None` 不算），不进里层的函数、类、lambda；有 yield 的（生成器）是 None"""
+    out = []
+    stack = list(fn.body)
+    while stack:
+        x = stack.pop()
+        t = type(x)
+        if t in _SCOPES:
+            continue
+        if t is ast.Yield or t is ast.YieldFrom:
+            return None
+        if t is ast.Return and x.value is not None and not is_none(x.value):
+            out.append(x)
+        stack.extend(ast.iter_child_nodes(x))
+    return out
+
+
+def is_stub(fn) -> bool:
+    """方法体只有（文档字符串之外）pass、...、raise NotImplementedError：留给子类写"""
+    body = fn.body[1:] if fn.body and type(fn.body[0]) is ast.Expr and type(fn.body[0].value) is ast.Constant \
+        and type(fn.body[0].value.value) is str else fn.body
+    for x in body:
+        t = type(x)
+        if t is ast.Pass or t is ast.Expr and type(x.value) is ast.Constant and x.value.value is Ellipsis:
+            continue
+        if t is ast.Raise and x.exc is not None:
+            e = x.exc.func if type(x.exc) is ast.Call else x.exc
+            if type(e) is ast.Name and e.id == "NotImplementedError":
+                continue
+        return False
+    return bool(body)
+
+
 def iter_types(tg, it, names: list) -> dict:
     """for tg in it 绑的名字（names：tg 里绑定的 Name 节点）各是什么：it 是 e → tg 是 i；it 是 p → 二元组的第二项是 i；
     别的都不知道（None）"""
@@ -167,6 +202,9 @@ class TypeResolver:
         self.repo = repo
         self.var_specs: dict[str, list] = {}         # 属性 "v:模块:类.x" → [(模块, 解析线索, 种类, 是不是标注)]
         self.ret_specs: dict[str, tuple] = {}        # 函数 "模块:限定名" → (模块, 返回值标注的解析线索, 种类)
+        self.ret_vals: dict[str, list] = {}          # 没标返回值类型的函数 → [(模块, return 的值的解析线索, 种类)]
+        self.stubs: set[str] = set()                 # 留给子类写的方法（is_stub）
+        self._subs: dict[str, list] | None = None
         self._memo: dict = {}
 
     def instance(self, target, kind: str = "i") -> str | None:
@@ -191,9 +229,55 @@ class TypeResolver:
         return self.call_value(r) if kind == "c" else self.instance(r, kind)
 
     def ret_type(self, key: str) -> str | None:
-        """函数的返回值标注推出来的值（def make() -> Engine）"""
+        """函数的返回值推出来的值：有标注按标注（def make() -> Engine）；没有的按 return 的值；留给子类写的按重写了它的"""
         rs = self.ret_specs.get(key)
-        return self._cached(("r", key), self.spec_value, *rs) if rs else None
+        if rs:
+            return self._cached(("r", key), self.spec_value, *rs)
+        if key in self.ret_vals:
+            return self._cached(("r", key), self._agree, [(m, sp, k) for m, sp, k in self.ret_vals[key]])
+        if key in self.stubs:
+            return self._cached(("r", key), self._overridden, key)
+        return None
+
+    def _agree(self, specs) -> str | None:
+        found = set()
+        for m, sp, kind in specs:
+            v = self.spec_value(m, sp, kind)
+            if not typed(v):
+                return None
+            found.add(v)
+        return found.pop() if len(found) == 1 else None
+
+    def _overridden(self, key: str) -> str | None:
+        """仓库里的子类重写了方法 key 的，返回值都推出一样时取它"""
+        cls, _, name = key.rpartition(".")
+        found = set()
+        for sub in self._descendants(cls):
+            k = f"{sub}.{name}"
+            if k in self.repo.symbols:
+                v = self.ret_type(k)
+                if v is None:
+                    return None
+                found.add(v)
+        return found.pop() if len(found) == 1 else None
+
+    def _descendants(self, cls: str) -> list[str]:
+        if self._subs is None:
+            subs: dict[str, list] = {}
+            for k, s in self.repo.symbols.items():
+                if s.get("k") == "class":
+                    for b in self.repo.bases(k):
+                        if b[:1] not in "~?":
+                            subs.setdefault(b, []).append(k)
+            self._subs = subs
+        out, todo, seen = [], list(self._subs.get(cls, ())), {cls}
+        while todo:
+            c = todo.pop()
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+                todo.extend(self._subs.get(c, ()))
+        return out
 
     def var_type(self, target: str) -> str | None:
         """属性 v:模块:类.x 的值推出来是什么。有标注的（类体里 x: C、self.x: C = …）只按标注；没有的按方法里
@@ -213,5 +297,6 @@ class TypeResolver:
     def _cached(self, key, fn, *args):
         r = self._memo.get(key, _MISS)
         if r is _MISS:
+            self._memo[key] = None                    # 递归推到自己（互相调用的函数）：不知道
             r = self._memo[key] = fn(*args)
         return r

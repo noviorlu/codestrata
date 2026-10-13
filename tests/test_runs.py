@@ -2310,7 +2310,7 @@ _NT = {
     "nt/deco.py": "def deco(fn):\n    def wrapper(*a):\n        return fn(*a)\n    return wrapper\n",
     "nt/app.py": ("import os\n\nfrom nt import lib\nfrom nt.base import Sub\nfrom nt.deco import deco\n\n\n"
                   "@deco\ndef work(x):\n    return x\n\n\n"
-                  "def make():\n    return Sub()\n\n\n"
+                  "def make(kind='sub'):\n    return {'sub': Sub}[kind]()\n\n\n"
                   "def run(xs):\n"
                   "    sq = sum(lib.plain(i) for i in xs)\n"
                   "    f = lambda v: lib.plain(v)\n"
@@ -2344,7 +2344,7 @@ def test_trace_only_notes():
     assert wr[0]["note"]["k"] == "line" and wr[0]["note"]["c"] == ["nt/app.py#work"] and "f" in wr[0]["note"]["names"], wr
     local = [x for k, x in C.items() if k.startswith("nt/app.py#run|nt/app.py#run.<L")]
     assert len(local) == 2 and all(x["only"] == 0 for x in local), local      # 生成器表达式、lambda
-    # make().run()：make 没标返回值类型，scan 只知道名字 run
+    # make().run()：make 按名字挑类，scan 只知道名字 run
     sr = C["nt/app.py#run|nt/base.py#Base.run"]["lines"]
     assert [(y["l"], y["note"]) for y in sr] == [(ln("make().run()"), {"k": "name", "names": ["run"]})], sr
     rt = ui_source.runtime_lines(idx, "nt/app.py", hot)

@@ -78,17 +78,23 @@
 ### scan 推一点类型：只推构造和类型标注写明的
 - 决定：xref 推方法调用的接收者是什么类，只认代码里写明的：`x = C(…)`、`self.x = C(…)`（含 `C(…) if … else None`、`[C(…) for …]`）、
   参数 / 属性 / 类体字段的类型标注、函数 / 方法 / property 的返回值标注（`async def` 不算）、`list[C]` / `dict[K, C]` 取出来的元素、
-  `getattr(obj, "x")`。一个属性几处赋的推不一样、有一处推不出，就当不知道；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推
+  `getattr(obj, "x")`；没标返回值类型的函数按 return 的值（每个 return 都推得出、一样才算，生成器不算），只有 `raise NotImplementedError` /
+  `pass` / `...` 的方法按仓库里重写了它的方法（都推出一样才算）；`f = obj.m` / `f = getattr(obj, "m", None)` 之后的 `f()` 按 `obj.m()`（property 不算）。
+  一个属性几处赋的推不一样、有一处推不出，就当不知道；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推
   （参数：没被重新赋值），不管分支、try、循环的先后。推出来的同时用于跳转和 graph 的调用记录。
   MRO 上排在仓库外基类后面的 mixin 方法：graph 的调用记录按 mixin 的算（近似，仓库外的基类多半没有它），跳转不给。
 - 为什么：「代码里看不出」的一大半是 scan 不推类型造成的假阳性。vllm-omni 上 MiniCPM 一次请求（serving 阶段），只有 trace 的跨文件调用
   从 52.4% 降到 21.1%（按函数对 52.2% → 25.8%，请求路径上那一跳看不出的行 186 → 103，共 479 行）；剩下的主要是经仓库外的代码转一道、
   按配置或工厂造出来的对象（`self.model`、`self.connector`）。scan 新定下了 4105 处调用：这次跑到的 161 处里 157 处对上，另外 4 处
   标注写的是 Protocol、跑的是实现；没跑到的随机抽 40 处逐条读代码核对，全对。scan 用时 13.7 s → 14.2 s。
+  后来加上 return 的值、留给子类写的方法、存进局部变量的方法：同一次请求 21.0% → 19.2%（`getattr` 取出来再调的 1,691 次定下了；
+  `self.connector` 推到基类 `OmniConnectorBase`，1,642 次从「只知道名字」变成「写的是基类、跑的是子类」，仍算看不出）。全仓新定下 17 处，逐条读过；
+  第一版把 `m = self.p`（property）之后的 `m()` 当成调 property，读的时候发现、改掉。剩下的大头是 vllm 的 `run_busy_loop` 回调进仓库、
+  加载器按架构名给的 `self.model`。
 - 放弃的方案：接 pyright / jedi 这类类型检查器（多一个重依赖，大仓库上慢，还要配好被分析的环境）；按名字猜接收者（同名方法很多，猜错比不猜糟）；
   局部变量按语句顺序走、后赋的盖掉先赋的（10-01 第一版：`e = Slow(); if flag: e = Fast(); e.run()` 定成 `Fast.run`，跳错；改成只推绑定一次的之后，
   vllm-omni 全仓少定下 154 处，这次请求跑到的一处没少）；按控制流分支分别推（要做数据流分析，不值）。
-- 在哪：`xtypes.py`（`rebound`：函数里绑定过不止一次的名字）；`xref.py` 的 `_Collect.self_spec` / `value_spec` / `type_spec`、`_Walk.type_local` / `bind_types` / `ann_type` / `call_type`、
+- 在哪：`xtypes.py`（`rebound`：函数里绑定过不止一次的名字；`returns` / `is_stub`；`TypeResolver.ret_type`）；`xref.py` 的 `_Collect.self_spec` / `value_spec` / `type_spec`、`_Walk.type_local` / `func_ref` / `bind_types` / `ann_type` / `call_type`、
   `_Repo.class_member_past_unknown`。测试 `test_type_inference`；前后对比用 `tests/bench/quality.py`。
 
 ---
