@@ -412,7 +412,10 @@ def test_procinfo_and_default_lanes():
     assert P[3]["parts"] == ["w.py", "+1.00→+2.50 s", "7 轮", "2 段"], P[3]
     assert P[4]["parts"][0] == "+0.00→+1.00 s", "单进程（没有别的进程可比）不写文件"
     assert P[9]["parts"] == ["请求 Omni.generate", "−0.10→+4.50 s"], P[9]
-    assert procinfo.summary(None, 0) == {}
+    assert procinfo.summary(None, 0) == {} and procinfo.summary(dict(S, whole=True), 1_000_000) == {}, "整个 run 不写"
+    runp = {"phases": [{"name": "start"}, {"name": "serving"}]}
+    assert segments.whole_run(runp, 0, 9_000, 9_000) and not segments.whole_run(runp, 5, 9_000, 9_000)
+    assert not segments.whole_run({"phases": [{"name": "work"}]}, 0, 9_000, 9_000), "没有 serving 的 run：整个 run 就是要看的"
     k = lambda kind, fns=1, i=0, o=0, rep=False: {"kind": kind, "fns": fns, "in": i, "out": o, "repeat": rep}
     S["kinds"] = {"a": k("loop", 40, 1, 3), "b": k("poll", 2), "c": k("poll", 46), "d": k("threads", 33), "e": k("external", 0, 5, 5),
                   "f": k("few", 2, 1, 1), "g": k("few", 9, 1, 1), "h": k("quiet", 0), "i": k("few", 1, 1, 0),

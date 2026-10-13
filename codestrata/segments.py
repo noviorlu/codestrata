@@ -302,12 +302,19 @@ def background(A: dict, segs: list[dict]) -> list[str]:
     return sorted(ln["alias"] for ln in A["lanes"].values() if ln["kind"] == "poll" and ln["alias"] not in mains)
 
 
+def whole_run(run: dict, lo: int, hi: int, end_us: int | None) -> bool:
+    """看的是整个 run，而这个 run 有 serving 阶段：大半是启动（加载时的 save_loop 也像主循环），切出来的段和轮数靠不住——
+    进程头不写、进程按启动的先后（用户 10-13 定；segments 命令同样警告 whole_run）"""
+    return _seq.main_phase(run) is not None and lo <= 0 and end_us is not None and hi >= end_us
+
+
 _STAGES: "OrderedDict[tuple, dict | None]" = OrderedDict()   # (span 目录, index 的 mtime, 时间段, 阶段, 认轮头的那段) → stages 的结果（最近 8 个）
 _STAGES_LOCK = threading.Lock()
 
 
 def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict | None:
-    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments, "kinds": lane_kinds}，调用方只读。
+    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments, "kinds": lane_kinds,
+    "whole": 看的是整个 run（whole_run）}，调用方只读。
     切段靠不住时是 None：老 run（没录交接）、这段时间里一次交接都没录到。phase 是 REF 所在的阶段名。
     按 (run, 时间段) 缓存：分列改切面、收起进程都不再算；进程的先后（proc_order）、进程头上的一句（procinfo）、
     默认收起哪几列（lanedefault）用同一份"""
@@ -324,7 +331,8 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
     if ho:
         A = analyse(rd, lo, hi, head_window=head_window)
         reqs = requests(A, run, phase, lo, hi, label)
-        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}), "kinds": lane_kinds(A, lo, hi)}
+        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}), "kinds": lane_kinds(A, lo, hi),
+               "whole": whole_run(run, lo, hi, _seq.run_end(run, rd))}
     with _STAGES_LOCK:
         _STAGES[key] = out
         while len(_STAGES) > 8:
@@ -334,9 +342,11 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
 
 def proc_order(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict[int, int]:
     """进程的先后（用户 10-10 定：按这一段里开始干活的先后）：{pid: 开始干活的时刻}。持有请求的进程从请求开始算，
-    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。切段靠不住时（stages 是 None）是空的
-    （调用方退回按启动的先后）；只有一轮的段不算。phase 是 REF 所在的阶段名"""
-    S = stages(rd, run, phase, lo, hi, label, head_window) or {"reqs": [], "segs": []}
+    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。切段靠不住时（stages 是 None）、
+    看的是整个 run 时（用户 10-13 定）是空的（调用方按第一次活动排：整个 run 里就是启动的先后）；只有一轮的段不算。phase 是 REF 所在的阶段名"""
+    S = stages(rd, run, phase, lo, hi, label, head_window)
+    if not S or S["whole"]:
+        return {}
     out: dict[int, int] = {}
     for q in S["reqs"]:
         out[q["pid"]] = min(out.get(q["pid"], q["t0_us"]), max(q["t0_us"], lo))

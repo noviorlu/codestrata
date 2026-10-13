@@ -5,7 +5,8 @@
 
 parts 按要紧的先后排：页面上进程头窄时从后往前丢，第一样（干什么）放不下时中间省略。
 独有的文件只写第一名，而且至少 OWN_MIN 次、占这一段这个进程调用的 OWN_SHARE 以上（只调了一次的 interface.py 不写）；
-单进程的程序（没有别的进程可比）不写文件。时刻从这一段的开头算（同页面上别的 +秒）。
+单进程的程序（没有别的进程可比）不写文件。时刻从这一段的开头算（同页面上别的 +秒）。看的是整个 run（有 serving 阶段，segments.whole_run）时
+不写：大半是启动，切出来的段和轮数靠不住（用户 10-13 定）。
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ OWN_SHARE = 0.01
 
 def summary(S: dict | None, lo: int) -> dict[int, dict]:
     """{pid: {"parts", "title"}}：进程头上的那一句（parts 用 · 连起来）和悬停时的说明。S：segments.stages 的结果（None：切段靠不住，不写）"""
-    if not S:
+    if not S or S.get("whole"):
         return {}
 
     def at(t: int) -> str:
