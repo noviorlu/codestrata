@@ -92,7 +92,8 @@ def run(a) -> out.Result:
 # ---------------------------------------------------------------- 拼视图（url、set 共用）
 
 # 没写 lanes= 的视图：页面默认收起转一手的列（lanedefault）。说一句，哪几列、为什么在 lanes 命令里
-_DEFAULT_LANES = "列：没写 lanes=，分列里默认收起转一手的列（哪几列、为什么见 codestrata lanes；--lanes all 看全部）"
+_DEFAULT_LANES = ("列：没写 lanes=，按页面默认（转一手的列收起；老 run、这一段没录到交接时不收）——收哪几列、为什么见 codestrata lanes；"
+                  "--lanes all 看全部")
 
 
 def _compose(c, a, v: _viewspec.View) -> list[str]:

@@ -392,8 +392,9 @@ def note_short(note: dict | None) -> str:
     """只有 trace 的那一行为什么代码里看不出（note，见 judge）的短说法：命令行写在「代码里看不出」后面（页面的长说法是 panel.js 的 noteText）"""
     k = (note or {}).get("k")
     q = lambda t: (t or "").partition("#")[2] or t or ""
-    if k == "override":
-        return f"写的是 {q(note.get('w'))}，跑的是子类"
+    if k == "override":       # 写的和跑的同名：多半是子类覆盖的，也可能是 Protocol / 鸭子类型的实现（judge 只比名字）
+        w = note.get("w") or ""
+        return f"写的是 {q(w) if '.' in q(w) else w}，跑的是同名的这个（子类覆盖的或接口的实现）"
     if k == "name":
         return "只知道名字 " + "、".join(note.get("names") or [])
     if k == "prop":
@@ -407,6 +408,8 @@ def note_short(note: dict | None) -> str:
         return "这一行没看到调用"
     if k == "nomatch":
         return "调用方里没有同名的调用"
+    if k == "gpu":
+        return "GPU kernel：经扩展 / PyTorch 转了几道才启动，不知道是哪一行"
     return ""
 
 

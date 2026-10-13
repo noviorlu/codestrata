@@ -203,8 +203,15 @@ def _link_text(d: dict, lo: int) -> list[str]:
 
 
 def _unseen_tag(x: dict) -> str:
-    """「代码里看不出」带上为什么（align.note_short：写的是基类的方法、只知道名字、经别的转了一道……）"""
-    return "  [代码里看不出" + (" · " + x["why"] if x.get("why") else "") + "]"
+    """只有 trace 的（全部 / 其中几次）标出来，带上为什么（align.note_short：写的是基类的方法、只知道名字、经别的转了一道……）；
+    GPU kernel 写 [GPU kernel]（和 path 树的 [GPU]、页面一致）"""
+    st = x.get("status")
+    if st not in ("trace", "mixed"):
+        return ""
+    if (x.get("note") or {}).get("k") == "gpu":
+        return "  [GPU kernel]"
+    head = "代码里看不出" if st == "trace" else f"其中 {x.get('only')} 次代码里看不出"
+    return f"  [{head}" + (" · " + x["why"] if x.get("why") else "") + "]"
 
 
 def _fn_text(d: dict, lo: int) -> list[str]:
@@ -224,10 +231,9 @@ def _fn_text(d: dict, lo: int) -> list[str]:
             L.append(title)
             for x in xs:
                 ln = "、".join(map(str, x["lines"]))
-                L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}" + (f"  行 {ln}" if ln else "")
-                         + (_unseen_tag(x) if x["status"] == "trace" else ""))
+                L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}" + (f"  行 {ln}" if ln else "") + _unseen_tag(x))
     if d.get("ran_as"):
-        L.append("代码里写成调它、跑的是子类覆盖的")
+        L.append("代码里写成调它、跑的是同名的别的方法（子类覆盖的或接口的实现）")
         for x in d["ran_as"]:
             by = "；".join(f"{common.short(y['fn'])} 行 {y['line']}" for y in x["callers"][:3])
             L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}  ← {by}")
@@ -289,8 +295,7 @@ def _edge_text(d: dict, lo: int) -> list[str]:
          + ("，一直在反复（↻）" if d["repeat"] else "") + (f"；其中约 {d['only']} 次代码里看不出" if d.get("only") else "")]
     L.append("底下次数最多的几对函数：")
     for p in d["pairs"]:
-        L.append(f"  ×{p['n']:<6} {common.short(p['caller'])} → {common.short(p['callee'])}"
-                 + (_unseen_tag(p) if p.get("status") == "trace" else ""))
+        L.append(f"  ×{p['n']:<6} {common.short(p['caller'])} → {common.short(p['callee'])}" + _unseen_tag(p))
         L += _code(p.get("code"), "      ")
         L += _def(p.get("def"), "      ")
     return L
