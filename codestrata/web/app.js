@@ -682,6 +682,7 @@ window.CS = window.CS || {};
       }
       // 整段重写会把键盘焦点丢到 body 上：记下焦点在哪个开关上，重写完放回去
       var fa = document.activeElement, ft = fa && fa.closest && fa.closest('#edgechips [data-t]') ? fa.dataset.t : null;
+      var ff = !!(fa && fa.closest && fa.closest('#edgechips [data-focus]'));   // 焦点在「全部显示 / 回到默认」上：重写之后放回去（键盘接着按）
       document.getElementById('edgechips').innerHTML = defs.map(function (x) {
         var tm = x[0] === 'timeorder';            // 时间顺序：开关上画一段起点色 → 终点色的渐变线
         return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="'
@@ -711,6 +712,7 @@ window.CS = window.CS || {};
       if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
       if (cbtn) cbtn.onclick = function () { CS.chain.clear(); };
       if (ft) { var fb = document.querySelector('#edgechips [data-t="' + ft + '"]'); if (fb) fb.focus(); }
+      if (ff && fbtn) fbtn.focus();
     },
 
     /* ---- 切面：展开 / 收起 ---- */

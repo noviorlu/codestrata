@@ -74,10 +74,7 @@ window.CS = window.CS || {};
       if (!quiet) this.redraw();
     },
     clear: function () { this.set([]); },
-    redraw: function () {
-      CS.lanes.redraw();
-      if (CS.app.lanesChanged) CS.app.lanesChanged();
-    },
+    redraw: function () { CS.lanes.redrawKeep(); },     // 选中的还画着就接着选（redrawKeep 里也通知 lanesChanged）
 
     /* 工具栏上的小签：只看 5 / 12 列 · 全部显示（默认收起的：默认只看 8 / 19 列 · 全部显示；lanes=* 时：全部 19 列 · 回到默认） */
     chip: function () {

@@ -98,12 +98,44 @@ export default async function (t) {
      '默认收起转一手的列、进程头有那一句 ' + JSON.stringify(d));
   const tip = await page.ev(`(document.querySelector('#g .ln-col.part title') || {}).textContent || ''`);
   ok(tip.startsWith('默认收起') && tip.includes('——') && tip.includes('点一下展开'), '默认收起的窄列悬停写每列为什么收 ' + JSON.stringify(tip));
+  // 窄列底上压着线的地方：真鼠标点下去选的是线，不展开（窄列的点击不能吞掉线）
+  const near = await page.ev(`(() => {
+    for (const c of document.querySelectorAll('#g .ln-col.part .ln-band')) {
+      const r = c.getBoundingClientRect();
+      for (let y = r.top + 60; y < Math.min(r.bottom, innerHeight) - 4; y += 3)
+        for (let x = r.left + 4; x < r.right - 4; x += 3) {
+          const h = CS.lanes.hitAt(x, y), t = document.elementFromPoint(x, y);
+          if (h.length && h[0].d > 2 && h[0].d < 6 && t && t.closest('.ln-col.part') && !t.closest('.ln-th')) return { x, y, key: h[0].E.key };
+        }
+    }
+    return null; })()`);
+  ok(!!near, '找到了窄列底上压着线的点（这个 fixture 上有）');
+  if (near) {
+    await page.mouse('mouseMoved', near.x, near.y); await sleep(80);
+    await page.mouse('mousePressed', near.x, near.y, 1); await page.mouse('mouseReleased', near.x, near.y);
+    ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(near.key)} && !CS.focus.sels.length`, 5000),
+       '窄列底上压着线的地方点下去选中那条线、不展开 ' + JSON.stringify([near, await page.ev(`CS.lanes.sel`), await page.ev(`CS.focus.sels`)]));
+    await page.key('Escape', 'Escape', 27);
+  }
+  // 选中一个节点，再真鼠标点窄列的列头：只展开这个进程收起的列，选中还在、地址里还有 sel=
   const nAll = await page.ev(`CS.lanes.L.lanes.length`), nDef = await page.ev(`Object.keys(CS.focus.lanes()).length`);
-  const part = await page.ev(`(() => { const c = [...document.querySelectorAll('#g .ln-col.part')][0]; const ids = CS.lanes.L.lanes.filter(l => CS.focus.hidden(l.id)).map(l => l.id);
-    c.dispatchEvent(new MouseEvent('click', { bubbles: true })); return ids.length; })()`);
+  const pick = await page.ev(`(() => { const x = CS.lanes.nodes.find(n => !CS.focus.hidden(n.lane)); CS.lanes.pickNode(x.id, x.lane); return CS.lanes.sel; })()`);
+  const want = await page.ev(`(() => { const c = document.querySelector('#g .ln-col.part');
+    const ids = CS.lanes.L.lanes.filter(l => CS.focus.hidden(l.id)); const pid = ids.length ? ids[0].pid : null;
+    return ids.filter(l => l.pid === pid).map(l => l.id); })()`);
+  // 列头挪到看得见的地方；右上角的搜索栏挡着就先收起来（真鼠标点的是最上面那个元素）
+  const reach = () => page.ev(`(() => { const h = document.querySelector('#g .ln-col.part .ln-th');
+    h.scrollIntoView({ block: 'nearest', inline: 'center' });
+    const r = h.getBoundingClientRect(), t = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    return !!(t && t.closest('.ln-col.part')); })()`);
+  if (!await reach()) { await page.click('#sbx'); await sleep(200); }
+  ok(await reach(), '窄列的列头点得到（没被挡着）');
+  await page.click('#g .ln-col.part .ln-th');
   ok(await page.wait(`!CS.view.applying && CS.focus.sels.length > 0 && CS.focus.lanes() && /lanes=/.test(location.hash)`, 5000)
-     && await page.ev(`Object.keys(CS.focus.lanes()).length`) > nDef && await page.ev(`Object.keys(CS.focus.lanes()).length`) <= nAll,
-     '点窄列：这个进程收起的列放出来，地址里写 lanes= ' + await hashNow(page) + ' 收起的原有 ' + part);
+     && await page.ev(`${JSON.stringify(want)}.every(id => !CS.focus.hidden(id)) && Object.keys(CS.focus.lanes()).length === ${nDef} + ${want.length}`)
+     && await page.ev(`Object.keys(CS.focus.lanes()).length`) <= nAll,
+     '点窄列的列头：只放出这个进程收起的列，地址里写 lanes= ' + await hashNow(page));
+  ok(await page.wait(`CS.lanes.sel === ${JSON.stringify(pick)} && location.hash.includes('sel=')`, 5000), '点窄列之后选中还在、地址里有 sel= ' + await hashNow(page));
   ok((await page.ev(`(document.querySelector('#edgechips [data-focus]') || {}).textContent || ''`)).includes('全部显示'), '小签变成「只看 n / N 列 · 全部显示」');
   await page.click('#edgechips [data-focus]');
   ok(await page.wait(`!CS.focus.lanes() && decodeURIComponent(location.hash).includes('lanes=*')`, 5000), '点「全部显示」：全部列，地址里写 lanes=* ' + await hashNow(page));
@@ -111,6 +143,7 @@ export default async function (t) {
      '小签留着：「全部 N 列 · 回到默认」');
   await page.click('#edgechips [data-focus]');
   ok(await page.wait(`!CS.view.applying && !CS.focus.sels.length && !!CS.focus.lanes() && !/lanes=/.test(location.hash)`, 5000)
+     && await page.ev(`CS.lanes.sel === ${JSON.stringify(pick)}`)
      && (await page.ev(`(document.querySelector('#edgechips [data-focus]') || {}).textContent || ''`)).startsWith('默认只看'),
      '点「回到默认」：又是默认收起、地址里没有 lanes= ' + await hashNow(page));
 }

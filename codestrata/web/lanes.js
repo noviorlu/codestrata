@@ -385,15 +385,23 @@ window.CS = window.CS || {};
         if (C.fold) {
           head.textContent = C.part ? '其他 ' + C.lns.length + ' 列' : C.lns.length + ' 列（收起）';
           var ft = el('title', {});
-          if (!C.part) ft.textContent = '收起了：' + C.lns.map(function (l) { return laneName(l.id); }).join('、');
-          else if (!CS.focus.sels.length)              // 没写 lanes=：默认收起的，一列一列写为什么（用户 10-13 定）
-            ft.textContent = '默认收起（转一手的列）：\n' + C.lns.map(function (l) {
-              var w = CS.focus.why(l.id);
-              return '  ' + laneName(l.id) + (w ? ' —— ' + w : '');
-            }).join('\n') + '\n点一下展开这个进程收起的列';
-          else ft.textContent = '只看几列时没选的：' + C.lns.map(function (l) { return laneName(l.id); }).join('、') + '\n点一下展开这个进程收起的列';
+          // 窄列：一列一列写，默认会收起的写为什么（用户 10-13 定；写了 lanes= 也照写）
+          var why = C.lns.map(function (l) { var w = CS.focus.why(l.id); return '  ' + laneName(l.id) + (w ? ' —— ' + w : ''); }).join('\n');
+          ft.textContent = C.part ? (CS.focus.sels.length ? '只看几列时没选的：\n' : '默认收起（转一手的列）：\n') + why + '\n点一下展开这个进程收起的列'
+            : '收起了：' + C.lns.map(function (l) { return laneName(l.id); }).join('、');
           col.appendChild(ft);
-          if (C.part) col.onclick = function (ev) { ev.stopPropagation(); CS.focus.expand(C.lanes); };
+          if (C.part) {
+            var go = function () { CS.focus.expand(C.lanes); };
+            col.setAttribute('role', 'button');
+            col.setAttribute('tabindex', '0');
+            col.setAttribute('aria-label', '其他 ' + C.lns.length + ' 列，展开这个进程收起的列：' + C.lns.map(function (l) { return laneName(l.id); }).join('、'));
+            // 点在列头「其他 N 列」上一定展开；点在列底上、旁边压着线时，这次点击交给 lanepick 去选线
+            col.onclick = function (ev) {
+              if (ev.target !== head && self.hitAt(ev.clientX, ev.clientY).length) return;
+              ev.stopPropagation(); go();
+            };
+            col.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); } };
+          }
           C.lns.forEach(function (ln) { laneOf[ln.id] = { x: C.x, w: C.w, fold: true, ci: ci }; });
           return;
         }
@@ -665,9 +673,15 @@ window.CS = window.CS || {};
     /* 收起 / 展开一个进程（▾ / ▸）：数据不变，重画；选着的还画着就接着选它（详情按新图重画：里面能点的节点跟着变），
        收进去了就取消选中，免得详情里留着点了没反应、或者会选到别的线程里去的按钮 */
     fold: function (pid, on) {
+      if (!this._args) return;
+      this.collapsed[this.procAlias(pid)] = on;
+      this.redrawKeep();
+    },
+
+    /* 重画，选中的东西还画着就接着选、收起 / 收进窄列了就清掉（收起进程、只看几列、回到默认都走这里，详情栏不留过期的） */
+    redrawKeep: function () {
       var was = this.sel, many = this.selMany, a = this._args;
       if (!a) return;
-      this.collapsed[this.procAlias(pid)] = on;
       this.draw(a[0], a[1], a[2], a[3]);
       var E = was && this.byKey[was], nk = was && was.indexOf('n:') === 0 ? was.slice(2) : null;
       var fk = was && was.indexOf('f:') === 0 ? was.slice(2) : null;
