@@ -166,6 +166,11 @@ def _phase_log(run: dict) -> list[tuple[str, int]]:
     return sorted(log, key=lambda x: x[1])
 
 
+def main_phase(run: dict) -> str | None:
+    """默认建议看的阶段：有 serving 就是它（启动时的初始化会淹没请求本身）"""
+    return "serving" if any(p.get("name") == "serving" for p in run.get("phases") or []) else None
+
+
 def phase_segments(run: dict, end_us: int) -> list[tuple[str, int, int]]:
     """run 按阶段切成的一段段 [(名字, 起, 止)]（微秒，相对 run 起点，按时间排）：同一个阶段切走又切回来
     就有几段。页面的时间轴画的就是它（runs.load 放进 meta）"""

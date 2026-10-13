@@ -94,7 +94,7 @@ def run(a) -> out.Result:
     if r.lanes:
         c.warnings.append({"code": "lanes_ignored", "msg": f"segments 切的是整个范围里的所有进程，REF 里的列（/{','.join(r.lanes)}）没用上"})
     mp = common.main_phase(r.run)
-    if not r.phase and mp:
+    if _seg.whole_run(r.run, lo, hi, r.end_us):        # 和页面同一个判法：没写范围、或者 t=0-终点
         c.warnings.append({"code": "whole_run", "msg": f"看的是整个 run（大半是启动）；请求在 {mp} 阶段里",
                            "next": c.cmd("read", "segments", f"{r.run['id']}@{mp}")})
     if A["ix"].get("truncated"):

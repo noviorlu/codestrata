@@ -226,6 +226,15 @@ class EndFns:
         return {"fn": self.fn_of(k) if k is not None else None, "ext": not inspan, "line": self.line_of(k, line) if inspan else 0}
 
 
+def proc_starts(ix: dict) -> dict[int, int]:
+    """每个进程映像最早的起点 {pid: 微秒}（span 的 index 里的 procs）：fork 出来的子进程就是在这一刻起的（B 行没有时刻）。
+    分列没给 proc_order 时、看整个 run 时（segments.proc_order）按它排进程"""
+    out: dict[int, int] = {}
+    for p in ix.get("procs") or []:
+        out[p["pid"]] = min(out.get(p["pid"], p["t0_us"]), p["t0_us"])
+    return out
+
+
 def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, text=None,
           cuts: dict | None = None, proc_order: dict | None = None, chain: tuple | None = None) -> dict:
     """{"phase", "window": [起, 止], "segs": [[起, 止]…]（阶段的各个时间片）, "scope", "lanes": [列], "links": [连线],
@@ -581,9 +590,7 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         if na is not None and na in lanes[src]["nodes"]:
             link("launch", "cuda", {"lane": src, "node": na, "fn": fn_of(ka), "t": first, "line": 0},
                  {"lane": lid, "node": nb, "fn": fn_of(kb), "t": first, "line": 0}, n=n, gpu_us=us, t_last=last)
-    pstart: dict[int, int] = {}                  # 进程映像最早的起点：fork 出来的子进程就是在这一刻起的（B 行没有时刻）
-    for p in ix.get("procs") or []:
-        pstart[p["pid"]] = min(pstart.get(p["pid"], p["t0_us"]), p["t0_us"])
+    pstart = proc_starts(ix)
     for s in ix.get("spawns") or []:
         # fork 没有记时刻：用子进程映像的起点（不用调 fork 的那个 span 的开始——它可能早得多），连线和列头的「起」是同一刻
         tf = s.get("t_us", pstart.get(s["child"]))

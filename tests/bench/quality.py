@@ -3,7 +3,8 @@
     .venv/bin/python tests/bench/quality.py [REPO] [RUN@阶段] [--target 函数名 …] [--json]
 
 默认是 vllm-omni 的 MiniCPM 那次请求（20260930-233507-run_single_prompt@serving，有调用行和时序事件）。打印：
-  1. 跨文件的调用：一共几次、只有 trace（代码里看不出）几次、占多少；只有 trace 的按说明分（name / line / none / override /
+  1. 跨文件的调用：一共几次、只有 trace（代码里看不出）几次、占多少，再按不算「写的是基类、跑的是子类」（override）算一次——
+     类型推断把接收者定到基类时调用从 name 挪到 override，第一个数不动、第二个数下降；只有 trace 的按说明分（name / line / none / override /
      nomatch），name 再按写法分（self.属性.方法、局部变量或参数.方法、self.方法、getattr / 字符串、别的）——类型推断该压低的是前两种。
      次数让轮询的几对占了大头，所以也按「对」数一遍：跨文件的函数对几对、其中至少一处调用代码里看不出的几对。
   2. 请求路径上到几个目标函数（默认 compute_logits、_model_forward）的那条链：从根到它几跳、其中几跳代码里看不出；
@@ -123,7 +124,9 @@ def main(argv: list[str]) -> int:
         print(json.dumps(m, ensure_ascii=False))
         return 0
     print(f"{m['run']}（{'有' if m['has_lines'] else '没有'}调用行）")
-    print(f"  跨文件的调用 {m['cross_file_calls']} 次，只有 trace {m['trace_only']} 次（{m['trace_only_share']:.1%}）")
+    print(f"  跨文件的调用 {m['cross_file_calls']} 次，只有 trace {m['trace_only']} 次（{m['trace_only_share']:.1%}）；"
+          f"不算写的是基类、跑的是子类的 {m['trace_only'] - m['by_note'].get('override', 0)} 次"
+          f"（{(m['trace_only'] - m['by_note'].get('override', 0)) / max(m['cross_file_calls'], 1):.1%}）")
     print(f"  按对数：跨文件的函数对 {m['cross_file_pairs']} 对，至少一处调用代码里看不出的 {m['trace_only_pairs']} 对"
           f"（{m['trace_only_pairs'] / max(m['cross_file_pairs'], 1):.1%}）")
     print("  只有 trace 按说明：" + "，".join(f"{k} {v}" for k, v in m["by_note"].items()))

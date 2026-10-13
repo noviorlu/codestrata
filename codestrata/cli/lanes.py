@@ -1,6 +1,7 @@
 """codestrata lanes：这段时间里有哪几列（进程 · 线程），和页面的分列是同一套；每列给稳定写法。"""
 from __future__ import annotations
 
+from .. import lanedefault as _lanedefault
 from .. import lanes as _lanes
 from .. import laneid as _laneid
 from .. import runs as _runs
@@ -10,7 +11,7 @@ from . import common, out
 
 NAME = "lanes"
 EFFECT = "read"
-DOES = "这段时间里有哪几列（进程 · 线程）：稳定写法、有没有调用（轮询也算调用）、是不是只做交接、首末时刻"
+DOES = "这段时间里有哪几列（进程 · 线程）：稳定写法、有没有调用（轮询也算调用）、是不是只做交接、首末时刻、页面默认收不收"
 USAGE = "codestrata lanes REF [--limit N] [--json]"
 EXAMPLE = "codestrata lanes 20261001-170349-run_single_prompt@serving/stage1"
 
@@ -36,27 +37,29 @@ def activity(ln: dict) -> str:
 _KIND = {"gpu": "GPU kernel", "external": "只跑仓库外的代码，只做交接", "idle": "这段没调用，只是交接的一头", "busy": "有调用"}
 
 
-def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str]]:
-    """(lanes.build 的结果, {列 id: 列别名}, {pid: 进程别名})"""
+def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str], dict[str, str]]:
+    """(lanes.build 的结果, {列 id: 列别名}, {pid: 进程别名}, {页面默认收起的列 id: 为什么})"""
     common.require_events(c)
     idx = common.index(c)
     r = c.res
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
+    label = common.labeler(idx)
     try:
-        b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None, proc_order=common.proc_order(c, common.labeler(idx)))
+        b = _lanes.build(idx, r.rd, r.run, r.phase, hot, None, proc_order=common.proc_order(c, label))
     except LookupError as e:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"]),
                               next=[c.cmd("write", "runs", "merge", r.run["id"])]) from None
     procs = _lanes.proc_aliases(r.rd)
-    return b, _lanes.aliases_of(r.rd, b), procs
+    folded = _lanedefault.default_folded(b, common.stages(c, label))    # 和页面同一份（切段缓存着，proc_order 刚算过）
+    return b, _lanes.aliases_of(r.rd, b), procs, folded
 
 
 def run(a) -> out.Result:
     c = common.context(a)
     r = c.res
-    b, aliases, procs = build(c)
+    b, aliases, procs, folded = build(c)
     want = set(_laneid.select(r.lanes, aliases)) if r.lanes else set(aliases)
     names = _lanes.proc_names(r.rd)
     base = r.slices[0][0] if r.slices else 0
@@ -68,11 +71,14 @@ def run(a) -> out.Result:
                      "proc_name": names.get(ln["pid"]), "thread": ln.get("thread"), "thread_names": ln.get("names") or [],
                      "n_threads": ln.get("n_threads") or 1, "activity": activity(ln),
                      "n_calls": sum(v.get("n") or 0 for v in (ln.get("nodes") or {}).values()),
-                     "first_us": ln.get("first"), "last_us": ln.get("last")})
+                     "first_us": ln.get("first"), "last_us": ln.get("last"), "page_folded": folded.get(ln["id"])})
     shown = rows[:max(a.limit, 1)]
     span = sum(y - x for x, y in r.slices)
     lines = [f"run {r.run['id']} {('@' + r.phase) if r.phase else '整个 run'}（{out.dur(span)}）："
              f"{len(rows)} 列，{len({x['pid'] for x in rows})} 个进程。时刻从这一段开头算"]
+    if folded:
+        lines.append(f"页面默认只看 {len(b['lanes']) - len(folded)} / {len(b['lanes'])} 列：标「页面默认收起」的收进每个进程的「其他 N 列」"
+                     "（地址里写 lanes=* 看全部）")
     label = {x["id"]: x["lane"] + (f" ×{x['n_threads']}" if x["n_threads"] > 1 else "") for x in shown}
     width = max((len(v) for v in label.values()), default=0)
     cur = None
@@ -81,7 +87,8 @@ def run(a) -> out.Result:
             cur = x["pid"]
             lines.append(f"{x['proc']}  {x['proc_name']}  pid {x['pid']}")
         what = _KIND[x["activity"]] + (f" · {x['n_calls']} 次" if x["activity"] == "busy" else "")
-        lines.append(f"  {label[x['id']].ljust(width)}  {what}  {out.secs(x['first_us'], base)} → {out.secs(x['last_us'], base)}")
+        lines.append(f"  {label[x['id']].ljust(width)}  {what}  {out.secs(x['first_us'], base)} → {out.secs(x['last_us'], base)}"
+                     + (f"  （页面默认收起：{x['page_folded']}）" if x["page_folded"] else ""))
     if r.lanes and not rows:
         c.warnings.append({"code": "lane_idle", "msg": f"选的列（{','.join(r.lanes)}）在这段时间里没有活动"})
     if b.get("truncated"):
@@ -100,5 +107,6 @@ def run(a) -> out.Result:
         nxt.append(c.cmd("read", "lanes", f"{r.text}/{(busy[0] if busy else rows[0])['proc']}", why="只看一个进程的列"))
     data = {"lanes": shown, "procs": [{"proc": procs[p], "pid": p, "name": names.get(p)}
                                      for p in dict.fromkeys(x["pid"] for x in rows)],
-            "window_us": b.get("window"), "truncated": b.get("truncated") or []}
+            "window_us": b.get("window"), "truncated": b.get("truncated") or [],
+            "page_default": None if not folded else {"shown": len(b["lanes"]) - len(folded), "total": len(b["lanes"])}}
     return out.Result(data=data, text=lines, repo=c.repo, ref=c.ref_json(), next=nxt, more=more, warnings=c.warnings)

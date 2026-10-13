@@ -667,6 +667,7 @@ body.lanesmode .graphonly{display:none}
 .ln-band{fill:var(--card);stroke:var(--rule)}
 .ln-col.ext .ln-band{fill:none;stroke-dasharray:4 3}
 .ln-col.fold .ln-band{fill:var(--sunk)}
+.ln-col.part{cursor:pointer}#g:not(.ln-over) .ln-col.part:hover .ln-band,.ln-col.part:focus .ln-band{stroke:var(--sel)}
 .ln-th{font:600 10.5px/1 system-ui,sans-serif;fill:var(--body)}
 .ln-ext{font:italic 9.5px/1 system-ui,sans-serif;fill:var(--faint)}
 .ln-e{fill:none;stroke:var(--hot);stroke-width:1.6}

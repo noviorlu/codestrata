@@ -75,20 +75,31 @@
   名字解析本身算核心，跳转和引用列表的界面冻结（见「工程」第一条）。graph 的 scan 记录和 xref 同一遍、同一套名字解析，但定不下被调方的调用处另存在
   graph.json 里（给 scan-trace alignment 对行用），跳转不用它，这一条不变。
 
-### scan 推一点类型：只推构造和类型标注写明的
+### scan 推一点类型：只推构造、类型标注和 return 写明的
 - 决定：xref 推方法调用的接收者是什么类，只认代码里写明的：`x = C(…)`、`self.x = C(…)`（含 `C(…) if … else None`、`[C(…) for …]`）、
   参数 / 属性 / 类体字段的类型标注、函数 / 方法 / property 的返回值标注（`async def` 不算）、`list[C]` / `dict[K, C]` 取出来的元素、
-  `getattr(obj, "x")`。一个属性几处赋的推不一样、有一处推不出，就当不知道；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推
+  `getattr(obj, "x")`；没标返回值类型的函数按 return 的值（每个 return 都推得出、一样才算，生成器不算）；`f = obj.m` / `f = getattr(obj, "m", None)`
+  之后的 `f()` 按 `obj.m()`（property 不算）。不从子类推：只在子类里赋的属性、只 `raise NotImplementedError` 的方法都不推。
+  一个属性几处赋的推不一样、有一处推不出，就当不知道；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推
   （参数：没被重新赋值），不管分支、try、循环的先后。推出来的同时用于跳转和 graph 的调用记录。
   MRO 上排在仓库外基类后面的 mixin 方法：graph 的调用记录按 mixin 的算（近似，仓库外的基类多半没有它），跳转不给。
 - 为什么：「代码里看不出」的一大半是 scan 不推类型造成的假阳性。vllm-omni 上 MiniCPM 一次请求（serving 阶段），只有 trace 的跨文件调用
   从 52.4% 降到 21.1%（按函数对 52.2% → 25.8%，请求路径上那一跳看不出的行 186 → 103，共 479 行）；剩下的主要是经仓库外的代码转一道、
   按配置或工厂造出来的对象（`self.model`、`self.connector`）。scan 新定下了 4105 处调用：这次跑到的 161 处里 157 处对上，另外 4 处
   标注写的是 Protocol、跑的是实现；没跑到的随机抽 40 处逐条读代码核对，全对。scan 用时 13.7 s → 14.2 s。
+  后来加上 return 的值、存进局部变量的方法：同一次请求 21.1% → 19.2%，不算「写的是基类、跑的是子类」的 17.8% → 14.1%（`getattr` 取出来再调的 1,723 次定下了；
+  `self.connector` 按工厂的 return 推到基类 `OmniConnectorBase`，1,695 次从「只知道名字」变成「写的是基类、跑的是子类」，仍算看不出）。全仓新定下 17 处，逐条读过；
+  第一版把 `m = self.p`（property）之后的 `m()` 当成调 property，读的时候发现、改掉。剩下的大头是 vllm 的 `run_busy_loop` 回调进仓库、
+  加载器按架构名给的 `self.model`、基类里只赋 `None`、子类里才赋真值的 `self.connector`（393 次）。
+- 审查后补的几条（都是少推）：同名的 def 有几个（try / except、if / else 的备选）时几个都推出一样才算；被重新赋值过的标注参数不按标注推
+  （`self.x = 参数`、`return 参数` 和局部变量一个规矩：vllm-omni 全仓因此少定下 3 处，sana_video 的 `transformer` 参数又被加载器重新赋值了）；
+  里层函数用 `nonlocal` 改过的名字算重新赋值；`self.p(x)` 调的是 property 的值，结果不按 getter 的返回值推。
+- 不从子类推：只在子类里赋的属性、只 `raise NotImplementedError` 的方法都不按子类推——第一版推了后一种，在 vllm-omni 上一次也没起作用，
+  还和前一种不推成了两种口径，删了。
 - 放弃的方案：接 pyright / jedi 这类类型检查器（多一个重依赖，大仓库上慢，还要配好被分析的环境）；按名字猜接收者（同名方法很多，猜错比不猜糟）；
   局部变量按语句顺序走、后赋的盖掉先赋的（10-01 第一版：`e = Slow(); if flag: e = Fast(); e.run()` 定成 `Fast.run`，跳错；改成只推绑定一次的之后，
   vllm-omni 全仓少定下 154 处，这次请求跑到的一处没少）；按控制流分支分别推（要做数据流分析，不值）。
-- 在哪：`xtypes.py`（`rebound`：函数里绑定过不止一次的名字）；`xref.py` 的 `_Collect.self_spec` / `value_spec` / `type_spec`、`_Walk.type_local` / `bind_types` / `ann_type` / `call_type`、
+- 在哪：`xtypes.py`（`rebound`：函数里绑定过不止一次的名字；`returns`；`TypeResolver.ret_type`）；`xref.py` 的 `_Collect.self_spec` / `value_spec` / `type_spec`、`_Walk.type_local` / `func_ref` / `bind_types` / `ann_type` / `call_type`、
   `_Repo.class_member_past_unknown`。测试 `test_type_inference`；前后对比用 `tests/bench/quality.py`。
 
 ---
@@ -515,6 +526,15 @@
   默认收起之后 19 → 8 列、画布 5065 → 3529 px，进程头写出 minicpmo_4_5_omni_llm.py / _tts.py / batched_token2wav.py。
 - 代价：默认看到的列和 `lanes` 命令列出的不一样（命令行照旧列全部）；编号要和页面一致，后端算编号时也按默认收起算。
 - 实现时定的：没调用的列也收；进程头上文件放最前（窄的进程头放不下时先丢时段、轮数）。
+- 后来改：列有没有调用、调了几个函数，折叠行（录制时把连着的同一调用折成一行）按次数摊开数，和 `lanes` 命令同一个数法——之前只看开始时刻，
+  stage2 的 save_loop 一行 186 次横跨这一段，算成「没调用」，`lanes` 却写 45 次；不在交接链上、只是反复调同一两个函数的列也算「只在轮询」照样收
+  （serving 照旧 8 / 19、shutdown 照旧 7 / 10，start 10 → 7 / 13）。实现时定的：收了数据再反复处理的不算（它在链上）。
+- 后来改：看的是整个 run（有 serving 阶段，范围盖住整个 run：没写阶段、或 t=0-终点）时不写进程头、进程按启动的先后（`segments.whole_run`）——整个 run 上 stage0 的头写着
+  「+28.55→+79.14 s · 27 轮」，其实是加载时的 save_loop；默认收起照旧。
+- 后来改：默认收起的「其他 N 列」悬停一列一列写为什么收（`lanedefault.reasons`，`/api/lanes` 的 `default_folded`），点它只展开这个进程收起的列；
+  点「全部显示」之后小签留着写「全部 N 列 · 回到默认」——之前点完小签就没了，回不到默认，只能手改地址。「重置」只管搜索、高亮和选中，不管列（列由小签管）。
+- 后来改：点窄列展开的进程在地址里记成「默认 + 这个进程」（`lanes=+stage0`，`laneid.view_lanes`，页面的 lanefocus.js 同一份）——第一版写成此刻看到的具体列名，
+  换到别的阶段时和那一段的默认对不上（该收的放出来、该看的收进去）、窄列不再写原因、回到默认要点两下。选的列这一段里一列都没有时也给「回到默认」。
 
 ### 分列图上的名字：撞名只按这一列画着的节点算，放不下时中间省略
 - 决定：分列里节点、框头的短名，撞了名补父目录段时只看这一列画着的节点和框（`lanesview.decorate`），不看整个切面；面板、搜索栏的短名照旧按切面算。

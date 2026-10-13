@@ -96,7 +96,7 @@ def test_calls_and_sites():
         (f"{U}#a.<L{lu('g = sum')}>", "run", lu("g = sum"), lu("g = sum"), graph.CALL),
         (f"{U}#a", f"{B}#Box", lu("h = [Box"), lu("h = [Box"), graph.NEW),        # 列表推导式：算外层
         (f"{U}#a", "helper", lu("getattr"), lu("getattr"), graph.STR),
-        (f"{U}#a", None, lu("getattr"), lu("getattr"), graph.CALL),               # getattr(…)()：没有名字
+        (f"{U}#a", f"{B}#Box.helper", lu("getattr"), lu("getattr"), graph.CALL),  # getattr(b, "helper")()：同 b.helper()
         (f"{U}#a", "go", lu("thing.go("), lu("        2)"), graph.CALL),               # 跨三行
         (f"{U}#<module>", f"{B}#deco", lu("@deco"), lu("@deco"), graph.DECO),
         (f"{U}#<module>", f"{B}#factory", lu("@factory"), lu("@factory"), graph.CALL),
@@ -283,6 +283,7 @@ _TI_SRC = {
         "        self.engine = Engine()\n"
         "        self.alt = Engine() if fast else None\n"
         "        self.other = make()\n"
+        "        self.opaque = opaque()\n"
         "        self.mixed = Engine() if fast else make()\n"
         "        self.given = given\n"
         "        self.pools = pools\n"
@@ -298,7 +299,10 @@ _TI_SRC = {
         "        Engine().step()  # direct\n"
         "        self.engine.step()  # attr\n"
         "        self.alt.step()  # cond\n"
-        "        self.other.step()  # unknown\n"
+        "        self.other.step()  # unret\n"
+        "        self.opaque.step()  # unknown\n"
+        "        pick(fast).step()  # pick\n"
+        "        pick2(fast).step()  # pick2\n"
         "        self.mixed.step()  # mixed\n"
         "        e.step()  # param\n"
         "        o.step()  # optional\n"
@@ -325,6 +329,30 @@ _TI_SRC = {
         "        x.step()  # rebound\n"
         "        return x\n\n\n"
         "def make():\n    return Engine()\n\n\n"
+        "def opaque():\n    return len([])\n\n\n"
+        "def pick(flag):\n    if flag:\n        return Engine()\n    return None\n\n\n"
+        "def pick2(flag):\n    if flag:\n        return Engine()\n    return Slow()\n\n\n"
+        "class Maker:\n    def __init__(self):\n        self.out = self.build()\n\n"
+        "    def build(self):\n        \"\"\"子类写\"\"\"\n        raise NotImplementedError\n\n"
+        "    def go(self):\n        self.out.step()  # stub\n\n\n"
+        "class RealMaker(Maker):\n    def build(self):\n        return make()\n\n\n"
+        "def rec(n):\n    if n:\n        return rec(n - 1)\n    return Engine()\n\n\n"
+        "def ping(n):\n    return pong(n)\n\n\n"
+        "def pong(n):\n    return ping(n)\n\n\n"
+        "def gen():\n    yield 1\n    return Engine()\n\n\n"
+        "def outer_only():\n    def inner():\n        return Engine()\n    inner()\n\n\n"
+        "async def later2():\n    return Engine()\n\n\n"
+        "try:\n    import json\n\n    def get_engine():\n        return Fast()\nexcept ImportError:\n    def get_engine():\n        return Slow()\n\n\n"
+        "def coerce(e: Fast):\n    e = Slow()\n    return e\n\n\n"
+        "class Model2:\n    def __call__(self, x):\n        return Slow()\n\n    def run(self):\n        return 1\n\n\n"
+        "class PropHolder:\n    @property\n    def model(self):\n        return Model2()\n\n    def go(self):\n        self.model(1).run()  # propcall\n\n\n"
+        "def swapper():\n    g = Fast().run\n\n    def swap():\n        nonlocal g\n        g = Slow().run\n    swap()\n    g()  # nonlocal-ref\n\n\n"
+        "def uses():\n    rec(3).step()  # rec\n    ping(1).step()  # ping\n    gen().step()  # gen\n    outer_only().step()  # outeronly\n"
+        "    get_engine().run()  # dupdef\n    coerce(Fast()).run()  # coerce\n\n\n"
+        "def refs(e: Engine):\n    h = getattr(e, 'step', None)\n    if h is not None:\n        h()  # fnref\n"
+        "    g = e.step\n    g()  # alias\n\n\n"
+        "class Holder:\n    @property\n    def model(self):\n        return Engine()\n\n"
+        "    def go(self):\n        m = self.model\n        m()  # propref\n\n\n"
         "def build() -> 'Engine':\n    return Engine()\n\n\n"
         "class Slow:\n    def run(self):\n        return 1\n\n\n"
         "class Fast:\n    def run(self):\n        return 2\n\n\n"
@@ -340,7 +368,8 @@ def test_type_inference():
     """scan 推一点类型：x = C(…) 之后的 x.m()、C().m()、self.x = C(…)（含 C(…) if … else None）之后的 self.x.m()、
     参数标注 C / Optional[C] / "C | None" 的 x.m()、类体里的 x: C、self.x = 标了类型的参数、list[C] / dict[K, C] 的
     下标 / 循环 / enumerate / .items() / .get() / 推导式、getattr(self, "x")、函数 / 方法 / property 的返回值标注都定下被调方；
-    self.x 赋的是别的调用的结果、几处赋的推不一样、局部变量在函数里绑定过不止一次（不管分支和先后），就不猜。
+    没标返回值类型的函数按 return 的值、getattr(obj, "m") / obj.m 存进局部变量再调也定下（不从子类推）；
+    self.x 赋的是推不出的调用结果、几处赋的推不一样、局部变量在函数里绑定过不止一次（不管分支和先后），就不猜。
     MRO 上隔着仓库外基类的 mixin 方法：graph 的调用记录按它算（近似），跳转不给（宁可不跳也不跳错）"""
     d = tmpdir("cs-graph-") / "repo"
     for rel, text in _TI_SRC.items():
@@ -353,13 +382,24 @@ def test_type_inference():
     M = "ti/m.py#"
     got = {(l, g["callees"][i]) for i, l, _, _ in g["calls"][f"{M}Runner.run"]}
     for tag in ("local", "direct", "attr", "cond", "param", "optional", "union", "field", "injected", "index", "loop",
-                "enumerate", "items", "get", "comp", "getattr", "factory", "property", "returns"):
+                "enumerate", "items", "get", "comp", "getattr", "factory", "property", "returns", "unret", "pick"):
         assert (ln(tag), f"{M}Engine.step") in got, (tag, sorted(got))
     assert (ln("mixin"), f"{M}Mixin.helper") in got, sorted(got)
-    for tag in ("unknown", "mixed", "rebound", "async"):         # 推不出 / 赋了别的 / 协程：不猜
+    for tag in ("unknown", "mixed", "rebound", "async", "pick2"):   # 推不出 / 赋了别的 / 协程 / 两个 return 不一样：不猜
         assert (ln(tag), f"{M}Engine.step") not in got, (tag, sorted(got))
-    # 局部变量在函数里绑定过不止一次（分支、try、循环里先用后赋、参数被重新赋值）：不管先后都不推
+    # getattr(obj, "m") / obj.m 存进局部变量再调；只 raise NotImplementedError 的方法不从子类推
     calls = {(l, g["callees"][i]) for xs in g["calls"].values() for i, l, _, _ in xs}
+    for tag in ("fnref", "alias"):
+        assert (ln(tag), f"{M}Engine.step") in calls, (tag, sorted(calls))
+    assert not any(l == ln("stub") and c.endswith(".step") for l, c in calls), sorted(calls)
+    assert not any(l == ln("propref") and c.endswith("Holder.model") for l, c in calls), sorted(calls)   # 拿的是 property 的值
+    # 推不出、或者推出来不一样的不猜：递归 / 互相调用、生成器、只有里层 def 有 return、同名的 def 有两个（try / except 的备选）推出来不一样、
+    # 被重新赋值过的标注参数、调 property 的值（self.p(x) 的结果不是 getter 返回的那个）、里层用 nonlocal 改过的方法引用
+    for tag in ("rec", "ping", "gen", "outeronly", "dupdef", "coerce", "propcall", "nonlocal-ref"):
+        assert not any(l == ln(tag) and (c.endswith(".step") or c.endswith(".run")) for l, c in calls), (tag, sorted(c for l, c in calls if l == ln(tag)))
+    sites = {(nm, l) for nm, l, _, _ in g["sites"].get(f"{M}uses", [])}
+    assert ("step", ln("rec")) in sites and ("step", ln("ping")) in sites, sorted(sites)    # 递归推到自己：这一行的调用照样记着（只是定不下）
+    # 局部变量在函数里绑定过不止一次（分支、try、循环里先用后赋、参数被重新赋值）：不管先后都不推
     for tag in ("branchy", "tried", "loopy", "reparam"):
         assert not any(l == ln(tag) and c.endswith(".run") for l, c in calls), (tag, sorted(calls))
     assert (ln("once"), f"{M}Fast.run") in calls, sorted(calls)

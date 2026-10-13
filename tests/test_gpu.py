@@ -244,6 +244,17 @@ def test_gpu_time_in_lanes():
     assert not ui_load.load_lane(repo, idx, rid, main["id"])["kernels"], "线程的列不含 GPU 的行"
 
 
+def test_unseen_lists_gpu_apart():
+    """path --unseen 的清单不列 GPU kernel（Python 经扩展才启动它，本来就看不出是哪一行），末尾单说有几处；explain 标 [GPU kernel]"""
+    import json
+    repo, rid = gpu_repo()
+    d = json.loads(cs("path", rid, "-C", repo, "--unseen", "--json").stdout)["data"]
+    assert d["n_unseen_gpu"] > 0 and not any((x.get("note") or {}).get("k") == "gpu" for x in d["unseen"]), d
+    assert "处是 GPU kernel" in cs("path", rid, "-C", repo, "--unseen").stdout
+    t = cs("explain", "dyn/models/net.py#Net.forward", rid, "-C", repo).stdout
+    assert "[GPU kernel]" in t, t
+
+
 def test_recorder_compiles_against_cupti_versions():
     """GPU 录制端对着几个版本的 CUPTI 头都编得过（CUDA 12 的头最新的 kernel 记录是 Kernel9，13 的是 Kernel12；
     写死 Kernel12 时 CUDA 12 编不过）：本机工具链的头，加上 CODESTRATA_TEST_CUPTI_INCLUDE（冒号分开的几个只有 CUPTI 头的目录，

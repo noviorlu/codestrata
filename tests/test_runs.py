@@ -2310,7 +2310,7 @@ _NT = {
     "nt/deco.py": "def deco(fn):\n    def wrapper(*a):\n        return fn(*a)\n    return wrapper\n",
     "nt/app.py": ("import os\n\nfrom nt import lib\nfrom nt.base import Sub\nfrom nt.deco import deco\n\n\n"
                   "@deco\ndef work(x):\n    return x\n\n\n"
-                  "def make():\n    return Sub()\n\n\n"
+                  "def make(kind='sub'):\n    return {'sub': Sub}[kind]()\n\n\n"
                   "def run(xs):\n"
                   "    sq = sum(lib.plain(i) for i in xs)\n"
                   "    f = lambda v: lib.plain(v)\n"
@@ -2344,11 +2344,21 @@ def test_trace_only_notes():
     assert wr[0]["note"]["k"] == "line" and wr[0]["note"]["c"] == ["nt/app.py#work"] and "f" in wr[0]["note"]["names"], wr
     local = [x for k, x in C.items() if k.startswith("nt/app.py#run|nt/app.py#run.<L")]
     assert len(local) == 2 and all(x["only"] == 0 for x in local), local      # 生成器表达式、lambda
-    # make().run()：make 没标返回值类型，scan 只知道名字 run
+    # make().run()：make 按名字挑类，scan 只知道名字 run
     sr = C["nt/app.py#run|nt/base.py#Base.run"]["lines"]
     assert [(y["l"], y["note"]) for y in sr] == [(ln("make().run()"), {"k": "name", "names": ["run"]})], sr
     rt = ui_source.runtime_lines(idx, "nt/app.py", hot)
     assert sorted(rt) == [ln("make().run()"), ln("return work(1)")], rt
+    # 命令行写出为什么看不出；explain 基类的方法时列出跑到的子类
+    d = json.loads(cs("explain", "nt/base.py#Sub.step", "nt", "-C", repo, "--json").stdout)["data"]
+    c0 = d["callers"][0]
+    assert c0["status"] == "trace" and c0["note"]["k"] == "override" and "Base.step" in c0["why"] and "子类覆盖的或接口的实现" in c0["why"], c0
+    d = json.loads(cs("explain", "nt/base.py#Base.step", "nt", "-C", repo, "--json").stdout)["data"]
+    assert [x["fn"] for x in d["ran_as"]] == ["nt/base.py#Sub.step"] and d["ran_as"][0]["callers"][0]["fn"] == "nt/base.py#Base.run", d["ran_as"]
+    t = cs("explain", "nt/base.py#Base.step", "nt", "-C", repo).stdout
+    assert "跑的是同名的别的方法" in t and "Sub.step" in t, t
+    u = json.loads(cs("path", "nt", "-C", repo, "--unseen", "--json").stdout)["data"]
+    assert u["unseen"] and all(x["why"] for x in u["unseen"]), u["unseen"]
     assert rt[ln("return work(1)")][0]["def"] == {"f": "nt/deco.py", "l": 2}, rt
     rb = ui_source.runtime_lines(idx, "nt/base.py", hot)
     assert [(l, [r["callee"] for r in v]) for l, v in rb.items()] == [(3, ["nt/base.py#Sub.step"])], rb
@@ -2358,6 +2368,23 @@ def test_trace_only_notes():
     old = align.to_package_graph(c, idx)["calls"]
     o = old["nt/app.py#run|nt/deco.py#deco.wrapper"]
     assert o["lines"] is None and o["status"] == "trace" and o["note"] == {"k": "nomatch"} and o["guessed"] == [], o
+    # explain 在老 run 上也按只有 trace 的次数判（和边详情一样），带整对的 note；ran_as 看整对的 note
+    from codestrata import explain as ex_
+    run_, rd_, _ = runs.resolve(repo, "nt")
+    oh = {"calls": old}
+    d = ex_.function(repo, rd_, run_, idx, oh, "nt/deco.py#deco.wrapper", set(), 0, 1 << 60, lambda k: k, None)
+    c0 = d["callers"][0]
+    assert c0["status"] == "trace" and c0["note"] == {"k": "nomatch"} and c0["why"], c0
+    d = ex_.function(repo, rd_, run_, idx, oh, "nt/base.py#Base.step", set(), 0, 1 << 60, lambda k: k, None)
+    assert [x["fn"] for x in d["ran_as"]] == ["nt/base.py#Sub.step"], d["ran_as"]
+    # 有的行看得出、有的看不出（mixed）：写其中几次看不出、为什么，文字和 JSON 同一个判断
+    from codestrata.cli import explain as cex_
+    mix = {"calls": {"nt/app.py#run|nt/base.py#Base.step": {"n": 4, "only": 2, "a": "nt/app.py", "b": "nt/base.py", "lines": [
+        {"l": 5, "n": 2, "status": "trace", "note": {"k": "name", "names": ["step"]}}, {"l": 6, "n": 2, "status": "both", "note": None}]}}}
+    c0 = ex_.function(repo, rd_, run_, idx, mix, "nt/base.py#Base.step", set(), 0, 1 << 60, lambda k: k, None)["callers"][0]
+    assert c0["status"] == "mixed" and c0["only"] == 2 and c0["why"] == "只知道名字 step", c0
+    assert cex_._unseen_tag(c0) == "  [其中 2 次代码里看不出 · 只知道名字 step]", cex_._unseen_tag(c0)
+    assert cex_._unseen_tag({"status": "trace", "note": {"k": "gpu"}, "why": "x"}) == "  [GPU kernel]"
     assert old["nt/base.py#Base.run|nt/base.py#Sub.step"]["note"] == {"k": "override", "w": "nt/base.py#Base.step"}
     assert ui_source.runtime_lines(idx, "nt/app.py", {"calls": old}) == {}
     # 时间段（整个 run）：调用行按整个 run 的比例摊，跨文件的调用分类和次数都和按阶段看一样

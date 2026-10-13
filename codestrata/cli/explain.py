@@ -6,6 +6,7 @@ import re
 
 from .. import explain as _explain
 from .. import funcref as _funcref
+from .. import laneid as _laneid
 from .. import lanes as _lanes
 from .. import linkgroups as _linkgroups
 from .. import locate as _locate
@@ -202,6 +203,18 @@ def _link_text(d: dict, lo: int) -> list[str]:
     return L
 
 
+def _unseen_tag(x: dict) -> str:
+    """只有 trace 的（全部 / 其中几次）标出来，带上为什么（align.note_short：写的是基类的方法、只知道名字、经别的转了一道……）；
+    GPU kernel 写 [GPU kernel]（和 path 树的 [GPU]、页面一致）"""
+    st = x.get("status")
+    if st not in ("trace", "mixed"):
+        return ""
+    if (x.get("note") or {}).get("k") == "gpu":
+        return "  [GPU kernel]"
+    head = "代码里看不出" if st == "trace" else f"其中 {x.get('only')} 次代码里看不出"
+    return f"  [{head}" + (" · " + x["why"] if x.get("why") else "") + "]"
+
+
 def _fn_text(d: dict, lo: int) -> list[str]:
     word = "类" if d.get("kind") == "class" else "函数"
     L = [f"{word} {d['item']}。时刻从这一段开头（t={lo}）算"]
@@ -219,8 +232,12 @@ def _fn_text(d: dict, lo: int) -> list[str]:
             L.append(title)
             for x in xs:
                 ln = "、".join(map(str, x["lines"]))
-                L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}" + (f"  行 {ln}" if ln else "")
-                         + ("  [代码里看不出]" if x["status"] == "trace" else ""))
+                L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}" + (f"  行 {ln}" if ln else "") + _unseen_tag(x))
+    if d.get("ran_as"):
+        L.append("代码里写成调它、跑的是同名的别的方法（子类覆盖的或接口的实现）")
+        for x in d["ran_as"]:
+            by = "；".join(f"{common.short(y['fn'])} 行 {y['line']}" for y in x["callers"][:3])
+            L.append(f"  ×{x['n']:<6} {common.short(x['fn'])}  ← {by}")
     f = d.get("first")
     if f:
         L.append(f"第一次  {out.secs(f['t_us'], lo)} 在 {f['lane']}：{_chain(f['chain'])}")
@@ -252,9 +269,12 @@ def _numbered(a, c) -> out.Result:
                               candidates=[str(k) for k in range(1, min(order["n"], 10) + 1)])
     inner = next(k for k, rk in order["keys"].items() if rk == n - 1)
     lo, hi = r.slices[0][0], r.slices[-1][1]
-    dflt = not v.lanes and L.get("default_lanes")       # 地址里没写 lanes=：页面默认把转一手的列收起（lanedefault）
+    # 地址里没写 lanes=（或者全是 +进程）：页面默认把转一手的列收起（lanedefault），+ 的再放出来（laneid.view_lanes）
+    shown = _laneid.view_lanes(v.lanes, aliases, L.get("default_lanes"))
+    dflt = (not v.lanes or _laneid.plus_only(v.lanes)) and shown is not None
     head = (f"按这个视图算：{r.full}" + (f" · 收起 {','.join(v.fold)}" if v.fold else "") + (f" · 藏起 {','.join(v.hide)}" if v.hide else "")
-            + (f" · 默认收起转一手的 {len(L['lanes']) - len(dflt)} 列" if dflt else "")
+            + (f" · 默认收起转一手的 {len(L['lanes']) - len(shown)} 列" if dflt else "")
+            + (f"（再放出 {','.join(x[1:] for x in v.lanes)}）" if dflt and v.lanes else "")
             + f" · 时间顺序开 · 共 {order['n']} 个编号；{n} 号是 {order['ids'][n - 1]}")
     if inner.startswith("l:"):
         k = L["links"][int(inner[2:])]                 # 页面上画的这一条（这两个节点之间的）：只讲它的两头
@@ -279,8 +299,7 @@ def _edge_text(d: dict, lo: int) -> list[str]:
          + ("，一直在反复（↻）" if d["repeat"] else "") + (f"；其中约 {d['only']} 次代码里看不出" if d.get("only") else "")]
     L.append("底下次数最多的几对函数：")
     for p in d["pairs"]:
-        L.append(f"  ×{p['n']:<6} {common.short(p['caller'])} → {common.short(p['callee'])}"
-                 + ("  [代码里看不出]" if p.get("status") == "trace" else ""))
+        L.append(f"  ×{p['n']:<6} {common.short(p['caller'])} → {common.short(p['callee'])}" + _unseen_tag(p))
         L += _code(p.get("code"), "      ")
         L += _def(p.get("def"), "      ")
     return L

@@ -63,8 +63,8 @@ import json
 import os
 from pathlib import Path
 
-from .xtypes import (TypeResolver, ann_class, builtin_call, if_value, is_none, iter_types, method_call, rebound, subscript,
-                     typed)
+from .xtypes import (TypeResolver, ann_class, builtin_call, if_value, is_none, iter_types, method_call, rebound, returns,
+                     subscript, typed)
 
 REF, CALL, IMPORT, DEF = 0, 1, 2, 3
 HOW_CALL, HOW_DECO, HOW_PROP, HOW_STR = "call", "deco", "prop", "str"
@@ -707,6 +707,7 @@ class _Collect:
         self.stars: list = []
         self.all = None                               # 字面量的 __all__；没有或不是字面量时 None
         self._locals: dict = {}                       # 外层函数的局部名字（嵌套类的基类用；按需算）
+        self._rebound: dict = {}                      # 函数节点的 id → 绑定过不止一次的名字（rebound_in）
 
     def run(self, tree) -> None:
         repo, m = self.repo, self.m
@@ -799,11 +800,17 @@ class _Collect:
         if type(st) is ast.ClassDef:
             self.klass(st, q, key, env)
         else:
+            fenv = [e for e in env if e[0] != "c"] + [("f", st, key, cls)]
+            types = self.repo.types
             if type(st) is ast.FunctionDef and st.returns is not None:     # async def 调了是协程，不算
                 sp = self.type_spec(st.returns, env, st.lineno)
                 if sp:
-                    self.repo.types.ret_specs[key] = (self.m, *sp)
-            fenv = [e for e in env if e[0] != "c"] + [("f", st, key, cls)]
+                    types.ret_specs[key] = (self.m, *sp)
+            elif type(st) is ast.FunctionDef:          # 没标：按 return 的值
+                rets = returns(st)
+                if rets:                               # 同名的 def 有几个（try / except、if / else 的备选）：都推出一样才算
+                    types.ret_vals.setdefault(key, []).extend(
+                        (self.m, *(self.value_spec(r.value, fenv, r.lineno) or (None, None))) for r in rets)
             self.func_body(st.body, q + ".", fenv, _first_param(st, cls), cls)
 
     def first(self, key: str, line: int) -> None:
@@ -912,9 +919,16 @@ class _Collect:
         elif t is ast.Name:
             i = next((i for i in range(len(env) - 1, -1, -1) if env[i][0] == "f"), None)
             a = next((x for x in _all_args(env[i][1].args) if x.arg == v.id), None) if i is not None else None
-            if a is not None and a.annotation is not None:
+            if a is not None and a.annotation is not None and v.id not in self.rebound_in(env[i][1]):   # 参数被重新赋值过：不按标注
                 return self.type_spec(a.annotation, env[:i], line)     # 标注在 def 外面求值
         return None
+
+    def rebound_in(self, fn) -> set:
+        """函数 fn 里绑定过不止一次的名字（xtypes.rebound，按函数缓存）"""
+        r = self._rebound.get(id(fn))
+        if r is None:
+            r = self._rebound[id(fn)] = rebound(fn)
+        return r
 
     def type_spec(self, ann, env: list, line: int):
         """标注推得出类型时（类的解析线索, 种类），见 xtypes.ann_class"""
@@ -1191,8 +1205,14 @@ class _Walk:
     def type_local(self, targets, v) -> None:
         """函数里 x = C(…)（或别的推出了类型的值）：之后的 x.m() 按 C 解析。按语句的先后走，后面再赋别的就换掉；
         推不出的值（调用的结果、拆包）就记成不知道"""
-        v = v if typed(v) else None
+        v = v if typed(v) or self.func_ref(v) else None
         self.bind_types({x.id: v if type(tg) is ast.Name else None for tg in targets for x in _names(tg, [])})
+
+    def func_ref(self, v) -> bool:
+        """v 是仓库里的一个函数 / 方法（f = obj.m、getattr(obj, "m", None)）：之后的 f() 调的就是它。
+        property 不算（f = obj.p 拿到的是它返回的值，f() 调的是那个值）"""
+        sym = self.symbols.get(v[2:]) if v and v[:2] == "s:" else None
+        return bool(sym) and sym.get("k") == "func" and not _is_property(sym)
 
     def bind_types(self, types: dict) -> None:
         """函数里的局部名字 → 推出来的类型（None 是不知道）。模块顶层 / 类体里的名字、函数里绑定过不止一次的名字不推"""
@@ -1482,6 +1502,8 @@ class _Walk:
             vals = [self.ex(x) for x in n.args]
             for k in n.keywords:
                 self.ex(k.value)
+            if r and r[:2] == "s:" and _is_property(self.symbols.get(r[2:])):
+                return None                           # self.p(x)：调的是 property 的值，结果不是 getter 返回的那个
             return self.repo.types.call_value(r) or self.call_type(n, r, recv, vals)
         if t is ast.Subscript:                        # 序列 / 映射里取出来的是元素的实例；切片还是序列
             v = self.ex(n.value)
@@ -1551,7 +1573,7 @@ class _Walk:
                 and type(n.args[1].value) is str):
             a = self.repo.member(vals[0], n.args[1].value)
             a = self.repo.types.var_type(a) if a and a[:2] == "v:" else a
-            return a if typed(a) else None
+            return a if typed(a) or self.func_ref(a) else None
         return builtin_call(f.id, vals[0]) if vals else None
 
     def comp(self, n) -> None:

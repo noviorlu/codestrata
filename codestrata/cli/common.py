@@ -79,9 +79,7 @@ def phases(run: dict, rd: Path) -> list[dict]:
     return [{"name": n, "t0_us": a, "t1_us": b} for n, a, b in _seq.phase_segments(run, end)] if end else []
 
 
-def main_phase(run: dict) -> str | None:
-    """默认建议看的阶段：有 serving 就是它（启动时的初始化会淹没请求本身）"""
-    return "serving" if any(p.get("name") == "serving" for p in run.get("phases") or []) else None
+main_phase = _seq.main_phase
 
 
 def refuse_old(c: Ctx) -> None:

@@ -2,7 +2,9 @@
 
 只推代码里写明的：构造 `C(…)`（含 `C(…) if … else None`）；类型标注（参数、`x: C`、类体里的字段、`self.x: C`，
 `Optional[C]`、`C | None`、字符串的前向引用也认）；函数 / 方法 / property 的返回值标注（`async def` 不算：调了是协程）；
-`list[C]`、`dict[K, C]` 这类容器取出来的元素；`getattr(obj, "x")`。属性在几处赋的推不一样、有一处推不出的，就当不知道
+`list[C]`、`dict[K, C]` 这类容器取出来的元素；`getattr(obj, "x")`。没标返回值类型的函数按它 return 的值
+（每个 return 都推得出、推出来一样才算；生成器不算）。不从子类推：只在子类里赋的属性、只 `raise NotImplementedError` 的方法都不推。
+属性在几处赋的推不一样、有一处推不出的，就当不知道
 （留给 trace）；有标注的只按标注。函数里的局部变量只在这个函数里绑定过一次时才推（参数：没被重新赋值），
 不管分支、循环、try 的先后——`e = Slow(); if flag: e = Fast()` 之后的 `e.run()` 不推（rebound）。
 
@@ -78,7 +80,8 @@ _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
 def rebound(fn) -> set:
     """函数 fn 里绑定过不止一次的名字（参数算一次；赋值、for / with / except 的目标、del、import、:=、里面的 def / class 各算一次；
-    global / nonlocal 的名字也算在里面）：它们的类型不推。不进里层的函数、类、lambda（它们的名字算一次）。
+    global / nonlocal 的名字也算在里面）：它们的类型不推。不进里层的函数、类、lambda（它们的名字算一次）；里层用 nonlocal 写的名字
+    （`def swap(): nonlocal g; g = …`，什么时候调不知道）也算。
     推导式的循环变量也数进来（多数一点只会少推，不会推错）"""
     n: dict[str, int] = {}
 
@@ -97,6 +100,10 @@ def rebound(fn) -> set:
             if t is not ast.Lambda:
                 bind(x.name)
                 stack.extend(x.decorator_list)
+                for y in ast.walk(x):                # 里层改外面的名字：多算只会少推
+                    if type(y) is ast.Nonlocal:
+                        for name in y.names:
+                            bind(name, 2)
             continue
         if t is ast.Name:
             if type(x.ctx) is not ast.Load:
@@ -120,6 +127,23 @@ def rebound(fn) -> set:
             bind(x.rest)
         stack.extend(ast.iter_child_nodes(x))
     return {k for k, v in n.items() if v > 1}
+
+
+def returns(fn):
+    """函数 fn 里 return 的值（`return` / `return None` 不算），不进里层的函数、类、lambda；有 yield 的（生成器）是 None"""
+    out = []
+    stack = list(fn.body)
+    while stack:
+        x = stack.pop()
+        t = type(x)
+        if t in _SCOPES:
+            continue
+        if t is ast.Yield or t is ast.YieldFrom:
+            return None
+        if t is ast.Return and x.value is not None and not is_none(x.value):
+            out.append(x)
+        stack.extend(ast.iter_child_nodes(x))
+    return out
 
 
 def iter_types(tg, it, names: list) -> dict:
@@ -167,6 +191,7 @@ class TypeResolver:
         self.repo = repo
         self.var_specs: dict[str, list] = {}         # 属性 "v:模块:类.x" → [(模块, 解析线索, 种类, 是不是标注)]
         self.ret_specs: dict[str, tuple] = {}        # 函数 "模块:限定名" → (模块, 返回值标注的解析线索, 种类)
+        self.ret_vals: dict[str, list] = {}          # 没标返回值类型的函数 → [(模块, return 的值的解析线索, 种类)]
         self._memo: dict = {}
 
     def instance(self, target, kind: str = "i") -> str | None:
@@ -191,9 +216,22 @@ class TypeResolver:
         return self.call_value(r) if kind == "c" else self.instance(r, kind)
 
     def ret_type(self, key: str) -> str | None:
-        """函数的返回值标注推出来的值（def make() -> Engine）"""
+        """函数的返回值推出来的值：有标注按标注（def make() -> Engine）；没有的按 return 的值"""
         rs = self.ret_specs.get(key)
-        return self._cached(("r", key), self.spec_value, *rs) if rs else None
+        if rs:
+            return self._cached(("r", key), self.spec_value, *rs)
+        if key in self.ret_vals:
+            return self._cached(("r", key), self._agree, self.ret_vals[key])
+        return None
+
+    def _agree(self, specs) -> str | None:
+        found = set()
+        for m, sp, kind in specs:
+            v = self.spec_value(m, sp, kind)
+            if not typed(v):
+                return None
+            found.add(v)
+        return found.pop() if len(found) == 1 else None
 
     def var_type(self, target: str) -> str | None:
         """属性 v:模块:类.x 的值推出来是什么。有标注的（类体里 x: C、self.x: C = …）只按标注；没有的按方法里
@@ -213,5 +251,6 @@ class TypeResolver:
     def _cached(self, key, fn, *args):
         r = self._memo.get(key, _MISS)
         if r is _MISS:
+            self._memo[key] = None                    # 递归推到自己（互相调用的函数）：不知道
             r = self._memo[key] = fn(*args)
         return r

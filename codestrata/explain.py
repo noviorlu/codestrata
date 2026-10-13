@@ -11,6 +11,7 @@ import functools
 import re
 from pathlib import Path
 
+from . import align as _align
 from . import lanes as _lanes
 from . import seq as _seq
 from .errors import CodestrataError
@@ -172,14 +173,28 @@ def definition(repo: Path, idx: dict, node: str) -> dict | None:
                   if re.match(rf"\s*(async\s+def|def|class)\s+{re.escape(name)}\b", ls[i - 1])), None)
     sig = doc = None
     if start:
+        body = _body_at(repo, rel, start)
         parts = []
-        for i in range(start, min(len(ls), start + 12) + 1):
-            parts.append(ls[i - 1].strip())
-            if ls[i - 1].rstrip().endswith(":"):
-                break
+        if body and body[0] == start:              # 一行写完的 def f(...) -> None: ...：截到冒号（不然一直拼到下一个以冒号结尾的行）
+            parts.append(ls[start - 1][:body[1]].strip())
+        else:
+            last = min(len(ls), start + 12, body[0] - 1 if body else len(ls))
+            for i in range(start, last + 1):
+                parts.append(ls[i - 1].strip())
+                if ls[i - 1].rstrip().endswith(":"):
+                    break
         sig = re.sub(r"\s+", " ", " ".join(parts)).replace("( ", "(").replace(" )", ")")
         doc = _doc(repo, rel, start)
     return {"file": rel, "line": start or s["l"], "end": s.get("e"), "signature": sig, "doc": doc, "kind": s.get("k")}
+
+
+def _body_at(repo: Path, rel: str, line: int) -> tuple[int, int] | None:
+    """第 line 行的 def / class 的体从哪开始：(行, 列)；找不到是 None"""
+    tree = _ast(str(repo / rel), _mtime(repo / rel))
+    for n in ast.walk(tree) if tree is not None else ():
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.lineno == line and n.body:
+            return n.body[0].lineno, n.body[0].col_offset
+    return None
 
 
 def _doc(repo: Path, rel: str, line: int) -> str | None:
@@ -368,13 +383,28 @@ def function(repo: Path, rd: Path, run: dict, idx: dict, hot: dict, node: str, k
     callees = sorted(((k.partition("|")[2], v) for k, v in calls.items() if k.partition("|")[0] == node), key=lambda kv: -kv[1]["n"])
 
     def pair(fn: str, v: dict) -> dict:
-        st = {ln.get("status") for ln in v.get("lines") or []}
-        return {"fn": fn, "n": v["n"], "lines": [ln.get("l") for ln in v.get("lines") or [] if ln.get("l")][:3],
-                "status": "trace" if st == {"trace"} else "both"}
+        # 和边详情（ui/edge.py）同一个判法：按只有 trace 的次数；老 run（没有调用行）也对
+        only = v.get("only") or 0
+        status = "trace" if only >= v["n"] else "both" if not only else "mixed"
+        note = _align.top_note(v) if only else None
+        return {"fn": fn, "n": v["n"], "only": only, "lines": [ln.get("l") for ln in v.get("lines") or [] if ln.get("l")][:3],
+                "status": status, "note": note, "why": _align.note_short(note)}
+    # 代码里写成调它、跑的是同名的别的方法（override：子类覆盖的或接口的实现）：explain 一个基类的方法时，它自己可能一次也没跑
+    ran_as: dict[str, dict] = {}
+    for k, v in calls.items():
+        lines = v.get("lines")
+        rows = lines if lines is not None else [{"note": v.get("note"), "n": v["n"], "l": (v.get("guessed") or [None])[0]}]
+        for ln in rows:
+            nt = ln.get("note") or {}
+            if nt.get("k") == "override" and nt.get("w") == node:
+                caller, _, callee = k.partition("|")
+                x = ran_as.setdefault(callee, {"fn": callee, "n": 0, "callers": []})
+                x["n"] += ln.get("n") or 0
+                x["callers"].append({"fn": caller, "line": ln.get("l")})
     out = {"item": node, "kind": "function", "def": definition(repo, idx, node), "ran": bool(per_lane),
            "lanes": [{"lane": k, "n": v[0], "first_us": v[1], "last_us": v[2]} for k, v in sorted(per_lane.items(), key=lambda kv: -kv[1][0])],
            "callers": [pair(f, v) for f, v in callers[:5]], "callees": [pair(f, v) for f, v in callees[:5]],
-           "first": None, "recent_handoff": None}
+           "ran_as": sorted(ran_as.values(), key=lambda x: -x["n"])[:5], "first": None, "recent_handoff": None}
     if first:
         t0, pid, i, rows = first
         r = rows[i]
@@ -443,7 +473,9 @@ def edge(repo: Path, idx: dict, lane_hot: dict, lane_alias: str, e: dict, top: i
     pairs = []
     for c in (d.get("calls") or [])[:top]:
         ln = next(iter(c.get("lines") or []), None)
-        pairs.append({"caller": c["caller"], "callee": c["callee"], "n": c["n"], "status": c.get("status"),
+        note = _align.top_note(c) if c.get("status") != "both" else None
+        pairs.append({"caller": c["caller"], "callee": c["callee"], "n": c["n"], "only": c.get("only") or 0, "status": c.get("status"),
+                      "note": note, "why": _align.note_short(note),
                       "code": code_at(repo, ln["f"], ln["l"]) if ln and ln.get("l") else None,
                       "def": definition(repo, idx, c["callee"])})
     return {"kind": "edge", "lane": lane_alias, "a": e["a"], "b": e["b"], "n": e.get("n"), "only": e.get("only"),

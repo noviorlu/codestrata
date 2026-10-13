@@ -83,7 +83,7 @@ def analyse(rd, lo: int, hi: int, p: _steps.Params | None = None, head: dict | N
             ln["win"] = _steps.in_window(ln["rounds"], lo, hi)
         else:
             ln["rounds"], ln["regular"], ln["win"] = [], set(), []
-        has = any(lo <= r[0] < hi for _, r in lr)
+        has = any(_n_in(r, lo, hi) for _, r in lr)
         ln["kind"] = "external" if not lr and (ln["ho_out"] or ln["ho_in"]) else _steps.kind(len(ln["tids"]), has, loop, ln["win"])
     return {"lanes": lanes, "rows": rows, "tid_lane": tid_lane, "aliases": aliases, "procs": _lanes.proc_aliases(rd), "ix": ix,
             "window": (lo, hi), "head_window": (hlo, hhi), "handoffs_any": bool(ix.get("handoffs")), "p": p}
@@ -137,10 +137,21 @@ def stage_segments(A: dict, lo: int, hi: int, skip_pids: set[int]) -> list[dict]
 
 def lane_kinds(A: dict, lo: int, hi: int) -> dict[str, dict]:
     """每一列在这段时间里是什么样：{列 id: {kind（steps.kind；只在交接两头出现的是 external）, fns（调到几个不同的仓库函数）,
-    in, out（收到 / 交出几次交接）}}"""
-    return {lid: {"kind": ln["kind"], "fns": len({r[5] for _, r in ln["lr"] if lo <= r[0] < hi}),
-                  "in": sum(1 for x in ln["ho_in"] if lo <= x[2] < hi), "out": sum(1 for x in ln["ho_out"] if lo <= x[2] < hi)}
-            for lid, ln in A["lanes"].items()}
+    repeat（这一段里的调用全在折叠行里：录制时把连着的同一调用折成了一行，只是在反复调同一两个函数）, in, out（收到 / 交出几次交接）}}"""
+    out = {}
+    for lid, ln in A["lanes"].items():
+        rows = [r for _, r in ln["lr"] if _n_in(r, lo, hi)]
+        out[lid] = {"kind": ln["kind"], "fns": len({r[5] for r in rows}), "repeat": bool(rows) and all(r[6] >= 2 for r in rows),
+                    "in": sum(1 for x in ln["ho_in"] if lo <= x[2] < hi), "out": sum(1 for x in ln["ho_out"] if lo <= x[2] < hi)}
+    return out
+
+
+def _n_in(r, lo: int, hi: int) -> int:
+    """一行 span 在 [lo, hi) 里有几次调用：折叠行（rep 次连着的同级调用合成的一行）按 seq.calls_in 摊开，和 lanes、phase_calls 同一个摊法。
+    只看开始时刻的话，从这段之前就在反复调的一行（save_loop 隔 100 ms 清一次共享内存，一行 186 次横跨 18 s）在这段里算 0 次。
+    右端是开的：phase_calls 对 t= 时间段、到 run 终点的最后一段是闭的，正好落在右端那一刻的一次调用这里不算（只差右端那一次）"""
+    got = _seq.calls_in(r[0], r[1], r[6], lo, hi, open_hi=True)
+    return got[0] if got else 0
 
 
 def _process_segments(A: dict, lns: list[dict], lo: int, hi: int) -> list[dict]:
@@ -185,7 +196,7 @@ def _describe(A: dict, main: dict, part: list[dict], a: int, b: int) -> dict:
     pid = main["pid"]
     longest = max(part, key=lambda x: x["dur_us"])
     mine = [ln for ln in A["lanes"].values() if ln["pid"] == pid]
-    busy = [ln["alias"] for ln in mine if any(a <= r[0] < b for _, r in ln["lr"])
+    busy = [ln["alias"] for ln in mine if any(_n_in(r, a, b) for _, r in ln["lr"])
             or any(a <= t < b for _, _, t in ln["ho_out"] + ln["ho_in"])]
     return {"kind": "stage", "pid": pid, "proc": A["procs"].get(pid, str(pid)), "main": main["alias"],
             "lanes": sorted(ln["alias"] for ln in mine), "busy_lanes": sorted(busy),
@@ -204,8 +215,9 @@ def _files_by_pid(A: dict, lo: int, hi: int) -> dict[int, Counter]:
     for pid, rows in A["rows"].items():
         c = out.setdefault(pid, Counter())
         for r in rows:
-            if r is not None and len(r) <= 9 and lo <= r[0] < hi:
-                c[keys[r[5]].rpartition(":")[0]] += r[6]
+            n = _n_in(r, lo, hi) if r is not None and len(r) <= 9 else 0
+            if n:
+                c[keys[r[5]].rpartition(":")[0]] += n
     return out
 
 
@@ -216,8 +228,9 @@ def _own_files(A: dict, s: dict, files: dict[int, Counter], top: int = 3) -> tup
     others = set().union(*(set(c) for pid, c in files.items() if pid != s["pid"])) if len(files) > 1 else set()
     mine: Counter = Counter()
     for r in A["rows"].get(s["pid"]) or []:
-        if r is not None and len(r) <= 9 and a <= r[0] < b:
-            mine[keys[r[5]].rpartition(":")[0]] += r[6]
+        n = _n_in(r, a, b) if r is not None and len(r) <= 9 else 0
+        if n:
+            mine[keys[r[5]].rpartition(":")[0]] += n
     return [[f, n] for f, n in mine.most_common() if f not in others and f != "?"][:top], sum(mine.values())
 
 
@@ -290,12 +303,19 @@ def background(A: dict, segs: list[dict]) -> list[str]:
     return sorted(ln["alias"] for ln in A["lanes"].values() if ln["kind"] == "poll" and ln["alias"] not in mains)
 
 
+def whole_run(run: dict, lo: int, hi: int, end_us: int | None) -> bool:
+    """看的是整个 run，而这个 run 有 serving 阶段：大半是启动（加载时的 save_loop 也像主循环），切出来的段和轮数靠不住——
+    进程头不写、进程按启动的先后（用户 10-13 定；segments 命令同样警告 whole_run）"""
+    return _seq.main_phase(run) is not None and lo <= 0 and end_us is not None and hi >= end_us
+
+
 _STAGES: "OrderedDict[tuple, dict | None]" = OrderedDict()   # (span 目录, index 的 mtime, 时间段, 阶段, 认轮头的那段) → stages 的结果（最近 8 个）
 _STAGES_LOCK = threading.Lock()
 
 
 def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict | None:
-    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments, "kinds": lane_kinds}，调用方只读。
+    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments, "kinds": lane_kinds,
+    "whole": 看的是整个 run（whole_run）}，调用方只读。
     切段靠不住时是 None：老 run（没录交接）、这段时间里一次交接都没录到。phase 是 REF 所在的阶段名。
     按 (run, 时间段) 缓存：分列改切面、收起进程都不再算；进程的先后（proc_order）、进程头上的一句（procinfo）、
     默认收起哪几列（lanedefault）用同一份"""
@@ -312,7 +332,8 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
     if ho:
         A = analyse(rd, lo, hi, head_window=head_window)
         reqs = requests(A, run, phase, lo, hi, label)
-        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}), "kinds": lane_kinds(A, lo, hi)}
+        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}), "kinds": lane_kinds(A, lo, hi),
+               "whole": whole_run(run, lo, hi, _seq.run_end(run, rd))}
     with _STAGES_LOCK:
         _STAGES[key] = out
         while len(_STAGES) > 8:
@@ -322,9 +343,14 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
 
 def proc_order(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict[int, int]:
     """进程的先后（用户 10-10 定：按这一段里开始干活的先后）：{pid: 开始干活的时刻}。持有请求的进程从请求开始算，
-    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。切段靠不住时（stages 是 None）是空的
-    （调用方退回按启动的先后）；只有一轮的段不算。phase 是 REF 所在的阶段名"""
-    S = stages(rd, run, phase, lo, hi, label, head_window) or {"reqs": [], "segs": []}
+    别的进程从它的 stage 段开始算；没有段的不在里面（调用方按第一次活动排在后面）。看的是整个 run 时（whole_run，用户 10-13 定）
+    是各进程启动的时刻（lanes.proc_starts：按启动的先后）；切段靠不住时（stages 是 None）是空的（调用方按第一次活动排）；只有一轮的段不算。
+    phase 是 REF 所在的阶段名"""
+    if whole_run(run, lo, hi, _seq.run_end(run, rd)):
+        return _lanes.proc_starts(_seq.span_index(rd))
+    S = stages(rd, run, phase, lo, hi, label, head_window)
+    if not S:
+        return {}
     out: dict[int, int] = {}
     for q in S["reqs"]:
         out[q["pid"]] = min(out.get(q["pid"], q["t0_us"]), max(q["t0_us"], lo))

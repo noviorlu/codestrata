@@ -71,7 +71,8 @@ def add_args(p) -> None:
 
 
 def _view_opts(q) -> None:
-    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 是全部）")
+    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 或 * 是全部列，不写是页面默认收起转一手的列，"
+                                                  "+进程 是在默认上再放出这个进程的列）")
     q.add_argument("--fold", default=None, help="收起这些进程（别名，逗号隔开；none 是都不收）")
     q.add_argument("--mark", default=None, help="标出这些文件 / 目录 / 函数所在的节点（逗号隔开，最多 20；none 清掉；+东西 是追加）")
     q.add_argument("--expand", default=None, help="把切面展开到这些文件 / 函数所在的文件：在它跑过的每一列里")
@@ -91,6 +92,11 @@ def run(a) -> out.Result:
 
 # ---------------------------------------------------------------- 拼视图（url、set 共用）
 
+# 没写 lanes= 的视图：页面默认收起转一手的列（lanedefault）。说一句，哪几列、为什么在 lanes 命令里
+_DEFAULT_LANES = ("列：没写 lanes=，按页面默认（转一手的列收起；老 run、这一段没录到交接时不收）——收哪几列、为什么见 codestrata lanes；"
+                  "--lanes all 看全部")
+
+
 def _compose(c, a, v: _viewspec.View) -> list[str]:
     """把命令行的选项套到视图 v 上（v.run、v.lanes 已经按 REF 定好）；返回说明「这个视图是什么」的几行"""
     r = c.res
@@ -100,7 +106,8 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
     procs = _lanes.proc_aliases(r.rd)
     if a.lanes is not None:
         try:
-            v.lanes = [] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
+            # all 写成 *：不写 lanes= 是默认（转一手的列收起），不是全部
+            v.lanes = ["*"] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
         except CodestrataError:                     # 录了 GPU 的 run：再加上 GPU 的列认一次
             v.lanes = _laneid.canonical(_laneid.parse_list(a.lanes), _lanes.run_aliases(r.rd, _lanes.gpu_lanes(r.rd, r.run)))
     if a.fold is not None:
@@ -193,8 +200,14 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
                 raise CodestrataError(info.get("code") or "usage", f"--chain 在这个 run 上走不出来：{info['error']}")
             v.chain = a.chain
     what = []
-    if v.lanes:
+    if v.lanes == ["*"]:
+        what.append("全部列（不收起转一手的）")
+    elif _laneid.plus_only(v.lanes):
+        what.append("默认收起转一手的列，再放出 " + ",".join(x[1:] for x in v.lanes))
+    elif v.lanes:
         what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
+    else:
+        what.append(_DEFAULT_LANES)
     if v.fold:
         what.append("收起 " + ",".join(v.fold))
     if expand:
@@ -306,6 +319,8 @@ def _get(a) -> out.Result:
     c, pg, t = _page(a)
     lines = [f"{pages.where(pg, t)}  最后是{_BY.get(t['by'], t['by'])}改的",
              f"  视图  {t['view'] or '（静态图）'}"]
+    if t["view"] and t["view"].startswith("run=") and "lanes=" not in t["view"]:
+        lines.append("  " + _DEFAULT_LANES)
     if t.get("n") is not None:
         lines.append(f"  编号  一共 {t['n']} 个")
     if t.get("last"):
