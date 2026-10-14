@@ -48,13 +48,13 @@
 
 ### 纵轴按依赖分层，不用 SCC 缩点，也不用架构高度
 - 决定：`layout.layers` 直接对边排序：按权重贪心去环（Eades–Lin–Smyth），再 sifting（最多 20 轮）把逆向边的权重压到最小，
-  最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。架构高度 `(出 − 入) / (出 + 入)` 只留在详情面板和 scan 的输出里。
+  最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。不算架构高度 `(出 − 入) / (出 + 入)`。
 - 为什么：Python 的循环 import 让强连通分量退化——vllm-omni 上 30 个包有 20 个塌进同一个环，缩点后分层信息全丢。
   架构高度只看每个模块自己的出入比例、不看谁连着谁，omni → omni_base 这种边会画成往上指。贪心在 vllm-omni 上为了拆环
   反过一条 4383 次调用的边，所以加 sifting（测试里的例子：贪心逆掉的权重 91，sifting 后 51）。从上往下数时，只被一个入口
   用到的叶子会飘在图中间（codestrata 自己的 render、highlight）。
 - 放弃的方案：SCC 缩点后拓扑分层；架构高度当纵轴；从上往下数的最长路。
-- 在哪：`layout.py` 的 `layers`、`MAX_LANES`；`scan.py` 模块说明末段；架构高度在 `cut.view` 里算。
+- 在哪：`layout.py` 的 `layers`、`MAX_LANES`；`scan.py` 模块说明末段。
 
 ### 叠了 run 时，分层按这次的调用加权
 - 决定：import 边（图上不画，见「图上只有调用边」）当排版的静态权重 `1 + log1p(import 语句数)`；叠了 run 时，切面上节点间的调用另作为 runtime 边加进来，权重
@@ -359,7 +359,7 @@
   `env_inherited`；`rerun_command` 给 `cd <目录> && <原样命令>`。只有没存 `invocation` 的老 run 才按参数拼。
 - 为什么：按参数拼的漏掉什么就少什么：当时在哪个目录跑、相对路径指到哪、codestrata 装在哪、shell 里 export 了什么。目标是页面上能拿到一条照抄就能
   复刻的命令。`test_rerun_command_reproduces` 在 / 下照抄这条命令，再录出同样分段的 run。
-- 放弃的方案：case 定义文件（cases.toml）：目标是录一次复用，不是方便重录，也省掉 TOML 和对 3.11 的依赖；变体就是另一个 `--case` 名加 `--env` / `--tag`。
+- 放弃的方案：case 定义文件（cases.toml）：目标是录一次复用，不是方便重录，也省掉 TOML 和对 3.11 的依赖；变体就是另一个 `--case` 名加 `--env` / `--note`。
 - 在哪：`__main__.py` 的 `main`、`cmd_trace`；`runs.py` 的 `new_run`、`inherited_env`、`rerun_command`、`fmt_seconds`。
 
 ---

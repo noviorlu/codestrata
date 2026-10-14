@@ -355,8 +355,6 @@ def test_laneorder():
     o = laneorder.rank(L, al)
     assert [o["keys"][k] for k in ("e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1")] == [0, 1, 2, 3, 4], o
     assert o["n"] == 5 and o["ids"][1] == "e:p1/Main|b|a", o["ids"]          # 同一时刻 10：先比最后一次，再比稳定写法
-    o = laneorder.rank(L, al, hide={"dyn"})
-    assert "e:1:Main|b|a" not in o["keys"] and o["n"] == 4
     o = laneorder.rank(L, al, fold={1})
     assert set(o["keys"]) == {"e:2:Main|a|d", "l:0"}, o["keys"]               # 进程 1 收起：它的边、它里面两头的交接都不编
     o = laneorder.rank(L, al, lanes={"1:Main", "2:Main"})
@@ -444,9 +442,9 @@ def test_procinfo_and_default_lanes():
                   {"kind": "handoff", "via": "zmq", "first": 1, "last": 1, "from": {"lane": "b"}, "to": {"lane": "d"}}]
     L["default_lanes"] = lanedefault.default_lanes(L, S)
     al = {x: f"p/{x}" for x in "abcdefghi"}
-    assert laneorder.rank_view(L, al, {1: "p"}, [], [], [])["n"] == 1, "默认：两头都收在同一个窄列里的那条不编号"
-    assert laneorder.rank_view(L, al, {1: "p"}, [], [], ["*"])["n"] == 2 and laneorder.rank_view(L, al, {1: "p"}, [], [], ["p/nosuch"])["n"] == 2
-    assert laneorder.rank_view(L, al, {1: "p"}, [], [], ["+p"])["n"] == 2, "默认 + 整个进程 p：等于全部列"
+    assert laneorder.rank_view(L, al, {1: "p"}, [], [])["n"] == 1, "默认：两头都收在同一个窄列里的那条不编号"
+    assert laneorder.rank_view(L, al, {1: "p"}, [], ["*"])["n"] == 2 and laneorder.rank_view(L, al, {1: "p"}, [], ["p/nosuch"])["n"] == 2
+    assert laneorder.rank_view(L, al, {1: "p"}, [], ["+p"])["n"] == 2, "默认 + 整个进程 p：等于全部列"
     from codestrata import align, lanes as _lanes, runs as _runs, seq
     from codestrata.ui import load as _load
     repo, rid = truth()

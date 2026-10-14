@@ -42,7 +42,6 @@ def load_index(repo: Path) -> dict:
         idx["files"] = extra.get("files", {})
         idx["aux"] = extra.get("aux", {})
         idx["name_refs"] = extra.get("name_refs")    # 老的 symbols.json 没有：None（不显示接线点）
-        idx["docs"] = extra.get("docs", {})
         idx["file_loc"] = extra.get("file_loc", {})
         idx["file_sha"] = extra.get("file_sha")      # 老的 symbols.json 没有：None
     gp = d / "graph.json"

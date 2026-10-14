@@ -122,7 +122,7 @@ flowchart LR
 | `chainview.py` | 66 | 链的取数：在一段时间里把链走出来（links --follow 和页面共用）、视图描述里 chain 键的写法，给分列画链要的（录到的交接标第几跳、推出来的那一跳多连一条） |
 | `procinfo.py` | 57 | 分列进程头上那一句：只有它跑的文件、干活的时段、主循环几轮，持有请求的写请求（`segments.stages` 同一份） |
 | `lanedefault.py` | 65 | 分列默认看哪几列：转一手的列（收发 socket、只在轮询、线程池、没调用）默认收起，每列的原因（`reasons`）；页面、编号、`explain N`、`lanes` 命令共用 |
-| `laneorder.py` | 59 | 分列里时间顺序的编号：按视图（收起的进程、开关、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
+| `laneorder.py` | 59 | 分列里时间顺序的编号：按视图（收起的进程、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
 | `viewspec.py` | 100 | 视图描述（页面地址 # 后面）的 Python 一侧：解析、规范写法（和 web/view.js 同一套），按一个视图算分列和时间顺序的编号（explain 24、view url） |
 | `laneid.py` | 173 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`、`stage1/gpu0.7`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
 | `errors.py` | 36 | `CodestrataError`：稳定的错误码、候选、下一步、之前的警告；错误码 → 退出码 |
@@ -138,7 +138,7 @@ flowchart LR
 | `viewers.py` | 158 | 主菜单给每个仓库起的 `codestrata serve` 子进程 |
 | `web/ids.js` | 37 | 节点 id 的写法（和 `cut.py` 同一套）：本层文件、所在目录、在不在某个目录里 |
 | `web/ds.js` | 79 | 数据源层：fetch serve 的 `api/*` |
-| `web/app.js` | 1059 | 入口：串起数据源、图、面板、run 选择、时间轴、读图须知 |
+| `web/app.js` | 1059 | 入口：串起数据源、图、面板、run 选择、时间轴、帮助 |
 | `web/graph.js` | 568 | SVG 绘图（纯函数式），边的配色约定 |
 | `web/panel.js` | 721 | 详情面板：节点的事实和源码（GPU kernel 的次数和 GPU 时间），边上实际调了哪些函数（可按先后排）；分列里选中的是一列里的一份时，次数、文件树、kernel 表换成只算这一列的（`asCopy`，`/api/lanehot`），列里的边的详情也只算这一列（`/api/edge?lane=`）；GPU 列的一份的 kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久 |
 | `web/viewer.js` | 455 | 全文窗口：大纲、Ctrl+点击跳转（`CS.xref`）、叠着 run 时行尾的运行时被调方 |
@@ -156,7 +156,6 @@ flowchart LR
 | `web/lanepick.js` | 130 | 分列里点线：离鼠标最近的那条加粗、出提示，点了选中它；一样近的弹单子挑；换视图 / 重画前撤掉 |
 | `web/lanedetail.js` | 190 | 分列的详情栏：节点这一份的调用 / 被调用 / 连线（只算这条线程）、点列之间的连线（两头的代码，点了在代码窗口里看那一行）、点节点上起 / 收了好几列的「▶ 起 / ■ 收」（逐条列出） |
 | `web/path.js` | 108 | 请求路径（详情栏里）：一个线程一节、缩进是调用的层次，点了开定义 / 调用那一行 |
-| `web/hl.js` | 314 | 浏览器端高亮（Pygments 词法表的 JS 版），边详情里的代码片段用 |
 | `web/home.js` | 390 | 主菜单页面（`home.html`，不走 ds.js） |
 
 已知的结构问题：
@@ -171,7 +170,7 @@ flowchart LR
 - 叠加：`align.py` 的 `to_package_graph` / `sym_locs` / `defining` / `hot_on_cut`、`ui.graphview.graph_payload`
   只依赖 symbols 表的字段（`f`、`l`、`dl`、`e`、`x`）和 graph.json，「第 0 行 = 文件顶层的执行」是约定，「落在标了 `defexec` 的符号的定义行 = 定义时的执行」由扫描端标出来（Python 给类标）。
 - `trace/driver.py` 的进程管理（会话、信号升级、残留进程），除了注入方式（见下）。
-- 前端全部；`highlight.py` / `hl.js` 本来就认多种语言。
+- 前端全部；`highlight.py` 本来就认多种语言。
 
 **C / C++ / CUDA 专用**：`native_scan.py`（tree-sitter 的 CUDA 语法，名字按文本对）。图上的边、叠加、切面都不分语言；`ui/edge.py` 取签名、`ui/graphview.py` 判断「顶层符号」、前端拆限定名（`CS.ids.qsep`）按语言分 `.` 和 `::`。
 
@@ -195,13 +194,12 @@ flowchart LR
 ## 前端结构
 
 `codestrata/web/` 下是原样发布的静态文件，**没有构建步骤**：普通 `<script>`，每个文件是一个 IIFE，往 `window.CS`
-上挂一个对象（`CS.ids`、`CS.ds`、`CS.graph`、`CS.findbar`、`CS.viewer` / `CS.xref`、`CS.panel`、`CS.search`、`CS.timebar`、`CS.hl`、`CS.app`，
+上挂一个对象（`CS.ids`、`CS.ds`、`CS.graph`、`CS.findbar`、`CS.viewer` / `CS.xref`、`CS.panel`、`CS.search`、`CS.timebar`、`CS.app`，
 分列再挂 `CS.lanePack`、`CS.laneRoute`、`CS.laneCut`、`CS.lanes`、`CS.lanePick`、`CS.laneDetail`）。
 节点 id 是路径，页面上显示的名字都来自数据（`names` 短名、`labels` 完整名、布局给的 `label`），不从 id 拆；判断 id 之间的关系只用 `CS.ids`。
 
-- **加载顺序**：`index.html` 末尾依次是 `hl.js`、`ids.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
+- **加载顺序**：`index.html` 末尾依次是 `ids.js`、`ds.js`、`graph.js`、`findbar.js`、`viewer.js`、`panel.js`、`search.js`、
   `timebar.js`、`path.js`、`lanepack.js`、`laneroute.js`、`lanecut.js`、`lanes.js`、`lanefocus.js`、`lanechain.js`、`lanepick.js`、`lanedetail.js`、`app.js`（`app.js` 最后启动）。
-  `hl.js` 单独一个 `<script>`：它用了正则后行断言，老浏览器解析失败时只丢高亮。
   `tests/test_package.py` 核对 web/ 下每个 .js 都有页面加载。
 - **数据源层 `ds.js`**：UI 只调 `CS.ds.*`，它 `fetch('api/…')`；地址都是相对的，经主菜单转发时页面在 `/v/<端口>/` 下。样式在 `app.css`。
 - 主菜单是另一套页面 `home.html` + `home.js` + `home.css`，不走 ds.js，直接 fetch 主菜单的 `/api/*`。
@@ -226,7 +224,6 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 .venv/bin/python tests/test_web.py       # 要 node
 .venv/bin/python tests/test_platform.py
 .venv/bin/python tests/test_browser.py   # 要 node 22+ 和 Chrome / Chromium，约 15 秒
-.venv/bin/python tests/hl_parity.py      # 只在动了高亮时跑；要 node
 .venv/bin/python tests/payload_parity.py <旧提交> <仓库> [RUN …]   # 只在「行为不变」的重构时跑
 ```
 
@@ -262,7 +259,6 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 - `test_package.py`：wheel 里带着 web/ 每个文件；拿整个工作区（连 .gitignore 挡着的）打的 sdist / wheel 里只有包、README、LICENSE、pyproject 和完整的测试，没有 .gitignore 挡着的文件、`.codestrata/`、构建残留；wheel 装进一个干净的 venv 能跑 scan、trace、serve；公开文档里没有内部内容；↻ 的判法写在图例和文档里的「至少 N 次」和 `seq.REPEAT_MIN` 一致；web/ 下每个 .js 都有页面加载；两条结构约束（录制三块的依赖方向、模块之间不用私有名）。
 - `test_web.py`：用 node 跑前端纯函数（`findbar.find`、时间轴的吸附 / 缩放 / 标签、分列的排线 `test_lane_route`、分列的摆放 `test_lane_pack`：框装得下、不越界、不压别的框，改一列不动别的列）。
 - `test_platform.py`：模拟没有 fcntl / SIGKILL、`sys.platform` 不是 Linux 的环境：所有模块能 import、scan 和 serve 的图数据能用、trace 拒绝且不建 run。
-- `hl_parity.py`：`hl.js` 对拍 `highlight.py`，不是回归测试；默认语料含本机的 vllm-omni，别处要给目录参数。
 - `bench/python_versions.py`：trace 在 3.10 / 3.11 / 3.12 上的开销（usage「实测数字」里那张表），不是回归测试。
 - `bench/events_overhead.py`：时序事件的录制和整理开销（不录 / `--no-events` / 记每一次调用 / 拿老代码只记跨文件的对照），不是回归测试。
 - `bench/quality.py`：核心质量的基准数（只有 trace 的占比按成因分、请求路径上到模型函数的链有几跳看不出、`/api/graph` 的大小），

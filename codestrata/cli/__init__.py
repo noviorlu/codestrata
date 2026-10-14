@@ -5,14 +5,14 @@
 """
 from __future__ import annotations
 
-from . import explain, find, guide, lanes, links, out, path, runs, segments, status, steps, trace, view  # noqa: F401  （runs、trace：__main__ 用）
+from . import explain, find, guide, lanes, links, out, path, runs, segments, status, steps, view  # noqa: F401  （runs：__main__ 用）
 
 COMMANDS = [status, lanes, segments, steps, links, find, explain, view, path, guide]
 
 # 老命令的 effect（§ 契约「effect」）：guide 和 --help 用
 OLD = [
-    {"name": "runs ls / show / wait", "effect": "read", "does": "列出 run、看一个 run 的详情和复刻命令（--json 带各阶段的微秒窗口）；等还在录的 run 录完"},
-    {"name": "runs tag / untag / note / merge", "effect": "write", "does": "改 run 的标签、备注；从原始数据重算"},
+    {"name": "runs ls / show", "effect": "read", "does": "列出 run、看一个 run 的详情和复刻命令（--json 带各阶段的微秒窗口）"},
+    {"name": "runs note / merge", "effect": "write", "does": "改 run 的备注；从原始数据重算"},
     {"name": "runs rm", "effect": "delete", "does": "删 run（不能重建）"},
     {"name": "scan", "effect": "write", "does": "静态扫描，重写索引"},
     {"name": "trace", "effect": "record", "does": "跑被录的程序（可能占 GPU、跑很久）"},

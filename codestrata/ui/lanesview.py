@@ -5,7 +5,7 @@
     加上 frame、collapsible），再加 hits（这一段里调进去几次，同 hot.packages）和 name（面板、搜索栏写的短名，同 names；
     撞名按画它的（第一）列的切面算，见下面的 names）；完整的显示名是 label。节点信息只看 id，同一个 id 在哪一列的切面上
     都一样。只是框（哪一列里都没有收成节点）的 id 只有 kind、label、sep、name、frame、collapsible、hits；
-  - more {id: {syms, files, docs}}：不是 base 节点的那些节点的顶层符号、文件、文档（同 pkgSyms / pkgFiles / pkgDocs）；
+  - more {id: {syms, files}}：不是 base 节点的那些节点的顶层符号、文件（同 pkgSyms / pkgFiles）；
   - place {id: [B, sub]}：比 base 细的节点——在 base 的节点 B 里面——排在 B 那一层底下的第几个子层。B 里这一段各列调到的单元
     按调用和 import 自己分一次层（权重同模块图的分层），id 取它调到的单元里最靠上的那层。只看 id 和这一段，和哪一列展开了什么、
     画了哪些兄弟节点无关：各列共用一套纵坐标。和 base 节点一样粗或者更粗的不在里面；
@@ -115,7 +115,7 @@ def decorate(idx: dict, hot: dict | None, L: dict, base) -> dict:
 
 
 def _more(idx: dict, lanes: list, map_of, base_nodes: dict) -> dict:
-    """不是 base 节点的那些列节点：{id: {"syms", "files", "docs"}}（graphview.node_details，按各自那一列的切面算）"""
+    """不是 base 节点的那些列节点：{id: {"syms", "files"}}（graphview.node_details，按各自那一列的切面算）"""
     todo: dict[str, list] = {}                   # 切面的键 → 要算的节点
     cut_of: dict[str, list] = {}
     seen: set = set()
@@ -128,9 +128,9 @@ def _more(idx: dict, lanes: list, map_of, base_nodes: dict) -> dict:
                 todo.setdefault(k, []).append(n)
     out: dict[str, dict] = {}
     for k, ids in todo.items():
-        syms, files, docs = _graphview.node_details(idx, set(cut_of[k]), map_of(cut_of[k]).v, ids)
+        syms, files = _graphview.node_details(idx, set(cut_of[k]), map_of(cut_of[k]).v, ids)
         for n in ids:
-            out[n] = {"syms": syms.get(n, []), "files": files.get(n, []), "docs": docs.get(n, [])}
+            out[n] = {"syms": syms.get(n, []), "files": files.get(n, [])}
     return out
 
 

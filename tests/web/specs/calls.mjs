@@ -6,7 +6,7 @@ export default async function (t) {
   const { page, base, fx, ok } = t;
   await page.goto(base + '#run=' + fx.an);
   ok(await waitRun(page, fx.an), '叠上 run A');
-  const chips = await page.ev(`[...document.querySelectorAll('#edgechips [data-t]')].map(b => b.dataset.t)`);
+  const chips = await page.ev(`[...document.querySelectorAll('#edgechips [data-t], #edgechips [data-lg]')].map(b => b.dataset.t || b.dataset.lg)`);
   ok(chips.includes('scan') && chips.includes('hot') && !chips.includes('imp') && !chips.includes('type'),
      '图例：代码里的调用、这次跑了，没有「只 import」「仅类型」 ' + JSON.stringify(chips));
   const TC = `CS.graph.edgeInfo('fakesvc/truth.py', 'fakesvc/callee.py')`;
@@ -85,7 +85,7 @@ export default async function (t) {
   ok(await page.wait(`(document.querySelector('.ln.focus') || {}).id === 'vL${line}'`), '「返回」回到点标记的那一行');
   await page.key('Escape', 'Escape', 27);
 
-  // 全是代码里看不出的边：橙虚线，代码里写了调用的（scan 边）也一样；关掉「代码里看不出」就不画它，和「这次跑了」各管各的
+  // 全是代码里看不出的边：橙虚线，代码里写了调用的（scan 边）也一样
   await page.goto(fx.base3 + '#run=' + fx.dynn);
   ok(await waitRun(page, fx.dynn), '第三个小仓库叠上它的 run');
   const d = await page.ev(`(E => E && [E.a, E.b, E.p.getAttribute('class'), E.lab && E.lab.textContent, E.scan])(CS.graph.edges.find(E => E.dashed))`);
@@ -93,23 +93,11 @@ export default async function (t) {
      'runner → net 代码里写了一处调用、跑到的 3 次全是代码里看不出的：橙虚线、标着 3 ' + JSON.stringify(d));
   const rto = await page.ev(`(E => E && [E.dashed, E.scan, E.hits])(CS.graph.edgeInfo('dyn/main.py', 'dyn/models/net.py'))`);
   ok(rto && rto[0] && rto[1] === 0 && rto[2] === 1, '代码里没写的 main → net（getattr 取到的类）也是虚线 ' + JSON.stringify(rto));
-  ok(await page.ev(`!!document.querySelector('#edgechips [data-t="dyn"]')`), '有虚线边时有「代码里看不出」开关');
-  await page.click('#edgechips [data-t="dyn"]');
-  await sleep(300);
-  ok(await page.ev(`CS.graph.edges.filter(E => E.dashed).every(E => !E._dyn && (E.scan ? E._show : !E._show))`),
-     '关掉它：不画虚线了，代码里写了调用的退回灰实线，没写的整条不画');
-  await page.click('#edgechips [data-t="dyn"]');
-  await sleep(300);
-  ok(await page.ev(`CS.graph.edges.filter(E => E.dashed).every(E => E._show)`), '再打开：回来了');
-  const hotN = await page.ev(`+document.querySelector('#edgechips [data-t="hot"] .n').textContent`);
-  ok(hotN === await page.ev(`CS.graph.edges.filter(E => E.hits > 0).length`), '「这次跑了」数的是全部跑到的边（虚线也算）：' + hotN);
-  await page.click('#edgechips [data-t="hot"]');
-  await sleep(300);
-  ok(await page.ev(`!CS.graph.edges.some(E => E._warm || E._dyn) && document.querySelector('#edgechips [data-t="dyn"]').disabled`),
-     '关掉「这次跑了」：跑到的边都不画了，「其中代码里看不出」点不了');
-  await page.click('#edgechips [data-t="hot"]');
-  await sleep(300);
-  ok(await page.ev(`CS.graph.edges.filter(E => E.dashed).every(E => E._dyn) && !document.querySelector('#edgechips [data-t="dyn"]').disabled`), '再打开：都回来');
+  // 「这次跑了」「其中代码里看不出」只是图例（不再是开关）：数字是条数
+  ok(await page.ev(`!document.querySelector('#edgechips [data-t="hot"], #edgechips [data-t="dyn"]')`), '没有藏边的开关');
+  const hotN = await page.ev(`+document.querySelector('#edgechips [data-lg="hot"] .n').textContent`);
+  ok(hotN === await page.ev(`CS.graph.edges.filter(E => E.hits > 0).length`), '图例「这次跑了」数的是全部跑到的边（虚线也算）：' + hotN);
+  ok(await page.ev(`!!document.querySelector('#edgechips [data-lg="dyn"]')`), '有虚线边时图例里有「其中代码里看不出」');
 
   // 构造：代码里写的 Runner(…)，跑的是 Runner.__init__，卡片上说明
   await clickEdge(page, 'dyn/main.py', 'dyn/runner.py');

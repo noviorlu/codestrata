@@ -71,16 +71,6 @@ export default async function (t) {
   await page.ev(`document.querySelector('#g .ln-proc .ln-fold').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
   ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 0 && +document.querySelector('${chip} .n').textContent === ${n}`, 3000), '再展开：回到 ' + n);
 
-  // 关掉「其中代码里看不出」：编号按新的视图重排，还是 = 后端的
-  const dyn = '#edgechips [data-t="dyn"]';
-  if (await page.ev(`!!document.querySelector('${dyn}')`)) {
-    await page.click(dyn);
-    ok(await page.wait(`CS.lanes.orderQ === CS.lanes.viewQuery() && CS.lanes.viewQuery().includes('hide=dyn')`, 3000)
-       && await sameAsBackend(page), '关掉「其中代码里看不出」：序号牌 = 后端按新视图排的');
-    await page.click(dyn);
-    ok(await page.wait(`CS.lanes.orderQ === CS.lanes.viewQuery() && !CS.lanes.viewQuery()`, 3000), '再打开：回到原来的视图');
-  }
-
   // 换阶段：按 loop 的时间窗重排
   await page.click('.tph[data-ph="loop"]');
   ok(await waitRun(page, fx.a + '@loop'), '换到 loop');

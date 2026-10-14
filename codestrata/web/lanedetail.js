@@ -142,7 +142,9 @@ window.CS = window.CS || {};
         var h = '<div class="lk-site"><span class="lk-lab2">' + esc(label) + '</span>';
         if (!name) return h + '<span class="hint">仓库外的代码</span></div>';
         var at = line || (def ? def.l : 1);
-        return h + '<button class="lk-fn" data-f="' + esc(def && def.f) + '" data-l="' + at + '" title="' + esc(name)
+        if (!(def && def.f))                         // 没有文件可开的（仓库外的 kernel）：只写名字，不做成按钮
+          return h + '<span class="lk-name">' + esc(short(name)) + '</span>' + (code ? '' : '<span class="hint">（' + bare(end) + '）</span>') + '</div>';
+        return h + '<button class="lk-fn" data-f="' + esc(def.f) + '" data-l="' + at + '" title="' + esc(name)
           + (line ? ' 第 ' + line + ' 行' : '') + '（点了在代码窗口里看）">' + esc(short(name)) + (line ? ':' + line : '') + '</button>'
           + (code ? '<code class="lk-code" data-f="' + esc(def && def.f) + '" data-l="' + at + '" title="点了在代码窗口里看这一行">'
                     + esc(code) + '</code>'
@@ -169,9 +171,6 @@ window.CS = window.CS || {};
         }).join('') + '</div>'
         + (k.n_pairs > (k.pairs || []).length ? '<p class="hint">还有 ' + (k.n_pairs - k.pairs.length) + ' 对（次数更少）</p>' : '')
         + (k.inferred ? '<p class="hint">两头是 A 边、B 边配上的那两次调用；交接发生在哪一行不知道（没录到）。</p>'
-           : k.kind === 'handoff' ? '<p class="hint">配对：进程内的队列按「同一个队列里的同一个对象」，ZMQ 按消息内容的指纹；'
-           + '代码是放 / 取、发 / 收那一刻最里层的仓库函数里正执行的那一行（经仓库外的代码转了一道的，是调进去的那一行）；'
-           + '发生在仓库外的代码里时写那一刻这条线程最底下在跑的仓库函数，那一刻没有在跑的仓库函数就是仓库外的代码。</p>'
            : k.kind === 'join' ? '<p class="hint">线程从入口函数返回就结束了；收的那一行是 join（线程池的 shutdown 也是逐个 join）或 '
            + 'waitpid（Popen.wait、Process.join）等到它的那一行。</p>' : '');
       CS.panel.claim(h);

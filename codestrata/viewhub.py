@@ -27,7 +27,7 @@ from pathlib import Path
 from . import ref as _ref
 from .errors import CodestrataError
 
-KEYS = ("run", "lanes", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "hide", "panel")
+KEYS = ("run", "lanes", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "panel")
 STALE_S = 30.0              # 看得见的标签页多久没来问算不在了
 LIVE_S = 3.0                # 看得见、没焦点的页面每秒来问一次：这么久没来问的不当缺省的目标（关了却没来得及说一声的）
 HIDDEN_S = 3600.0           # 看不见的标签页留多久

@@ -31,7 +31,7 @@ EFFECT = "page"
 DOES = ("页面的视图描述：view set 推给开着的页面（只看列、收起、标记、选中、展开到函数、时间顺序）、view back 撤销（page）；"
         "view url 只拼地址、view get 读用户在看什么、view wait 等用户点（read）")
 USAGE = ("codestrata view url|set|get|back|wait [REF|'页面地址'] [--lanes 列,…] [--fold 进程,…] [--mark 东西,…] [--expand 东西,…] "
-         "[--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--hide hot,dyn|none] [--path] [--reset] [--note 一句话] "
+         "[--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--path] [--reset] [--note 一句话] "
          "[--page 端口] [--tab ID] [--for select|range|lanes|any|applied] [--timeout 秒] [--json]")
 EXAMPLE = "codestrata view set 20261001-170349-run_single_prompt@serving --focus MiniCPMO45OmniTTSForConditionalGeneration.sample --note 'talker 的采样'"
 
@@ -80,7 +80,6 @@ def _view_opts(q) -> None:
     q.add_argument("--select", default=None, metavar="东西",
                    help="选中：n:列|节点、e:列|a|b、l:种类|通道|起列|终列，或一个函数（选它所在的文件）；none 取消")
     q.add_argument("--order", choices=["on", "off"], default=None, help="时间顺序开 / 关")
-    q.add_argument("--hide", default=None, help="藏起的边：hot、dyn，none 是都不藏")
     q.add_argument("--path", action="store_true", help="详情栏讲请求路径")
     q.add_argument("--chain", default=None, metavar="范围~起点~--link…",
                    help="页面高亮一条链（links --follow 的下一步里拼好了）：链上的跳亮出来、推出来的画虚线；none 清掉")
@@ -183,11 +182,6 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
     v.mark = marks[:20]
     if a.order is not None:
         v.order = a.order == "on"
-    if a.hide is not None:
-        bad = [x for x in _laneid.parse_list(a.hide) if x not in ("hot", "dyn", "none")]
-        if bad:
-            raise CodestrataError("usage", f"--hide 只认 hot、dyn、none：{', '.join(bad)}", candidates=["hot", "dyn", "none"])
-        v.hide = [] if a.hide == "none" else [x for x in _laneid.parse_list(a.hide) if x in ("hot", "dyn")]
     if a.path:
         v.panel = "path"
     if a.chain is not None:

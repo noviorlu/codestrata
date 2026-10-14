@@ -272,7 +272,7 @@ def _numbered(a, c) -> out.Result:
     # 地址里没写 lanes=（或者全是 +进程）：页面默认把转一手的列收起（lanedefault），+ 的再放出来（laneid.view_lanes）
     shown = _laneid.view_lanes(v.lanes, aliases, L.get("default_lanes"))
     dflt = (not v.lanes or _laneid.plus_only(v.lanes)) and shown is not None
-    head = (f"按这个视图算：{r.full}" + (f" · 收起 {','.join(v.fold)}" if v.fold else "") + (f" · 藏起 {','.join(v.hide)}" if v.hide else "")
+    head = (f"按这个视图算：{r.full}" + (f" · 收起 {','.join(v.fold)}" if v.fold else "")
             + (f" · 默认收起转一手的 {len(L['lanes']) - len(shown)} 列" if dflt else "")
             + (f"（再放出 {','.join(x[1:] for x in v.lanes)}）" if dflt and v.lanes else "")
             + f" · 时间顺序开 · 共 {order['n']} 个编号；{n} 号是 {order['ids'][n - 1]}")

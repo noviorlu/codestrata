@@ -62,7 +62,7 @@ def require_events(c: Ctx) -> None:
     if st == "recording":
         if _runs.live(run):
             raise CodestrataError("recording", f"run {run['id']} 还在录", warnings=c.warnings,
-                                  next=[c.cmd("read", "runs", "wait", run["id"], why="等它录完")])
+                                  next=[c.cmd("read", "runs", "show", run["id"], why="录完再看")])
         raise CodestrataError("interrupted_run", f"run {run['id']} 录制中断了，要先从原始数据合并", warnings=c.warnings,
                               next=[c.cmd("write", "runs", "merge", run["id"])])
     if not (c.res.rd / "counts.json.gz").is_file():

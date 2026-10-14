@@ -191,12 +191,12 @@ def _run_warnings(repo: Path, name: str, hit: dict, cat: list[dict]) -> list[dic
                   "next": step("write", "runs", "merge", hit["id"], repo=repo)})
     elif st == "recording":
         w.append({"code": "recording", "msg": f"run {hit['id']} 还在录",
-                  "next": step("read", "runs", "wait", hit["id"], repo=repo)})
+                  "next": step("read", "runs", "show", hit["id"], repo=repo)})
     if hit["id"] != name:                        # 按 case 名挑的
         newer = [r for r in cat if r.get("case") == name and r["id"] > hit["id"] and _runs.live(r)]
         if newer:
             w.append({"code": "newer_recording", "msg": f"case {name} 有一次更新的正在录（{newer[0]['id']}），这里用的是录完的 {hit['id']}",
-                      "next": step("read", "runs", "wait", newer[0]["id"], repo=repo)})
+                      "next": step("read", "runs", "show", newer[0]["id"], repo=repo)})
     return w
 
 

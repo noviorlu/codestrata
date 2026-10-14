@@ -67,14 +67,14 @@ def by_argv(detail: dict, needle: str) -> list[dict]:
 def test_ok():
     """正常退出：ok；各进程怎么结束的都记下来；exec 前后两段都在；原始数据打包；阶段有时刻。"""
     repo = fresh()
-    r = trace_fake(repo, "fake", "--tag", "model=fake", "--note", "第一次")
+    r = trace_fake(repo, "fake", "--note", "第一次")
     assert "完整录完" in r.stdout, r.stdout
     run, det, rd = latest(repo)
     assert run["status"] == "ok" and run["stop"] == "exit" and run["returncode"] == 0, run
     assert [p["name"] for p in run["phases"]] == ["start", "serving", "shutdown"], run["phases"]
     assert all(p["t_us"] is not None for p in run["phases"])
     assert run["phases"][0]["t_us"] < run["phases"][1]["t_us"] < run["phases"][2]["t_us"]
-    assert run["tags"] == ["model=fake"] and run["note"] == "第一次"
+    assert run["note"] == "第一次"
     assert run["env"] == {"PY": PY}
     whys = {p["why"] for p in det["procs"]}
     assert whys <= {"atexit", "_exit", "exec"}, det["procs"]
@@ -329,7 +329,7 @@ def test_layers_point_down():
     assert sum(w for a, b, w in edges if lay[a] >= lay[b]) == 51, lay
     # 叠了 run：base 按 import 在 sub 下面，但 runtime 是 base 调 sub（回调）→ base 在上
     idx = {"repo": {"roots": ["p"]}, "edges": [["p.sub", "p.base", 3]], "frames": {},
-           "packages": {n: {"files": 1, "loc": 10, "classes": 1, "funcs": 1, "out": 1, "in": 1, "alt": 0.0}
+           "packages": {n: {"files": 1, "loc": 10, "classes": 1, "funcs": 1, "out": 1, "in": 1}
                         for n in ("p.sub", "p.base")}}
     static = {n["id"]: n["lane"] for n in layout.build(idx)["nodes"]}
     assert static["p.sub"] < static["p.base"], static
@@ -714,15 +714,13 @@ def test_rerun_secrets_and_bytes():
 
 
 def test_manage():
-    """tag / untag / note / rm；.codestrata 带 .gitignore 和 README.txt。"""
+    """note / rm；.codestrata 带 .gitignore 和 README.txt。"""
     repo = fresh()
     trace_fake(repo)
     run, _, rd = latest(repo)
-    cs("runs", repo, "tag", "fake", "a=1", "b")
-    cs("runs", repo, "untag", "fake", "b")
     cs("runs", repo, "note", "fake", "一句备注")
     got = json.loads((rd / "run.json").read_text())
-    assert got["tags"] == ["a=1"] and got["note"] == "一句备注"
+    assert got["note"] == "一句备注"
     assert (repo / ".codestrata" / ".gitignore").read_text().strip() == "*"
     assert "runs/" in (repo / ".codestrata" / "README.txt").read_text()
     r = cs("runs", repo, "rm", run["id"], check=False)          # 没有 --yes、不是终端：拒绝
@@ -739,8 +737,6 @@ def test_bad_names():
     repo = fresh()
     r = cs("trace", repo, "--case", "a/b", "--", "true", check=False)
     assert r.returncode != 0 and "case 名" in r.stderr
-    r = cs("trace", repo, "--case", "x", "--tag", "a b", "--", "true", check=False)
-    assert r.returncode != 0 and "tag" in r.stderr
 
 
 def test_migrate_legacy():
@@ -2103,14 +2099,14 @@ def test_type_checking_imports_are_not_dependencies():
     CTX, APP, CLI, UTIL = "tc/ctx.py", "tc/app.py", "tc/cli.py", "tc/sub/util.py"
     assert (CTX, APP) not in E and (UTIL, CTX) not in E, E
     assert E[(CLI, APP)] == 1, E                                # 函数里的那条是真依赖
-    # 高度只看运行时的 import：ctx 只被 app import，是叶子
-    assert idx["packages"][CTX]["alt"] == -1.0, idx["packages"][CTX]
+    # 出入只算运行时的 import：ctx 只被 app import
+    assert (idx["packages"][CTX]["out"], idx["packages"][CTX]["in"]) == (0, 1), idx["packages"][CTX]
     assert "type_edges" not in idx and "edge_dead" not in idx, sorted(idx)
     g = ui_graphview.graph_payload(repo, idx, open_=["tc/"])
     ge = {f"{a}|{b}" for a, b, _ in g["graph"]["edges"]}
     assert f"{CLI}|{APP}" in ge and f"{UTIL}|{CTX}" not in ge, ge       # App().run() 是调用，只写在标注里的不是
     assert f"{CTX}|{APP}" in ge, ge                                     # self.app: App 之后的 self.app.hook()
-    assert g["pkgs"][CTX]["alt"] == -1.0, g["pkgs"][CTX]
+    assert (g["pkgs"][CTX]["out"], g["pkgs"][CTX]["in"]) == (0, 1), g["pkgs"][CTX]
     # runtime：ctx 经 self.app 调到 app 的 hook，和代码里写的那一处对上
     cs("trace", repo, "--case", "tc", "--", PY, "-m", "tc")
     hot, meta = ui_load.load_hot(repo, idx, "tc")
@@ -2813,8 +2809,7 @@ def test_lanes_percut():
         assert (x.pop("hits"), x.pop("name"), x["label"]) == (g["hot"]["packages"].get(n, 0), g["names"][n], g["labels"][n]) \
             and x == g["pkgs"][n], (n, x)
         if n in D4["more"]:
-            assert D4["more"][n] == {"syms": g["pkgSyms"].get(n, []), "files": g["pkgFiles"].get(n, []),
-                                     "docs": g["pkgDocs"].get(n, [])}, n
+            assert D4["more"][n] == {"syms": g["pkgSyms"].get(n, []), "files": g["pkgFiles"].get(n, [])}, n
     assert set(D4["more"]) == {"cx/sansio/app.py", "cx/sansio/hooks.py", "cx/sansio/util.py", "cx/ops/util.py", "cx/ops/kernels/"}, \
         D4["more"]
     assert (m4["names"]["cx/sansio/util.py"], m4["names"]["cx/ops/util.py"]) == ("sansio.util", "ops.util"), m4["names"]

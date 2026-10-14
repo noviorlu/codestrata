@@ -41,11 +41,10 @@ window.CS = window.CS || {};
       + esc(text) + '</button>' : '<span>' + esc(text) + '</span>';
   }
 
-  /* 一小段代码：浏览器里有 hl.js 就高亮，没有就纯文本 */
+  /* 一小段代码（纯文本） */
   function code(lines) {
     if (!lines || !lines.length) return '';
-    var t = lines.join('\n'), h = CS.hl ? CS.hl.lines(t, 'python') : null;
-    return '<pre class="csnip"><code>' + (h ? h.join('\n') : esc(t)) + '</code></pre>';
+    return '<pre class="csnip"><code>' + esc(lines.join('\n')) + '</code></pre>';
   }
   function fname(f) { return f.split('/').pop(); }
 
@@ -246,9 +245,7 @@ window.CS = window.CS || {};
         return;
       }
       det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
-        + '<div class="sub" title="按 import 算：(出 − 入) / (出 + 入)，+1 靠入口、−1 是叶子">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
-        + '　import 出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
-        + '<span class="rtc">' + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</span></div>'
+        + '<div class="sub"><span class="rtc">' + (hot ? ('runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</span></div>'
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
@@ -257,7 +254,7 @@ window.CS = window.CS || {};
         // 分列里这一块换成这条线程里这一份的（CS.laneDetail.node）
         + '<div id="nbslot">' + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
         + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
-        + this._docs(id) + '<div id="kslot">' + this._kernels(id, v) + '</div>'
+        + '<div id="kslot">' + this._kernels(id, v) + '</div>'
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
       this._wireDet(id);
@@ -309,17 +306,6 @@ window.CS = window.CS || {};
                 + '<span class="kc">×' + c.n + '</span><span class="kt">' + ms(c.gpu_us) + '</span></div>';
             }).join('');
         }).join('') + '</div>';
-    },
-
-    /* 作者写的文档：包内 README、frontmatter 声明了管这里的设计文档 */
-    _docs: function (id) {
-      var ds = (D.pkgDocs || {})[id] || [];
-      if (!ds.length) return '';
-      var K = { readme: 'README', primary: '设计', related: '相关', mentions: '提到' };
-      return '<div class="kv files"><span>文档</span>' + ds.slice(0, 10).map(function (d) {
-        return '<button class="filebtn" data-view="' + esc(d.f) + '" title="' + esc(d.f) + '">'
-          + '<span class="fl lang-doc">' + K[d.kind] + '</span>' + esc(d.title) + '</button>';
-      }).join('') + (ds.length > 10 ? '<span>…还有 ' + (ds.length - 10) + ' 份</span>' : '') + '</div>';
     },
 
     /* ---- 文件树：模块根目录 → 子目录（缩进）→ 文件 → 类 / 函数 → 方法 ----

@@ -5,27 +5,18 @@
   index.json（画总图要的，小）
     format     2（单元、目录按路径认；1 是点分名）
     packages   单元：每个 .py 文件一个，id 是相对仓库根的路径；label 是点分的模块名（包的 __init__.py 是
-               <包>.__init__），sep 是 "."；含「架构高度」
+               <包>.__init__），sep 是 "."
     edges      单元之间的 import 边，权重 = import 语句条数（不含 TYPE_CHECKING 里的）。图上不画（图上只有调用，
-               见 graph.py），只给排版当权重、算架构高度
+               见 graph.py），只给排版当权重
     dirs       目录树；default_open 是默认切面（图上显示哪一层，见 cut.py）
   symbols.json（按需加载，大）
     symbols    每个类/函数的 file:line、结束行、基类、所属单元
     files      文件 → 单元的映射，给 runtime tracer 反查用
     aux        包目录里的 C/C++/CUDA 文件 → 所在目录
     name_refs  字符串里按名字提到的仓库内的类（注册表、getattr、插件表）
-    docs       作者写的文档 → 目录 / 单元（包内 README、frontmatter 声明了代码路径的设计文档）
 
-「架构高度」= (出边 − 入边) / (出边 + 入边)，范围 [-1, +1]：
-
-    +1  谁都不依赖它，它依赖一切  → 入口层（CLI、API server）
-     0  双向都多                  → 中间层（引擎、调度）
-    -1  只被依赖，自己不依赖别人  → 叶子工具（协议定义、metrics）
-
-架构高度现在只是详情面板上的一个指标。图的纵轴改成了按依赖分层（layout.layers）：
-出入度比值只看每个模块自己，不看谁连着谁，边会画成往上指。早先不用分层的理由是循环 import——vllm-omni
-上 30 个二级包有 20 个在同一个强连通分量里、缩点后分层信息全丢；layers 不缩点，而是按边的权重打断
-最轻的那些回边（贪心 + sifting），层太多时再压到 16 条泳道。
+图的纵轴是按依赖分层（layout.layers）：循环 import 不缩点，按边的权重打断最轻的那些回边（贪心 + sifting），
+层太多时再压到 16 条泳道。
 """
 from __future__ import annotations
 
@@ -302,91 +293,6 @@ def candidate_roots(root: Path, depth: int = 3) -> list[dict]:
     return out
 
 
-# 设计文档在 frontmatter 里声明自己管哪些代码（vllm-omni 的 docs/design 就是这样），
-# 这几个键下面的列表项是仓库内路径（文件、目录或 dir/**）
-DOC_PATH_KEYS = {"primary_code_paths": "primary", "code_paths": "primary",
-                 "related_code_paths": "related"}
-
-
-def collect_docs(root: Path, files: dict[str, str]) -> dict[str, list]:
-    """把作者写的文档挂到包上：包目录里的 README，和 frontmatter 声明了代码路径的设计文档。
-
-    「为什么这样写」作者往往在文档里写过。详情面板会列出它们，读代码的人先看作者自己的说法，
-    而不是从命名去猜。
-    """
-    dir_pkg: dict[str, str] = {}
-    for rel, unit in files.items():
-        dir_pkg.setdefault(os.path.dirname(rel), _cut.unit_dir(unit))   # README 挂到它所在的目录
-    out: dict[str, dict] = {}
-
-    rank = {"readme": 0, "primary": 1, "related": 2, "mentions": 3}
-
-    def paths_to_pkgs(path: str) -> set[str]:
-        path = path.removesuffix("/**").removesuffix("/*").rstrip("/")
-        if path in files:
-            return {files[path]}
-        return {pkg for fr, pkg in files.items()
-                if fr.startswith(path + "/") or fr.startswith(path + ".")}
-
-    def add(pkg: str, rel: str, kind: str, title: str) -> None:
-        cur = out.setdefault(pkg, {}).get(rel)
-        if cur is None or rank[kind] < rank[cur["kind"]]:
-            out[pkg][rel] = {"f": rel, "kind": kind, "title": title}
-
-    n = 0
-    for dp, dn, fn in os.walk(root):
-        if _is_env(fn, dn):
-            dn[:] = []
-            continue
-        dn[:] = [d for d in dn if not _skip_dir(dp, d)]
-        for f in fn:
-            if not f.lower().endswith(".md"):
-                continue
-            n += 1
-            if n > 5000:
-                break
-            p = Path(dp, f)
-            rel = str(p.relative_to(root))
-            try:
-                if p.stat().st_size > 1_000_000:
-                    continue
-                text = p.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), f)
-            if f.lower().startswith("readme"):
-                pkg = dir_pkg.get(os.path.dirname(rel))
-                if pkg:
-                    add(pkg, rel, "readme", title)
-            if not text.startswith("---"):
-                # 没有 frontmatter 的设计文档常在开头一段写「本文负责 `pkg/sub/**`」：
-                # 开头 40 行里用反引号写出的仓库路径算「提到」（最弱的一档）
-                head = "\n".join(text.splitlines()[:40])
-                for m in re.finditer(r"`([\w./*-]+/[\w./*-]+)`", head):
-                    for pkg in paths_to_pkgs(m.group(1)):
-                        add(pkg, rel, "mentions", title)
-                continue
-            end = text.find("\n---", 3)
-            if end < 0:
-                continue
-            kind = None
-            for line in text[3:end].splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                if not line.startswith((" ", "\t", "-")):          # 新的顶层键
-                    k = s.split(":", 1)[0].strip()
-                    kind = DOC_PATH_KEYS.get(k)
-                    if k == "title":
-                        title = s.split(":", 1)[1].strip().strip('"') or title
-                    continue
-                if kind and s.startswith("- "):
-                    for pkg in paths_to_pkgs(s[2:].strip().strip('"').strip("'")):
-                        add(pkg, rel, kind, title)
-    return {pkg: sorted(v.values(), key=lambda d: (rank[d["kind"]], d["f"]))
-            for pkg, v in out.items()}
-
-
 def module_of(rel: Path) -> str:
     parts = list(rel.parts)
     if parts and parts[-1] == "__init__.py":
@@ -644,7 +550,6 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
     else:
         native_info = {"skipped": native_why}
 
-    # 架构高度
     out: dict[str, int] = {}
     inn: dict[str, int] = {}
     for (a, b), w in edges.items():
@@ -657,7 +562,6 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             "files": pkg_files[p], "loc": pkg_loc.get(p, 0),
             "classes": pkg_cls.get(p, 0), "funcs": pkg_fn.get(p, 0),
             "out": o, "in": i,
-            "alt": round((o - i) / (o + i), 4) if (o + i) else 0.0,
         }
         if p in unit_label:                  # Python 的点分名；原生文件不给，按路径显示
             packages[p]["label"], packages[p]["sep"] = unit_label[p], "."
@@ -703,11 +607,10 @@ def scan(root: Path, depth: int | None = None, roots: list[str] | None = None,
             for p in walk_aux(proj, chosen):
                 add_aux(p, _cut.root_dir(r))
 
-    docs = collect_docs(root, files)
     class_names = {s.name.rsplit(".", 1)[-1] for s in symbols.values() if s.kind == "class"}
     index = {
         "format": _cut.INDEX_FORMAT,
-        "docs": docs, "file_loc": file_loc,
+        "file_loc": file_loc,
         "repo": {"root": str(root), "name": root.name, "roots": roots,
                  "n_files": n_files, "n_parse_errors": n_err,
                  # 哪个文件 import 了哪个模块：文件写路径，模块写 import 语句里的点分名（仓库里没有它，也就没有路径）
@@ -741,12 +644,11 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     files = index.pop("files", {})
     aux = index.pop("aux", {})
     name_refs = index.pop("name_refs", {})
-    docs = index.pop("docs", {})
     file_loc = index.pop("file_loc", {})
     file_sha = index.pop("file_sha", {})
     native_graph = index.pop("native_graph", None)
     (outdir / "symbols.json").write_text(
-        json.dumps({"symbols": symbols, "files": files, "aux": aux, "docs": docs, "file_loc": file_loc,
+        json.dumps({"symbols": symbols, "files": files, "aux": aux, "file_loc": file_loc,
                     "file_sha": file_sha, "name_refs": name_refs},
                    ensure_ascii=False),
         encoding="utf-8")
@@ -755,7 +657,6 @@ def write_index(root: Path, index: dict, outdir: Path | None = None) -> Path:
     p.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     index["symbols"], index["files"], index["aux"] = symbols, files, aux   # 调用方还要用
     index["name_refs"] = name_refs
-    index["docs"] = docs
     index["file_loc"] = file_loc
     index["file_sha"] = file_sha
     if native_graph is not None:

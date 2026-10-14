@@ -50,7 +50,7 @@ def frame_tree(idx: dict, parents: dict, counted) -> tuple[dict, dict]:
     return frame_of, frames
 
 
-def node_details(idx: dict, open_: set, v: dict, ids=None) -> tuple[dict, dict, dict]:
+def node_details(idx: dict, open_: set, v: dict, ids=None) -> tuple[dict, dict]:
     """切面（open_，cut.view 的结果 v）上每个节点的 (顶层类 / 函数, 文件, 文档)：面板的符号、文件树、文档。
     文件含挂在目录上的（C/C++ 文件、目录里的 README）。ids 给了就只要这几个节点的"""
     mem, node_of = v["members"], v["node_of"]
@@ -73,13 +73,7 @@ def node_details(idx: dict, open_: set, v: dict, ids=None) -> tuple[dict, dict, 
         pkg_syms[n] = syms
     for fs in pkg_files.values():
         fs.sort()
-    pkg_docs: dict[str, list] = {}
-    for key, ds in (idx.get("docs") or {}).items():
-        n = node_of.get(key) or _cut.dir_node(idx, open_, key)
-        if n and (want is None or n in want):
-            have = {d["f"] for d in pkg_docs.get(n, [])}
-            pkg_docs.setdefault(n, []).extend(d for d in ds if d["f"] not in have)
-    return pkg_syms, pkg_files, pkg_docs
+    return pkg_syms, pkg_files
 
 
 def short_names(idx: dict, ids, alias: dict) -> tuple[dict, dict]:
@@ -129,7 +123,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     repo_info = dict(idx["repo"])
     repo_info["n_symbols"] = len(idx.get("symbols") or {})
     repo_info["n_units"] = len(idx["packages"])
-    pkg_syms, pkg_files, pkg_docs = node_details(idx, open_, v)
+    pkg_syms, pkg_files = node_details(idx, open_, v)
     # 图上的边只有调用：scan 边（代码里写了、定下了被调方的调用，graph.json）和这次 trace 到的调用。
     # 边的第三项：切面上这条 scan 边底下有几处调用
     kinds = _align.scan_edges_on_cut(idx, node_of)
@@ -169,7 +163,7 @@ def graph_payload(repo: Path, idx: dict, *, hot: dict | None = None,
     names, labels = short_names(idx, set(v["nodes"]) | set(frames), alias)
     return {"repo": repo_info, "graph": g, "graphHot": g_hot, "pkgs": v["nodes"], "names": names, "labels": labels,
             "rootLabel": _cut.sep_join(idx, _cut.root_label(idx)),
-            "pkgSyms": pkg_syms, "pkgFiles": pkg_files, "pkgDocs": pkg_docs,
+            "pkgSyms": pkg_syms, "pkgFiles": pkg_files,
             "fileLoc": idx.get("file_loc") or {},
             "alias": alias, "runtimeOnlyEdges": rt_only,
             "hot": hot_view, "hotMeta": hot_meta, "phaseMarks": phase_marks,

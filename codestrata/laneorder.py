@@ -1,23 +1,16 @@
 """分列里时间顺序的编号（页面上的 1、2、3… 号牌）：按视图算，页面和命令行（explain 24）用同一份。
 
-一个视图里编号的是：画着的列（没收起的进程里、只看列时选中的列）里画着的边（两头的节点都在这一列里，开关没藏掉它）
+一个视图里编号的是：画着的列（没收起的进程里、只看列时选中的列）里画着的边（两头的节点都在这一列里）
 和画着的交接连线（两头落在同一个收起的窄列里的不画），第一次发生在这段时间里的；按 (第一次, 最后一次, 稳定写法) 排——同一时刻的几条按稳定写法比先后，
 不按列表下标（换个切面、收起个进程，同一时刻的几条不会互换）。
 """
 from __future__ import annotations
 
 
-def edge_hidden(e: dict, hide: set[str]) -> bool:
-    """这条边被开关藏起来没有：hide 里有 hot（「这次跑了」关了）就藏全部；有 dyn（「其中代码里看不出」关了）只藏全是看不出的"""
-    dashed = e.get("n", 0) > 0 and e.get("only", 0) >= e["n"]
-    return "hot" in hide or (dashed and "dyn" in hide)
-
-
-def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, hide: set[str] | None = None,
-         lanes: set[str] | None = None) -> dict:
+def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, lanes: set[str] | None = None) -> dict:
     """{"keys": {页面上的 key（e:列 id|a|b、l:下标）: 名次（从 0 数）}, "ids": [按名次的稳定写法], "n"}。
-    fold：收起的进程；hide：藏起的边（hot / dyn）；lanes：只看的列 id（None 是全部）"""
-    fold, hide = fold or set(), hide or set()
+    fold：收起的进程；lanes：只看的列 id（None 是全部）"""
+    fold = fold or set()
     lo, hi = (L.get("window") or [0, 0])[:2]
     items = []
     for ln in L["lanes"]:
@@ -25,7 +18,7 @@ def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, hide: s
             continue
         al = aliases.get(ln["id"], ln["id"])
         for e in ln.get("edges") or []:
-            if e["a"] not in ln["nodes"] or e["b"] not in ln["nodes"] or edge_hidden(e, hide):
+            if e["a"] not in ln["nodes"] or e["b"] not in ln["nodes"]:
                 continue
             if e.get("first") is not None and lo <= e["first"] <= hi:
                 items.append((e["first"], e.get("last") or 0, f"e:{al}|{e['a']}|{e['b']}", f"e:{ln['id']}|{e['a']}|{e['b']}"))
@@ -48,7 +41,7 @@ def rank(L: dict, aliases: dict[str, str], fold: set[int] | None = None, hide: s
     return {"keys": {x[3]: r for r, x in enumerate(items)}, "ids": [x[2] for x in items], "n": len(items)}
 
 
-def rank_view(L: dict, aliases: dict[str, str], proc_aliases: dict, fold: list[str], hide: list[str], lanes: list[str]) -> dict:
+def rank_view(L: dict, aliases: dict[str, str], proc_aliases: dict, fold: list[str], lanes: list[str]) -> dict:
     """按视图描述里的写法算编号（页面的 /api/lanes、命令行的 explain N 共用）：收起的进程写别名、只看的列写选择器；
     画哪些列按 laneid.view_lanes：没写只看的列时按 L 的 default_lanes（转一手的列默认收起，lanedefault.py），全是 +选择器时默认再放出它们，
     选择器在这一段里一列都对不上时画全部列（同 lanes=*）。
@@ -56,4 +49,4 @@ def rank_view(L: dict, aliases: dict[str, str], proc_aliases: dict, fold: list[s
     from . import laneid as _laneid
     procs = {a: int(pid) for pid, a in proc_aliases.items()}
     want = _laneid.view_lanes(lanes, aliases, L.get("default_lanes"))
-    return rank(L, aliases, fold={procs[a] for a in fold if a in procs}, hide=set(hide), lanes=want)
+    return rank(L, aliases, fold={procs[a] for a in fold if a in procs}, lanes=want)

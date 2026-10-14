@@ -6,12 +6,12 @@
                                   （页面上放回去的链接）；命令行拿页面地址当 REF 时问它是哪个仓库；features 有 view 才能推视图
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
-    GET  /api/lanes?run=&open=&cuts=&fold=&hide=&lanes=&chain=   chain：页面高亮的链（chainview：范围~起点~--link…）
+    GET  /api/lanes?run=&open=&cuts=&fold=&lanes=&chain=   chain：页面高亮的链（chainview：范围~起点~--link…）
                                   按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
                                   加上节点信息、框、名字、子层（ui/lanesview.py）。open 是共用的切面，
                                   cuts（JSON [{"lanes": [列 id…], "open": [目录…]}…]）是各列自己的切面。
                                   每列的 names 是图上的名字 {id: 字}，合进来的线程原名在 thread_names；aliases 是列别名、
-                                  proc_aliases 是进程别名；order 是这个视图（fold 收起的进程、hide 藏起的边、lanes 只看的列）
+                                  proc_aliases 是进程别名；order 是这个视图（fold 收起的进程、lanes 只看的列）
                                   里时间顺序的编号（laneorder.py）。进程按这一段里开始干活的先后排（segments.proc_order），
                                   procinfo 是进程头上「它在干什么」的那一句 {pid: {parts, title}}（procinfo.py），
                                   default_lanes 是没写 lanes= 时默认看的列（转一手的收起，lanedefault.py；null 是全部），
@@ -35,14 +35,12 @@
     GET  /api/open?f=&l=          让本机编辑器跳到 file:line（要带 X-Codestrata 头：别的网页触发不了）
     POST /api/view…、GET /api/view…  agent 推给页面的视图、页面回报的现状（viewhub.py：只在内存里）。读写都要 X-Codestrata 头，
                                   POST 还要 application/json、请求体 ≤ 64 KB
-    GET  /code/<path>?l=N         整个文件，带行号锚点
 
 只用标准库。只监听 127.0.0.1，Host 头必须是本机这个端口（防 DNS rebinding）；所有路径 realpath 后
 必须落在仓库内。起来之后在配置目录登记（serves.py），退出（含 SIGTERM）时删掉。
 """
 from __future__ import annotations
 
-import html
 import json
 import mimetypes
 import os
@@ -89,30 +87,6 @@ def _editor() -> list[str] | None:
         if p:
             return [p, "-g"] if e != "subl" else [p]
     return None
-
-
-def _code_page(repo: Path, rel: str, line: int) -> str:
-    try:
-        src = (repo / rel).read_text(encoding="utf-8", errors="replace").split("\n")
-    except OSError as exc:
-        return f"<pre>读不到 {html.escape(rel)}: {html.escape(str(exc))}</pre>"
-    rows = "".join(
-        f'<tr{" class=hi" if i == line else ""} id="L{i}"><td class="n"><a href="#L{i}">{i}</a></td>'
-        f'<td class="c">{html.escape(ln) or "&nbsp;"}</td></tr>'
-        for i, ln in enumerate(src, 1))
-    q = urllib.parse.quote(rel)
-    return f"""<!doctype html><meta charset="utf-8"><title>{html.escape(rel)}:{line}</title>
-<style>:root{{color-scheme:light dark;--bg:#f6f7f9;--fg:#11161f;--mut:#8a94a3;--hi:#fdf3e2;--line:#e6e9ef}}
-@media(prefers-color-scheme:dark){{:root{{--bg:#10141b;--fg:#e6eaf1;--mut:#697485;--hi:#2a2113;--line:#242b37}}}}
-body{{margin:0;background:var(--bg);color:var(--fg);font:12px/1.62 ui-monospace,Menlo,monospace}}
-header{{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:9px 14px;display:flex;gap:12px}}
-header a{{color:inherit}}.sp{{margin-left:auto}}table{{border-collapse:collapse;width:100%}}
-td.n{{text-align:right;color:var(--mut);padding:0 10px 0 14px;user-select:none;width:1%;border-right:1px solid var(--line)}}
-td.n a{{color:inherit;text-decoration:none}}td.c{{padding:0 14px;white-space:pre}}tr.hi{{background:var(--hi)}}</style>
-<header><b>{html.escape(rel)}</b>:{line}<span class="sp"></span>
-<a href="/api/open?f={q}&l={line}" onclick="fetch(this.href,{{headers:{{'{HEADER}':'1'}}}});return false">在编辑器打开</a>
-<a href="/">← 回到图</a></header><table>{rows}</table>
-<script>location.hash||(location.hash='#L{line}');</script>"""
 
 
 def asset(name: str) -> tuple[bytes, str] | None:
@@ -312,7 +286,7 @@ class Handler(BaseHandler):
     def _lanes(self, q: dict, order_only: bool = False):
         """/api/lanes：按进程 · 线程分列（lanes.build + lanesview.decorate），加上每列的别名（aliases）、进程别名（proc_aliases）、
         这个视图里时间顺序的编号（order，laneorder.py）。run 必填，@阶段（或 @t=）决定时间段，open 是共用的切面，
-        cuts 是各列自己的切面；fold（收起的进程，别名）、hide（藏起的边：hot / dyn）、lanes（只看的列，选择器）只影响编号。
+        cuts 是各列自己的切面；fold（收起的进程，别名）、lanes（只看的列，选择器）只影响编号。
         order_only（/api/laneorder）：只回编号——收起进程、切开关时页面不用重取整张图"""
         ref = (q.get("run") or [""])[0].strip()
         if not ref:
@@ -362,10 +336,10 @@ class Handler(BaseHandler):
             return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
 
     def _order(self, L: dict, q: dict) -> dict:
-        """这个视图（fold / hide / lanes）里时间顺序的编号（laneorder.rank_view：和命令行的 explain N 同一份）"""
+        """这个视图（fold / lanes）里时间顺序的编号（laneorder.rank_view：和命令行的 explain N 同一份）"""
         def arg(k: str) -> list[str]:
             return [x for x in ((q.get(k) or [""])[0]).split(",") if x]
-        return _laneorder.rank_view(L, L["aliases"], L.get("proc_aliases") or {}, arg("fold"), arg("hide"), arg("lanes"))
+        return _laneorder.rank_view(L, L["aliases"], L.get("proc_aliases") or {}, arg("fold"), arg("lanes"))
 
     def _proc_order(self, rd: Path, run: dict, phase: str | None) -> dict:
         """进程的先后：这一段里开始干活的先后（分列和请求路径同一个；轮头按装着这一段的阶段认，和命令行一样）"""
@@ -551,16 +525,6 @@ class Handler(BaseHandler):
                 return self._send(501, "没找到编辑器 CLI（code / cursor …）".encode(), "text/plain; charset=utf-8")
             subprocess.Popen(ed + [f"{p}:{line}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return self._send(204, b"")
-
-        if path.startswith("/code/"):
-            rel = urllib.parse.unquote(path[len("/code/"):])
-            try:
-                line = int((q.get("l") or ["1"])[0])
-            except ValueError:
-                line = 1
-            if not self._in_repo(rel):
-                return self._send(404, b"not found", "text/plain")
-            return self._send(200, _code_page(self.repo, rel, line).encode())
 
         return self._asset(path)
 

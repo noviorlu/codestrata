@@ -274,13 +274,6 @@ export default async function (t) {
   await page.key('Escape', 'Escape', 27);
   ok(await page.wait(`!CS.lanes.sel && !document.querySelector('#g .ln-link.sel')`, 3000), 'Esc 全部取消');
 
-  // 「这次跑了」关掉：列里的边藏起来；打开回来
-  await page.click('#edgechips [data-t="hot"]');
-  ok(await page.wait(`CS.lanes.edges.every(E => !E.show) && [...document.querySelectorAll('#g .ln-e')].every(p => p.style.display === 'none')`, 3000),
-     '「这次跑了」关掉：列里的边藏起来');
-  await page.click('#edgechips [data-t="hot"]');
-  ok(await page.wait(`CS.lanes.edges.some(E => E.show)`, 3000), '再打开：回来');
-
   // 收起一个进程：它的几列合成一条；再点展开
   const n0 = await page.ev(`document.querySelectorAll('#g .ln-col:not(.fold)').length`);
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见

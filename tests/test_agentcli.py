@@ -296,31 +296,25 @@ def test_path():
     assert "BrokenPipe" not in p.stderr and "Traceback" not in p.stderr, p.stderr
 
 
-def test_runs_json_and_wait():
-    """runs ls / show --json：信封，带各阶段的微秒窗口；runs wait 对录完的 run 立刻返回；写错名字退出码 3"""
+def test_runs_json():
+    """runs ls / show --json：信封，带各阶段的微秒窗口"""
     repo, rid = truth()
     j = one_json(cs("runs", repo, "ls", "--json"))
     r0 = next(r for r in j["data"]["runs"] if r["id"] == rid)
     assert j["ok"] and [p["name"] for p in r0["phases"]] == ["start", "work"] and r0["end_us"] > 0, r0
     j = one_json(cs("runs", repo, "show", "truth", "--json"))
     assert j["data"]["run"]["id"] == rid and j["data"]["rerun"] and j["data"]["phases"], j["data"].keys()
-    r = cs("runs", repo, "wait", "truth")
-    assert rid in r.stdout and "ok" in r.stdout, r.stdout
-    r = csc("runs", repo, "wait", "nope", "--json", cwd=HERE.parent)
-    assert r.returncode == 3 and one_json(r)["error"]["code"] == "run_not_found", r.stdout
 
 
-def test_trace_json_and_phase_names():
-    """trace --json：被录程序的输出和摘要都在 stderr，stdout 只有一个信封；case 脚本写来的阶段名里的怪字符换成 _"""
+def test_phase_names_sanitized():
+    """case 脚本写来的阶段名里的怪字符换成 _"""
     repo = fresh()
     script = repo / "case.sh"
     script.write_text(f'echo "a b/c" > "$CODESTRATA_OUT/PHASE"; sleep 0.3; {shlex.quote(PY)} -c '
-                      "\"print('child says hi'); from fakesvc import work; work.init_model()\"\n")
-    r = csc("trace", repo, "--case", "pj", "--json", "--", "bash", str(script), cwd=HERE.parent)
-    j = one_json(r)
-    assert r.returncode == 0 and j["ok"] and j["cmd"] == "trace" and "child says hi" in r.stderr, (r.stdout, r.stderr[-500:])
+                      "\"from fakesvc import work; work.init_model()\"\n")
+    cs("trace", repo, "--case", "pj", "--", "bash", str(script))
+    j = one_json(cs("runs", repo, "show", "pj", "--json"))
     assert [p["name"] for p in j["data"]["phases"]] == ["start", "a_b_c"], j["data"]["phases"]
-    assert j["next"] and j["next"][0]["effect"] == "read"
 
 
 def test_read_commands_do_not_migrate():
@@ -352,7 +346,7 @@ def test_serve_port_in_use():
 
 
 def _recording_copy(repo, rid, sleeper):
-    """把录好的 run 拷一份成「正在录」的（id 更新、driver 指向一个活着的进程）：runs wait、newer_recording 用"""
+    """把录好的 run 拷一份成「正在录」的（id 更新、driver 指向一个活着的进程）：newer_recording 用"""
     import shutil
     from codestrata.trace import driver
     base = repo / ".codestrata" / "runs"
@@ -366,29 +360,19 @@ def _recording_copy(repo, rid, sleeper):
 
 
 def test_recording_runs():
-    """同一个 case 有一次更新的正在录：runs wait <case> 等的是它（超时退出码 4、下一步给更长的 --timeout）；
-    status <case> 用录完的那次并警告 newer_recording；lanes 读正在录的报 recording、下一步 runs wait；driver 没了是 interrupted"""
+    """同一个 case 有一次更新的正在录：status <case> 用录完的那次并警告 newer_recording；lanes 读正在录的报 recording、下一步 runs show"""
     repo, rid = truth()
     sleeper = subprocess.Popen(["sleep", "60"])
     nid = None
     try:
         nid = _recording_copy(repo, rid, sleeper)
-        r = csc("runs", "wait", "truth", "--timeout", "1", "--json", cwd=repo)
-        j = one_json(r)
-        assert r.returncode == 4 and j["error"]["code"] == "recording" and nid in j["error"]["msg"], j
-        assert "--timeout 2" in j["next"][0]["cmd"], j["next"]
         j = one_json(csc("status", "truth", "--json", cwd=repo))
         assert j["data"]["run"]["id"] == rid and any(w["code"] == "newer_recording" and nid in w["msg"] for w in j["warnings"]), j
         r = csc("lanes", nid, "--json", cwd=repo)
         j = one_json(r)
-        assert r.returncode == 4 and j["error"]["code"] == "recording" and "runs wait" in j["next"][0]["cmd"], j
+        assert r.returncode == 4 and j["error"]["code"] == "recording" and "runs show" in j["next"][0]["cmd"], j
         j = one_json(csc("status", nid, "--json", cwd=repo))
-        assert j["data"]["run"]["status"] == "recording" and "runs wait" in j["next"][0]["cmd"], j
-        sleeper.kill()
-        sleeper.wait()
-        j = one_json(csc("runs", "wait", "truth", "--json", cwd=repo))
-        assert j["data"]["status"] == "interrupted" and "runs merge" in j["next"][0]["cmd"], j
-        assert j["next"][0]["effect"] == "write"
+        assert j["data"]["run"]["status"] == "recording" and "runs show" in j["next"][0]["cmd"], j
     finally:
         sleeper.kill()
         if nid:
@@ -498,9 +482,6 @@ def test_runs_text_and_json_agree():
     j = one_json(cs("runs", "ls", "-C", repo, "--json"))
     row = next(x for x in j["data"]["runs"] if x["id"] == rid)
     assert row["status"] == "ok" and row["phases"][0].keys() >= {"name", "t0_us", "t1_us", "n_funcs"}, row
-    r = csc("trace", repo, "--case", "bad", "--json", "--", PY, "-c", "pass", cwd=HERE.parent)
-    j = one_json(r)
-    assert r.returncode == 4 and j["error"]["code"] == "failed_run" and "runs show" in j["next"][0]["cmd"], (r.returncode, j)
 
 
 if __name__ == "__main__":

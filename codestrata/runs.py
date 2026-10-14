@@ -168,7 +168,7 @@ def _dists(site_dirs) -> dict:
 # ---------------------------------------------------------------- 录制：建目录、收尾
 
 def new_run(repo: Path, *, case: str, cmd: list[str], cwd: Path, env: dict | None = None,
-            tags: list[str] | None = None, note: str = "", rec: dict | None = None,
+            note: str = "", rec: dict | None = None,
             invocation: dict | None = None, env_inherited: dict | None = None) -> Path:
     """建一个新的 run 目录（状态 recording）并返回它；各进程往 <run>/parts 里写。
     rec 是录制参数（timeout、stop_grace、attach、events、phase_at），老 run 没存原始命令时拼复刻命令用。
@@ -195,7 +195,7 @@ def new_run(repo: Path, *, case: str, cmd: list[str], cwd: Path, env: dict | Non
             "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname(),
             "cmd": list(cmd), "cwd": str(cwd), "env": dict(env or {}), "git": git,
             "clock": {"mono0_ns": time.monotonic_ns(), "wall0": time.time()},
-            "rec": dict(rec or {}), "tags": list(tags or []), "note": note or "",
+            "rec": dict(rec or {}), "note": note or "",
             "invocation": invocation, "env_inherited": dict(env_inherited or {})})
         (rd / "parts").mkdir()
     except BaseException:
@@ -716,7 +716,7 @@ def brief(r: dict, rd: Path, stale: dict | None) -> dict:
     return {"id": r["id"], "case": r.get("case"), "status": r.get("status_shown") or r.get("status"),
             "problems": r.get("problems") or [], "created": r.get("created"),
             "duration_s": r.get("duration_s"), "git": (r.get("git") or {}).get("commit"),
-            "tags": r.get("tags") or [], "note": r.get("note") or "",
+            "note": r.get("note") or "",
             "phases": [{"name": p["name"], "n_funcs": p.get("n_funcs")} for p in r.get("phases") or []],
             "n_procs_active": sm.get("n_procs_active"), "n_funcs": sm.get("n_funcs"),
             "events": bool(ev and not ev.get("error")), "events_error": bool(ev and ev.get("error")),
@@ -863,7 +863,7 @@ def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> t
             "procs": [{**p, "argv": _redact_argv(p.get("argv") or [])} for p in procs_grouped(detail.get("procs"))],
             "script": script,
             "run_id": run["id"], "status": run.get("status"), "problems": run.get("problems") or [],
-            "git": run.get("git"), "tags": run.get("tags") or [], "note": run.get("note") or "",
+            "git": run.get("git"), "note": run.get("note") or "",
             "created": run.get("created"), "migrated_from": run.get("migrated_from"),
             # 改过的文件里按名字对不上的键（lambda、改了名的、老 run 没存名字的）：这些调用的叠加可能偏
             "unmatched": len(unmatched), "events": run.get("events"),
@@ -892,17 +892,6 @@ def _update(rd: Path, fn) -> dict:
     fn(run)
     _write(rd / "run.json", run)
     return run
-
-
-def set_tags(repo: Path, ref: str, tags: list[str], remove: bool = False) -> dict:
-    _, rd, _ = resolve(repo, ref)
-
-    def f(run):
-        cur = [t for t in run.get("tags") or [] if not (remove and t in tags)]
-        if not remove:
-            cur += [t for t in tags if t not in cur]
-        run["tags"] = cur
-    return _update(rd, f)
 
 
 def set_note(repo: Path, ref: str, text: str) -> dict:
@@ -1108,8 +1097,6 @@ def rerun_command(run: dict, repo: Path, with_env: bool = False, redact: bool = 
         parts.extend(rec["roots"])
     for t in rec.get("phase_at") or []:
         parts.append(f"--phase={t['name']}={t['func']}")
-    for t in run.get("tags") or []:
-        parts.append(f"--tag={t}")
     if run.get("note"):
         parts.append(f"--note={run['note']}")
     cmd = list(run.get("cmd") or [])

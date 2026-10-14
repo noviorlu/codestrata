@@ -17,9 +17,6 @@ def known_file(idx: dict, rel: str) -> str | None:
         return idx["files"][rel]
     if rel in (idx.get("aux") or {}):
         return idx["aux"][rel] or "(无所属包)"
-    for pkg, ds in (idx.get("docs") or {}).items():         # 挂在目录 / 单元上的文档也能打开
-        if any(d["f"] == rel for d in ds):
-            return pkg
     return None
 
 

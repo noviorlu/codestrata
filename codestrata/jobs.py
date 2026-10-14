@@ -42,7 +42,7 @@ def scan_argv(repo: Path, roots: list[str]) -> list[str]:
 class TraceSpec:
     """「录制运行」表单。command 是一行 shell 风格的命令，在 cwd 执行（None：仓库根目录，和 trace 默认一样），
     phases 是 [[阶段名, 函数], …]（trace --phase 的 名字=函数），env 是 trace --env 的 K=V。
-    tags / roots / stop_grace 表单上不显示，只是从一个 run 复刻时原样带过去"""
+    roots / stop_grace 表单上不显示，只是从一个 run 复刻时原样带过去"""
     repo: str
     case: str
     command: str
@@ -52,7 +52,6 @@ class TraceSpec:
     events: bool = True
     note: str = ""
     attach: list = field(default_factory=list)
-    tags: list = field(default_factory=list)
     roots: list | None = None
     stop_grace: float | None = None
     cwd: str | None = None
@@ -71,18 +70,18 @@ class TraceSpec:
                 raise ValueError(f"{k} 要是秒数：{v!r}") from None
 
         phases, env = d.get("phases") or [], d.get("env") or {}
-        attach, tags, roots = d.get("attach") or [], d.get("tags") or [], d.get("roots")
+        attach, roots = d.get("attach") or [], d.get("roots")
         if not (isinstance(phases, list) and all(isinstance(p, list) and len(p) == 2 for p in phases)):
             raise ValueError("phases 要是 [[名字, 函数], …]")
-        if not (isinstance(env, dict) and isinstance(attach, list) and isinstance(tags, list)
+        if not (isinstance(env, dict) and isinstance(attach, list)
                 and (roots is None or isinstance(roots, list))):
-            raise ValueError("env 要是 {K: V}，attach / tags / roots 要是列表")
+            raise ValueError("env 要是 {K: V}，attach / roots 要是列表")
         return cls(repo=str(d.get("repo") or ""), case=str(d.get("case") or "").strip(),
                    command=str(d.get("command") or "").strip(),
                    phases=[[str(a).strip(), str(b).strip()] for a, b in phases if str(a).strip() or str(b).strip()],
                    env={str(k).strip(): str(v) for k, v in env.items() if str(k).strip()},
                    timeout=seconds("timeout"), events=bool(d.get("events", True)), note=str(d.get("note") or ""),
-                   attach=[str(a) for a in attach if str(a).strip()], tags=[str(t) for t in tags],
+                   attach=[str(a) for a in attach if str(a).strip()],
                    roots=[str(r) for r in roots] if roots is not None else None, stop_grace=seconds("stop_grace"),
                    cwd=cls._run_dir(str(d.get("repo") or ""), str(d.get("cwd") or "").strip()))
 
@@ -103,7 +102,7 @@ class TraceSpec:
                    phases=[[p["name"], p["func"]] for p in rec.get("phase_at") or []],
                    env=dict(run.get("env") or {}), timeout=rec.get("timeout"),
                    events=bool(rec.get("events")), note="", attach=list(rec.get("attach") or []),
-                   tags=list(run.get("tags") or []), roots=rec.get("roots"), stop_grace=rec.get("stop_grace"),
+                   roots=rec.get("roots"), stop_grace=rec.get("stop_grace"),
                    cwd=cwd)
 
     def validate(self, symbols: dict | None) -> None:
@@ -147,7 +146,6 @@ class TraceSpec:
         a += [f"--phase={n}={f}" for n, f in self.phases]
         a += [f"--env={k}={v}" for k, v in self.env.items()]
         a += [f"--attach={p}" for p in self.attach]
-        a += [f"--tag={t}" for t in self.tags]
         if self.note:
             a.append(f"--note={self.note}")
         if self.roots is not None:

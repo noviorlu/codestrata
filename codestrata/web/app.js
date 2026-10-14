@@ -198,20 +198,6 @@ window.CS = window.CS || {};
       });
     },
 
-    /* 读图须知：叠着 run 时在图上面一行（关掉记在浏览器里，「?」的说明里一直有） */
-    readNote: function (on) {
-      var el = document.getElementById('readnote'), self = this;
-      if (!el) return;
-      el.hidden = !on || !!this._load('codestrata.readnote').off;
-      if (el.hidden || el._done) return;
-      el._done = true;
-      el.innerHTML = '<b>读图须知</b><span>' + READ_NOTE + '</span>'
-        + '<button class="chip" data-help>更多</button>'
-        + '<button class="rnx" aria-label="不再显示读图须知" title="不再显示（「?」里一直有）">×</button>';
-      el.querySelector('[data-help]').onclick = function () { self.help(true); };
-      el.querySelector('.rnx').onclick = function () { el.hidden = true; self._save('codestrata.readnote', { off: 1 }); };
-    },
-
     help: function (on) {
       var p = document.getElementById('help');
       p.hidden = !on;
@@ -300,17 +286,6 @@ window.CS = window.CS || {};
           setTimeout(function () { b.textContent = '复制'; }, 1600);
         });
       });
-    },
-
-    /* 「复刻」按钮：打开帮助、滚到复刻命令那里 */
-    showRerun: function () {
-      this.help(true);
-      var r = document.getElementById('rerun');
-      if (!r) return;
-      r.scrollIntoView({ block: 'nearest' });
-      r.classList.remove('flash');
-      void r.offsetWidth;
-      r.classList.add('flash');
     },
 
     /* ---- 叠哪个 run：静态图 / 某一次录下的运行，分了阶段的再选阶段。
@@ -410,11 +385,6 @@ window.CS = window.CS || {};
       }
       b.classList.toggle('on', !!m);
       b.textContent = m ? m.case + ' · ' + shortTime(m.created) : '静态图';
-      var rb = document.getElementById('rerunbtn');
-      if (rb) {
-        rb.hidden = !(m && m.rerun);
-        rb.onclick = function () { self.showRerun(); };
-      }
       b.title = m ? 'run ' + m.run_id + '（点开换一个）' : '现在只看静态图；点开选一次录下的运行叠上去';
       var run = m && (this.runList || []).filter(function (x) { return x.id === m.run_id; })[0];
       // 时间轴：阶段按钮 + 时间条（录了时序事件的还能在条上拖出任意一段时间；老 run 不知道多长就只有按钮）
@@ -547,8 +517,7 @@ window.CS = window.CS || {};
         h += '<div class="rg">' + esc(c) + '</div>';
         by[c].forEach(function (x) {
           var ok = x.status === 'ok', ph = (x.phases || []).filter(function (p) { return p.name; });
-          var meta = (x.tags || []).map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('')
-            + (x.git ? 'git <b>' + esc(x.git.slice(0, 8)) + '</b>　' : '')
+          var meta = (x.git ? 'git <b>' + esc(x.git.slice(0, 8)) + '</b>　' : '')
             + (x.n_procs_active != null ? x.n_procs_active + ' 个进程　' : '')
             + (ph.length > 1 ? ph.map(function (p) { return esc(p.name) + ' ' + p.n_funcs; }).join(' / ') + '　'
                : x.n_funcs != null ? x.n_funcs + ' 个函数　' : '')
@@ -612,21 +581,13 @@ window.CS = window.CS || {};
         + '　展开的目录画成一个框，框里的子模块仍按自己的高度落在各条泳道里。</span>'
         + (d.hot ? '<br><b>读图须知</b>：' + READ_NOTE + '「未归到命名符号的调用」是进 lambda、生成器表达式'
                    + '（3.12 之前还有推导式）这类没有名字的代码的次数：算到文件和模块上，不单列函数，边详情里写成「外层函数.&lt;L行&gt;」。' : '');
-      var st = [['文件', r.n_files], ['模块', r.n_units || 0], ['图上节点', d.graph.nodes.length],
-                ['符号', r.n_symbols || 0], ['图上的边', d.graph.edges.length],
-                ['解析失败', r.n_parse_errors]];
-      var hm = d.hot && d.hotMeta;
+      var hm = d.hot && d.hotMeta, stale = hm && hm.stale_files && hm.stale_files.length;
+      // 页头只在有问题时说一句：解析失败的文件、录制后改过的文件（细节在「?」里）
       document.getElementById('stats').innerHTML =
-        st.map(function (p) { return '<span>' + p[0] + ' <b>' + p[1] + '</b></span>'; }).join('')
-        // hot 图：上面只留一个标记，来历（阶段、进程、安装包映射、命令）在「?」里
-        + (hm ? '<button class="hottag" data-help title="这次 trace 的情况在帮助里">hot <b>' + esc(hm.case)
-                 + (hm.phase ? '@' + esc(CS.timebar.label(hm.phase)) : '') + '</b>'
-                 + (hm.stale_files && hm.stale_files.length ? ' <span style="color:var(--stale)">⚠ 录制后有文件改过</span>' : '')
-                 + '</button>' : '');
-      var ht = document.querySelector('#stats [data-help]');
-      if (ht) ht.onclick = function () { self.help(true); };
+        (r.n_parse_errors ? '<button class="hottag" data-help>解析失败 <b>' + r.n_parse_errors + '</b> 个文件</button>' : '')
+        + (stale ? '<button class="hottag" data-help style="color:var(--stale)">⚠ 录制后有文件改过</button>' : '');
+      [].forEach.call(document.querySelectorAll('#stats [data-help]'), function (b) { b.onclick = function () { self.help(true); }; });
       this.runBar();
-      this.readNote(!!(d.hot && d.hotMeta));
       if (!(d.hot && d.hotMeta)) document.getElementById('hotbanner').innerHTML = '';
       if (d.hot && d.hotMeta) {
         var m = d.hotMeta;
@@ -672,9 +633,10 @@ window.CS = window.CS || {};
       var c = CS.graph.counts, hot = !!CS.graph.hot, s = CS.graph.state;
       var defs = [['scan', 'e', '代码里的调用', c.scan, '代码里写了、scan 定下了被调方的调用（灰实线；跑到了的画成橙色）', false]];
       if (hot) {
+        // 「这次跑了」「其中代码里看不出」只是图例（不能点）
         defs.push(['hot', 'e warm', '这次跑了', c.warm + c.dyn, '这次 case 真的调用过的边（橙色）；粗细不变，边上标调用次数。'
-                   + (c.dyn ? '其中 ' + c.dyn + ' 条跑到的全是代码里看不出的，画虚线，后一个开关单独管它们' : ''), true]);
-        if (c.dyn) defs.push(['dyn', 'e dyn warm', '其中代码里看不出', c.dyn, DYN_TIP + (s.hot === false ? '。要先开「这次跑了」' : ''), true]);
+                   + (c.dyn ? '其中 ' + c.dyn + ' 条跑到的全是代码里看不出的，画虚线' : ''), true, 1]);
+        if (c.dyn) defs.push(['dyn', 'e dyn warm', '其中代码里看不出', c.dyn, DYN_TIP, true, 1]);
         if (this.canTimeOrder())
           defs.push(['timeorder', '', '时间顺序', CS.graph.state.timeOrder ? (this.lanesMode() ? CS.lanes.timed : 0) || 0 : '',
                      '跑到的边按第一次被调用的先后上色（早 → 晚）、在中点标序号；↻ 是整段时间里反复调用的。'
@@ -685,16 +647,17 @@ window.CS = window.CS || {};
       var ffb = fa && fa.closest && fa.closest('#edgechips [data-focus]'), ff = ffb ? ffb.getAttribute('data-focus') : null;   // 焦点在「全部显示 / 回到默认」上：重写之后放回去（键盘接着按）
       document.getElementById('edgechips').innerHTML = defs.map(function (x) {
         var tm = x[0] === 'timeorder';            // 时间顺序：开关上画一段起点色 → 终点色的渐变线
-        return '<button class="chip lg' + (x[5] ? ' rt' : '') + '" data-t="' + x[0] + '" aria-pressed="'
-          + (tm ? !!s.timeOrder : s[x[0]] !== false) + '"' + (x[0] === 'dyn' && s.hot === false ? ' disabled' : '') + ' title="'
-          + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true">'
+        var tag = x[6] ? 'span' : 'button';         // 图例是 span，开关是 button
+        return '<' + tag + ' class="chip lg' + (x[5] ? ' rt' : '') + (x[6] ? ' legend' : '') + '" '
+          + (x[6] ? 'data-lg="' + x[0] + '"' : 'data-t="' + x[0] + '" aria-pressed="' + (tm ? !!s.timeOrder : s[x[0]] !== false) + '"')
+          + ' title="' + esc(x[4]) + '"><svg width="22" height="8" aria-hidden="true">'
           // 渐变按用户坐标铺：默认的 objectBoundingBox 在水平线上（包围盒高 0）不画，线就没了
           + (tm ? '<defs><linearGradient id="tmchip" gradientUnits="userSpaceOnUse" x1="0" y1="4" x2="22" y2="4">'
                   + '<stop offset="0" style="stop-color:var(--tm0)"/>'
                   + '<stop offset=".5" style="stop-color:var(--tm1)"/><stop offset="1" style="stop-color:var(--tm2)"/></linearGradient></defs>'
                   + '<line x1="0" y1="4" x2="22" y2="4" stroke="url(#tmchip)" style="stroke-width:2.4"/>'
                 : '<line x1="0" y1="4" x2="22" y2="4" class="' + x[1] + '" style="stroke-width:1.8"/>')
-          + '</svg>' + x[2] + ' <span class="n">' + x[3] + '</span></button>';
+          + '</svg>' + x[2] + ' <span class="n">' + x[3] + '</span></' + tag + '>';
       }).join('')
         + (s.timeOrder && CS.graph.times ? '<span class="tmleg" title="颜色按第一次被调用的先后排名：最早的在左边那头，最晚的在右边那头">'
            + '早<i class="tmbar"></i>晚　<b class="tp" style="background:var(--tm0)">3</b> 第几个开始的　'
@@ -997,8 +960,7 @@ window.CS = window.CS || {};
 
     controls: function () {
       var s = CS.graph.state, self = this;
-      var KEY = { scan: 'scan', hot: 'hot', dyn: 'dyn', onlyhot: 'onlyHot',
-                  timeorder: 'timeOrder' };
+      var KEY = { scan: 'scan', onlyhot: 'onlyHot', timeorder: 'timeOrder' };
       [].forEach.call(document.querySelectorAll('[data-t]'), function (b) {
         var key = KEY[b.dataset.t];
         if (key === 'onlyHot') {                 // 换 run 时会来回切：没叠 runtime 就藏起来
@@ -1012,7 +974,6 @@ window.CS = window.CS || {};
           // 「只看跑到的」换成单独排版的 hot 图，而不是在总图上隐藏——隐藏的节点还占着位置
           if (key === 'onlyHot' && self.data.graphHot) self.redraw();
           else if (key === 'timeOrder') self.applyTimes();
-          else if (key === 'hot') { self.repaint(); self.edgeChips(); self.controls(); }   // 「其中代码里看不出」跟着它能不能点
           else { self.repaint(); if (self.lanesMode()) { self.edgeChips(); self.controls(); } }
           CS.view.changed('toggle');
         };

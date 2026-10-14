@@ -164,7 +164,7 @@ window.CS = window.CS || {};
       var d = CS.app.data, info = L.info || {}, more = L.more || {};
       function ext(o) { return Object.assign({}, o || {}); }
       var m = Object.assign({}, d, { pkgs: ext(d.pkgs), names: ext(d.names), labels: ext(d.labels),
-                                     pkgSyms: ext(d.pkgSyms), pkgFiles: ext(d.pkgFiles), pkgDocs: ext(d.pkgDocs) });
+                                     pkgSyms: ext(d.pkgSyms), pkgFiles: ext(d.pkgFiles) });
       var hot = d.hot ? Object.assign({}, d.hot, { packages: ext(d.hot.packages) }) : null;
       Object.keys(info).forEach(function (id) {
         var v = info[id];
@@ -174,7 +174,7 @@ window.CS = window.CS || {};
         if (hot && hot.packages[id] == null && v.hits) hot.packages[id] = v.hits;
       });
       Object.keys(more).forEach(function (id) {
-        m.pkgSyms[id] = more[id].syms; m.pkgFiles[id] = more[id].files; m.pkgDocs[id] = more[id].docs;
+        m.pkgSyms[id] = more[id].syms; m.pkgFiles[id] = more[id].files;
       });
       m.hot = hot;
       CS.panel.setData(m);
@@ -729,7 +729,7 @@ window.CS = window.CS || {};
       if (!this.svg || !this.L) return;
       var s = CS.graph.state, self = this, cnt = { scan: 0, warm: 0, dyn: 0 };
       this.edges.forEach(function (E) {
-        E.show = E.dashed ? s.hot !== false && s.dyn !== false : s.hot !== false;
+        E.show = true;
         if (E.dashed) cnt.dyn++; else cnt.warm++;
         [E.halo, E.p, E.lab].forEach(function (x) { if (x) x.style.display = E.show ? '' : 'none'; });
       });
@@ -767,15 +767,11 @@ window.CS = window.CS || {};
       this.applySel();
     },
 
-    /* 视图里只影响编号的那几个键（地址栏的写法：进程用别名）：fold=收起的进程&hide=藏起的边（hot / dyn） */
+    /* 视图里只影响编号的那几个键（地址栏的写法：进程用别名）：fold=收起的进程 */
     viewQuery: function () {
       var self = this, s = CS.graph.state, q = [];
       var fold = this.foldedAliases();
       if (fold.length) q.push('fold=' + encodeURIComponent(fold.join(',')));
-      var hide = [];
-      if (s.hot === false) hide.push('hot');
-      if (s.dyn === false) hide.push('dyn');
-      if (hide.length) q.push('hide=' + hide.join(','));
       // 只看的列：没写 lanes= 时不带（后端按同一份默认收起算）；写了但看着全部列（lanes=*、一列都没配上）时带 *
       var F = CS.focus, f = F && F.sels.length ? F.lanes() : null;
       if (f) q.push('lanes=' + encodeURIComponent(Object.keys(f).map(function (id) { return laneName(id); }).sort().join(',')));

@@ -94,7 +94,7 @@ RUN   := 完整 run id | case 名
 |---|---|
 | `partial` | run 只录了一部分（带 `problems`） |
 | `interrupted` | 录制中断了，下一步 `runs merge`（write） |
-| `recording` | run 还在录，下一步 `runs wait` |
+| `recording` | run 还在录，下一步 `runs show` |
 | `newer_recording` | 按 case 名挑到的是录完的那次，同一个 case 有一次更新的正在录 |
 | `repo_from_run` | 当前目录的仓库里没有这个 run，用的是别的已知仓库 |
 | `page_unknown` / `page_mismatch` | 页面地址（或 view url 的 `--page`）那个端口问不到 / 那边开的不是这个仓库、或者那个仓库里没有这个 run |
@@ -120,7 +120,7 @@ RUN   := 完整 run id | case 名
 | 1 | `internal` | 意外（老代码里的错误、codestrata 的 bug） |
 | 2 | `usage` | 用法错 |
 | 3 | `repo_unknown` `run_not_found` `phase_not_found` `bad_window` `window_out_of_range` `lane_not_found` `ambiguous_lane` `item_not_found` `ambiguous_item` | 名字写错，都带候选 |
-| 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `no_handoffs` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs wait` 是 read，`runs merge`、`scan` 是 write） |
+| 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `no_handoffs` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs merge`、`scan` 是 write） |
 | 5 | `no_live_page` `old_serve` `page_failed` `timeout` `interrupted` `superseded` `refused` | 页面换不了：没有开着的页面 / 老 serve / 页面换不过去 / 被后来的一条顶掉 / 撤不了；`next` 给 `view url`（把地址交给用户） |
 | 6 | — | `view set`：推过去了、页面还没换（`data.state` 是 deferred / queued / offered / sent，`ok` 仍是 true）；`next` 给 `view wait --for applied` |
 
@@ -130,9 +130,9 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url / get / wait`、`path`、`guide`、`runs ls / show / wait` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url / get / wait`、`path`、`guide`、`runs ls / show` | 随便跑（真的只读：不迁移老文件、不建目录） |
 | page | `view set`、`view back` | 用户这句话本身就是「要看 / 只看 / 标出 / 选中 / 聚焦」时直接推，回复里说怎么撤销（浏览器后退或 `view back`）；其余情况先问 |
-| write | `scan`、`runs tag / untag / note / merge` | 先问用户 |
+| write | `scan`、`runs note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
 | start | `serve`、`app` | 先问用户（起常驻进程、占端口） |
 | record | `trace` | 先问用户（跑被录的程序，可能占 GPU、跑很久） |
@@ -143,7 +143,7 @@ RUN   := 完整 run id | case 名
 - 不给 REF：仓库、索引什么时候 scan 的（`index.scanned` 是带时区的时刻）、最近 5 个 run 和各自的状态（多于 5 个时 `more` 指到 `runs ls`）。
 - 给 REF：run 的状态、问题、有没有时序事件和 GPU、时序事件到没到行数上限；REF 规整成什么、落在哪几片微秒；各阶段的窗口。
 - 开着的页面（这个仓库能推视图的 serve 的标签页）各在看什么；给的 REF 不是页面上那个 run 时警告 `not_on_page`。
-- 下一步：还在录的给 `runs wait`；中断的给 `runs merge`；没给范围、有 `serving` 阶段的，`lanes` 建议看 `@serving`。
+- 下一步：还在录的给 `runs show`；中断的给 `runs merge`；没给范围、有 `serving` 阶段的，`lanes` 建议看 `@serving`。
 - `data`：`repo`、`found_by`（`C` / `page` / `run` / `cwd`）、`index`、`pages`（`port`、`pid`、`tabs`、`default`），以及 `runs`（没给 REF）或 `run` + `phases` + `lanes`。
 
 ### `codestrata lanes REF [--limit N] [--json]`
@@ -269,7 +269,7 @@ RUN   := 完整 run id | case 名
 ### `codestrata view url | set | get | back | wait …`
 每个动作是一个子命令，`-C`、`--json` 写在动作前后都行。
 
-**`view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--hide …] [--path] [--page 端口]`**（read）
+**`view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--path] [--page 端口]`**（read）
 - 拼出一个视图的页面地址，不推。用户粘进浏览器地址栏（同一个标签页也行），页面不刷新就换过去；后退回到原来的。地址单独一行、不加引号（原样交给用户）。
 - REF 定 run、范围和列；给的是页面地址时在它的视图上改（没给的选项沿用地址里的）。前缀取页面地址的，或 `--page 端口`（核对那个端口上是不是这个仓库的 serve：
   不是给警告 `page_unknown` / `page_mismatch`）；都没有时只打 `#…` 那一段（警告 `no_page`）。`--select 函数` 先在选中的那一列里展开到它的文件。
@@ -306,7 +306,7 @@ RUN   := 完整 run id | case 名
 
 ### 视图描述（页面地址 # 后面）
 
-`run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & chain=范围~起点~--link… & order=1 & hide=hot,dyn & panel=path`
+`run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & chain=范围~起点~--link… & order=1 & panel=path`
 
 - 页面和命令行同一套（`web/view.js`、`viewspec.py`）。值里 `@ , / ~ | : ; + * =` 不转义；不认识的键原样留着。
 - `lanes`：只看这几列，没选的列每个进程收成一窄列「其他 N 列」，连线照接；`fold`：收起的进程（别名）；`cut`：共用的切面（和默认一样不写）；
@@ -314,7 +314,7 @@ RUN   := 完整 run id | case 名
   `mark`：标记；`chain`：高亮的链（`范围~起点[~--link…]`：链在哪一段里走出来的、不随范围变的起点、--link 原样；页面在那一段里重走一遍，
   链上的连线加粗、标「链 N · 通道 第 k/n 次」，推出来的 --link 那一跳多画一条紫色虚线、标「推断」，别的线变淡（选中的不淡），工具栏「链 N 跳 · 清掉」；
   这一段里没有链上的线时不变淡、小签写「链不在这一段」；用户自己换 run 时清掉；走不出来时分列照画、页面说一声）；
-  `order=1`：时间顺序开；`hide`：藏起的边；`panel=path`：详情栏讲请求路径。
+  `order=1`：时间顺序开；`panel=path`：详情栏讲请求路径。
 - 页面上每改一处，地址按规范写法重写（不多出历史记录）；粘进来的地址、后退按固定的顺序套：run 和范围 → 切面 → 各列的切面和链 → 只看列和收起 → 开关 → 标记 → 选中 → 详情栏。
   地址里阶段写错，退回这个 run 默认的阶段并提示；run 找不到，照旧看现在的并提示。
 

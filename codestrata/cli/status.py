@@ -52,7 +52,7 @@ def run(a) -> out.Result:
     flags = [_STATE.get(st, st)]
     if st == "recording":
         flags.append("时序事件录完才有")
-        nxt.append(c.cmd("read", "runs", "wait", run_["id"], why="等它录完"))
+        nxt.append(c.cmd("read", "runs", "show", run_["id"], why="录完再看"))
     else:
         flags += ["有时序事件" if ev else "没录时序事件", "录了 GPU" if run_.get("gpu") else "没录 GPU",
                   f"{len(trunc)} 个进程的时序事件到了行数上限" if trunc else "时序事件没到行数上限"]
