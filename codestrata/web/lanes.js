@@ -126,13 +126,12 @@ window.CS = window.CS || {};
       this.ready = null;
       // drawn：这次取数画完（搜索选中、改切面之后要等它画好再找节点）
       // 共用的切面 + 各列单独的切面（lanecut.js）
-      var vq = this.viewQuery();
-      return (this.drawn = CS.ds.lanes(d.open, CS.laneCut.query(), vq).then(function (L) {
+      return (this.drawn = CS.ds.lanes(d.open, CS.laneCut.query()).then(function (L) {
         if (tok !== self._tok) return;
         // 改切面画好之后接着选的，是这一刻选着的（取数可能要好几秒，这期间在旧图上点的那个算数）
         if (self.afterCut) self.afterCut.snap = self.snapshot();
         self.data = L;
-        self.order = L.order; self.orderQ = vq;
+        self.order = L.order;
         CS.laneCut.settle(L);
         self.panelData(L);
         CS.chain.paint(L, svg);                     // 高亮的链（lanechain.js）：先认这一份的链（标签、提示要用），只亮链上的线
@@ -729,22 +728,20 @@ window.CS = window.CS || {};
       });
       this.links.forEach(function (E) { E.show = true; });
       CS.graph.counts = cnt;
-      // 时间顺序：编号是后端按这个视图（收起的进程、开关、只看的列）排好的（laneorder.py，命令行的 explain 24 用同一份）；
-      // 视图变了先按旧编号画，重取回来再画
+      // 时间顺序：编号是后端排好的（laneorder.py，命令行的 explain 24 用同一份），和视图无关：收起的、没画的号空着
       var tm = !!(s.timeOrder && CS.app.canTimeOrder());
       var w = this.L.window || [0, 0];
-      if (tm && this.viewQuery() !== this.orderQ) this.reorder();
-      var keys = (this.order && this.order.keys) || {};
+      var keys = (this.order && this.order.keys) || {}, N = (this.order && this.order.n) || 0;
       var list = tm ? this.edges.concat(this.links).filter(function (E) { return E.show && keys[E.key] != null; }) : [];
       list.sort(function (p, q) { return keys[p.key] - keys[q.key]; });
       var n = list.length;
       this.edges.concat(this.links).forEach(function (E) { E._t = null; });
       list.forEach(function (E) {
-        E._t = { k: keys[E.key], n: n, repeat: !!(E.kind === 'edge' ? E.e.repeat : E.k.repeat) };   // 反复调用：后端按 seq.is_repeat 算好的
+        E._t = { k: keys[E.key], n: N, repeat: !!(E.kind === 'edge' ? E.e.repeat : E.k.repeat) };   // 反复调用：后端按 seq.is_repeat 算好的
       });
       function sec(us) { return when(us, w[0]); }
       this.edges.concat(this.links).forEach(function (E) {
-        var tc = E._t ? self.timeColor(E._t.k / Math.max(1, n - 1)) : null;
+        var tc = E._t ? self.timeColor(E._t.k / Math.max(1, N - 1)) : null;
         E._tc = tc;
         E.p.style.stroke = tc || '';
         E.p.classList.toggle('tm', !!tc);
@@ -752,25 +749,13 @@ window.CS = window.CS || {};
         E.halo.classList.toggle('bg', tm && !tc);
         E.p.setAttribute('marker-end', 'url(#' + self.marker(tc, E.kind === 'link' ? E.k.kind : 'edge') + ')');
         if (E.lab) E.lab.classList.toggle('tm', !!tc);
-        E.tip.textContent = E.tipBase + (E._t ? '\n时间顺序：第 ' + (E._t.k + 1) + ' / ' + n + ' 个开始的　首次 ' + sec(E.first)
+        E.tip.textContent = E.tipBase + (E._t ? '\n时间顺序：第 ' + (E._t.k + 1) + ' / ' + N + ' 个开始的　首次 ' + sec(E.first)
           + (E.last != null ? '　最后 ' + sec(E.last) : '') + (E._t.repeat ? '\n↻ 这段时间里一直在反复：序号只说明它从什么时候开始' : '') : '');
       });
       this.badges(list);
       this.timed = n;                                // 开关上的数（app.edgeChips 在分列下读它）
       CS.graph.times = tm ? { window: w, truncated: this.L.truncated || [] } : null;
       this.applySel();
-    },
-
-    /* 视图里只影响编号的那几个键（地址栏的写法：进程用别名）：fold=收起的进程 */
-    viewQuery: function () {
-      var self = this, s = CS.graph.state, q = [];
-      var fold = this.foldedAliases();
-      if (fold.length) q.push('fold=' + encodeURIComponent(fold.join(',')));
-      // 只看的列：没写 lanes= 时不带（后端按同一份默认收起算）；写了但看着全部列（lanes=*、一列都没配上）时带 *
-      var F = CS.focus, f = F && F.sels.length ? F.lanes() : null;
-      if (f) q.push('lanes=' + encodeURIComponent(Object.keys(f).map(function (id) { return laneName(id); }).sort().join(',')));
-      else if (F && F.sels.length) q.push('lanes=*');
-      return q.join('&');
     },
 
     /* 进程的别名（stage1）：后端给的，没有就写 pid */
@@ -783,20 +768,6 @@ window.CS = window.CS || {};
     foldedAliases: function () { var c = this.collapsed; return Object.keys(c).filter(function (a) { return c[a]; }).sort(); },
     /* 按上一次的数据重画（只看几列、收起、开关改了之后） */
     redraw: function () { var a = this._args; if (a) this.draw(a[0], a[1], a[2], a[3]); },
-
-    /* 视图变了（收起进程、切开关）：重取编号再画 */
-    reorder: function () {
-      var self = this, vq = this.viewQuery(), d = CS.app.data;
-      if (this._reordering === vq) return;
-      this._reordering = vq;
-      CS.ds.laneOrder(d.open, CS.laneCut.query(), vq).then(function (o) {
-        self._reordering = null;
-        if (self.viewQuery() !== vq) return;           // 又变了：等下一次
-        self.order = o; self.orderQ = vq;
-        self.paint();
-        if (CS.app.edgeChips) CS.app.edgeChips();
-      }).catch(function () { self._reordering = null; });
-    },
 
     /* 序号牌：上了色的边 / 连线上画一个同色的小牌子，先试中点、被节点或别的牌子挡住就沿路径挪 */
     badges: function (list) {

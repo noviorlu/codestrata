@@ -338,8 +338,7 @@ def test_find_explain_path_on_toy():
 
 
 def test_laneorder():
-    """时间顺序的编号按视图算：收起的进程、没选的列里的边不编；两头落在同一个收起窄列里的交接不编；
-    「其中代码里看不出」关了不编全是看不出的边；同一时刻的按稳定写法排（和列表下标无关）"""
+    """时间顺序的编号和视图无关：每列里两头都在这一列的边、交接连线都编；同一时刻的按稳定写法排（和列表下标无关）"""
     from codestrata import laneorder
     L = {"window": [0, 100],
          "lanes": [{"id": "1:Main", "pid": 1, "nodes": {"a": {}, "b": {}}, "edges": [
@@ -359,10 +358,6 @@ def test_laneorder():
     o = laneorder.rank(L, al)
     assert [o["keys"][k] for k in ("e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1")] == [0, 1, 2, 3, 4], o
     assert o["n"] == 5 and o["ids"][1] == "e:p1/Main|b|a", o["ids"]          # 同一时刻 10：先比最后一次，再比稳定写法
-    o = laneorder.rank(L, al, fold={1})
-    assert set(o["keys"]) == {"e:2:Main|a|d", "l:0"}, o["keys"]               # 进程 1 收起：它的边、它里面两头的交接都不编
-    o = laneorder.rank(L, al, lanes={"1:Main", "2:Main"})
-    assert set(o["keys"]) == {"e:2:Main|a|d", "e:1:Main|b|a", "e:1:Main|a|b", "l:0", "l:1"}, o["keys"]   # 1:w 收进窄列，交接照接
 
 
 def test_view_url_and_numbered_explain():
@@ -446,9 +441,7 @@ def test_procinfo_and_default_lanes():
                   {"kind": "handoff", "via": "zmq", "first": 1, "last": 1, "from": {"lane": "b"}, "to": {"lane": "d"}}]
     L["default_lanes"] = lanedefault.default_lanes(L, S)
     al = {x: f"p/{x}" for x in "abcdefghi"}
-    assert laneorder.rank_view(L, al, {1: "p"}, [], [])["n"] == 1, "默认：两头都收在同一个窄列里的那条不编号"
-    assert laneorder.rank_view(L, al, {1: "p"}, [], ["*"])["n"] == 2 and laneorder.rank_view(L, al, {1: "p"}, [], ["p/nosuch"])["n"] == 2
-    assert laneorder.rank_view(L, al, {1: "p"}, [], ["+p"])["n"] == 2, "默认 + 整个进程 p：等于全部列"
+    assert laneorder.rank(L, al)["n"] == 2, "编号和默认收起无关"
     from codestrata import align, lanes as _lanes, runs as _runs, seq
     from codestrata.ui import load as _load
     repo, rid = truth()

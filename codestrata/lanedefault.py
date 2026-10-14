@@ -8,7 +8,7 @@
     线程池          同名的线程很多、没有主循环（threads）；
     这一段里没有调用的（quiet）：画着它只是因为起 / 收它的那条线、或者一个从这段之前就在跑的调用（折叠行按次数摊开算，摊进这段的算有调用）。
 种类和 segments 同一份（segments.stages 的 kinds）；切段靠不住（老 run、这一段一次交接都没录到）时不收。
-地址里写了 lanes= 照写的来，lanes=* 是全部。页面、/api/laneorder 的编号、命令行的 explain N 都按这一份算。
+地址里写了 lanes= 照写的来，lanes=* 是全部。页面和命令行的列（laneid.view_lanes）按这一份算。
 """
 from __future__ import annotations
 

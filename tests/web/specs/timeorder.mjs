@@ -5,11 +5,11 @@ import { sleep, waitRun } from '../lib.mjs';
 const ranked = page => page.ev(`CS.lanes.edges.concat(CS.lanes.links).filter(E => E._t).sort((x, y) => x._t.k - y._t.k)
   .map(E => ({ key: E.key, first: E.first, kind: E.kind, via: E.k ? E.k.via : null }))`);
 
-// 页面上的每个序号牌 = 后端按这个视图排的名次（laneorder.py；命令行 explain 24 用同一份）
-const sameAsBackend = page => page.ev(`(async () => {
-  const o = await CS.ds.laneOrder(CS.app.data.open, CS.laneCut.query(), CS.lanes.viewQuery());
+// 页面上的每个序号牌 = 后端排的名次（laneorder.py；命令行 explain 24 用同一份）；和视图无关，收起的号空着
+const sameAsBackend = page => page.ev(`(() => {
+  const o = CS.lanes.order;
   const tn = [...document.querySelectorAll('#g .tord .tn')].map(g => [g.dataset.key, parseInt(g.textContent, 10)]);
-  return tn.length === o.n && tn.every(([k, v]) => o.keys[k] + 1 === v);
+  return tn.length <= o.n && tn.every(([k, v]) => o.keys[k] + 1 === v);
 })()`);
 
 export default async function (t) {
@@ -33,7 +33,7 @@ export default async function (t) {
   const badges = await page.ev(`[...document.querySelectorAll('#g .tord .tn')].map(g => g.textContent)`);
   ok(badges.length === n && new Set(badges.map(b => parseInt(b, 10))).size === n, '每一条都有序号牌，1…N 各一个');
   ok(badges.some(b => b.includes('↻')), '一直在反复的带 ↻ ' + JSON.stringify(badges.slice(0, 8)));
-  ok(await sameAsBackend(page), '每个序号牌 = 后端排的名次（/api/laneorder）');
+  ok(await sameAsBackend(page), '每个序号牌 = 后端排的名次');
   ok(+(await page.ev(`document.querySelector('${chip} .n').textContent`)) === n, '开关上的数 = 排上名次的条数');
   ok((await page.ev(`(document.querySelector('.tmleg') || {}).textContent || ''`)).includes('早'), '有图例');
   ok(await page.ev(`new Set(CS.lanes.edges.concat(CS.lanes.links).filter(E => E._tc).map(E => E._tc)).size`) > 2, '颜色按名次从早到晚');
@@ -67,7 +67,7 @@ export default async function (t) {
   ok(await page.wait(`+document.querySelector('${chip} .n').textContent === document.querySelectorAll('#g .tord .tn').length
                       && document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 1`, 3000),
      '收起一个进程：开关上的数跟着序号牌变 ' + await chipN());
-  ok(await page.wait(`CS.lanes.orderQ === CS.lanes.viewQuery()`, 3000) && await sameAsBackend(page), '收起进程之后：序号牌还是 = 后端的名次');
+  ok(await sameAsBackend(page), '收起进程之后：剩下的序号牌号码不变（收起的号空着）');
   await page.ev(`document.querySelector('#g .ln-proc .ln-fold').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
   ok(await page.wait(`document.querySelectorAll('#g .ln-col.fold:not(.part)').length === 0 && +document.querySelector('${chip} .n').textContent === ${n}`, 3000), '再展开：回到 ' + n);
 

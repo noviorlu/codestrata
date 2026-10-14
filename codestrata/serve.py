@@ -6,17 +6,15 @@
                                   （页面上放回去的链接）；命令行拿页面地址当 REF 时问它是哪个仓库；features 有 view 才能推视图
     GET  /api/runs                录下的所有 run（按新到旧）+ 打开页面时默认选哪个（serve --hot）
     GET  /api/path?run=           请求路径：run 选的阶段里每个进程、每个线程的函数级调用上下文树（path.py）
-    GET  /api/lanes?run=&open=&cuts=&fold=&lanes=&chain=   chain：页面高亮的链（chainview：范围~起点~--link…）
+    GET  /api/lanes?run=&open=&cuts=&chain=   chain：页面高亮的链（chainview：范围~起点~--link…）
                                   按进程 · 线程分列：每列这条线程调到的切面节点和边，列之间谁起了谁、谁交给谁（lanes.py），
                                   加上节点信息、框、名字、子层（ui/lanesview.py）。open 是共用的切面，
                                   cuts（JSON [{"lanes": [列 id…], "open": [目录…]}…]）是各列自己的切面。
                                   每列的 names 是图上的名字 {id: 字}，合进来的线程原名在 thread_names；aliases 是列别名、
-                                  proc_aliases 是进程别名；order 是这个视图（fold 收起的进程、lanes 只看的列）
-                                  里时间顺序的编号（laneorder.py）。进程按这一段里开始干活的先后排（segments.proc_order），
+                                  proc_aliases 是进程别名；order 是时间顺序的编号（laneorder.py，和视图无关）。进程按这一段里开始干活的先后排（segments.proc_order），
                                   procinfo 是进程头上「它在干什么」的那一句 {pid: {parts, title}}（procinfo.py），
                                   default_lanes 是没写 lanes= 时默认看的列（转一手的收起，lanedefault.py；null 是全部），
                                   default_folded 是默认收起的列 → 为什么收
-    GET  /api/laneorder?…         同 /api/lanes 的参数，只回 order（收起进程、切开关时不重取整张图）
     GET  /api/graph?open=a,b&w=&run=
                                   一个切面上的图 + 某个 run 的 hot 叠加（open：展开着的目录，缺省是
                                   默认切面；w：页面上图框的宽度，按它排版；run：run id 或 case 名，
@@ -283,11 +281,10 @@ class Handler(BaseHandler):
         except (OSError, ValueError) as e:
             return self._json({"error": _seq.unreadable(e, run["id"])}, 500)
 
-    def _lanes(self, q: dict, order_only: bool = False):
+    def _lanes(self, q: dict):
         """/api/lanes：按进程 · 线程分列（lanes.build + lanesview.decorate），加上每列的别名（aliases）、进程别名（proc_aliases）、
-        这个视图里时间顺序的编号（order，laneorder.py）。run 必填，@阶段（或 @t=）决定时间段，open 是共用的切面，
-        cuts 是各列自己的切面；fold（收起的进程，别名）、lanes（只看的列，选择器）只影响编号。
-        order_only（/api/laneorder）：只回编号——收起进程、切开关时页面不用重取整张图"""
+        时间顺序的编号（order，laneorder.py，和视图无关）。run 必填，@阶段（或 @t=）决定时间段，open 是共用的切面，
+        cuts 是各列自己的切面"""
         ref = (q.get("run") or [""])[0].strip()
         if not ref:
             return self._json({"error": "要先选一个 run（录了时序事件的）"}, 400)
@@ -321,12 +318,12 @@ class Handler(BaseHandler):
                 L["procinfo"] = {} if multi else {str(pid): v for pid, v in _procinfo.summary(S, lo).items()}
                 L["default_lanes"] = _lanedefault.default_lanes(L, S)
                 L["default_folded"] = _lanedefault.default_folded(L, S)
+                L["order"] = _laneorder.rank(L, L["aliases"])
                 with Handler._lock:
                     Handler._lane_cache[key] = L
                     while len(Handler._lane_cache) > 4:
                         Handler._lane_cache.pop(next(iter(Handler._lane_cache)))
-            order = self._order(L, q)
-            return self._json({"order": order} if order_only else dict(L, order=order))
+            return self._json(L)
         except (SystemExit, LookupError) as e:
             return self._json({"error": str(e)}, 404)
         except _errors.CodestrataError as e:
@@ -334,12 +331,6 @@ class Handler(BaseHandler):
         except (OSError, ValueError) as e:
             # 还没认出是哪个 run 就出错（读 runs 目录失败）：没有 run id 可写
             return self._json({"error": _seq.unreadable(e, run["id"]) if run else f"{type(e).__name__}: {e}"}, 500)
-
-    def _order(self, L: dict, q: dict) -> dict:
-        """这个视图（fold / lanes）里时间顺序的编号（laneorder.rank_view：和命令行的 explain N 同一份）"""
-        def arg(k: str) -> list[str]:
-            return [x for x in ((q.get(k) or [""])[0]).split(",") if x]
-        return _laneorder.rank_view(L, L["aliases"], L.get("proc_aliases") or {}, arg("fold"), arg("lanes"))
 
     def _proc_order(self, rd: Path, run: dict, phase: str | None) -> dict:
         """进程的先后：这一段里开始干活的先后（分列和请求路径同一个；轮头按装着这一段的阶段认，和命令行一样）"""
@@ -421,9 +412,6 @@ class Handler(BaseHandler):
 
         if path == "/api/lanes":
             return self._lanes(q)
-
-        if path == "/api/laneorder":
-            return self._lanes(q, order_only=True)
 
         if path == "/api/lanehot":
             return self._lanehot(q)

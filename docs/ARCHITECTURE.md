@@ -121,8 +121,8 @@ flowchart LR
 | `chainhint.py` | 88 | 链停下时的 `--link` 候选：A 边一份一次的函数，B 边在所有列里找第 k 次配第 k 次配得上的、按没走过 / 交替 / 间隔稳排、落点一样的合起来 |
 | `chainview.py` | 66 | 链的取数：在一段时间里把链走出来（links --follow 和页面共用）、视图描述里 chain 键的写法，给分列画链要的（录到的交接标第几跳、推出来的那一跳多连一条） |
 | `procinfo.py` | 57 | 分列进程头上那一句：只有它跑的文件、干活的时段、主循环几轮，持有请求的写请求（`segments.stages` 同一份） |
-| `lanedefault.py` | 65 | 分列默认看哪几列：转一手的列（收发 socket、只在轮询、线程池、没调用）默认收起，每列的原因（`reasons`）；页面、编号、`explain N`、`lanes` 命令共用 |
-| `laneorder.py` | 59 | 分列里时间顺序的编号：按视图（收起的进程、只看的列）排画着的边和交接线，同一时刻按稳定写法；页面（`/api/lanes` 的 order、`/api/laneorder`）和命令行共用 |
+| `lanedefault.py` | 65 | 分列默认看哪几列：转一手的列（收发 socket、只在轮询、线程池、没调用）默认收起，每列的原因（`reasons`）；页面和 `lanes` 命令共用 |
+| `laneorder.py` | 30 | 分列里时间顺序的编号：每列的边和交接线按第一次的先后，同一时刻按稳定写法，和视图无关；页面（`/api/lanes` 的 order）和命令行共用 |
 | `viewspec.py` | 100 | 视图描述（页面地址 # 后面）的 Python 一侧：解析、规范写法（和 web/view.js 同一套），按一个视图算分列和时间顺序的编号（explain 24、view url） |
 | `laneid.py` | 173 | 列的稳定写法：进程别名、列别名（`stage1/MainThread`）、列选择器和规整；纯函数（按整个 run 算别名的是 `lanes.run_aliases`） |
 | `errors.py` | 36 | `CodestrataError`：稳定的错误码、候选、下一步、之前的警告；错误码 → 退出码 |
