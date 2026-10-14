@@ -16,7 +16,6 @@ serve 用随机端口，测完关掉；Chrome 由 tests/web/cdp.mjs 自己起、
 """
 from __future__ import annotations
 
-import gzip
 import json
 import os
 import shutil
@@ -103,19 +102,12 @@ def fixture() -> dict:
     cs("scan", dyn)
     cs("trace", dyn, "--case", "dyn", "--", PY, "-m", "dyn.main")
     cs("trace", dyn, "--case", "dynne", "--no-events", "--", PY, "-m", "dyn.main")
-    # 同样跑一次、去掉调用行，当 2026-09-30 之前录的老 run
-    cs("trace", dyn, "--case", "dynold", "--no-events", "--", PY, "-m", "dyn.main")
-    cp = dyn / ".codestrata" / "runs" / run_id(dyn, "dynold") / "counts.json.gz"
-    c = json.loads(gzip.decompress(cp.read_bytes()))
-    for ph in c["phases"].values():
-        ph.pop("func_lines", None)
-    cp.write_bytes(gzip.compress(json.dumps(c).encode()))
     srv3, base3 = _serve(dyn)
     gpu, gpu_run = gpu_repo()
     srv4, base4 = _serve(gpu)
     from codestrata import native_scan
     _FX.update(srv4=srv4, base4=base4, gpu=gpu_run, gpu_native=native_scan.available() is None)
-    _FX.update(srv3=srv3, base3=base3, dyn=run_id(dyn, "dyn"), dynold=run_id(dyn, "dynold"), dynn=run_id(dyn, "dynne"))
+    _FX.update(srv3=srv3, base3=base3, dyn=run_id(dyn, "dyn"), dynn=run_id(dyn, "dynne"))
     _FX.update(repo=str(repo), base=base, srv=srv, srv2=srv2, base2=base2,
                a=run_id(repo, "truth"), b=run_id(repo, "offline"), an=run_id(repo, "truthne"), bn=run_id(repo, "offlinene"),
                cutrun=run_id(cut, "cutrun"))

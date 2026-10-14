@@ -1,5 +1,5 @@
 // 图上只有调用：边上标次数、粗细不变；全是代码里看不出的画虚线；三个图例开关；
-// 边详情按「谁调了谁、写在哪一行」（构造、老 run、不叠 run）；代码窗口在代码里看不出调到谁的那一行行尾标出这次调到了谁，点了跳过去、能返回
+// 边详情按「谁调了谁、写在哪一行」（构造、不叠 run）；代码窗口在代码里看不出调到谁的那一行行尾标出这次调到了谁，点了跳过去、能返回
 import { clickEdge, sleep, waitRun } from '../lib.mjs';
 
 export default async function (t) {
@@ -103,17 +103,6 @@ export default async function (t) {
   await clickEdge(page, 'dyn/main.py', 'dyn/runner.py');
   ok(await page.wait(`document.querySelectorAll('#det .call').length > 0`), 'main → runner 的详情');
   ok((await page.ev(`document.getElementById('det').textContent`)).includes('代码里写的是构造，跑的是'), '构造的卡片写明跑的是哪个方法');
-  await page.key('Escape', 'Escape', 27);
-
-  // 老 run（没有调用行）：调用处是按名字找到的，写明
-  await page.goto(fx.base3 + '#run=' + fx.dynold);
-  ok(await waitRun(page, fx.dynold), '叠上老 run');
-  await clickEdge(page, 'dyn/runner.py', 'dyn/models/net.py');
-  ok(await page.wait(`document.getElementById('det').textContent.includes('这个 run 没记调用行')`), '老 run 的卡片写明没记调用行、调用处是猜的');
-  await page.key('Escape', 'Escape', 27);
-  await page.ev(`CS.viewer.open('dyn/runner.py', 1)`);
-  ok(await page.wait(`(document.querySelector('.vhead .vhint.rt') || {}).textContent === '这个 run 没记调用行：行尾不标运行时调到了谁'`),
-     '老 run 打开代码窗口：说明为什么行尾不标');
   await page.key('Escape', 'Escape', 27);
 
   // 不叠 run：边详情是代码里写的调用（from 写在哪一行、to 被调的定义）

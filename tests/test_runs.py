@@ -739,46 +739,6 @@ def test_bad_names():
     assert r.returncode != 0 and "case 名" in r.stderr
 
 
-def test_migrate_legacy():
-    """老格式 trace-<case>.json + parts-<case>/ 迁进 runs/：计数逐键相等，老文件留在 legacy/，
-    argv 被截断的老进程标出来。几个进程同时触发迁移只得到一个 run。"""
-    repo = fresh()
-    trace_fake(repo)
-    run, det, rd = latest(repo)
-    counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
-    tot = runs._sum(counts)
-    old = {"case": "old", "cmd": ["bash", "fake_service.sh"], "returncode": 0,
-           "pids": [{"pid": 1, "argv": ["python", "-m", "fakesvc.server", "--port", "1", "--ready"],
-                     "n_funcs": 3}],
-           "funcs": tot["funcs"], "func_edges": tot["func_edges"], "file_edges": {},
-           "mapped": {}, "phases": counts, "file_shas": det["file_shas"]}
-    cdir = repo / ".codestrata"
-    (cdir / "trace-old.json").write_text(json.dumps(old))
-    (cdir / "parts-old").mkdir()
-    (cdir / "parts-old" / "part-1.json").write_text("{}")
-    idx = ui_load.load_index(repo)
-    want = ui_load.load_hot(repo, idx, run["id"])[0]
-    runs._MIGRATED.clear()
-    # 几个进程同时读 run 列表（serve、trace 开头都会迁移；runs ls 是只读的，不迁）
-    code = f"import sys; sys.path.insert(0, {str(HERE.parent)!r}); from codestrata import runs; runs.catalog({str(repo)!r})"
-    procs = [subprocess.Popen([PY, "-c", code], cwd=HERE.parent,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
-    outs = [p.communicate(timeout=60) for p in procs]
-    assert all(p.returncode == 0 for p in procs), outs
-    olds = [r for r in runs.catalog(repo) if r["case"] == "old"]
-    assert len(olds) == 1, olds
-    assert not (cdir / "trace-old.json").exists() and not (cdir / "parts-old").exists()
-    ord_ = cdir / "runs" / olds[0]["id"]
-    assert json.loads(gzip.decompress((ord_ / "legacy" / "trace-old.json.gz").read_bytes())) == old
-    got = ui_load.load_hot(repo, idx, "old")
-    a, b = dict(got[0]), dict(want)
-    a.pop("run"), b.pop("run")
-    assert a == b
-    assert got[1]["procs"][0]["cut"] is True, "老 trace 的 argv 被截断要标出来"
-
-
-# ---------------------------------------------------------------- 评审发现的问题的回归测试
-
 def test_dump_race():
     """落盘线程的定时落盘和进程退出时的落盘撞在一起：分片不能写坏（以前两边写同一个 .tmp）。"""
     repo = fresh()
@@ -900,22 +860,6 @@ def test_rm_live_refused():
     finally:
         p.send_signal(signal.SIGINT)
         p.wait(timeout=120)
-
-
-def test_legacy_unicode_case():
-    """老版本允许的 case 名（中文、+）：迁移后原名照样能 --hot。"""
-    repo = fresh()
-    trace_fake(repo)
-    run, det, rd = latest(repo)
-    counts = json.loads(gzip.decompress((rd / "counts.json.gz").read_bytes()))["phases"]
-    tot = runs._sum(counts)
-    old = {"case": "双工+v2", "cmd": ["x"], "returncode": 0, "pids": [], "funcs": tot["funcs"],
-           "func_edges": tot["func_edges"], "mapped": {}, "phases": {}, "file_shas": {}}
-    (repo / ".codestrata" / "trace-双工+v2.json").write_text(json.dumps(old, ensure_ascii=False))
-    runs._MIGRATED.clear()
-    idx = ui_load.load_index(repo)
-    hot, meta = ui_load.load_hot(repo, idx, "双工+v2")
-    assert meta["case"] == "双工+v2" and meta["phases"] == {} and hot["symbols"]
 
 
 def test_single_phase_and_extras():
@@ -2273,13 +2217,13 @@ def test_constructor_calls_counted_once():
     # 有 setter 的 property：self.v = 5 调 setter、self.v 调 getter，scan 都记了
     pv = hot["calls"][f"{M}Prop.bump|{M}Prop.v"]
     assert [y["status"] for y in pv["lines"]] == ["both", "both"] and pv["only"] == 0, pv
-    # 没有调用行的老 run：在整个函数里认构造，次数一样
+    # 没有调用行的计数（手写的）：不知道是哪一行（0），在整个函数里认构造，次数一样
     c = runs.load_counts(runs.resolve(repo, "ct")[1], None)
     c.pop("func_lines")
     old = align.to_package_graph(c, idx)
     og = {k.partition("|")[2]: x for k, x in old["calls"].items() if k.startswith(U + "|")}
     assert {k: x["n"] for k, x in og.items()} == {k: x["n"] for k, x in got.items()}, og
-    assert og[f"{M}Own"]["lines"] is None and og[f"{M}Own"]["guessed"] == [L["a"], L["e"]], og[f"{M}Own"]
+    assert [y["l"] for y in og[f"{M}Own"]["lines"]] == [0] and og[f"{M}Own"]["lines"][0]["note"]["k"] == "ctor", og[f"{M}Own"]
     # 分列的边：Leaf() 跑到 root.py 的 __init__，算在 use → leaf 上，和图上的边一致（不挪构造的话落在 root.py 上）
     run, rd, _ = runs.resolve(repo, "ct")
     te, _ = _lane_edges(idx, rd, run, None, hot, opened)
@@ -2358,13 +2302,13 @@ def test_trace_only_notes():
     assert rt[ln("return work(1)")][0]["def"] == {"f": "nt/deco.py", "l": 2}, rt
     rb = ui_source.runtime_lines(idx, "nt/base.py", hot)
     assert [(l, [r["callee"] for r in v]) for l, v in rb.items()] == [(3, ["nt/base.py#Sub.step"])], rb
-    # 老 run：整个函数里没有叫 wrapper 的调用，不猜；只有 trace 的那一对 guessed 是空的
+    # 没有调用行的计数：整个函数里没有叫 wrapper 的调用
     c = runs.load_counts(runs.resolve(repo, "nt")[1], None)
     c.pop("func_lines")
     old = align.to_package_graph(c, idx)["calls"]
     o = old["nt/app.py#run|nt/deco.py#deco.wrapper"]
-    assert o["lines"] is None and o["status"] == "trace" and o["note"] == {"k": "nomatch"} and o["guessed"] == [], o
-    # explain 在老 run 上也按只有 trace 的次数判（和边详情一样），带整对的 note；ran_as 看整对的 note
+    assert o["lines"] == [{"l": 0, "n": 1, "status": "trace", "note": {"k": "nomatch"}}] and o["only"] == 1, o
+    # explain 按只有 trace 的次数判（和边详情一样），带那一行的 note；ran_as 看 override 的 note
     from codestrata import explain as ex_
     run_, rd_, _ = runs.resolve(repo, "nt")
     oh = {"calls": old}
@@ -2381,7 +2325,7 @@ def test_trace_only_notes():
     assert c0["status"] == "mixed" and c0["only"] == 2 and c0["why"] == "只知道名字 step", c0
     assert cex_._unseen_tag(c0) == "  [其中 2 次代码里看不出 · 只知道名字 step]", cex_._unseen_tag(c0)
     assert cex_._unseen_tag({"status": "trace", "note": {"k": "gpu"}, "why": "x"}) == "  [GPU kernel]"
-    assert old["nt/base.py#Base.run|nt/base.py#Sub.step"]["note"] == {"k": "override", "w": "nt/base.py#Base.step"}
+    assert [y["note"] for y in old["nt/base.py#Base.run|nt/base.py#Sub.step"]["lines"]] == [{"k": "override", "w": "nt/base.py#Base.step"}]
     assert ui_source.runtime_lines(idx, "nt/app.py", {"calls": old}) == {}
     # 时间段（整个 run）：调用行按整个 run 的比例摊，跨文件的调用分类和次数都和按阶段看一样
     full = f"{runs.resolve(repo, 'nt')[0]['id']}@t=0-{meta['end_us']}"      # 时间段两头都含：到终点就是整个 run
@@ -2926,7 +2870,6 @@ def test_request_path():
     assert [th["name"] for th in ths] == ["MainThread", "worker"], [th["name"] for th in ths]
     E, A = "pa/engine.py#Engine.", "pa/app.py#"
     rows = [(r["d"], r["fn"], r["before"], r["rep"], r["n"]) for r in ths[0]["rows"]]
-    assert P["scope"] == "all", P["scope"]
     # 调用上下文树：serve 之前就在跑的 <module> → main 列出来当上下文；step 在 loop 下面（×20）和 serve 下面（×1）各一个
     assert rows == [(0, f"{A}<module>", True, False, None), (1, f"{A}main", True, False, None),
                     (2, f"{A}serve", False, False, 1), (3, f"{E}add", False, False, 1),
@@ -2940,18 +2883,11 @@ def test_request_path():
     assert "== pa.app/MainThread  -m pa.app · pid " in out and "Engine.step  ×20  ↻" in out and "（同文件）" not in out and "← app.py:" in out, out
     assert "（之前）  app.py:<module>" in out, out
     assert cs("path", repo, "pa@serve", "--depth", "0").stdout.count("Engine.") == 0
-    # 老 run：时序事件只记了跨文件的调用
+    # 老格式（时序事件只记了跨文件的调用，2026-10-01 之前）：不再读，说请重录
     _drop_same_file_events(rd)
     cs("runs", repo, "merge", run["id"])
-    run, rd, phase = runs.resolve(repo, "pa@serve")
-    P = cs_path.request_path(idx, rd, run, phase, hot)
-    assert P["scope"] == "cross", P["scope"]
-    rows = [(r["d"], r["fn"], r["untimed"], r["rep"], r["n"]) for r in P["procs"][0]["threads"][0]["rows"]]
-    assert rows == [(0, f"{A}serve", False, False, None), (1, f"{E}add", False, False, 1),
-                    (1, f"{A}loop", True, False, None), (2, f"{E}step", False, True, 20)], rows
-    # 老做法：每个函数只挂在第一个调用方下面，serve 直接调 step 的那一次挂不上（调用上下文树修的就是这个）
-    assert "（同文件）" in cs("path", repo, "pa@serve").stdout
-
+    r = cs("path", repo, "pa@serve", check=False)
+    assert r.returncode != 0 and "重录" in (r.stdout + r.stderr), r.stdout + r.stderr
 
 _DF = {
     "df/__init__.py": "",

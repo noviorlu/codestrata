@@ -96,7 +96,6 @@ def _pages(c: common.Ctx, lines: list[str]) -> list[dict]:
 def _recent(c: common.Ctx, data: dict, lines: list[str], nxt: list[dict]) -> out.Result:
     """没给 REF：最近 SHOW 个 run"""
     cat = _locate.catalog(c.repo)
-    c.warnings += _locate.legacy_warning(c.repo)
     rows = [{"id": r["id"], "case": r.get("case"), "status": _runs.state(r), "created": r.get("created"),
              "phases": [p["name"] for p in r.get("phases") or []]} for r in cat[:SHOW]]
     data["runs"], data["n_runs"] = rows, len(cat)

@@ -68,7 +68,7 @@ def measure(repo: Path, ref: str, targets: list[str]) -> dict:
             by_note[k] += y["n"]
             if k == "name":
                 by_form[receiver_form(source.line_text(repo, f, y["l"]) if y["l"] else "")] += y["n"]
-    out = {"run": ref, "has_lines": meta.get("has_lines"), "cross_file_calls": total, "trace_only": only,
+    out = {"run": ref, "cross_file_calls": total, "trace_only": only,
            "trace_only_share": round(only / total, 4) if total else 0,
            "cross_file_pairs": pairs, "trace_only_pairs": only_pairs, "by_note": dict(by_note.most_common()),
            "name_by_receiver": dict(by_form.most_common())}
@@ -123,7 +123,7 @@ def main(argv: list[str]) -> int:
     if as_json:
         print(json.dumps(m, ensure_ascii=False))
         return 0
-    print(f"{m['run']}（{'有' if m['has_lines'] else '没有'}调用行）")
+    print(m["run"])
     print(f"  跨文件的调用 {m['cross_file_calls']} 次，只有 trace {m['trace_only']} 次（{m['trace_only_share']:.1%}）；"
           f"不算写的是基类、跑的是子类的 {m['trace_only'] - m['by_note'].get('override', 0)} 次"
           f"（{(m['trace_only'] - m['by_note'].get('override', 0)) / max(m['cross_file_calls'], 1):.1%}）")

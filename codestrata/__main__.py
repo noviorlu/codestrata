@@ -182,7 +182,6 @@ def _trace(a) -> tuple[int, dict]:
             print(f"[codestrata] 阶段 {t['name']}：第一次进入 {t['qualname']}（{t['file']}:{t['line']}）时切过去"
                   + (f"——{t['func']} 是继承来的，定义在 {t['via']}" if t.get("via") else ""), file=sys.stderr)
     _outdir(repo)
-    _runs.catalog(repo)                      # 先把老格式的 trace 迁进 runs/
     # 顶层包 → 仓库内目录：命令若跑的是 pip 安装的那份，trace 靠它映射回仓库
     # 默认用 scan 时选的目录（主菜单里用户勾的、或者 scan --roots 给的）：录制和图对的是同一批代码
     roots = a.roots or (_load.index_summary(repo) or {}).get("roots") or _scan.detect_roots(repo)

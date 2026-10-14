@@ -526,7 +526,8 @@ window.CS = window.CS || {};
             + (x.stale && x.stale.mismatch ? '<span style="color:var(--stale)">录制时安装包和仓库有 ' + x.stale.mismatch + ' 个文件不一致</span>　' : '')
             + (x.note ? '「' + esc(x.note) + '」' : '');
           h += '<button class="rr' + (ok ? '' : ' weak') + '" role="menuitem" data-run="' + esc(x.id) + '"'
-            + (x.loadable ? '' : ' disabled title="还没有计数：还在录，或录制中断了（codestrata runs <repo> merge ' + esc(x.id) + '）"')
+            + (x.loadable ? '' : x.too_old ? ' disabled title="2026-10-01 之前的录制格式，不再读（数据还在）；用同样的命令重录一次"'
+               : ' disabled title="还没有计数：还在录，或录制中断了（codestrata runs <repo> merge ' + esc(x.id) + '）"')
             + ' aria-current="' + (x.id === cur) + '">'
             + '<span class="rt" title="' + esc(x.id) + '">' + esc(shortTime(x.created)) + '</span>'
             + '<span class="rm">' + meta + '</span>'
@@ -598,7 +599,7 @@ window.CS = window.CS || {};
           '<div class="hotbanner"><div><b>hot 图</b>：case <b>' + esc(m.case) + '</b>　'
           + (m.run_id ? '<span class="lab">run ' + esc(m.run_id) + '</span>　' : '')
           + (m.window ? '时间段 <b>' + esc(CS.timebar.label(m.phase)) + '</b>'
-             + '<span class="lab">（次数按这段时间里的时序事件算；2026-10-01 之前录的 run 只记了跨文件的调用）</span>　'
+             + '<span class="lab">（次数按这段时间里的时序事件算）</span>　'
              : m.phase ? '阶段 <b>' + esc(m.phase) + '</b>　' : '')
           + (m.status && m.status !== 'ok' ? '<span style="color:var(--stale)">⚠ 这次录制不完整'
              + (m.problems && m.problems.length ? '：' + esc(m.problems.join('；')) : '') + '</span>　' : '')

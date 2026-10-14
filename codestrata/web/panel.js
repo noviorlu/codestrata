@@ -90,7 +90,7 @@ window.CS = window.CS || {};
     return E.calls.map(function (P) {
       var q = P.callee.slice(P.callee.indexOf('#') + 1), parts = CS.ids.qparts(q), qsep = CS.ids.qsep(q);
       var name = parts.pop(), only = P.status === 'trace', mixed = P.status === 'mixed';
-      var lines = P.lines || P.guessed || [];
+      var lines = P.lines || [];
       var first = lines.filter(function (x) { return x.l; })[0];
       var from = first ? jump(first, fname(first.f) + ':' + first.l) : jump(P.caller_def, fname(P.caller_def.f) + ':' + P.caller_def.l);
       var more = lines.filter(function (x) { return x.l && x !== first; }).map(function (x) {
@@ -98,7 +98,6 @@ window.CS = window.CS || {};
       var notes = {}, unk = 0;
       // GPU kernel 的启动本来就没有调用行（发起它的是栈上最近的仓库函数），不算「不知道是哪一行」
       (P.lines || []).forEach(function (x) { if (x.note) notes[noteText(x.note)] = 1; if (!x.l && !(x.note && x.note.k === 'gpu')) unk += x.n; });
-      if (!P.lines && P.note) notes[noteText(P.note)] = 1;
       var gpu = (P.lines || []).some(function (x) { return x.note && x.note.k === 'gpu'; });
       var tag = gpu ? '<span class="dtag" title="GPU 上跑的 kernel（trace --gpu 录的），Python 代码里本来就不会直接写">GPU kernel</span>'
               : only ? '<span class="dtag" title="这次跑了，但代码里看不出会调到它：多态、注册表、回调、框架转了一道">代码里看不出</span>'
@@ -109,8 +108,6 @@ window.CS = window.CS || {};
         + '<div class="cs"><span class="lab">from</span>' + from + more
         + '<span class="who">' + esc(symLabel(P.caller)) + '</span></div>'
         + (first && first.s ? code([first.s]) : '')
-        + (P.guessed ? '<div class="via">' + (P.guessed.length ? '这个 run 没记调用行：上面是在调用方里按名字找到的，不一定是这一处'
-                                                               : '这个 run 没记调用行，不知道是哪一行') + '</div>' : '')
         + (unk ? '<div class="via">其中 ' + unk + ' 次不知道是哪一行（录制之后这个文件改过，调用行挪不过来），按调用方整个函数比</div>' : '')
         + Object.keys(notes).map(function (t) { return '<div class="via">' + esc(t) + '</div>'; }).join('')
         + '<div class="cs"><span class="lab">to</span>' + (P.def && P.def.virtual ? '<span>仓库外，没有源码</span>'

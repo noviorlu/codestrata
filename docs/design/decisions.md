@@ -339,11 +339,12 @@
 
 ### 清单拆成 run.json 和 detail.json，目录扁平，只用文件不用数据库
 - 决定：`runs/<id>/` 一层；列表只读几 KB 的 run.json，procs、哈希、环境在 detail.json；所有写都先写临时文件再 `os.replace`。不用 sqlite，不做就地 schema 升级，
-  读取端兼容所有 schema。老格式的迁移加文件锁、只拷不挪、核对（计数逐键相等、legacy 逐字节相同）通过才删老文件。
+  2026-10-01 之前格式的 run（schema < 3 没有调用行，或时序事件只记了跨文件的调用）不再读：数据不删，打开时说请重录（`runs.too_old`）；
+  再早的 `.codestrata/trace-<case>.json` 不再迁移。
 - 为什么：列 100 个 run 时不用读几十 MB；glob 只需一层，按 id 排序就是按时间排序。run 只有几十个，按时间窗取数据靠分块加 index.json 就够。
-  迁移只拷不挪：runs/ 常是指到另一块盘的软链，rename 跨不了文件系统。
-- 放弃的方案：sqlite；按 case 分层的目录；迁移时用 rename 认领（最初的计划）。
-- 在哪：`runs.py` 的 `new_run`、`catalog`、`_write`、`migrate`、`_migrate_locked`、`_cleanup_legacy`。
+  老格式各留一条退路（按名字猜调用行、没有父 span 时另一套建树）让读取端越来越杂，而它们都能重录。
+- 放弃的方案：sqlite；按 case 分层的目录；读取端兼容所有 schema（以前的做法）。
+- 在哪：`runs.py` 的 `new_run`、`catalog`、`_write`、`too_old`。
 
 ### REF 是「完整 id 或 case 名」；时序事件的问题不改 status
 - 决定：`runs.resolve` 先当完整 id 查，再当 case 名（`runs.pick`）：取最新一次 ok 的，没有就最新的 partial（并提示），再没有取最新的任意一个；后面可加 `@阶段` 或 `@t=起-止`。

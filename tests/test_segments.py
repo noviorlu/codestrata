@@ -149,11 +149,13 @@ def test_self_times():
 
 
 def test_old_format_refused():
-    """2026-10-01 之前的 run（没录交接、span 没有父亲）：认得出来（命令行拒绝并说明）"""
-    rd, _ = scenario(tmpdir("cs-seg-"), old=True)
-    assert segments.old_format(rd)
+    """2026-10-01 之前的 run（时序事件只记了跨文件的调用、没录交接；或者没有调用行）：runs.too_old 认得出来"""
+    from codestrata import runs
+    rd, run = scenario(tmpdir("cs-seg-"), old=True)
+    assert runs.too_old(json.loads((rd / "run.json").read_text()))
     rd2, _ = scenario(tmpdir("cs-seg-"))
-    assert not segments.old_format(rd2)
+    assert not runs.too_old(json.loads((rd2 / "run.json").read_text()))
+    assert runs.too_old({"schema": 2}) and not runs.too_old({"schema": 3})
 
 
 # ---------------------------------------------------------------- 命令（真录的 toy）
@@ -275,16 +277,18 @@ def test_slices_on_toy():
 
 
 def test_old_run_refused_by_commands():
-    """老 run：segments / steps 报 no_handoffs（退出码 4），下一步给 lanes 和 path（还能看原始的调用）"""
+    """老 run：读命令报 old_run（退出码 4），下一步给 runs show；runs show 照样能看它是什么"""
     repo, rid = truth()
     d = tmpdir("cs-seg-")
     rd, _ = scenario(d, old=True)
     (d / ".codestrata" / "index.json").write_text((repo / ".codestrata" / "index.json").read_text())
-    for cmd in (["segments", "synth@serving"], ["steps", "synth@serving/stage0/MainThread"]):
+    for cmd in (["status", "synth@serving"], ["lanes", "synth@serving"], ["path", "synth@serving"]):
         r = subprocess.run([PY, "-m", "codestrata", *cmd, "-C", str(d), "--json"], capture_output=True, text=True, cwd=HERE.parent)
         j = one_json(r)
-        assert r.returncode == 4 and j["error"]["code"] == "no_handoffs", (cmd, j)
-        assert [n["cmd"].split()[1] for n in j["next"]] == ["lanes", "path"], j["next"]
+        assert r.returncode == 4 and j["error"]["code"] == "old_run", (cmd, j)
+        assert [n["cmd"].split()[1:3] for n in j["next"]] == [["runs", "show"]], j["next"]
+    r = subprocess.run([PY, "-m", "codestrata", "runs", "show", "synth", "-C", str(d)], capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 0, r.stderr
 
 
 def test_finder_match():

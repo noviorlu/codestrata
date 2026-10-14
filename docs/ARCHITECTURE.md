@@ -97,7 +97,7 @@ flowchart LR
 | `trace/gpu.py` | 73 | `trace --gpu`：找带 CUPTI 的 CUDA 工具链、用 g++ 现编 GPU 录制端（按哈希缓存），给出要注入的 `CUDA_INJECTION64_PATH` |
 | `trace/cupti_inject.cpp` | 155 | GPU 录制端（C++，CUDA 载进被录的进程）：CUPTI activity 记 kernel 和发起它的启动调用，写 `cu-*.log`；时刻用 CLOCK_MONOTONIC；kernel 记录按 `CUpti_ActivityKernel9` 读（用到的字段在 Kernel9–12 里位置一样，CUDA 12 和 13 的头都编得过） |
 | `trace/analysis.py` | 417 | 录之前解析 `--phase`（`resolve_phase_at`），录完之后合并分片（`merge`）、找 case 脚本；纯数据处理 |
-| `runs.py` | 1118 | run 目录的建、收尾、迁移、解析（`pick`、`resolve`）、加载（`load` / `load_run`、`file_state`；一份计数放到当前 index 上是 `overlay`，分列里一列的叠加也用它）、管理、复刻命令 |
+| `runs.py` | 1118 | run 目录的建、收尾、解析（`pick`、`resolve`；2026-10-01 之前格式的不读：`too_old`）、加载（`load` / `load_run`、`file_state`；一份计数放到当前 index 上是 `overlay`，分列里一列的叠加也用它）、管理、复刻命令 |
 | `events.py` | 499 | 时序事件日志 → span（`events/spans/`）：配对、深度、父 span、第一级折叠；谁起了谁、谁回收了谁、谁把数据交给谁（`_origins`、`_ends`、`_handoffs`） |
 | `seq.py` | 397 | 时序事件（span）→ 一段时间（阶段、时间段（可以几片）、整个 run）里每个进程、每条线程的调用表（`phase_calls`，按 run 和时间段缓存；GPU 的行按设备 · 流另记一份）、整个 run 的线程和每条线程最底下的仓库函数（`run_rows`）、时间段计数（`window_counts`，调用行按整个 run 的比例摊）、阶段区间、「反复调用」（`is_repeat`）、GPU 的行跑了多少 ns（`gpu_ns`）；读 span 的公开接口（`span_index`、`pid_rows`、`window_segments`、`calls_in`、`cut_map`）；一行 span 里落在一段时间里的每一次调用（`each_call`，和 calls_in 同一个摊法）、时刻在不在这几段里（`in_segs`） |
 | `path.py` | 336 | 请求路径：一个阶段里每个进程、每个线程的函数级调用上下文树（span 带父亲的；老 run 是按第一次调用排的树）（`request_path`、只留几列 / 截行 `trim`、`format_text`），边详情按先后排要的每对函数第一次调用的时刻（`first_calls`，给了列就只算那一列） |
@@ -112,7 +112,7 @@ flowchart LR
 | `ref.py` | 197 | REF 的语法（`RUN[@范围][/列]` 或页面地址）：解析、范围对着 run.json 规整成阶段名或 `t=起-止[,起-止…]`（几片排好、合并）、越界和写错的候选；不碰文件和网络，命令行和 `runs.resolve`（页面、老命令）共用；拼规整的 REF（`join`） |
 | `locate.py` | 224 | 命令行的 REF 对上仓库和 run：仓库查找（`-C` 往上找 → 页面的 `/api/app`，核对 run 在不在 → 已知仓库里的 run id → 当前目录往上）、找不到时指到别的已知仓库、run 的警告（partial、中断、还在录、同一个 case 有更新的在录）、列对着整个 run 核对规整；只读 |
 | `steps.py` | 262 | 一列的主循环：认轮头（去掉「一轮调几次」的、按同票数 × 次数，内层循环不算）、切轮（按祖先归轮）、常规（这一列自己便宜的那几类轮）/ 空转 / 超长、忙段、一轮里每个函数自己的时间；纯计算，判法和阈值（`Params`，`seg/2`）写在文件头 |
-| `segments.py` | 360 | 按功能切段：读整个 run 的 span（折叠行按次数摊开数）、每列认主循环（`analyse`；轮头在 REF 所在的阶段上认：`head_window`），请求、每个进程的每块忙段（几列合起来切）、缺口、独有的文件、跨进程交接合成组、背景列、没出段的进程；认老格式的 run（`old_format`）；这一段的请求、忙段、各列的种类（`stages`，按 run 和时间段缓存；看的是整个 run 时标出来：`whole_run`）和由它来的进程的先后（`proc_order`，分列和请求路径用） |
+| `segments.py` | 360 | 按功能切段：读整个 run 的 span（折叠行按次数摊开数）、每列认主循环（`analyse`；轮头在 REF 所在的阶段上认：`head_window`），请求、每个进程的每块忙段（几列合起来切）、缺口、独有的文件、跨进程交接合成组、背景列、没出段的进程；这一段的请求、忙段、各列的种类（`stages`，按 run 和时间段缓存；看的是整个 run 时标出来：`whole_run`）和由它来的进程的先后（`proc_order`，分列和请求路径用） |
 | `funcref.py` | 63 | 命令行里写的函数（限定名、路径#限定名、唯一的名字）→ trace 的键；对不上 / 对上几个时给候选；没录到的在 scan 的索引里找（`resolve_symbol`） |
 | `finder.py` | 122 | find：按名字找函数 / 类 / 文件 / 目录（完全一样 > 前缀 > 子串、通配），每个节点在各列的次数和时刻，类 / 文件 / 目录合起来 |
 | `explain.py` | 482 | explain 的原料：一组交接里各种两头和挑出的那种的第一次（两头的代码原文、按 ast 找的所在分支、放 / 取在仓库外时当时还没返回的仓库调用）、函数的签名和 docstring、span 的调用链、之前最近收到的交接（inferred: time）、scan 的说法；函数的谁调它 / 它调谁；类（合它的方法）；切面上的一个节点里跑过的函数；列中的一条边 |
@@ -228,7 +228,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 ```
 
 - `test_runs.py`（78 个用例）：在 `tests/trace_cases/fake_repo` 的 CPU 假服务上跑真的 trace。停进程（超时、中断、挂断、
-  残留）、合并与重算、迁移、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 只有 trace 的调用和它的说明 / 调用行、
+  残留）、合并与重算、`--phase` 和阶段日志、复刻命令、时序事件和 `seq`、`remap`、类体 / 只有 trace 的调用和它的说明 / 调用行、
   构造只算一次、老 run 和时间段的调用行、请求路径（`test_request_path`）、分层方向、分列（`test_lanes`：起 / 收、谁把数据交给谁、时间段；
   `test_lanes_percut`：每列各自的切面、`place`、框、名字，在一个有几层目录、两条线程的仓库上；`test_lanes_wrap`：同一层子模块多于 5 个折行；
   `test_lane_counts`：一列的叠加——所有列加起来是时序事件里的全部调用、节点次数和分列画的一样、`/api/lanehot` 和 `/api/edge?lane=`）、
@@ -238,7 +238,7 @@ CODESTRATA_TEST_CUDA_PY=<CUDA 版 torch 的 python> .venv/bin/python tests/test_
 - `test_graph.py`：scan 产出的 graph（调用、构造、装饰器、property 的读写、语法触发的特殊方法、调用方是哪个节点、构造时跑到的方法）；加上它 xref.json 不变；旧格式的索引要重新 scan。
 - `test_app.py`：主菜单的 `projects`、`jobs`、`app` HTTP（鉴权、扫描、录制、打开图）、serve 的安全检查，scan 的 roots 选择，以及命令行省掉仓库的写法（`runs ls`）。
 - `test_agentcli.py`：给 agent 的命令和它们共用的一层（path 收 REF / 列 / --limit、runs ls / show / wait 的文字和 JSON、正在录的 run（等哪一次、
-  newer_recording）、trace --json 和录失败、阶段名带空格、读命令不迁移老文件、端口被占、-C 往上找和找不到时的候选、case 在别的仓库、
+  newer_recording）、阶段名带空格、端口被占、-C 往上找和找不到时的候选、case 在别的仓库、
   列在 REF 里规整、runs.resolve 和命令行同一套范围、--json 时的意外错误）：进程 / 列别名和选择器、REF 和页面地址的解析、范围（最长匹配、秒、越界的候选）、
   命令过一遍 shlex 还是同一个 REF、guide ≤ 80 行、status / lanes 的文字和信封（从子目录找仓库、下一步原样能跑、`-C`）、错误码和退出码、
   页面地址经真的 serve 找到仓库、run id 在已知仓库里找到。

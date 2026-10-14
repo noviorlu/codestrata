@@ -409,8 +409,8 @@ export default async function (t) {
   await page.ev(`CS.ds.lanes = window.__lanes`);
 
   // 没录时序事件的 run：一张模块图
-  await page.goto(fx.base3 + '#run=' + fx.dynold);
-  ok(await waitRun(page, fx.dynold), '叠上没录时序事件的 run');
+  await page.goto(fx.base3 + '#run=' + fx.dynn);
+  ok(await waitRun(page, fx.dynn), '叠上没录时序事件的 run');
   await sleep(300);
   ok(await page.ev(`!document.body.classList.contains('lanesmode') && document.querySelectorAll('#g .nd').length > 0`), '没录时序事件：一张模块图');
 }

@@ -317,20 +317,6 @@ def test_phase_names_sanitized():
     assert [p["name"] for p in j["data"]["phases"]] == ["start", "a_b_c"], j["data"]["phases"]
 
 
-def test_read_commands_do_not_migrate():
-    """给 agent 的读命令真的只读：老格式的 trace-*.json 不迁移，只提示（runs ls 照旧会迁）"""
-    repo, rid = truth()
-    old = repo / ".codestrata" / "trace-legacy.json"
-    old.write_text("{}")
-    try:
-        j = one_json(cs("status", "-C", repo, "--json"))
-        assert any(w["code"] == "legacy_runs" for w in j["warnings"]) and old.exists(), j["warnings"]
-        one_json(cs("lanes", "-C", repo, f"{rid}@work", "--json"))
-        assert old.exists()
-    finally:
-        old.unlink()
-
-
 def test_serve_port_in_use():
     """端口被占：一句人话，不是 traceback"""
     import socket

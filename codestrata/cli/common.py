@@ -82,15 +82,6 @@ def phases(run: dict, rd: Path) -> list[dict]:
 main_phase = _seq.main_phase
 
 
-def refuse_old(c: Ctx) -> None:
-    """切段要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 切出来是错的，拒绝并说明（用户 10-09 定）"""
-    from .. import segments as _segments
-    if _segments.old_format(c.res.rd):
-        raise CodestrataError("no_handoffs", f"run {c.res.run['id']} 是 2026-10-01 之前录的，没录「谁把数据交给谁」，切段会切错；"
-                              "要重新录一次才能切（trace 是 record，先问用户）。原始的调用还能看：", warnings=c.warnings,
-                              next=[c.cmd("read", "lanes", c.res.full), c.cmd("read", "path", c.res.full, "--limit", "30")])
-
-
 def labeler(idx: dict):
     """键 rel:行 → 函数级的节点（file#Qual）"""
     from .. import align as _align

@@ -32,7 +32,6 @@
   xref.json                  交叉引用（冻结区，和 run 无关）
   graph.json                 函数之间的调用：graph 的 scan 记录（和 run 无关，见 §9.3）
   runs/                      可以是软链（比如指到 /mnt/data）；scan 不碰它
-    .migrate.lock            迁移老格式时的文件锁
     <id>/                    一个 run，id = YYYYMMDD-HHMMSS-<case>[-k]（同一秒撞名加 -2、-3…）
       run.json
       detail.json
@@ -57,16 +56,13 @@
 | `files/NN-<文件名>` | 原始 | `runs.capture` | `runs.load`（case 脚本给页面看） | 录制时的 case 脚本、进程命令行里出现的小配置文件、`--attach` 点名的文件。`NN` 是两位序号 |
 | `events/raw.tar.gz` | 原始 | `runs._pack_all` | `runs.merge_run` | 各进程的时序事件日志 `ev-<pid>-<t0ns>.log`，见 §6.1。只有录了事件的 run 有（`trace` 默认录，被录的 Python 要 3.12+） |
 | `events/spans/` | 派生 | `events.build`（finalize、merge 都会重建） | `seq.py` | 配好对、折叠过的 span，见 §6.2 |
-| `legacy/trace-<case>.json.gz` | 原始 | `runs.migrate` | 没人读（留档） | 只有从老的 `.codestrata/trace-<case>.json` 迁移来的 run 有；逐字节压进来 |
 | `<id>/.merge-<pid>/`、`*.tmp`、`spans.<pid>.tmp` / `.old` | 临时 | merge、原子写、`events.build` | — | 进程死在中途时可能留下，可以删 |
-| `runs/.tmp-<id>/` | 临时 | 迁移 | — | 迁移中途死掉留下的，下次迁移时删掉重来 |
 
 **原始 vs 派生。** 原始数据只在录制时拿得到（一次录制往往要几分钟 GPU），录完就不再改：`parts.tar.gz`、
-`events/raw.tar.gz`、`files/`、`legacy/`、`detail.json`（`procs` 除外）、run.json 里开录和收尾时写下的字段。
+`events/raw.tar.gz`、`files/`、`detail.json`（`procs` 除外）、run.json 里开录和收尾时写下的字段。
 派生数据可以用 `codestrata runs <repo> merge <id|case>` 从原始数据重算：它把 `parts.tar.gz`、`events/raw.tar.gz`
 和散着的 `parts/` 解到一个临时目录（散着的同名文件覆盖包里的），重新合并，重写 `counts.json.gz`、`events/spans/`、
 `detail.json` 的 `procs`、run.json 的派生字段；`detail.json` 已经有的不重写，没有的（driver 死在收尾之前）现在补，标 `captured: "late"`。
-迁移来的老 run 没有分片，不能 merge。
 
 除了 `runs rm`（整个 run）和 `runs rm --events-only`（只删 `events/`，run.json 的 `events` 置 null），没有代码会删 run 里的东西。
 
@@ -112,7 +108,7 @@
 
 | 字段 | 类型 | 含义 | 必 | 谁写 | 谁读 |
 |---|---|---|---|---|---|
-| `schema` | int | 现在是 `3`（3 起 counts.json.gz 带调用行 `func_lines`，§4；迁移来的老 run 没有） | — | `new_run`、迁移 | 没有代码读 |
+| `schema` | int | 现在是 `3`（3 起 counts.json.gz 带调用行 `func_lines`，§4） | — | `new_run` | `runs.too_old`：小于 3 的不再读 |
 | `id` | str | 等于目录名 | L | `new_run` | `catalog`、`resolve`、`load`、`/api/runs` |
 | `case` | str | case 名；同一 case 可以录很多次 | L | `new_run` | `resolve`（按 case 找）、`runs ls`（分组，缺了会 KeyError）、复刻命令（老 run 没存 `invocation` 时拼命令，缺了会 KeyError） |
 | `status` | str | `recording` / `ok` / `partial` / `failed`，规则见下 | L | `new_run`、`derive` | `resolve`（case 名优先取最新的 ok，其次 partial）、`live`、列表 |
@@ -138,7 +134,6 @@
 | `sizes` | {文件名: 字节} | run 目录下各文件的大小。在最后一次写 run.json **之前**取的，所以 `run.json` 自己的数不准 | — | `derive` | 没有代码读（`runs ls` 的大小是现走目录算的） |
 | `gpu` | object | 只有 `trace --gpu` 的 run 有：`{n_kernels, n_names, gpu_us, unattached, dropped, procs}`——kernel 次数、种数、GPU 上一共多少 µs、找不到发起它的调用（只算次数、没有调用边）的次数、CUPTI 丢掉的记录数、有 GPU 日志的进程。不靠时序事件 | — | `derive`（`kernels.Gpu.summary`） | `trace` 的输出、`runs show` |
 | `events` | object \| null | 时序事件的摘要：`{n_lines, n_spans, n_calls, scope, truncated: [pid], n_procs, bytes}`（`scope` 同 span 的 index.json，2026-10-01 之前的 run 没有）；整理 span 失败时是 `{error, bytes}`；没录事件是 null。`bytes` 是 `events/raw.tar.gz` 的大小 | 时序要 | `derive`（`runs._build_events` 的结果）、`remove_events` | `/api/runs`（`events` 为真且没有 `error` 时，页面才开放「时间顺序」和在时间条上拖时间段）、`runs ls/show` |
-| `migrated_from` | str | 只有迁移来的 run 有：老文件名 `trace-<case>.json` | — | 迁移 | 页面、`/api/runs` |
 
 `rec` 的字段（`__main__.cmd_trace` 写）：
 

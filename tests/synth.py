@@ -75,7 +75,7 @@ class Builder:
         run = {"schema": 3, "id": run_id, "case": run_id.split("-", 2)[2], "status": "ok", "problems": [],
                "phase_log": [[n, t, "hook"] for n, t in phases], "duration_s": end / 1e6,
                "phases": [{"name": n, "t_us": t, "n_funcs": 1, "n_calls": 1} for n, t in phases],
-               "events": {"n_spans": ix["n_spans"], "truncated": self.truncated}, "rec": rec or {}}
+               "events": {"n_spans": ix["n_spans"], "truncated": self.truncated, "scope": "cross" if old else "all"}, "rec": rec or {}}
         (rd / "run.json").write_text(json.dumps(run))
         return rd
 

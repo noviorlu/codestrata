@@ -62,9 +62,9 @@ def _known(but: Path | None = None) -> list[Path]:
 
 
 def catalog(repo: Path) -> list[dict]:
-    """只读地列出 run（不迁移老文件、不建目录）"""
+    """只读地列出 run（不建目录）"""
     try:
-        return _runs.catalog(repo, migrate_legacy=False)
+        return _runs.catalog(repo)
     except SystemExit as e:                      # runs/ 是软链、盘没挂上
         raise CodestrataError("internal", str(e)) from None
 
@@ -77,14 +77,6 @@ def _has(repo: Path, name: str) -> bool:
         return _runs.pick(catalog(repo), name) is not None
     except CodestrataError:
         return False
-
-
-def legacy_warning(repo: Path) -> list[dict]:
-    old = _runs.legacy_files(repo)
-    if not old:
-        return []
-    return [{"code": "legacy_runs", "msg": f"有 {len(old)} 个老格式的录制（.codestrata/trace-*.json）还没迁进 runs/，这里看不到；"
-                                           "serve 起来或下一次 trace 时会自动迁（write）"}]
 
 
 def page_app(page: dict, timeout: float = 0.3) -> dict | None:
@@ -153,14 +145,18 @@ def _not_found(repo: Path, name: str, cat: list[dict], again: str) -> Codestrata
                            next=[step("read", "status", again, repo=p) for p in elsewhere[:3]])
 
 
-def resolve(repo: Path, ref: _ref.Ref) -> Resolved:
+def resolve(repo: Path, ref: _ref.Ref, allow_old: bool = False) -> Resolved:
+    """allow_old：2026-10-01 之前格式的 run 也给（runs show 看它是什么）；别的命令报 old_run"""
     if not ref.run:
         raise CodestrataError("need_view", "页面地址里没有 run（页面只开着静态图）；先在页面上选一个 run，或者直接写 RUN")
     cat = catalog(repo)
     hit = _runs.pick(cat, ref.run)
     if hit is None:
         raise _not_found(repo, ref.run, cat, ref.text)
-    warns = legacy_warning(repo) + _run_warnings(repo, ref.run, hit, cat)
+    if not allow_old and _runs.too_old(hit):
+        raise CodestrataError("old_run", f"run {hit['id']} {_runs.OLD_RUN_MSG}",
+                              next=[step("read", "runs", "show", hit["id"], repo=repo)])
+    warns = _run_warnings(repo, ref.run, hit, cat)
     rd = _runs.runs_dir(repo) / hit["id"]
     end = _seq.run_end(hit, rd)
     lanes = list(ref.lanes)

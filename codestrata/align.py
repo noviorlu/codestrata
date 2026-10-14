@@ -9,7 +9,7 @@
   2. 和 scan 记录比（graph.json，见 graph.py）：trace 说 F 在第 L 行调了 G，看 scan 在 F 的第 L 行记的那处调用
      （classify）。scan 定下的被调方就是 G，或者写的是构造 C(…)、跑的是 C 沿继承找到的 __init__ 这类：两边都有；
      其余是「只有 trace」——代码里看不出会调到 G（定到了基类的方法、只知道名字、这一行 scan 什么都没看到），
-     记下是哪一种。构造的调用挪到 F→C 上，和 scan 的记录对上。老 run 没有调用行：在 F 整个函数里比，调用处按名字猜。
+     记下是哪一种。构造的调用挪到 F→C 上，和 scan 的记录对上。
      切面上按节点合起来：scan_edges_on_cut、hot_on_cut。
   3. 只有 trace 的调用的线索：仓库里哪些字符串按名字提到了被调的类（注册表、插件表；wiring）。
 """
@@ -60,7 +60,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
     """把一个 run 的 trace 记录（计数，键是「文件:首行」）放到当前 index 的节点上，并和 scan 记录比（classify）。
 
     返回 {"packages": {单元: 次数}, "symbols": {符号键: 次数}, "files": {文件: 次数}, "kernels": {kernel 节点: {n, gpu_us}}（trace --gpu 的 run 才有）,
-          "calls": {"调用方|被调方": {a, b, n, only, lines, guessed, …}},   见 classify；a、b 是两端的单元（没有是 null）
+          "calls": {"调用方|被调方": {a, b, n, only, lines, …}},   见 classify；a、b 是两端的单元（没有是 null）
           "redirect": {"trace 的键对": 类},   整个归到构造 F→C 上的调用（见 classify），「时间顺序」、请求路径也算到 C 上
           "module_exec": [顶层代码执行过的文件], "module_frames": n, "class_frames": n, "anon": n, "unmapped": n}
     calls 里同一个文件里的调用也有（代码窗口要）；图上只画不同节点之间的。
@@ -126,15 +126,14 @@ def to_package_graph(trace: dict, index: dict) -> dict:
         x["n"] += n
         raw[pk].append(k)
     lines = trace.get("func_lines")
-    if lines is not None:                # 这个 run 记了调用行（2026-09-30 之后录的）
-        for x in pairs.values():
-            x["lines"] = {}
-        for k, n in lines.items():
-            ab, _, ln = k.rpartition("|")
-            a, _, b = ab.partition("|")
-            x = pairs.get(f"{label(a)}|{label(b)}") if ":" in a and ":" in b else None
-            if x is not None:
-                x["lines"][int(ln)] = x["lines"].get(int(ln), 0) + n
+    for x in pairs.values():
+        x["lines"] = {} if lines is not None else {0: x["n"]}     # 没给调用行的（只有手写的计数）：不知道是哪一行（0）
+    for k, n in (lines or {}).items():
+        ab, _, ln = k.rpartition("|")
+        a, _, b = ab.partition("|")
+        x = pairs.get(f"{label(a)}|{label(b)}") if ":" in a and ":" in b else None
+        if x is not None:
+            x["lines"][int(ln)] = x["lines"].get(int(ln), 0) + n
     calls, moved = classify(pairs, index)
     # 整个挪到构造 F→C 上的函数对：「时间顺序」、请求路径读 span 时这些键对也算到 C 上
     redirect = {k: c for pk, c in moved.items() if c in symbols for k in raw[pk]}
@@ -414,17 +413,16 @@ def note_short(note: dict | None) -> str:
 
 
 def top_note(x: dict) -> dict | None:
-    """一对调用（hot 的 calls 里的一条）里只有 trace、次数最多的那一行的 note；老 run（没有调用行）用整对的"""
+    """一对调用（hot 的 calls 里的一条）里只有 trace、次数最多的那一行的 note"""
     tl = max((ln for ln in x.get("lines") or [] if ln.get("status") == "trace"), key=lambda ln: ln.get("n") or 0, default=None)
     return tl.get("note") if tl else x.get("note")
 
 
 def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
-    """给 to_package_graph 的函数对填上和 scan 比的结果，返回 (函数对, moved)。每个函数对 {a, b, n, only, lines, guessed}：
+    """给 to_package_graph 的函数对填上和 scan 比的结果，返回 (函数对, moved)。每个函数对 {a, b, n, only, lines}：
       only     其中「只有 trace」的次数（代码里看不出会调到它）
-      lines    有调用行时 [{l, n, status, note}]：status 是 both / trace，note 见 judge。l 是 0 的不知道是哪一行
+      lines    [{l, n, status, note}]：status 是 both / trace，note 见 judge。l 是 0 的不知道是哪一行
                （录制之后改过的文件，见 remap）：按调用方整个函数比
-      guessed  老 run（没有调用行）：在调用方里按名字找到的调用处 [行]；lines 是 null，整个函数对一个 status、note
     调用方自己里面的 lambda、生成器表达式（F → F.<L行>）算两边都有：就写在这儿。
     构造 C(…)（scan 的种类 1）跑的是 C 沿继承找到的 __new__ / __init__ / __post_init__：这些调用从 F→方法 挪到 F→C
     这个函数对上（被调方是类，status both，note {"k": "ctor", "via": [跑到的方法]}），和 scan 的那条记录对上，
@@ -433,10 +431,10 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
     by = scan_by_base(index)
     syms = index.get("symbols") or {}
     out: dict[str, dict] = {}
-    built: dict[str, dict] = {}         # "F|C" → {"a", "lines": {行: {方法: 次数}}}；老 run 的行是 None
+    built: dict[str, dict] = {}         # "F|C" → {"a", "lines": {行: {方法: 次数}}}
     moved: dict[str, str] = {}
 
-    def move(caller: str, cs: list, l: int | None, callee: str, n: int, a: str | None) -> None:
+    def move(caller: str, cs: list, l: int, callee: str, n: int, a: str | None) -> None:
         for i, c in enumerate(cs):
             share = n // len(cs) + int(i < n % len(cs))
             if share:
@@ -450,19 +448,7 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
         prop = _last(callee) == "__getattr__" or _is_prop(syms.get(base_node(callee)))
         if _is_kernel(syms, callee):        # GPU kernel（trace --gpu）：调用方是发起它时栈上最近的仓库函数，不知道是哪一行
             ls = [{"l": l, "n": n, "status": "trace", "note": {"k": "gpu"}} for l, n in sorted((x["lines"] or {0: x["n"]}).items())]
-            out[pk] = {**x, "lines": ls, "only": x["n"], "guessed": None}
-            continue
-        if x["lines"] is None:
-            cs = ctor_classes(index, recs, callee)
-            if cs:
-                move(caller, cs, None, callee, x["n"], x["a"])
-                if len(cs) == 1:
-                    moved[pk] = cs[0]
-                continue
-            st, note = ("both", None) if local else judge(recs, callee, whole=True)
-            last = _last(callee)
-            guess = sorted({r[0] for r in recs if r[2] == callee or r[3] == last or (r[2] and _last(r[2]) == last)})
-            out[pk] = {**x, "status": st, "note": note, "only": x["n"] if st == "trace" else 0, "guessed": guess[:6]}
+            out[pk] = {**x, "lines": ls, "only": x["n"]}
             continue
         keep, to = [], set()
         for l, n in sorted(x["lines"].items()):
@@ -476,21 +462,15 @@ def classify(pairs: dict, index: dict) -> tuple[dict, dict]:
             keep.append({"l": l, "n": n, "status": st, "note": note})
         if keep:
             out[pk] = {**x, "n": sum(y["n"] for y in keep), "lines": keep,
-                       "only": sum(y["n"] for y in keep if y["status"] == "trace"), "guessed": None}
+                       "only": sum(y["n"] for y in keep if y["status"] == "trace")}
         elif len(to) == 1:
             moved[pk] = to.pop()
     for pk, y in built.items():
-        caller, _, c = pk.partition("|")
+        c = pk.partition("|")[2]
         b = node_unit(index, c)
-        if None in y["lines"]:
-            per = y["lines"][None]
-            guess = sorted({r[0] for r in by.get(base_node(caller), []) if r[2] == c and r[4] == _graph.NEW})
-            out[pk] = {"a": y["a"], "b": b, "n": max(per.values()), "lines": None, "only": 0, "guessed": guess[:6],
-                       "status": "both", "note": {"k": "ctor", "via": sorted(per)}}
-        else:
-            ls = [{"l": l, "n": max(per.values()), "status": "both", "note": {"k": "ctor", "via": sorted(per)}}
-                  for l, per in sorted(y["lines"].items())]
-            out[pk] = {"a": y["a"], "b": b, "n": sum(z["n"] for z in ls), "lines": ls, "only": 0, "guessed": None}
+        ls = [{"l": l, "n": max(per.values()), "status": "both", "note": {"k": "ctor", "via": sorted(per)}}
+              for l, per in sorted(y["lines"].items())]
+        out[pk] = {"a": y["a"], "b": b, "n": sum(z["n"] for z in ls), "lines": ls, "only": 0}
     return out, moved
 
 

@@ -6,7 +6,7 @@ run 不能重建——一次录制往往要几分钟 GPU（起服务、加载模
   - 每次 trace 都是一个新目录 .codestrata/runs/<id>/，id = 录制时刻 + case 名。同名 case
     重录不覆盖旧的：今天录 MiniCPM、明天录 Qwen，两份都留着，随时叠到图上。
   - run 目录里分两类东西。原始数据——录制时才拿得到的：parts.tar.gz（各进程写出的分片）、
-    files/（case 脚本、命令里提到的配置文件）、legacy/（迁移来的老文件）、run.json 和
+    files/（case 脚本、命令里提到的配置文件）、run.json 和
     detail.json 里录制时写下的字段；finalize 之后不再改。派生数据——counts.json.gz：
     合并 parts 得到的调用计数，合并逻辑改了可以用 `runs merge` 从原始数据重算。
   - 除了 `runs rm`，没有代码会删 run。scan 不碰 runs/；runs/ 可以是软链（比如指到 /mnt/data），
@@ -48,7 +48,6 @@ SCHEMA = 3
 CASE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _TEXT_EXTS = (".sh", ".bash", ".py", ".yaml", ".yml", ".json", ".toml")
 _FILE_MAX = 200_000          # 自动存下的文本文件（case 脚本、命令里提到的配置）的大小上限
-_MIGRATED: set[str] = set()  # 这个进程里已经检查过迁移的仓库
 
 
 # ---------------------------------------------------------------- 小工具
@@ -493,157 +492,23 @@ def finalize(repo: Path, rd: Path, tr: dict, *, stop: str, returncode: int | Non
 
 # ---------------------------------------------------------------- 迁移老的 trace-<case>.json
 
-def migrate(repo: Path) -> list[str]:
-    """把老的 .codestrata/trace-<case>.json（每个 case 只有一份，重录就被覆盖）搬进 runs/。
-    幂等、可以并发（加文件锁串行）：id 由老文件的修改时间决定；先在 .tmp-<id>/ 里建好、
-    逐键核对计数，整个 rename 成 <id>/，最后才删老文件——老文件逐字节压在 legacy/ 里，
-    原始数据一份不丢。返回迁移了的 run id。"""
-    repo = Path(repo)
-    cs = repo / ".codestrata"
-    base = runs_dir(repo)
-    if not any(cs.glob("trace-*.json")) and not any(base.glob(".tmp-*")):
+def too_old(run: dict) -> bool:
+    """2026-10-01 之前录的 run：没有调用行（schema < 3），或者时序事件只记了跨文件的调用（span 没有父亲、没录交接）。
+    这种 run 不再读（数据不删），打开时说请重录"""
+    ev = run.get("events")
+    return (run.get("schema") or 0) < SCHEMA or bool(ev and not ev.get("error") and ev.get("scope") != "all")
+
+
+OLD_RUN_MSG = "是 2026-10-01 之前的录制格式，codestrata 不再读它（数据还在）；用同样的命令重录一次"
+
+
+def catalog(repo: Path) -> list[dict]:
+    """所有 run 的 run.json，新的在前。只读：runs/ 不在也不建"""
+    base = Path(repo) / ".codestrata" / "runs"
+    if not base.is_dir():
+        if base.is_symlink():
+            raise SystemExit(f"{base} 是软链，但指向的目录不在（{os.readlink(base)}）：盘没挂上？")
         return []
-    # 整个迁移串行：同时起的几个 serve / runs ls 排队，后来的看到 run 已经在了就跳过。
-    # 锁随进程释放，所以持锁时还在的 .tmp-* 一定是上次迁到一半死掉留下的
-    with open(base / ".migrate.lock", "a") as lk, _compat.file_lock(lk):
-        return _migrate_locked(repo, cs, base)
-
-
-def _migrate_locked(repo: Path, cs: Path, base: Path) -> list[str]:
-    # 持锁时还在的 .tmp-*：上次迁到一半死掉了。老文件一直留在原处（只拷不挪），删掉重来
-    for tmp in base.glob(".tmp-*"):
-        shutil.rmtree(tmp, ignore_errors=True)
-    done = []
-    for old in sorted(cs.glob("trace-*.json")):
-        case = old.name[len("trace-"):-len(".json")]
-        # 老版本不限制 case 名（可能有中文、+ 之类）：目录名用清洗过的，run.json 里仍是原名，
-        # --hot 原名照样能找到
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", case) or "case"
-        rid = time.strftime("%Y%m%d-%H%M%S", time.localtime(old.stat().st_mtime)) + f"-{safe}"
-        final = base / rid
-        if final.exists():
-            # 上次落位之后、删老文件之前死掉了：核对 legacy 里那份和老文件一样，再把收尾做完
-            _cleanup_legacy(cs, final, old, case)
-            continue
-        try:
-            tr = json.loads(old.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        tmp = base / f".tmp-{rid}"
-        tmp.mkdir()
-        try:
-            phases = tr.get("phases") or {"start": {"funcs": tr.get("funcs") or {},
-                                                     "func_edges": tr.get("func_edges") or {}}}
-            _write(tmp / "counts.json.gz", {"phases": phases, "names": {}}, gz=True)
-            # 核对：全部、每个阶段都要和老文件逐键相等
-            back = read_json(tmp / "counts.json.gz", gz=True)["phases"]
-            tot = _sum(back)
-            ok = (tot["funcs"] == (tr.get("funcs") or tot["funcs"])
-                  and tot["func_edges"] == (tr.get("func_edges") or tot["func_edges"])
-                  and all(back[n] == phases[n] for n in phases))
-            if not ok:
-                print(f"[codestrata] 迁移 {old.name} 时计数核对不上，保留老文件、跳过", file=sys.stderr)
-                shutil.rmtree(tmp, ignore_errors=True)
-                continue
-            procs = [{"pid": p.get("pid"), "ppid": p.get("ppid"), "argv": p.get("argv"),
-                      # 老版本只存了 sys.argv 的前 6 个、也没有 ppid：标出来，免得以为命令就这么长
-                      "argv_cut": "ppid" not in p and len(p.get("argv") or []) >= 6,
-                      "n_funcs": p.get("n_funcs", 0), "t0_us": None, "t1_us": None, "why": None, "py": None}
-                     for p in tr.get("pids") or []]
-            (tmp / "files").mkdir()
-            script_rec = None
-            if tr.get("script"):
-                name = "00-" + Path(tr["script"]["path"]).name
-                (tmp / "files" / name).write_text(tr["script"]["text"], encoding="utf-8")
-                script_rec = {"path": tr["script"]["path"], "stored": f"files/{name}"}
-            _write(tmp / "detail.json", {
-                "sha_of": "repo", "file_shas": tr.get("file_shas") or {},
-                "mapped_from": tr.get("mapped_from"), "mapped": tr.get("mapped") or {},
-                "mapped_mismatch": tr.get("mapped_mismatch") or [],
-                "mapped_only_installed": tr.get("mapped_only_installed") or [],
-                "procs": procs, "leftovers": [], "pythons": {}, "gpu": None, "git": {"dirty": []},
-                "script": script_rec, "files": []})
-            rc = tr.get("returncode")
-            n_funcs = len({k for ph in phases.values() for k in ph["funcs"]})
-            _write(tmp / "run.json", {
-                "schema": SCHEMA, "id": rid, "case": case,
-                "status": "ok" if rc == 0 else ("failed" if n_funcs == 0 else "partial"),
-                "problems": [] if rc == 0 else [f"命令退出码 {rc}"], "stop": "exit", "returncode": rc,
-                "created": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(old.stat().st_mtime)),
-                "host": None, "cmd": tr.get("cmd") or [], "cwd": tr.get("cwd") or str(repo), "env": {},
-                "git": None, "clock": None, "duration_s": None, "tags": [], "note": "",
-                "phases": [{"name": n, "t_us": None, "n_funcs": len(v["funcs"]),
-                            "n_calls": sum(v["funcs"].values())} for n, v in phases.items()],
-                "summary": {"n_funcs": n_funcs, "n_procs": len(procs),
-                            "n_procs_active": sum(1 for p in procs if p["n_funcs"]),
-                            "n_mapped": len(tr.get("mapped") or {})},
-                "migrated_from": old.name})
-            # 老文件原样压进 legacy/，parts-<case>/ 打包。只拷不挪：runs/ 常常是指到另一块盘的
-            # 软链，跨盘没法 rename；新 run 整个落位之后才删老文件
-            (tmp / "legacy").mkdir()
-            (tmp / "legacy" / (old.name + ".gz")).write_bytes(gzip.compress(old.read_bytes(), mtime=0))
-            parts = cs / f"parts-{case}"
-            if parts.is_dir():
-                with tarfile.open(tmp / "parts.tar.gz", "w:gz") as tf:
-                    for p in sorted(p for p in parts.iterdir() if p.is_file()):
-                        tf.add(p, arcname=p.name)
-            os.replace(tmp, final)
-        except Exception:
-            shutil.rmtree(tmp, ignore_errors=True)
-            raise
-        done.append(rid)
-        print(f"[codestrata] 老的 {old.name} 已迁成 run {rid}（在 {base.resolve()}）", file=sys.stderr)
-        _cleanup_legacy(cs, final, old, case)
-    return done
-
-
-def _cleanup_legacy(cs: Path, final: Path, old: Path, case: str) -> None:
-    """迁移的最后一步：run 里的 legacy 副本逐字节和老文件相同、parts 打包的成员齐全，才删老的。"""
-    try:
-        run = read_json(final / "run.json")
-        if run.get("migrated_from") != old.name:
-            return
-        if gzip.decompress((final / "legacy" / (old.name + ".gz")).read_bytes()) != old.read_bytes():
-            print(f"[codestrata] {old.name} 和 run {final.name} 里的副本不一样，保留老文件", file=sys.stderr)
-            return
-        parts = cs / f"parts-{case}"
-        if parts.is_dir():
-            names = sorted(p.name for p in parts.iterdir() if p.is_file())
-            tb = final / "parts.tar.gz"
-            if not tb.is_file():
-                return
-            with tarfile.open(tb, "r:gz") as tf:
-                if sorted(m.name for m in tf.getmembers()) != names:
-                    return
-            shutil.rmtree(parts)
-        old.unlink()
-    except (OSError, ValueError, tarfile.TarError):
-        return
-
-
-# ---------------------------------------------------------------- 读：列表、解析、加载
-
-def legacy_files(repo: Path) -> list[Path]:
-    """还没迁进 runs/ 的老格式录制（.codestrata/trace-<case>.json）"""
-    return sorted((Path(repo) / ".codestrata").glob("trace-*.json"))
-
-
-def catalog(repo: Path, migrate_legacy: bool = True) -> list[dict]:
-    """所有 run 的 run.json，新的在前。第一次调用时顺带迁移老文件（会写盘）；
-    migrate_legacy=False 时真的只读：不迁移、runs/ 不在也不建（给 agent 的读命令用，老文件由它们提示）。"""
-    repo = Path(repo)
-    if migrate_legacy:
-        key = str(repo.resolve())
-        if key not in _MIGRATED:
-            _MIGRATED.add(key)
-            migrate(repo)
-        base = runs_dir(repo)
-    else:
-        base = Path(repo) / ".codestrata" / "runs"
-        if not base.is_dir():
-            if base.is_symlink():
-                raise SystemExit(f"{base} 是软链，但指向的目录不在（{os.readlink(base)}）：盘没挂上？")
-            return []
     out = []
     for d in sorted(base.iterdir(), reverse=True):
         if d.name.startswith(".") or not (d / "run.json").is_file():
@@ -721,7 +586,7 @@ def brief(r: dict, rd: Path, stale: dict | None) -> dict:
             "n_procs_active": sm.get("n_procs_active"), "n_funcs": sm.get("n_funcs"),
             "events": bool(ev and not ev.get("error")), "events_error": bool(ev and ev.get("error")),
             "stale": stale,
-            "loadable": (rd / "counts.json.gz").is_file(), "migrated": bool(r.get("migrated_from"))}
+            "loadable": (rd / "counts.json.gz").is_file() and not too_old(r), "too_old": too_old(r)}
 
 
 def _sum(phases: dict) -> dict:
@@ -820,13 +685,15 @@ def load(repo: Path, idx: dict, ref: str | None) -> tuple[dict | None, dict | No
 
 def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> tuple[dict, dict]:
     """load 的后半：已经认出是哪个 run（和阶段 / 时间段）之后，映射到当前的 index 上"""
+    if too_old(run):
+        raise SystemExit(f"run {run['id']} {OLD_RUN_MSG}")
     if not (rd / "counts.json.gz").is_file():
         raise SystemExit(f"run {run['id']} 还没有计数：" + (
             "还在录制中" if _alive(run.get("driver")) else
             f"录制中断了，先 codestrata runs {repo} merge {run['id']}"))
     win = _seq.parse_window(phase)
     counts, names = load_counts(rd, None if win else phase, with_names=True)
-    if win:                                      # 时间段：次数按这段时间里的时序事件现算（2026-10-01 之前录的只有跨文件的调用）；
+    if win:                                      # 时间段：次数按这段时间里的时序事件现算；
         try:                                     # 调用行按整个 run 记的比例摊（span 不记调用行）
             counts = _seq.window_counts(rd, run, phase, ref_lines=counts.get("func_lines"))
         except LookupError as e:
@@ -864,11 +731,9 @@ def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> t
             "script": script,
             "run_id": run["id"], "status": run.get("status"), "problems": run.get("problems") or [],
             "git": run.get("git"), "note": run.get("note") or "",
-            "created": run.get("created"), "migrated_from": run.get("migrated_from"),
+            "created": run.get("created"),
             # 改过的文件里按名字对不上的键（lambda、改了名的、老 run 没存名字的）：这些调用的叠加可能偏
             "unmatched": len(unmatched), "events": run.get("events"),
-            # 记了调用行没有（2026-09-30 之前录的没有）：没有的话代码窗口不标运行时调到了谁，页面上说明
-            "has_lines": "func_lines" in counts,
             # 复刻：命令（原样的，或老 run 按参数拼的）、录制时继承的环境、--phase 怎么切的、各阶段的时刻
             # 网页上的：--env 里像密钥的值隐去，完整的在 runs show
             "rerun": rerun_command(run, Path(repo), redact=True),
@@ -879,7 +744,7 @@ def load_run(repo: Path, idx: dict, run: dict, rd: Path, phase: str | None) -> t
             "phase_at": (run.get("rec") or {}).get("phase_at") or [],
             "phase_log": run.get("phase_log") or [],
             # 时间轴（页面上的阶段条）：到哪一刻为止、各阶段的一段段；选的是时间段时它的起止（几片时从第一片的开头到最后一片的结尾）
-            # 和各片（这时次数按时序事件算：2026-10-01 之前录的只有跨文件的调用）
+            # 和各片（这时次数按时序事件算）
             "end_us": end, "timeline": [list(s) for s in _seq.phase_segments(run, end)] if end else [],
             "window": [win[0][0], win[-1][1]] if win else None, "slices": [list(s) for s in win] if win else None}
     return hot, meta
@@ -946,7 +811,7 @@ def merge_run(repo: Path, ref: str) -> dict:
         raise SystemExit(f"还有进程属于这个 run、可能还在往 {parts} 里写：{left}，先停掉它们")
     tarball = rd / "parts.tar.gz"
     if not parts.is_dir() and not tarball.is_file():
-        raise SystemExit(f"run {run['id']} 没有原始分片（迁移来的老 run），没法重算")
+        raise SystemExit(f"run {run['id']} 没有原始分片，没法重算")
     tmp = rd / f".merge-{os.getpid()}"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir()

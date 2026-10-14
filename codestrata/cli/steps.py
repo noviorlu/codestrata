@@ -48,7 +48,6 @@ def _rounds_arg(text: str | None) -> tuple[int, int] | None:
 def run(a) -> out.Result:
     c = common.context(a)
     common.require_events(c)
-    common.refuse_old(c)
     r = c.res
     lo, hi, rtext, rfull = common.span(c, "steps ")
     aliases = _lanes.run_aliases(r.rd)

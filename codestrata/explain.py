@@ -383,7 +383,7 @@ def function(repo: Path, rd: Path, run: dict, idx: dict, hot: dict, node: str, k
     callees = sorted(((k.partition("|")[2], v) for k, v in calls.items() if k.partition("|")[0] == node), key=lambda kv: -kv[1]["n"])
 
     def pair(fn: str, v: dict) -> dict:
-        # 和边详情（ui/edge.py）同一个判法：按只有 trace 的次数；老 run（没有调用行）也对
+        # 和边详情（ui/edge.py）同一个判法：按只有 trace 的次数
         only = v.get("only") or 0
         status = "trace" if only >= v["n"] else "both" if not only else "mixed"
         note = _align.top_note(v) if only else None
@@ -392,9 +392,7 @@ def function(repo: Path, rd: Path, run: dict, idx: dict, hot: dict, node: str, k
     # 代码里写成调它、跑的是同名的别的方法（override：子类覆盖的或接口的实现）：explain 一个基类的方法时，它自己可能一次也没跑
     ran_as: dict[str, dict] = {}
     for k, v in calls.items():
-        lines = v.get("lines")
-        rows = lines if lines is not None else [{"note": v.get("note"), "n": v["n"], "l": (v.get("guessed") or [None])[0]}]
-        for ln in rows:
+        for ln in v.get("lines") or []:
             nt = ln.get("note") or {}
             if nt.get("k") == "override" and nt.get("w") == node:
                 caller, _, callee = k.partition("|")

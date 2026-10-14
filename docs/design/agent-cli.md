@@ -98,7 +98,6 @@ RUN   := 完整 run id | case 名
 | `newer_recording` | 按 case 名挑到的是录完的那次，同一个 case 有一次更新的正在录 |
 | `repo_from_run` | 当前目录的仓库里没有这个 run，用的是别的已知仓库 |
 | `page_unknown` / `page_mismatch` | 页面地址（或 view url 的 `--page`）那个端口问不到 / 那边开的不是这个仓库、或者那个仓库里没有这个 run |
-| `legacy_runs` | 有老格式的录制还没迁进 runs/（读命令不迁；`serve` 起来或下一次 `trace` 时会迁） |
 | `lanes_unchecked` | 没录时序事件的 run，REF 里的列没核对 |
 | `lane_idle` | 选的列在这段时间里没有活动 |
 | `no_lanes` | find：没录时序事件，次数不分列 |
@@ -120,7 +119,7 @@ RUN   := 完整 run id | case 名
 | 1 | `internal` | 意外（老代码里的错误、codestrata 的 bug） |
 | 2 | `usage` | 用法错 |
 | 3 | `repo_unknown` `run_not_found` `phase_not_found` `bad_window` `window_out_of_range` `lane_not_found` `ambiguous_lane` `item_not_found` `ambiguous_item` | 名字写错，都带候选 |
-| 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `no_handoffs` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs merge`、`scan` 是 write） |
+| 4 | `not_scanned` `index_old` `no_events` `recording` `interrupted_run` `failed_run` `not_loadable` `spans_unreadable` `no_loop` `old_run` `link_mismatch` `need_view` | 没数据（包括还在录、等录完超时），或推断被拒；`next` 给出能补数据的命令（`runs merge`、`scan` 是 write） |
 | 5 | `no_live_page` `old_serve` `page_failed` `timeout` `interrupted` `superseded` `refused` | 页面换不了：没有开着的页面 / 老 serve / 页面换不过去 / 被后来的一条顶掉 / 撤不了；`next` 给 `view url`（把地址交给用户） |
 | 6 | — | `view set`：推过去了、页面还没换（`data.state` 是 deferred / queued / offered / sent，`ok` 仍是 true）；`next` 给 `view wait --for applied` |
 
@@ -130,7 +129,7 @@ RUN   := 完整 run id | case 名
 
 | effect | 命令 | 规矩 |
 |---|---|---|
-| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url / get / wait`、`path`、`guide`、`runs ls / show` | 随便跑（真的只读：不迁移老文件、不建目录） |
+| read | `status`、`lanes`、`segments`、`steps`、`links`、`find`、`explain`、`view url / get / wait`、`path`、`guide`、`runs ls / show` | 随便跑（真的只读：不建目录） |
 | page | `view set`、`view back` | 用户这句话本身就是「要看 / 只看 / 标出 / 选中 / 聚焦」时直接推，回复里说怎么撤销（浏览器后退或 `view back`）；其余情况先问 |
 | write | `scan`、`runs note / merge` | 先问用户 |
 | delete | `runs rm` | 先问用户 |
@@ -233,7 +232,7 @@ RUN   := 完整 run id | case 名
   别的（只有一轮、收请求时登记一下的）记成零星的。主循环是这块里前景轮在仓库函数里的时间最多的那一列。
 - **缺口**：段开始前后 max(段长 10%, 50 ms) 里没录到别的进程交给它的数据。REF 开始之前它就在忙（范围把开头切掉了）、或者同一个进程之前已经出过段，不报。
 - 认不准的形状：每轮都交接一次的循环（心跳、每步上报）不会空转；同名的几条线程合成一列时只认一条线程的主循环；交替得很密的几块会合成一块（调小 `--gap`）。
-- 要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 报 `no_handoffs`（退出码 4），下一步给 `lanes`、`path`。
+- 要 2026-10-01 之后录的 run（span 带父亲、录了交接）；更老的 run 所有读命令都报 `old_run`（退出码 4），下一步给 `runs show`。
 - 阈值都能在命令行上改，用的是哪一套写在 `basis` 里；判法改了时 `algo` 升版本。
 
 ### `codestrata find 文字 [REF] [--kind fn|class|file|dir] [--under 目录] [--all] [--limit N] [--json]`

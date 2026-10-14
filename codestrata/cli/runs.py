@@ -73,7 +73,6 @@ def _phases(run: dict, rd: Path) -> list[dict]:
 
 def ls(a) -> out.Result:
     _, repo, how, warns = _repo(a)
-    warns += _locate.legacy_warning(repo)
     base = repo / ".codestrata" / "runs"
     cat = [r for r in _locate.catalog(repo) if not a.case or r.get("case") == a.case]
     idx = _index(repo)
@@ -119,7 +118,7 @@ def ls(a) -> out.Result:
 def show(a) -> out.Result:
     ref, repo, how, warns = _repo(a, a.ref)
     try:
-        res = _locate.resolve(repo, ref)
+        res = _locate.resolve(repo, ref, allow_old=True)
     except CodestrataError as e:
         e.warnings = warns + e.warnings
         raise
@@ -148,7 +147,7 @@ def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -
          f"  状态  {run.get('status_shown') or run.get('status')}"
          + (f"（{'；'.join(run.get('problems') or [])}）" if run.get("problems") else "")]
     for k, label in (("created", "录制于"), ("duration_s", "用时（秒）"), ("returncode", "退出码"),
-                     ("stop", "怎么停的"), ("host", "机器"), ("cwd", "执行目录"), ("migrated_from", "迁移自")):
+                     ("stop", "怎么停的"), ("host", "机器"), ("cwd", "执行目录")):
         if run.get(k) is not None:
             L.append(f"  {label:<6}{run[k]}")
     L.append(f"  命令  {' '.join(run.get('cmd') or [])}")
@@ -188,8 +187,8 @@ def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -
             L.append(f"  时序  整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
         else:
             tr = ev.get("truncated") or []
-            L.append(f"  时序  {ev['n_spans']} 段、{ev['n_calls']} 次{ev_calls(ev)}（{ev['n_procs']} 个进程），"
-                     f"原始日志 {size(ev['bytes'] or 0)}"
+            L.append(f"  时序  {ev.get('n_spans')} 段、{ev.get('n_calls')} 次{ev_calls(ev)}（{ev.get('n_procs')} 个进程），"
+                     f"原始日志 {size(ev.get('bytes') or 0)}"
                      + (f"；⚠ {len(tr)} 个进程到了行数上限（pid " + "、".join(map(str, tr[:8])) + ("…" if len(tr) > 8 else "")
                         + "），之后的调用没记时序，计数完整" if tr else ""))
     if detail.get("leftovers"):

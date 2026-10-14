@@ -26,7 +26,6 @@ def add_args(p) -> None:
 def run(a) -> out.Result:
     c = common.context(a)
     common.require_events(c)
-    common.refuse_old(c)
     r = c.res
     if len(r.slices) != 1 and not (r.phase or "").startswith("t="):
         raise CodestrataError("bad_window", "这个阶段有几段时间（切走又切回来），切段还只认一段；用 @t=起-止 选其中一段",

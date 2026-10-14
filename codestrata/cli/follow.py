@@ -16,7 +16,6 @@ _STAY = {"ancestor": "就在这次调用里", "round": "这一轮里交出", "or
 
 
 def run(a, c: common.Ctx, idx: dict) -> out.Result:
-    common.refuse_old(c)
     r = c.res
     lo, hi, rtext, _ = common.span(c, "links --follow ")
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, None)       # 只要 keymap（录制之后改过的文件）：和页面认同一个函数

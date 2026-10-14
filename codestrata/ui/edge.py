@@ -38,10 +38,9 @@ def _sig(repo: Path, d: dict | None) -> list[str] | None:
 
 def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None, first: dict | None = None) -> dict:
     """点开一条边：a、b 可以是目录、本层文件或单个文件节点。两端底下函数之间的调用：
-      calls      这次 trace 到的函数对 [{caller, callee, caller_def, def, sig, n, only, status, lines, guessed, note, wiring}]：
+      calls      这次 trace 到的函数对 [{caller, callee, caller_def, def, sig, n, only, status, lines, note, wiring}]：
                  n 次数、only 其中代码里看不出的次数；status：both（两边都有）/ trace（只有 trace）/ mixed（有的行对得上、有的对不上）；
-                 lines 是 trace 记的调用行 [{f, l, n, status, note, s}]（note 见 align.judge）；老 run 没有调用行：lines 是 null，
-                 guessed 是在调用方里按名字找到的 [{f, l, s}]，note 是整个函数对的；wiring 见 align.wiring（只给有只有 trace 的）
+                 lines 是 trace 记的调用行 [{f, l, n, status, note, s}]（note 见 align.judge）；wiring 见 align.wiring（只给有只有 trace 的）
       scan_only  代码里写了、这次没录到的 [{caller, callee, caller_def, def, sig, lines: [{f, l, s, k}], n_lines, unseen}]
                  （k 是 graph.py 的种类）；unseen：只是构造一个构造时不跑仓库里代码的类，跑没跑 trace 都看不到
     两种都按次数 / 调用处多的在前，各最多 MAX_ITEMS 条（counts 里是全部的）。
@@ -68,12 +67,9 @@ def edge_detail(repo: Path, idx: dict, a: str, b: str, hot: dict | None = None, 
         it = {"caller": caller, "callee": callee, "caller_def": cd, "def": d, "sig": _sig(repo, d),
               "n": x["n"], "only": x["only"],
               "status": "trace" if x["only"] >= x["n"] else "both" if not x["only"] else "mixed",
-              "lines": None, "guessed": None, "note": x.get("note"),
+              "note": x.get("note"),
               "first": first.get(pk) if first is not None else None}
-        if x["lines"] is not None:
-            it["lines"] = [{**ln, "f": cd["f"], "s": text(cd["f"], ln["l"]) if ln["l"] else ""} for ln in x["lines"]]
-        else:
-            it["guessed"] = [{"f": cd["f"], "l": l, "s": text(cd["f"], l)} for l in x["guessed"] or []]
+        it["lines"] = [{**ln, "f": cd["f"], "s": text(cd["f"], ln["l"]) if ln["l"] else ""} for ln in x["lines"]]
         if x["only"]:
             w = _align.wiring(idx, callee)
             if w:

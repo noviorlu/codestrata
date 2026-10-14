@@ -10,7 +10,7 @@
             写上一次交给它是什么时候、什么通道，不说是谁交的（看的是整个 run 录到的交接）。REF 开始之前它就在忙（范围把开头切掉了）、
             或者同一个进程在这之前已经出过段，不报。
     独有代码 这段时间里这个进程调到、整个 REF 时间里别的进程都没调到的文件，按次数排——给 agent 认「这是 talker」用的证据。
-要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 由调用方拒绝（old_format）。
+要 2026-10-01 之后录的 run（span 带父亲、录了交接）；老 run 在读之前就被拒绝（runs.too_old）。
 """
 from __future__ import annotations
 
@@ -26,11 +26,6 @@ GAP_BEFORE = 0.10
 MIN_BLOCK_SHARE = 0.05       # 一块忙段在这个进程这段时间的前景里占的（在仓库函数里的时间）不到这么多：零星的，不单出段（收请求时登记一下那种）
 GAP_MIN_US = 50_000
 REQ_SLACK_US = 1000          # 阶段函数的那次调用可能比切阶段的时刻早一点点（hook 在进入函数时才切）
-
-
-def old_format(rd) -> bool:
-    """2026-10-01 之前整理的 span：没录交接（index 里没有 handoffs）——切段会切错"""
-    return "handoffs" not in _seq.span_index(rd)
 
 
 def head_window(run: dict, end_us: int | None, lo: int, hi: int, phase: str | None) -> tuple[str | None, tuple[int, int]]:
@@ -328,7 +323,7 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
         if key in _STAGES:
             return _STAGES[key]
     out = None
-    ho = [] if old_format(rd) else [h for h in _seq.span_index(rd).get("handoffs") or [] if lo <= h["from"][3] < hi]
+    ho = [h for h in _seq.span_index(rd).get("handoffs") or [] if lo <= h["from"][3] < hi]
     if ho:
         A = analyse(rd, lo, hi, head_window=head_window)
         reqs = requests(A, run, phase, lo, hi, label)

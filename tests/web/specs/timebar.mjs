@@ -31,7 +31,7 @@ export default async function (t) {
   s = await st(page);
   const tl = await page.ev(`CS.app.data.hotMeta.timeline.find(x => x[0] === 'loop')`);
   ok(s.win[1] === tl[2] && s.win[0] > tl[1], '终点不变、起点往后 ' + JSON.stringify([s.win, tl]));
-  ok(s.pressed.length === 0 && s.banner.includes('时间段') && s.banner.includes('跨文件'), '没有阶段按下，横幅写明时间段、只算跨文件的调用');
+  ok(s.pressed.length === 0 && s.banner.includes('时间段'), '没有阶段按下，横幅写明时间段');
   const he = await hotEdges(page);
   ok(Object.keys(he).length >= 1 && !he['fakesvc/execd.py|fakesvc/work.py'], '时间段里跑到的边 ' + JSON.stringify(he));
 
