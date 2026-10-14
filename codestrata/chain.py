@@ -227,7 +227,7 @@ class Walker:
             raise CodestrataError("ambiguous_lane", f"{sel!r} 对上了 {len(lids)} 列，这里要正好一列",
                                   candidates=[self.alias(x) for x in lids][:20])
         if lids[0] not in self.A["lanes"]:
-            raise CodestrataError("lane_not_found", f"{sel!r} 这一列没有线程（GPU 的列没有交接）")
+            raise CodestrataError("lane_not_found", f"{sel!r} 这一列没有线程")
         return lids[0]
 
     def fn(self, lid: str, text: str) -> Fn:

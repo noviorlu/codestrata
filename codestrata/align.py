@@ -59,7 +59,7 @@ def defining(symbols: dict, loc2sym: dict, rel: str, ln: int) -> str | None:
 def to_package_graph(trace: dict, index: dict) -> dict:
     """把一个 run 的 trace 记录（计数，键是「文件:首行」）放到当前 index 的节点上，并和 scan 记录比（classify）。
 
-    返回 {"packages": {单元: 次数}, "symbols": {符号键: 次数}, "files": {文件: 次数}, "kernels": {kernel 节点: {n, gpu_us}}（trace --gpu 的 run 才有）,
+    返回 {"packages": {单元: 次数}, "symbols": {符号键: 次数}, "files": {文件: 次数},
           "calls": {"调用方|被调方": {a, b, n, only, lines, …}},   见 classify；a、b 是两端的单元（没有是 null）
           "redirect": {"trace 的键对": 类},   整个归到构造 F→C 上的调用（见 classify），「时间顺序」、请求路径也算到 C 上
           "module_exec": [顶层代码执行过的文件], "module_frames": n, "class_frames": n, "anon": n, "unmapped": n}
@@ -138,12 +138,7 @@ def to_package_graph(trace: dict, index: dict) -> dict:
     # 整个挪到构造 F→C 上的函数对：「时间顺序」、请求路径读 span 时这些键对也算到 C 上
     redirect = {k: c for pk, c in moved.items() if c in symbols for k in raw[pk]}
 
-    # GPU kernel（trace --gpu）：每个 kernel 的次数和 GPU 上跑了多久，节点详情里列（仓库外的没有符号，只能从这里看）
-    kernels = {}
-    for k, us in (trace.get("gpu_us") or {}).items():
-        kernels[label(k)] = {"n": trace["funcs"].get(k, 0), "gpu_us": us}
-
-    return {"packages": pkg_hits, "symbols": sym_hits, "files": file_hits, "kernels": kernels,
+    return {"packages": pkg_hits, "symbols": sym_hits, "files": file_hits,
             "calls": calls, "redirect": redirect,
             "module_exec": sorted(module_exec),
             "module_frames": module_frames, "class_frames": class_frames, "anon": anon,

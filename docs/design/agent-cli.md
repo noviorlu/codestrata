@@ -55,7 +55,6 @@ RUN   := 完整 run id | case 名
   - 名字完全一样的几个进程，按启动先后编号：`server-1`、`server-2`（换一次录制，同一个位置上的进程名字还一样）。
 - **列别名**：`进程别名/线程`。
   - 线程名先归一：`Thread-3 (save_loop)` → `save_loop`，`worker-0` → `worker`。
-  - GPU 的列写成 `gpu<设备>.<流>`，比如 `stage1/gpu0.7`。
   - `[A-Za-z0-9._-]` 以外的字符换成 `_`，撞了加 `-2`。
   - 按整个 run 登记过的全部线程算一次（`lanes.run_aliases`），和时间段无关：同一个 run 里同一列的写法处处一样。
 - **选择器**：
@@ -177,7 +176,7 @@ RUN   := 完整 run id | case 名
 - 函数的写法（`--head`、`--with`）：`路径#限定名`、限定名、唯一的名字；对不上 `item_not_found`、对上几个 `ambiguous_item`，都带候选。
 - 认不出主循环报 `no_loop`，候选是这一列调得最多的函数（拿来给 `--head`）。
 
-### `codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] [--follow 起点 [--link 'A列:FN => B列:FN' …]] [--json]`
+### `codestrata links REF [--kind handoff|spawn|join|all] [--list] [--limit N] [--follow 起点 [--link 'A列:FN => B列:FN' …]] [--json]`
 - 列之间的连线（和页面的分列同一套），按（种类, 通道, 起列, 终列）合成组，id 是 `l:种类|通道|起列|终列`（和 `explain` 讲的是同一份组；
   页面上画的一条再加 `|起节点|终节点`，页面的选中和时间顺序编号都这么写，`explain` 也认）；
   每组给次数、首末时刻、两头的（函数, 行）有几种、次数最多的那种；放 / 取在仓库外的代码里时，函数是当时栈底的仓库函数（标出来）。

@@ -13,12 +13,12 @@ from . import common, follow, out
 
 NAME = "links"
 EFFECT = "read"
-DOES = "列之间谁交给谁（handoff）、谁起了谁（spawn）、谁等到了谁（join）、谁启动了 kernel（launch）：合成组，两头的函数和那一行"
-USAGE = ("codestrata links REF [--kind handoff|spawn|join|launch|all] [--list] [--limit N] "
+DOES = "列之间谁交给谁（handoff）、谁起了谁（spawn）、谁等到了谁（join）：合成组，两头的函数和那一行"
+USAGE = ("codestrata links REF [--kind handoff|spawn|join|all] [--list] [--limit N] "
          "[--follow 起点 [--link 'A列:FN => B列:FN' …]] [--json]")
 EXAMPLE = "codestrata links 20261001-170349-run_single_prompt@serving"
 
-KINDS = ("handoff", "spawn", "join", "launch")
+KINDS = ("handoff", "spawn", "join")
 
 
 def add_args(p) -> None:
@@ -48,7 +48,7 @@ def run(a) -> out.Result:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    aliases = _lanes.aliases_of(r.rd, b)
+    aliases = _lanes.run_aliases(r.rd)
     want = None
     if r.lanes:
         from .. import laneid as _laneid

@@ -138,9 +138,9 @@ export default async function (t) {
   // 分列时帮助讲分列、工具栏有连线的图例
   ok(await page.ev(`(() => { const v = el => !!el && getComputedStyle(el).display !== 'none';
     return v(document.querySelector('#lede .lanesonly')) && !v(document.querySelector('#lede .graphonly')) && v(document.getElementById('lnlegend'))
-      && document.getElementById('lnlegend').querySelectorAll('.k:not(.chainonly) line.ln-link').length === 4
+      && document.getElementById('lnlegend').querySelectorAll('.k:not(.chainonly) line.ln-link').length === 3
       && [...document.querySelectorAll('#lnlegend .chainonly')].every(x => !v(x)); })()`),
-     '分列时帮助讲分列、工具栏有四种连线的图例（链的两项只在高亮链时出现）');
+     '分列时帮助讲分列、工具栏有三种连线的图例（链的两项只在高亮链时出现）');
   await page.key('Escape', 'Escape', 27);
 
   // 排线：每条线的路径都不一样；每一条线沿路径取点，离鼠标最近的就是它（点下去选中它）的地方占大多数，没有一条点不到

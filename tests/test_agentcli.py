@@ -66,20 +66,18 @@ def test_proc_aliases():
 
 
 def test_lane_aliases_and_select():
-    """列别名：进程别名/线程，GPU 列 gpu<设备>.<流>，撞了加 -2；选择器按整段匹配、不分大小写、认 pid:线程"""
+    """列别名：进程别名/线程，撞了加 -2；选择器按整段匹配、不分大小写、认 pid:线程"""
     procs = {10: "stage1", 11: "stage10", 12: "end2end"}
     lanes = [{"id": "10:MainThread", "pid": 10, "thread": "MainThread"},
-             {"id": "10:GPU 0 · 流 7", "pid": 10, "thread": "GPU 0 · 流 7", "gpu": [0, 7]},
              {"id": "11:MainThread", "pid": 11, "thread": "MainThread"},
              {"id": "12:a b", "pid": 12, "thread": "a b"},
              {"id": "12:a_b", "pid": 12, "thread": "a_b"}]
     al = laneid.lane_aliases(lanes, procs)
-    assert al == {"10:MainThread": "stage1/MainThread", "10:GPU 0 · 流 7": "stage1/gpu0.7",
+    assert al == {"10:MainThread": "stage1/MainThread",
                   "11:MainThread": "stage10/MainThread", "12:a b": "end2end/a_b", "12:a_b": "end2end/a_b-2"}, al
-    assert laneid.select(["stage1"], al) == ["10:MainThread", "10:GPU 0 · 流 7"]
+    assert laneid.select(["stage1"], al) == ["10:MainThread"]
     assert laneid.select(["STAGE1/mainthread"], al) == ["10:MainThread"]
-    assert laneid.select(["*/gpu*"], al) == ["10:GPU 0 · 流 7"]
-    assert laneid.select(["*/MainThread", "stage1"], al) == ["10:MainThread", "10:GPU 0 · 流 7", "11:MainThread"]
+    assert laneid.select(["*/MainThread", "stage1"], al) == ["10:MainThread", "11:MainThread"]
     assert laneid.select(["12:a b"], al) == ["12:a b"]
     try:
         laneid.select(["stage9"], al)
@@ -90,7 +88,7 @@ def test_lane_aliases_and_select():
         laneid.select(["stage1/Main"], al)
         raise AssertionError("半个词不该配上")
     except CodestrataError as e:
-        assert e.candidates == ["stage1/MainThread", "stage1/gpu0.7"], e.candidates
+        assert e.candidates == ["stage1/MainThread"], e.candidates
     # +进程：当过滤用时 + 不算数；页面（view_lanes）在默认上再放出它；规整时留着 +
     assert laneid.select(["+stage10"], al) == ["11:MainThread"] and laneid.canonical(["+STAGE10"], al) == ["+stage10"]
     dflt = ["10:MainThread", "12:a b"]

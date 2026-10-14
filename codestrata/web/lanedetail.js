@@ -4,7 +4,7 @@
 window.CS = window.CS || {};
 (function (CS) {
   'use strict';
-  var F = CS.lanes.fmt, esc = F.esc, short = F.short, laneName = F.laneName, whenW = F.whenW, gpuT = F.gpuT;
+  var F = CS.lanes.fmt, esc = F.esc, short = F.short, laneName = F.laneName, whenW = F.whenW;
   var VIA = F.VIA, KIND = F.KIND, ENDS = F.ENDS;
 
   /* 一头的节点名：这一列画着它就能点（选中这一列里的那一份）；进程收起了、或者这一段里这一列没画它，写明为什么点不了。
@@ -21,7 +21,7 @@ window.CS = window.CS || {};
 
   CS.laneDetail = {
     /* 点了节点的一份：整个详情只讲这条线程里的这一份（用户 10-01：只列这条线程里这一份的）——顶上写明是哪一列，
-       次数、文件树、kernel 表换成只算这一列的（panel.asCopy），「调用 → / ← 被调用」换成这一列里的边，
+       次数、文件树换成只算这一列的（panel.asCopy），「调用 → / ← 被调用」换成这一列里的边，
        代码里没写、这次跑了的单列，再列一头是它的连线。点名字选中这一列里的那个节点，点次数看那条边 / 连线 */
     node: function (id, lane) {
       var lanes = CS.lanes, det = document.getElementById('det'), slot = document.getElementById('nbslot');
@@ -29,7 +29,7 @@ window.CS = window.CS || {};
       det.dataset.lane = lane;                      // 详情里的展开 / 收起只改这一列（panel 的按钮读它）
       var T = lanes.touching(lane, id), L = lanes.L;
       var me = ((lanes.laneIx[lane] || {}).nodes || {})[id] || {};
-      CS.panel.asCopy(id, lane, { label: lanes.laneLabel(lane), n: me.n || 0, gpu: !!(lanes.laneIx[lane] || {}).gpu });
+      CS.panel.asCopy(id, lane, { label: lanes.laneLabel(lane), n: me.n || 0 });
       function byN(a, b) { return b.n - a.n; }
       function edges(list, label, out) {
         if (!list.length) return '';
@@ -133,10 +133,9 @@ window.CS = window.CS || {};
           + (e.node ? '　' + nodeChip(e.node, e.lane) : '') + '</div>';
       }
       /* 一头的那一行代码。没有行的：交接是不知道是哪一行；起 / 收的那一头是线程的入口函数；
-         启动 kernel 的发起那一头是发起它时栈上最近的仓库函数（经 PyTorch / 扩展转了几道，不知道是哪一行），另一头是 kernel */
+       */
       function bare(end) {
-        return k.kind === 'handoff' ? '不知道是哪一行' : k.kind !== 'launch' ? '线程的入口函数'
-          : end === 'a' ? '发起它时栈上最近的仓库函数，不知道是哪一行' : 'GPU 上跑的 kernel';
+        return k.kind === 'handoff' ? '不知道是哪一行' : '线程的入口函数';
       }
       function site(label, name, def, line, code, ext, end) {
         var h = '<div class="lk-site"><span class="lk-lab2">' + esc(label) + '</span>';
@@ -159,13 +158,11 @@ window.CS = window.CS || {};
           + (hop ? '，这一组的第 <b>' + hop.k + ' / ' + hop.n + '</b> 次，' + whenW(hop.t_from, L) + ' → ' + whenW(hop.t_to, L)
                  + '（下面的次数、时刻是这一组合起来的）' : '') + '</p>' : '')
         + '<p class="hint">' + kind + '：' + esc(VIA[k.via] || k.via) + '，<b>' + k.n + '</b> 次'
-        + (k.gpu_us != null ? '，GPU 上共 <b>' + gpuT(k.gpu_us) + '</b>' : '')
         + (k.first != null ? '；第一次 ' + whenW(k.first, L, late) + (k.last != null && k.last !== k.first ? '，最后 ' + whenW(k.last, L, late) : '') : '')
         + '（从这一段的开头算）' + (k.out ? '；<b>整条发生在这一段' + (k.out === 'before' ? '开始之前' : '结束之后') + '</b>（这一段里跑过的线程）' : '') + '</p>'
         + side(k.from, '从') + side(k.to, '到')
         + '<h3>两头的代码</h3><div class="lk-pairs">' + (k.pairs || []).map(function (p) {
           return '<div class="lk-pair"><div class="lk-meta"><span class="pn">×' + p.n + '</span>'
-            + (p.gpu_us != null ? '<span class="pn">GPU ' + gpuT(p.gpu_us) + '</span>' : '')
             + (p.first != null ? '<span class="ptime">' + whenW(p.first, L, late) + '</span>' : '') + '</div>'
             + site(ends[0], p.a, p.da, p.la, p.ta, p.xa, 'a') + '<div class="arr">↓</div>' + site(ends[1], p.b, p.db, p.lb, p.tb, p.xb, 'b') + '</div>';
         }).join('') + '</div>'

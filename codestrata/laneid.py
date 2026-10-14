@@ -3,9 +3,9 @@
     进程别名  去掉扩展名，再去掉同一族进程（第一个词相同）共有的开头和结尾几个词，取从左往右最短的、
              能唯一认出它的前缀：VLLM::StageEngineCoreProc_stage1_replica0_DP0 → stage1，end2end.py → end2end。
              名字完全一样的几个进程（几个 python -c）按启动先后编号：python-1、python-2。整个 run 算一次，和时间段无关。
-    列别名    进程别名/线程（线程照 lanes.thread_group 归一）：stage1/MainThread；GPU 列是 stage1/gpu0.7。
+    列别名    进程别名/线程（线程照 lanes.thread_group 归一）：stage1/MainThread。
              [A-Za-z0-9._-] 以外的字符换成 _，撞了加 -2、-3。
-    选择器    进程/线程、进程（这个进程的所有列）、进程/*、*/线程、*/gpu*，也认 pid:线程（页面的列 id）。
+    选择器    进程/线程、进程（这个进程的所有列）、进程/*、*/线程，也认 pid:线程（页面的列 id）。
              不分大小写，按整段匹配（stage1 不配 stage10）。前面加 + 的（+stage0）在页面上是「默认之外再放出它」（view_lanes）；
              当过滤用时（命令行 REF 里的列）+ 不算数。
 """
@@ -86,10 +86,7 @@ def lane_aliases(lanes: list[dict], procs: dict[int, str]) -> dict[str, str]:
     used: set[str] = set()
     for ln in lanes:
         pa = procs.get(ln["pid"]) or str(ln["pid"])
-        if ln.get("gpu"):
-            th = f"gpu{ln['gpu'][0]}.{ln['gpu'][1]}"
-        else:
-            th = clean(ln.get("thread") or "?")
+        th = clean(ln.get("thread") or "?")
         a, k = f"{pa}/{th}", 2
         while a.lower() in used:
             a, k = f"{pa}/{th}-{k}", k + 1

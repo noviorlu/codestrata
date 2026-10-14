@@ -2622,7 +2622,7 @@ def test_lane_counts():
     with served(repo) as get:
         st, h = get(f"/api/lanehot?run=truth&lane={quote(w['id'])}")
         assert st == 200 and h["lane"] == w["id"] and h["packages"] == {u: v["n"] for u, v in w["nodes"].items() if v["n"]}, (st, h)
-        assert set(h) == {"lane", "run", "packages", "symbols", "files", "kernels", "lines_approx"}, h.keys()
+        assert set(h) == {"lane", "run", "packages", "symbols", "files", "lines_approx"}, h.keys()
         # 列里的边：只算这一列里的调用，和图上那条边的次数一样；不给 lane 是所有线程的（更多）
         st, E = get(f"/api/edge?a={quote(T)}&b={quote(C)}&run=truth&lane={quote(w['id'])}")
         assert st == 200 and E["lane"] == w["id"] and E["counts"]["calls"] == e["n"] > 0, (st, E.get("counts"), e)

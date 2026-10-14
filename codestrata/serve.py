@@ -240,7 +240,7 @@ class Handler(BaseHandler):
         return hit
 
     def _lanehot(self, q: dict):
-        """/api/lanehot：分列里一列的叠加，只给节点详情要的（各单元 / 符号 / 文件的次数、kernel 的次数和 GPU 时间）"""
+        """/api/lanehot：分列里一列的叠加，只给节点详情要的（各单元 / 符号 / 文件的次数）"""
         lane = (q.get("lane") or [""])[0].strip()
         if not lane:
             return self._json({"error": "要给 lane（分列里的列 id）"}, 400)
@@ -251,7 +251,7 @@ class Handler(BaseHandler):
         except (OSError, ValueError) as e:
             return self._json({"error": _seq.unreadable(e, (q.get("run") or [""])[0])}, 500)
         return self._json({"lane": lane, "run": h["run"], "packages": h["packages"], "symbols": h["symbols"],
-                           "files": h["files"], "kernels": h["kernels"], "lines_approx": h["lines_approx"]})
+                           "files": h["files"], "lines_approx": h["lines_approx"]})
 
     def _marklanes(self, q: dict):
         """/api/marklanes?run=&mark=a,b：标记的这些东西这段时间里在哪几列跑过 {lanes: {东西: {列 id: 次数}}}（页面只描这几列里装着它的节点）"""
@@ -314,7 +314,7 @@ class Handler(BaseHandler):
                 L = _lanesview.decorate(self.idx, hot, L, open_)
                 if cinfo is not None:
                     L["chain"] = cinfo
-                L["aliases"] = _lanes.aliases_of(rd, L)
+                L["aliases"] = _lanes.run_aliases(rd)
                 L["proc_aliases"] = {str(k): v for k, v in _lanes.proc_aliases(rd).items()}
                 S, lo, multi = self._stages(rd, run, phase)
                 # 进程头上的一句（几片的时间段不写：切段要连续的一段，按整段算的时刻和画着的几片对不上）、默认收起的列

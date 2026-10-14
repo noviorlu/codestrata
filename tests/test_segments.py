@@ -248,7 +248,7 @@ def test_chain_for_page():
     inf = [k for k in L["links"] if k.get("inferred")]
     assert len(rec) == 1 and rec[0]["via"] == "queue", [(k["via"], k.get("chain")) for k in L["links"] if k.get("chain")]
     assert len(inf) == 1 and inf[0]["via"] == "link" and inf[0]["chain"] == [1], inf
-    aliases = _lanes.aliases_of(rd, L)
+    aliases = _lanes.run_aliases(rd)
     assert not any("|link|" in x for x in laneorder.rank(L, aliases)["ids"]), "推出来的那条不编号"
     bad, none = chainview.for_page(idx, rd, run, hot, "~nosuch#1")
     assert bad["error"] and none is None, bad
@@ -459,7 +459,7 @@ def test_procinfo_and_default_lanes():
     nm, hw = segments.head_window(run, end, lo, hi, ph)
     S = segments.stages(rd, run, nm, lo, hi, align.node_labeler(idx), hw)
     L = _lanes.build(idx, rd, run, ph, _runs.load_run(repo, idx, run, rd, ph)[0], None)
-    al, keep = _lanes.aliases_of(rd, L), lanedefault.default_lanes(L, S) or []
+    al, keep = _lanes.run_aliases(rd), lanedefault.default_lanes(L, S) or []
     fold = {al[ln["id"]] for ln in L["lanes"] if ln["id"] not in keep}
     assert "truth-1/req" in fold and "truth-1/MainThread" not in fold and procinfo.summary(S, lo), fold
     # 看的是整个 run（有 serving 阶段）：进程按启动的先后（每个进程映像的起点），不按第一次活动

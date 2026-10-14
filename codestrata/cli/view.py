@@ -108,7 +108,7 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
             # all 写成 *：不写 lanes= 是默认（转一手的列收起），不是全部
             v.lanes = ["*"] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
         except CodestrataError:                     # 录了 GPU 的 run：再加上 GPU 的列认一次
-            v.lanes = _laneid.canonical(_laneid.parse_list(a.lanes), _lanes.run_aliases(r.rd, _lanes.gpu_lanes(r.rd, r.run)))
+            v.lanes = _laneid.canonical(_laneid.parse_list(a.lanes), _lanes.run_aliases(r.rd))
     if a.fold is not None:
         by = {x.lower(): x for x in procs.values()}            # 进程别名不分大小写（同列选择器）
         bad = [x for x in _laneid.parse_list(a.fold) if x.lower() not in by and a.fold != "none"]

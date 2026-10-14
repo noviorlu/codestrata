@@ -9,8 +9,7 @@
   - 谁把数据交给谁（handoff）：进程内的队列、跨进程的 ZMQ（events 的 handoffs），按 (起点列, 起点节点, 终点列, 终点节点, 通道) 合起来；
   - 谁回收了谁（join）：线程是在哪一列的哪个节点里被 join 等到结束的，子进程是在哪里被 waitpid 等到退出的（events 的
     thread_end、reaps），从被回收的那一列的入口节点连过去。
-  - 谁启动了哪个 GPU kernel（launch，trace --gpu）：kernel 按 GPU 设备 · 流各成一列（gpu 列），从发起它的那一列的调用方节点
-    连到 gpu 列里的 kernel 节点；时刻按发起算。
+GPU kernel（trace --gpu）是发起它的那条线程里的一次普通调用：调用方 → kernel 节点（仓库外的落在「GPU · 仓库外」上），不另成列。
 每一头都带着那一行代码（起线程、放 / 取、发 / 收、join 的那一行）。每列还有起止的摘要（start / stop）。
 数据：时序事件的 span（seq.span_index / pid_rows；带 parent 的才准，老 run 也能出列，只是没有连线）+ 这次 run 的叠加 hot
 （录制之后改过的文件走 hot["keymap"]、构造挪到类上走 hot["redirect"]、函数对和代码比的结果 hot["calls"]）。
@@ -32,7 +31,6 @@ from . import seq as _seq
 
 _TARGET = re.compile(r"^Thread-\d+ \((.+)\)$")
 _NUMBERED = re.compile(r"^(.+?)[-_]\d+$")
-_GPU_LANE = re.compile(r"^GPU (-?\d+) · 流 (-?\d+)$")
 
 
 def thread_group(name: str) -> str:
@@ -50,39 +48,16 @@ def lane_id(pid: int, tname: str) -> str:
     return f"{pid}:{thread_group(tname)}"
 
 
-def gpu_lane_id(pid: int, dev, stream) -> str:
-    """GPU 的列 id：这个进程在这个设备 · 流上跑的 kernel"""
-    return f"{pid}:GPU {dev} · 流 {stream}"
-
-
-def run_aliases(rd: Path, extra: list[dict] = ()) -> dict[str, str]:
+def run_aliases(rd: Path) -> dict[str, str]:
     """整个 run 的列 id → 列别名（stage1/MainThread；写法见 laneid.py）。按整个 run 登记过的全部线程算一次，和时间段无关，
-    命令行、以后的页面都用它，撞名时加的 -2 才处处一样。extra 是 build 的结果里另有的列（GPU 的列）。没录时序事件抛 LookupError"""
+    命令行、以后的页面都用它，撞名时加的 -2 才处处一样。没录时序事件抛 LookupError"""
     ix = _seq.span_index(rd)
     seen: dict[str, dict] = {}
     for pid_s, ts in sorted(ix["threads"].items(), key=lambda kv: int(kv[0])):
         for tid_s, name in sorted(ts.items(), key=lambda kv: int(kv[0])):
             lid = lane_id(int(pid_s), name)
             seen.setdefault(lid, {"id": lid, "pid": int(pid_s), "thread": thread_group(name)})
-    for ln in extra:
-        seen.setdefault(ln["id"], ln)
     return _laneid.lane_aliases(list(seen.values()), proc_aliases(rd))
-
-
-def aliases_of(rd: Path, built: dict) -> dict[str, str]:
-    """build 的结果里的列别名（线程的列按整个 run 算，加上这一份里的 GPU 列）"""
-    return run_aliases(rd, [ln for ln in built["lanes"] if ln.get("gpu")])
-
-
-def gpu_lanes(rd: Path, run: dict) -> list[dict]:
-    """整个 run 里的 GPU 列（{id, pid, gpu: [设备, 流]}：run_aliases 的 extra）；没录 GPU 的 run 是 []。要读整个 run 的 span"""
-    if not (_seq.span_index(rd).get("gpu") or {}).get("n_kernels"):
-        return []
-    seen: dict[str, dict] = {}
-    for (pid, _tid, _a, _b, dev, stream) in _seq.phase_calls(rd, run, None)["gpu"]:
-        lid = gpu_lane_id(pid, dev, stream)
-        seen.setdefault(lid, {"id": lid, "pid": pid, "gpu": [dev, stream]})
-    return sorted(seen.values(), key=lambda x: (x["pid"], str(x["gpu"][0]), str(x["gpu"][1])))
 
 
 def tid_aliases(rd: Path) -> dict[tuple, str]:
@@ -98,11 +73,10 @@ def tid_aliases(rd: Path) -> dict[tuple, str]:
 
 
 def lane_counts(rd: Path, run: dict, phase: str | None, lane: str) -> dict:
-    """一列（build 里的列 id：`pid:线程名`，或 GPU 的 `pid:GPU 设备 · 流 流号`）在这一段里的调用，和 counts.json.gz 同样形状的
-    {funcs, func_edges, gpu_us?}（键是录制时的 文件:首行），交给 align.to_package_graph 就是只算这一列的叠加——分列里节点的详情、
-    列里的边的详情用它（用户 10-01：分列里节点详情只列这条线程里的这一份）。线程的列不含 GPU 的行（kernel 画在 GPU 的列里）；
-    GPU 的列只有那个设备 · 流上的 kernel，func_edges 是发起它的调用方 → kernel，另给 gpu_pairs {"调用方键|kernel 键": [次数, GPU µs]}
-    （谁发起的、各占多少 GPU 时间）。没有时序事件、列 id 不对抛 LookupError"""
+    """一列（build 里的列 id：`pid:线程名`）在这一段里的调用，和 counts.json.gz 同样形状的 {funcs, func_edges}
+    （键是录制时的 文件:首行），交给 align.to_package_graph 就是只算这一列的叠加——分列里节点的详情、
+    列里的边的详情用它（用户 10-01：分列里节点详情只列这条线程里的这一份）。这条线程发起的 GPU kernel 也在里面（调用方 → kernel）。
+    没有时序事件、列 id 不对抛 LookupError"""
     pid_s, _, name = lane.partition(":")
     try:
         pid = int(pid_s)
@@ -112,46 +86,18 @@ def lane_counts(rd: Path, run: dict, phase: str | None, lane: str) -> dict:
     keys = pc["keys"]
     funcs: dict[str, int] = {}
     edges: dict[str, int] = {}
-    gpu_us: dict[str, int] = {}
-    pairs: dict[str, list] = {}
-
-    def add(a: int, b: int, n: int) -> str | None:
-        if not (0 <= a < len(keys) and 0 <= b < len(keys)):
-            return None
-        ka, kb = keys[a], keys[b]
-        funcs[kb] = funcs.get(kb, 0) + n
-        edges[f"{ka}|{kb}"] = edges.get(f"{ka}|{kb}", 0) + n
-        return kb
-
-    m = _GPU_LANE.match(name)
-    if m:
-        dev, stream = int(m.group(1)), int(m.group(2))
-        for (p, _, a, b, d, s), (_, _, n, ns) in pc["gpu"].items():
-            if p == pid and d == dev and s == stream:
-                kb = add(a, b, n)
-                if kb is not None:
-                    gpu_us[kb] = gpu_us.get(kb, 0) + ns          # 先按纳秒加，最后换成 µs
-                    pr = pairs.setdefault(f"{keys[a]}|{kb}", [0, 0])
-                    pr[0], pr[1] = pr[0] + n, pr[1] + ns
-    else:
-        tn = pc["threads"].get(str(pid)) or {}
-        on_gpu = {k[:4] for k in pc["gpu"]}
-        for k, (_, _, n, _) in pc["calls"].items():
-            p, tid, a, b = k
-            if p == pid and k not in on_gpu and thread_group(tn.get(str(tid)) or f"线程 {tid}") == name:
-                add(a, b, n)
-    out = {"funcs": funcs, "func_edges": edges}
-    if gpu_us:
-        out["gpu_us"] = {k: round(ns / 1000) for k, ns in gpu_us.items()}
-        out["gpu_pairs"] = {k: [n, round(ns / 1000)] for k, (n, ns) in pairs.items()}
-    return out
+    tn = pc["threads"].get(str(pid)) or {}
+    for (p, tid, a, b), (_, _, n, _) in pc["calls"].items():
+        if p == pid and 0 <= a < len(keys) and 0 <= b < len(keys) and thread_group(tn.get(str(tid)) or f"线程 {tid}") == name:
+            ka, kb = keys[a], keys[b]
+            funcs[kb] = funcs.get(kb, 0) + n
+            edges[f"{ka}|{kb}"] = edges.get(f"{ka}|{kb}", 0) + n
+    return {"funcs": funcs, "func_edges": edges}
 
 
 def in_lane(lane: str):
-    """列 id → 判断一条线程在不在这一列里的函数 (pid, 线程名) → bool（GPU 的列没有线程，总是 False）"""
+    """列 id → 判断一条线程在不在这一列里的函数 (pid, 线程名) → bool"""
     pid_s, _, name = lane.partition(":")
-    if _GPU_LANE.match(name):
-        return lambda pid, tname: False
     return lambda pid, tname: str(pid) == pid_s and thread_group(tname) == name
 
 
@@ -248,14 +194,13 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
          "edges": [{"a", "b", "n", "only": 其中代码里看不出的（约数）, "first", "last"}],
          "external": 只跑仓库外的代码、因为是交接的一头才有这一列（没有节点）,
          "idle": 跑过仓库代码、这一段里没有调用、因为是交接的一头才有这一列（只放交接的那个节点；起 / 收不算它）,
-         "gpu": [设备, 流]（只有 GPU 的列有：这一列是这个进程在这个设备 · 流上跑的 kernel，没有边、没有起止）,
          "proc_main": 这一列代表整个子进程（fork / exec / waitpid 接在它上面：主线程，或者从非主线程 fork 的子进程里唯一的线程）,
          "start": {"n": 知道是谁起的线程数, "t": 最早起的时刻, "lane": 起它的列（这一段里没跑的线程也写，那一列不在 lanes 里）,
                    "daemon": 其中守护线程数, "out": 段外的是 before / after} 或 None（不知道谁起的：
                   程序的主线程、hook 装上之前起的）,
          "stop": {"joined": 被 join / waitpid 等到的个数, "t": 最晚那一次的时刻, "lane": 等它的列,
                   "exited": 自己跑完、没人等的个数, "running": 到录制结束还没跑完的个数（子进程是不知道有没有退出）} 或 None}
-    连线：{"kind": "spawn" | "handoff" | "join" | "launch", "via": thread / exec / fork / queue / asyncio / janus / zmq / join / wait / cuda,
+    连线：{"kind": "spawn" | "handoff" | "join", "via": thread / exec / fork / queue / asyncio / janus / zmq / join / wait,
            "from": {"lane", "node", "fn", "t", "line"}, "to": {…}, "n", "first", "last",
            "pairs": [{"a": 起点函数, "b": 终点函数, "la" / "lb": 那一头的行（0 不知道）, "ta" / "tb": 那一行的代码,
                       "xa" / "xb": 那一头经仓库外的代码, "da" / "db": 定义 {f, l, k}, "n", "first",
@@ -332,11 +277,8 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         tnames = threads.get(str(pid)) or {}
         for tid in tids:
             tid_lane[(pid, tid)] = lane_id(pid, tnames.get(str(tid)) or f"线程 {tid}")
-    on_gpu = {k[:4] for k in T["gpu"]}           # GPU 的行（kernel）：不算进发起它的那条线程，最后单独成列（见下面）
     first_in: dict[tuple, int] = {}              # (pid, tid) → 这一段里第一次调用的时刻（入口在这一段之前就开始了的，按这一刻认入口）
     for (pid, tid, a, b), (first, last, n, first0) in T["calls"].items():
-        if (pid, tid, a, b) in on_gpu:
-            continue
         first_in[(pid, tid)] = min(first_in.get((pid, tid), first), first)
         lid = tid_lane[(pid, tid)]
         na, nb, defining, only, ua, ub = nodes_of(a, b, lid)
@@ -446,9 +388,9 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
 
     agg: dict[tuple, dict] = {}                  # 同样两头、同一种的连线合起来：(起点列, 起点节点, 终点列, 终点节点, 种类, 通道)
 
-    def link(kind: str, via: str, a: dict, b: dict, t: int | None = None, n: int = 1, gpu_us: int | None = None,
+    def link(kind: str, via: str, a: dict, b: dict, t: int | None = None, n: int = 1,
              t_last: int | None = None, raw: int | None = None) -> None:
-        """连一条线（同样两头、同一种的合起来）。n 次一起算的（GPU 的一组 kernel）给 t_last：这一组最后一次的时刻。
+        """连一条线（同样两头、同一种的合起来）。n 次一起算的给 t_last：这一组最后一次的时刻。
         raw：交接在 index 的 handoffs 里的下标（每一对记下最早那一次的，explain 从它讲起）"""
         k = (a["lane"], a["node"], b["lane"], b["node"], kind, via)
         x = agg.get(k)
@@ -457,8 +399,6 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         tl = t if t_last is None else t_last
         if x is None:
             x = agg[k] = {"kind": kind, "via": via, "from": a, "to": b, "n": n, "first": t, "last": tl, "pairs": {}}
-            if gpu_us is not None:
-                x["gpu_us"] = 0
         else:
             x["n"] += n
             for end, new in (("from", a), ("to", b)):  # 时刻取最早的一次
@@ -467,14 +407,11 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             if t is not None:
                 x["first"] = t if x["first"] is None else min(x["first"], t)
                 x["last"] = tl if x["last"] is None else max(x["last"], tl)
-        if gpu_us is not None:
-            x["gpu_us"] += gpu_us
         pr = x["pairs"].setdefault((a["fn"], a.get("line", 0), b["fn"], b.get("line", 0), a.get("ext", False), b.get("ext", False)),
-                                   [0, t, 0, raw])
+                                   [0, t, raw])
         pr[0] += n
-        pr[2] += gpu_us or 0
         if t is not None and (pr[1] is None or t < pr[1]):
-            pr[1], pr[3] = t, raw
+            pr[1], pr[2] = t, raw
 
     # 先连交接：只跑仓库外代码的线程的列（external）是这时候建的，之后起它、回收它的连线才接得上
     for hx, h in enumerate(ix.get("handoffs") or []):
@@ -569,27 +506,6 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
             a = entry_end(_lane_end(lanes, lid, e.get("t")), int(pid), int(tid))
             if a and b and a["lane"] != b["lane"]:
                 link("join", "join", a, b, t=j[3])
-    for (pid, tid, ka, kb, dev, stream), (first, last, n, us) in T["gpu"].items():   # us 这里是纳秒，出结果时换成 µs
-        lid = gpu_lane_id(pid, dev, stream)
-        nb = node(kb, lid)                       # kernel 落在 GPU 这一列的切面上，调用方落在发起它的那一列的切面上
-        if nb is None:
-            continue
-        G = lanes.get(lid)
-        if G is None:
-            G = lanes[lid] = {"id": lid, "pid": pid, "proc": names.get(pid) or f"pid {pid}", "thread": f"GPU {dev} · 流 {stream}",
-                              "names": set(), "tids": set(), "ran": set(), "first": first, "last": last, "entry": None,
-                              "entry_fn": None, "entry_t": None, "nodes": {}, "edges": {}, "u": set(), "gpu": [dev, stream]}
-        G["first"], G["last"] = min(G["first"], first), max(G["last"], last)
-        G["u"].add(unit_of(kb, lid))
-        v = G["nodes"].setdefault(nb, {"n": 0, "first": first, "gpu_us": 0})
-        v["n"] += n
-        v["gpu_us"] += us
-        v["first"] = min(v["first"], first)
-        src = tid_lane.get((pid, tid))
-        na = node(ka, src) if src in lanes else None
-        if na is not None and na in lanes[src]["nodes"]:
-            link("launch", "cuda", {"lane": src, "node": na, "fn": fn_of(ka), "t": first, "line": 0},
-                 {"lane": lid, "node": nb, "fn": fn_of(kb), "t": first, "line": 0}, n=n, gpu_us=us, t_last=last)
     pstart = proc_starts(ix)
     for s in ix.get("spawns") or []:
         # fork 没有记时刻：用子进程映像的起点（不用调 fork 的那个 span 的开始——它可能早得多），连线和列头的「起」是同一刻
@@ -630,15 +546,6 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
     for x in links:                              # 交接连线的「反复」（时间顺序里标 ↻）：和请求路径同一个判法
         if x["kind"] == "handoff":
             x["repeat"] = bool(x["first"] is not None and _seq.is_repeat(x["n"], x["first"], x["last"], span_us))
-    for x in links:                              # GPU 时间一路按纳秒加，到这里换成 µs
-        if "gpu_us" in x:
-            x["gpu_us"] = round(x["gpu_us"] / 1000)
-            for pr in x["pairs"].values():
-                pr[2] = round(pr[2] / 1000)
-    for L in lanes.values():
-        if L.get("gpu"):
-            for v in L["nodes"].values():
-                v["gpu_us"] = round(v["gpu_us"] / 1000)
     for x in links:                              # 整条都在段外（起 / 收的线程在这一段里跑过，起 / 收本身在段外）：画淡
         late = x["kind"] == "join"
         o1, o2 = out_of(x["first"], late), out_of(x["last"], late)
@@ -647,13 +554,11 @@ def build(idx: dict, rd: Path, run: dict, phase: str | None, hot: dict, open_, t
         prs = sorted(x["pairs"].items(), key=lambda kv: (-kv[1][0], kv[1][1] if kv[1][1] is not None else 0))
         x["n_pairs"] = len(prs)
         x["pairs"] = []
-        for (fa, la, fb, lb, xa, xb), (n, f, us, raw) in prs[:8]:
+        for (fa, la, fb, lb, xa, xb), (n, f, raw) in prs[:8]:
             da, db = _align.node_def(idx, fa) if fa else None, _align.node_def(idx, fb) if fb else None
             pr = {"a": fa, "b": fb, "la": la, "lb": lb, "xa": xa, "xb": xb, "n": n, "first": f, "da": da, "db": db}
             if raw is not None:
                 pr["h"] = raw
-            if "gpu_us" in x:
-                pr["gpu_us"] = us
             if text is not None:
                 pr["ta"] = text(da["f"], la) if da and la else ""
                 pr["tb"] = text(db["f"], lb) if db and lb else ""
@@ -721,9 +626,7 @@ def _order(lanes: list, links: list, pstart: dict) -> dict:
                 continue
             seq.append(cur)
             todo.extend(x["to"]["lane"] for x in hand if x["from"]["lane"] == cur and pid_of.get(x["to"]["lane"]) == pid)
-        # GPU 的列放在这个进程的最后，按设备、流排
-        rest = sorted((L for L in ls if L["id"] not in seq),
-                      key=lambda L: (bool(L.get("gpu")), L.get("gpu") or [], L["thread"] != "MainThread", L["first"]))
+        rest = sorted((L for L in ls if L["id"] not in seq), key=lambda L: (L["thread"] != "MainThread", L["first"]))
         for i, lid in enumerate(seq + [L["id"] for L in rest]):
             rank[lid] = i
     return rank

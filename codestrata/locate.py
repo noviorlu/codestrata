@@ -169,7 +169,7 @@ def resolve(repo: Path, ref: _ref.Ref, allow_old: bool = False) -> Resolved:
             lanes = lanes2
         phase, slices = _ref.parse_range(hit, rng, end)
     if lanes:
-        lanes, w = _check_lanes(rd, lanes, hit)
+        lanes, w = _check_lanes(rd, lanes)
         warns += w
     return Resolved(repo=repo, run=hit, rd=rd, phase=phase, slices=slices, end_us=end, lanes=lanes,
                     text=hit["id"] + (f"@{phase}" if phase else ""), warnings=warns)
@@ -196,21 +196,15 @@ def _run_warnings(repo: Path, name: str, hit: dict, cat: list[dict]) -> list[dic
     return w
 
 
-def _check_lanes(rd: Path, lanes: list[str], run: dict) -> tuple[list[str], list[dict]]:
-    """列选择器对着整个 run 的列核对、规整（录了 GPU 的 run，线程的列对不上时再加上 GPU 的列）；没录时序事件的 run 核对不了，原样留着并警告"""
+def _check_lanes(rd: Path, lanes: list[str]) -> tuple[list[str], list[dict]]:
+    """列选择器对着整个 run 的列核对、规整；没录时序事件的 run 核对不了，原样留着并警告"""
     from . import laneid as _laneid
     from . import lanes as _lanes
     try:
         aliases = _lanes.run_aliases(rd)
     except LookupError:
         return lanes, [{"code": "lanes_unchecked", "msg": "这个 run 没录时序事件，列没核对"}]
-    try:
-        return _laneid.canonical(lanes, aliases), []
-    except CodestrataError:
-        extra = _lanes.gpu_lanes(rd, run)
-        if not extra:
-            raise
-        return _laneid.canonical(lanes, _lanes.run_aliases(rd, extra)), []
+    return _laneid.canonical(lanes, aliases), []
 
 
 def from_cli(text: str | None, chdir: str | None, cwd: Path, allow_fresh: bool = False) -> tuple[_ref.Ref | None, Path, str, list[dict]]:

@@ -24,9 +24,7 @@ def add_args(p) -> None:
 
 
 def activity(ln: dict) -> str:
-    """一列在这一段里是什么样：gpu / external（只跑仓库外的代码，只做交接）/ idle（这一段没调用，只是交接的一头）/ busy（有调用，轮询也算）"""
-    if ln.get("gpu"):
-        return "gpu"
+    """一列在这一段里是什么样：external（只跑仓库外的代码，只做交接）/ idle（这一段没调用，只是交接的一头）/ busy（有调用，轮询也算）"""
     if ln.get("external"):
         return "external"
     if ln.get("idle"):
@@ -34,7 +32,7 @@ def activity(ln: dict) -> str:
     return "busy"
 
 
-_KIND = {"gpu": "GPU kernel", "external": "只跑仓库外的代码，只做交接", "idle": "这段没调用，只是交接的一头", "busy": "有调用"}
+_KIND = {"external": "只跑仓库外的代码，只做交接", "idle": "这段没调用，只是交接的一头", "busy": "有调用"}
 
 
 def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str], dict[str, str]]:
@@ -53,7 +51,7 @@ def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str], dict[str
                               next=[c.cmd("write", "runs", "merge", r.run["id"])]) from None
     procs = _lanes.proc_aliases(r.rd)
     folded = _lanedefault.default_folded(b, common.stages(c, label))    # 和页面同一份（切段缓存着，proc_order 刚算过）
-    return b, _lanes.aliases_of(r.rd, b), procs, folded
+    return b, _lanes.run_aliases(r.rd), procs, folded
 
 
 def run(a) -> out.Result:

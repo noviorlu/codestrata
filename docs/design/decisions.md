@@ -142,7 +142,7 @@
   线程的起和收：每条线程都有起的地方和回收的地方，像阶段的起点 / 终点那样高亮——
   起线程、回收线程的节点照阶段起点 / 终点的样子描绿 / 红、写「▶ 起 / ■ 收」，列头写起 / 收的时刻；谁回收了谁是第四种连线（红色细虚线）。
   起线程和交接的连线标出两边的代码：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
-  选中节点只算点的那一份；整个详情也只讲这一份：顶上写明是哪个进程 · 哪条线程，次数、调用 / 被调用 / 连线、文件树和 kernel 表都只算这一列，
+  选中节点只算点的那一份；整个详情也只讲这一份：顶上写明是哪个进程 · 哪条线程，次数、调用 / 被调用 / 连线、文件树都只算这一列，
   列里的边的详情同理（一列的叠加：`lanes.lane_counts` 从 `seq.phase_calls` 里挑出这一列的线程，和阶段的计数同样的形状，走同一个 `runs.overlay`；
   span 不记调用行，调用行按这一段所有线程的比例摊，详情里写明）。分列里的次数都来自时序事件：线程入口被调的那一次、递归调用自己的不记，
   比模块图（hook 的计数）少一些；没去补——分列图上画的次数本来就是时序事件的，详情和图上对得上更要紧。详情里点名字选中同一列里的那一份。
@@ -572,19 +572,20 @@
 - 放弃的方案：scip-clang（准档，以后再说）；Python 调进原生代码的那一跳（ctypes、pybind、`torch.ops`）、原生函数之间的运行时调用、kernel 内部，这一轮都不录。
 - 在哪：`native_scan.py`；`scan.py` 把原生单元装进索引；`graph.py` 的调用种类（启动是 7）。测试 `tests/test_native_scan.py`。
 
-### GPU kernel：自己的 CUPTI 注入库录，挂到发起它的 Python 调用上，图上写 GPU 时间
+### GPU kernel：自己的 CUPTI 注入库录，挂到发起它的 Python 调用上，图上只当一个被调节点
 - 决定：`trace --gpu` 用自己的 CUPTI 注入库（`CUDA_INJECTION64_PATH`；源码随包，录的时候用本机 CUDA 工具链现编、按源码哈希缓存）录每个 kernel 的
   起止、设备、流和发起它的启动调用。整理时重放时序事件，在启动那一刻看这条线程真实的栈，最里层的被录到的函数是调用方，不经静态的 C 链补中间几跳。
-  仓库里定义的 kernel 落在定义它的文件上，仓库外的（PyTorch、cuBLAS、Triton 生成的）落到虚拟节点「GPU · 仓库外」。分列里每个设备 · 流一列；
-  节点、launch 连线、kernel 表都写次数和 GPU 时间，kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久。录制端按 `CUpti_ActivityKernel9`
+  仓库里定义的 kernel 落在定义它的文件上，仓库外的（PyTorch、cuBLAS、Triton 生成的）落到虚拟节点「GPU · 仓库外」。分列里 kernel 是发起它的
+  那条线程那一列里的一个被调节点（调用方 → kernel 的边，边详情列名字和次数）；不按设备 · 流另成列，不画启动线，图上不写 GPU 时间
+  （run 里照样存）。录制端按 `CUpti_ActivityKernel9`
   读记录：用到的字段（起止、设备、流、关联号、名字）在 Kernel9–12 里位置一样，CUDA 12.0 起的头都有它。
-- 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里、花了多少 GPU 时间」。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
+- 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里」——从调用能跳到它就够了，重心是 CPU 这边的流程。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
   而且是外部工具或要改被录的程序；注入库不用改程序、不要 root，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的都录得到。
-  只写次数会看反：qwen 上 decode 的 kernel 17 次、GPU 上 318 ms，另一组 120 次只有 0.22 ms。
-- 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）。
-- 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（GPU 的列、节点和连线的 `gpu_us`，
-  `lane_counts` 的 `gpu_pairs`）、`ui/load.py` 的 `load_lane`（kernel 的调用方）、`web/panel.js` 的 `_kernels`、`web/lanes.js`、`web/lanedetail.js`。
-  测试 `tests/test_gpu.py`（手写的 GPU 日志、`test_gpu_time_in_lanes`、对着几个版本的 CUPTI 头编、有 GPU 时真录一个小程序）、`tests/web/specs/gpu.mjs`。
+  以前按设备 · 流各一列、节点和连线写 GPU 时间：MiniCPM 的 serving 首屏 16 列里 8 列是 GPU 流，画布宽了四成，对看 CPU 的流程没有帮助。
+- 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）；
+  分列里每个 GPU 流一列、写 GPU 时间（以前的做法）。
+- 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（kernel 和别的调用一样进它那一列）。
+  测试 `tests/test_gpu.py`（手写的 GPU 日志、`test_kernels_in_lanes`、对着几个版本的 CUPTI 头编、有 GPU 时真录一个小程序）、`tests/web/specs/gpu.mjs`。
 
 ### 一套零构建的前端，数据只经 ds.js 从 serve 取；取数只在 ui/ 里做
 - 决定：前端是 `codestrata/web/` 下的普通 HTML/CSS/JS，零构建。UI 只调 `web/ds.js`，它 fetch 相对地址 `api/…`；数据一律由 `ui/` 下的模块从 graph（索引和叠上的 run）里取，serve 按请求给。

@@ -31,10 +31,10 @@ window.CS = window.CS || {};
   var NW = 132, GAP = 10, PAD = 12, MINW = 104, EXTW = 92, FOLDW = 112, TOP = 36, HEAD = TOP + 72;
   var VIA = { janus: 'janus 队列', zmq: 'ZMQ', queue: 'queue.Queue', asyncio: 'asyncio.Queue', shm: '共享内存', link: '推断（--link 按先后配）',
               thread: '起线程', exec: '起子进程（exec）', fork: '起子进程（fork）',
-              join: 'join 等它结束', wait: 'waitpid 等子进程退出', cuda: '启动 GPU kernel' };
-  var KIND = { handoff: '谁把数据交给谁', spawn: '谁起了谁', join: '谁回收了谁', launch: '谁启动了哪个 GPU kernel' };
+              join: 'join 等它结束', wait: 'waitpid 等子进程退出' };
+  var KIND = { handoff: '谁把数据交给谁', spawn: '谁起了谁', join: '谁回收了谁' };
   // 连线两头的那一行代码是什么：放 / 取，起线程 / 线程入口，线程入口 / join 的那一行
-  var ENDS = { handoff: ['放 / 发', '取 / 收'], spawn: ['起', '入口'], join: ['入口', '收'], launch: ['发起', 'kernel'] };
+  var ENDS = { handoff: ['放 / 发', '取 / 收'], spawn: ['起', '入口'], join: ['入口', '收'] };
   /* 交接线的标签上写放 / 发的那一头（用户 10-10 定）：函数名的最后一段；放在仓库外的代码里（那一头只认得出栈底的函数）不写；
      这条线里几对两头的放的函数不止一个时写「等」。全名、那一行在悬停和详情里 */
   function sender(k) {
@@ -76,8 +76,6 @@ window.CS = window.CS || {};
       if (textW(t) > right - x) { t.textContent = s; break; }
     }
   }
-  /* GPU 上跑了多久（微秒）→ 150 µs / 318 ms / 2.4 s */
-  function gpuT(us) { return us >= 1e6 ? (us / 1e6).toFixed(1) + ' s' : us >= 1000 ? (us / 1000).toFixed(us >= 1e4 ? 0 : 1) + ' ms' : Math.round(us) + ' µs'; }
   /* 列头的起 / 收两行：[{kind: start|end, text, title}] */
   /* 段外的时刻（选了阶段 / 时间段时，起 / 收、交接发生在这一段之外）：每个时刻按它自己在不在这一段里标段前 / 段后（用户 10-01）。
      L：/api/lanes 的结果（window、segs）；落在阶段的两个时间片之间的，late（收）算段后，否则算段前（同 lanes.py 的 out_of） */
@@ -118,7 +116,7 @@ window.CS = window.CS || {};
 
   CS.lanes = {
     // 详情栏（lanedetail.js）也用的写法和说法
-    fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, gpuT: gpuT, VIA: VIA, KIND: KIND, ENDS: ENDS },
+    fmt: { esc: esc, short: short, laneName: laneName, when: when, whenW: whenW, VIA: VIA, KIND: KIND, ENDS: ENDS },
     data: null, collapsed: {}, sel: null, edges: [], links: [], nodes: [], frames: [], fpos: {}, laneIx: {},   // collapsed：{进程别名: true}
 
     /* 取数并画（app.drawMain 在叠着录了时序事件的 run 时调） */
@@ -437,12 +435,9 @@ window.CS = window.CS || {};
             var nm = self.label(id, ln.id);
             t.textContent = clipMid(nm, 18); g.appendChild(t);
             var s = el('text', { x: cx, y: cy + 9, class: 'ns', 'text-anchor': 'middle' });
-            // GPU 的列：kernel 跑了几次、在 GPU 上一共跑了多久（次数多的不一定耗时多）
-            s.textContent = info.gpu_us != null ? fmtN(info.n) + ' 次 · ' + gpuT(info.gpu_us)
-              : info.n ? '被调 ' + fmtN(info.n) + ' 次' : info.handoff ? '只在这里交接' : '只往外调'; g.appendChild(s);
+            s.textContent = info.n ? '被调 ' + fmtN(info.n) + ' 次' : info.handoff ? '只在这里交接' : '只往外调'; g.appendChild(s);
             var tp = el('title', {});
-            tp.textContent = id + '\n' + ln.thread + ' 里' + (info.gpu_us != null ? '跑了 ' + info.n + ' 次 kernel，GPU 上共 ' + gpuT(info.gpu_us)
-              : info.n ? '被调了 ' + info.n + ' 次' : info.handoff
+            tp.textContent = id + '\n' + ln.thread + ' 里' + (info.n ? '被调了 ' + info.n + ' 次' : info.handoff
               ? '这一段里没调到它，只是在这里放 / 取（交接在这一段里）' : '只当调用方')
               + '\n别的列里也有它的话，鼠标停在这里会连上；点了看详情';
             g.appendChild(tp);
@@ -576,9 +571,8 @@ window.CS = window.CS || {};
         lk.appendChild(E.halo); lk.appendChild(E.p);
         E.R = R; E.labCls = 'ln-ltxt ' + k.kind + (k.chain ? ' chain' : '') + (k.inferred ? ' inferred' : '');
         var who = k.kind === 'handoff' ? sender(k) : '', hop = CS.chain.hop(k);   // 链上的一跳：写它是这一组的第几次，不写整组的次数
-        E.labTxt = CS.chain.label(k) + (k.via === 'link' ? '推断' : k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : k.kind === 'launch' ? 'GPU' : '起')
-          + (hop && hop.n > 1 ? ' 第 ' + hop.k + '/' + hop.n + ' 次' : k.n > 1 ? ' ×' + fmtN(k.n) : '') + (who ? ' · ' + who : '')
-          + (k.gpu_us != null ? ' · ' + gpuT(k.gpu_us) : '');
+        E.labTxt = CS.chain.label(k) + (k.via === 'link' ? '推断' : k.kind === 'handoff' ? k.via : k.kind === 'join' ? '收' : '起')
+          + (hop && hop.n > 1 ? ' 第 ' + hop.k + '/' + hop.n + ' 次' : k.n > 1 ? ' ×' + fmtN(k.n) : '') + (who ? ' · ' + who : '');
         self.wire(E);
         self.links.push(E);
       });
@@ -686,7 +680,7 @@ window.CS = window.CS || {};
       var E = was && this.byKey[was], nk = was && was.indexOf('n:') === 0 ? was.slice(2) : null;
       var fk = was && was.indexOf('f:') === 0 ? was.slice(2) : null;
       if (E) this.open(E, true);
-      else if (nk && this.pos[nk]) {               // 节点的这一份还画着：只重写详情里只算这一列的那些（次数、调用 / 被调用、文件树、kernel 表），打开的源码不动
+      else if (nk && this.pos[nk]) {               // 节点的这一份还画着：只重写详情里只算这一列的那些（次数、调用 / 被调用、文件树），打开的源码不动
         this.select(was);
         CS.laneDetail.node(nk.slice(nk.lastIndexOf('|') + 1), nk.slice(0, nk.lastIndexOf('|')));
       } else if (fk && this.fpos[fk]) this.select(was);   // 框还画着

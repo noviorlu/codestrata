@@ -218,9 +218,9 @@ def test_virtual_gpu_node():
     assert not cut.within(cut.VIRTUAL_GPU, cut.ROOT_DIR) and cut.within("run.py", cut.ROOT_DIR)   # 不在根目录里（以前在，搜索定位会抛 KeyError）
 
 
-def test_gpu_time_in_lanes():
-    """分列里 GPU 的列：节点上有 GPU 时间，launch 连线上有次数和 GPU 时间（每对函数也有）；这一列的叠加里每种 kernel
-    带着是谁发起的、几次、GPU 上多久（手写的 GPU 日志：三次 forward 各启动 k::scale 和 at::native::foo，每个跑 50 µs）"""
+def test_kernels_in_lanes():
+    """分列里 kernel 是发起它的那条线程那一列里的被调节点：没有 GPU 的列、没有 launch 连线、不带 GPU 时间；
+    这一列的叠加（节点 / 边的详情）里有调用方 → kernel（手写的 GPU 日志：三次 forward 各启动 k::scale 和 at::native::foo）"""
     from codestrata import lanes, runs
     from codestrata.ui import load as ui_load
     repo, rid = gpu_repo()
@@ -228,21 +228,14 @@ def test_gpu_time_in_lanes():
     hot, _ = ui_load.load_hot(repo, idx, rid)
     run, rd, phase = runs.resolve(repo, rid)
     L = lanes.build(idx, rd, run, phase, hot, sorted(idx["dirs"]))
-    g = next(x for x in L["lanes"] if x.get("gpu"))
-    nodes = list(g["nodes"].values())
-    assert sum(v["n"] for v in nodes) == 6 and sum(v["gpu_us"] for v in nodes) == 300, g["nodes"]
-    ls = [x for x in L["links"] if x["kind"] == "launch"]
-    assert sum(x["n"] for x in ls) == 6 and sum(x["gpu_us"] for x in ls) == 300, ls
-    assert all(p["gpu_us"] == 50 * p["n"] for x in ls for p in x["pairs"]), [x["pairs"] for x in ls]
-    assert all("gpu_us" not in x for x in L["links"] if x["kind"] != "launch"), "只有 launch 连线带 GPU 时间"
-    h = ui_load.load_lane(repo, idx, rid, g["id"])
-    assert len(h["kernels"]) == 2 and all(v["callers"] == [{"caller": "dyn/models/net.py#Net.forward", "n": 3, "gpu_us": 150}]
-                                          for v in h["kernels"].values()), h["kernels"]
+    assert not any(x.get("gpu") for x in L["lanes"]) and not any(x["kind"] == "launch" for x in L["links"]), L["links"]
+    main = next(x for x in L["lanes"] if x["thread"] == "MainThread")
+    assert cut.VIRTUAL_GPU in main["nodes"] and "gpu_us" not in main["nodes"][cut.VIRTUAL_GPU], main["nodes"]
+    assert any(e["b"] == cut.VIRTUAL_GPU and e["a"] == "dyn/models/net.py" for e in main["edges"]), main["edges"]
+    h = ui_load.load_lane(repo, idx, rid, main["id"])
+    assert "kernels" not in h and h["packages"].get(cut.VIRTUAL_GPU), h["packages"]
     from codestrata.ui import search
     assert search.reveal(idx, cut.VIRTUAL_GPU, []) == [], "「GPU · 仓库外」不用展开哪个目录"
-    main = next(x for x in L["lanes"] if x["thread"] == "MainThread")
-    assert not ui_load.load_lane(repo, idx, rid, main["id"])["kernels"], "线程的列不含 GPU 的行"
-
 
 def test_unseen_lists_gpu_apart():
     """path --unseen 的清单不列 GPU kernel（Python 经扩展才启动它，本来就看不出是哪一行），末尾单说有几处；explain 标 [GPU kernel]"""

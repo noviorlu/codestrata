@@ -43,7 +43,7 @@ def find(built: dict, aliases: dict, item: str) -> tuple[dict | None, int | None
 # 两头各叫什么：放 / 取、发 / 收……（links、explain、links --follow 的文字共用）
 VERB = {"queue": ("放", "取"), "asyncio": ("放", "取"), "janus": ("放", "取"), "zmq": ("发", "收"), "shm": ("写", "读"),
         "thread": ("起", "线程入口"), "exec": ("起", "子进程"), "fork": ("fork", "子进程"),
-        "join": ("被等的", "等到"), "wait": ("被等的", "等到"), "cuda": ("启动", "kernel")}
+        "join": ("被等的", "等到"), "wait": ("被等的", "等到")}
 
 
 def verbs(via: str) -> tuple[str, str]:

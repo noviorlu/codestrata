@@ -79,7 +79,7 @@ def _built(c, idx: dict, hot: dict) -> tuple[dict, dict]:
         raise CodestrataError("no_events", str(e)) from None
     except (OSError, ValueError) as e:
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"])) from None
-    return b, _lanes.aliases_of(r.rd, b)
+    return b, _lanes.run_aliases(r.rd)
 
 
 def _thing(c, r, idx: dict, hot: dict, label, item: str, lo: int, hi: int) -> dict:
