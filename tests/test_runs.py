@@ -2312,19 +2312,18 @@ def test_trace_only_notes():
     from codestrata import explain as ex_
     run_, rd_, _ = runs.resolve(repo, "nt")
     oh = {"calls": old}
-    d = ex_.function(repo, rd_, run_, idx, oh, "nt/deco.py#deco.wrapper", set(), 0, 1 << 60, lambda k: k, None)
+    d = ex_.function(rd_, run_, oh, "nt/deco.py#deco.wrapper", set(), None)
     c0 = d["callers"][0]
     assert c0["status"] == "trace" and c0["note"] == {"k": "nomatch"} and c0["why"], c0
-    d = ex_.function(repo, rd_, run_, idx, oh, "nt/base.py#Base.step", set(), 0, 1 << 60, lambda k: k, None)
+    d = ex_.function(rd_, run_, oh, "nt/base.py#Base.step", set(), None)
     assert [x["fn"] for x in d["ran_as"]] == ["nt/base.py#Sub.step"], d["ran_as"]
     # 有的行看得出、有的看不出（mixed）：写其中几次看不出、为什么，文字和 JSON 同一个判断
     from codestrata.cli import explain as cex_
     mix = {"calls": {"nt/app.py#run|nt/base.py#Base.step": {"n": 4, "only": 2, "a": "nt/app.py", "b": "nt/base.py", "lines": [
         {"l": 5, "n": 2, "status": "trace", "note": {"k": "name", "names": ["step"]}}, {"l": 6, "n": 2, "status": "both", "note": None}]}}}
-    c0 = ex_.function(repo, rd_, run_, idx, mix, "nt/base.py#Base.step", set(), 0, 1 << 60, lambda k: k, None)["callers"][0]
+    c0 = ex_.function(rd_, run_, mix, "nt/base.py#Base.step", set(), None)["callers"][0]
     assert c0["status"] == "mixed" and c0["only"] == 2 and c0["why"] == "只知道名字 step", c0
     assert cex_._unseen_tag(c0) == "  [其中 2 次代码里看不出 · 只知道名字 step]", cex_._unseen_tag(c0)
-    assert cex_._unseen_tag({"status": "trace", "note": {"k": "gpu"}, "why": "x"}) == "  [GPU kernel]"
     assert [y["note"] for y in old["nt/base.py#Base.run|nt/base.py#Sub.step"]["lines"]] == [{"k": "override", "w": "nt/base.py#Base.step"}]
     assert ui_source.runtime_lines(idx, "nt/app.py", {"calls": old}) == {}
     # 时间段（整个 run）：调用行按整个 run 的比例摊，跨文件的调用分类和次数都和按阶段看一样

@@ -1,5 +1,5 @@
-"""分列的进程头上写「这个进程在干什么」（用户 10-10 定）：这段时间里只有它跑的那个文件、干活的时段、主循环几轮——和 segments
-同一份切段（segments.stages：stage 段、请求、独有的文件）。持有请求的进程写请求。
+"""分列的进程头上写「这个进程在干什么」（用户 10-10 定）：这段时间里只有它跑的那个文件、干活的时段、主循环几轮——和
+分列的先后同一份切段（segments.stages：stage 段、请求、独有的文件）。持有请求的进程写请求。
 
     stage1 │ minicpmo_4_5_omni_tts.py · +0.61→+3.08 s · 250 轮
 
@@ -35,7 +35,7 @@ def summary(S: dict | None, lo: int) -> dict[int, dict]:
                          for x in ss)
         if own:
             title += f"；这段时间里只有它跑的文件：{own[0]}（{own[1]} 次调用）"
-        out[pid] = {"parts": parts, "title": title + "。和 codestrata segments 同一份"}
+        out[pid] = {"parts": parts, "title": title + "。"}
     reqs: dict[int, list] = {}
     for q in S["reqs"]:
         reqs.setdefault(q["pid"], []).append(q)

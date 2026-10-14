@@ -1,8 +1,8 @@
-"""命令行找开着的页面、和它的 serve 说话（view set / get / back / wait、explain --selected、status）。
+"""命令行找开着的页面、和它的 serve 说话（view set / get / back / wait、status）。
 
 找法：给了页面（REF 是页面地址，或 --page 端口）就问那个端口；否则按仓库读登记（serves.listed），活着的再问一次 /api/app
 核对 repo 和 pid（端口可能被别的程序复用了）。好几个都开着时，挑有看得见的标签页、最近在看的那个。
-找不到报 no_live_page、老 serve（没有推视图的接口）报 old_serve，都是退出码 5，下一步给 view url（把地址交给用户）。
+找不到报 no_live_page、老 serve（没有推视图的接口）报 old_serve，都是退出码 5，说明里写怎么用 view url 把地址交给用户。
 """
 from __future__ import annotations
 
@@ -36,13 +36,6 @@ def call(port: int, method: str, path: str, body: dict | None = None, timeout: f
         raise CodestrataError("no_live_page", f"连不上 127.0.0.1:{port} 上的 serve：{e}") from None
 
 
-def _url_next(c, why: str = "把地址交给用户，粘进浏览器") -> list[dict]:
-    """找不到能推的页面时的下一步：只拼地址（read）、起一个 serve（start，先问用户）"""
-    ref = c.ref
-    parts = ["view", "url"] + ([ref.text] if ref and ref.text else [])
-    return [c.cmd("read", *parts, why=why), out.step("start", "serve", "--port", "0", repo=c.repo, why="起一个图服务（先问用户）")]
-
-
 def find(c, page: str | None) -> dict:
     """这个仓库开着的、能推视图的 serve：{port, pid, repo, url, tabs, default}。page：--page 端口"""
     port = None
@@ -56,9 +49,9 @@ def find(c, page: str | None) -> dict:
     if port is not None:
         app = _locate.page_app({"host": "127.0.0.1", "port": port}, timeout=1.0)
         if app is None:
-            raise CodestrataError("no_live_page", f"127.0.0.1:{port} 上没有 codestrata serve（关了？）", next=_url_next(c))
+            raise CodestrataError("no_live_page", f"127.0.0.1:{port} 上没有 codestrata serve（关了？）；可以先 codestrata view url 拼地址交给用户")
         if Path(app["repo"]).resolve() != Path(c.repo).resolve():
-            raise CodestrataError("no_live_page", f"127.0.0.1:{port} 开的是别的仓库 {app['repo']}，不是 {c.repo}", next=_url_next(c))
+            raise CodestrataError("no_live_page", f"127.0.0.1:{port} 开的是别的仓库 {app['repo']}，不是 {c.repo}；可以先 codestrata view url 拼地址交给用户")
         return _ready(c, app)
     alive = []
     for rec in _serves.listed(c.repo):
@@ -66,8 +59,7 @@ def find(c, page: str | None) -> dict:
         if app and app.get("pid") == rec.get("pid"):
             alive.append(app)
     if not alive:
-        raise CodestrataError("no_live_page", f"{c.repo} 没有开着的图服务（或者是推视图之前的老版本，没登记）",
-                              next=_url_next(c))
+        raise CodestrataError("no_live_page", f"{c.repo} 没有开着的图服务（或者是推视图之前的老版本，没登记）；可以先 codestrata view url 拼地址交给用户")
     best = None
     for app in alive:
         st = _tabs(app["port"])
@@ -91,7 +83,7 @@ def open_pages(repo: Path) -> list[dict]:
 def _ready(c, app: dict, st: dict | None = None) -> dict:
     if "view" not in (app.get("features") or []):
         raise CodestrataError("old_serve", f"127.0.0.1:{app['port']} 上的 serve 是能推视图之前的版本：重起它才能推"
-                              "（先问用户）；现在先把地址交给用户", next=_url_next(c))
+                              "（先问用户）；现在先用 codestrata view url 把地址交给用户")
     st = st or _tabs(app["port"])
     return {"port": app["port"], "pid": app.get("pid"), "repo": app["repo"], "home": app.get("home"),
             "tabs": st.get("tabs") or [], "default": st.get("default")}

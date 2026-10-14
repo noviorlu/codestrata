@@ -1,4 +1,4 @@
-"""能原样粘贴的 codestrata 命令（输出里的「下一步」、候选）：每个参数按 shell 规矩加引号，带上仓库。"""
+"""能原样粘贴的 codestrata 命令（输出里「要更多」的提示）：每个参数按 shell 规矩加引号，带上仓库。"""
 from __future__ import annotations
 
 import shlex
@@ -18,11 +18,3 @@ def command(*parts: str, repo: Path | None = None) -> str:
         else:
             rest = ["-C", str(repo)] + rest
     return shlex.join(["codestrata"] + head + rest)
-
-
-def step(effect: str, *parts: str, repo: Path | None = None, why: str = "") -> dict:
-    """下一步的一条：{cmd, effect, why}。effect 是 read / page / write / delete / start / record"""
-    d = {"cmd": command(*parts, repo=repo), "effect": effect}
-    if why:
-        d["why"] = why
-    return d

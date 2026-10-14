@@ -6,7 +6,7 @@
     POST /api/view/back   {tab?, timeout?}               撤销 agent 最近推的那一步（页面后退一条历史）；那之后用户自己改过就拒绝
     POST /api/view/poll   {tab, report, wait?}           页面来问有没有要换的，顺带回报现状；有焦点的页面挂着等，最多 wait 秒
     POST /api/view/bye    {tab}                          页面关了 / 刷新了
-    GET  /api/view?tab=                                  各标签页的现状（view get、status、explain --selected）
+    GET  /api/view?tab=                                  各标签页的现状（view get、status）
     GET  /api/view/wait?tab=&for=&timeout=               等用户在页面上改（select / range / lanes / any；applied 等最近一条换好）
 
 一条要求的状态：applied 换好了 · deferred 用户正在操作，松手后换 · queued 标签页在后台，回来时换（只换最后一次）·

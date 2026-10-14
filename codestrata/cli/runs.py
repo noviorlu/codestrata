@@ -108,9 +108,7 @@ def ls(a) -> out.Result:
         lines.append(f"\n共 {len(rows)} 个 run，{size(total)}")
         if total > 1 << 30:
             lines.append("注意：runs/ 超过 1 GB；不要的可以 codestrata runs rm <完整 run id>（delete：先问用户）")
-    nxt = [out.step("read", "status", rows[0]["id"] + (f"@{common.main_phase(cat[0])}" if common.main_phase(cat[0]) else ""),
-                    repo=None if how == "cwd" else repo)] if rows else []
-    return out.Result(data={"runs": rows, "bytes": total}, text=lines, repo=repo, warnings=warns, next=nxt)
+    return out.Result(data={"runs": rows, "bytes": total}, text=lines, repo=repo, warnings=warns)
 
 
 # ---------------------------------------------------------------- show
@@ -132,14 +130,9 @@ def show(a) -> out.Result:
             "gpu_devices": detail.get("gpu") or [], "leftovers": detail.get("leftovers") or [],
             "file_state": fs, "rerun": rerun, "dir": str(rd.resolve())}
     lines = _show_text(run, rd, detail, fs, rerun)
-    flag = None if how == "cwd" else repo
-    nxt = []
-    if run.get("events") and _runs.state(run) in ("ok", "partial"):
-        mp = common.main_phase(run)
-        nxt.append(out.step("read", "lanes", run["id"] + (f"@{mp}" if mp else ""), repo=flag, why="这段时间里有哪几列"))
     return out.Result(data=data, text=lines, repo=repo, ref={"text": res.full, "slices_us": [list(s) for s in res.slices],
                                                              "lanes": res.lanes},
-                      warnings=warns + res.warnings, next=nxt)
+                      warnings=warns + res.warnings)
 
 
 def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -> list[str]:

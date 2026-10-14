@@ -7,11 +7,11 @@ from .. import locate as _locate
 from .. import ref as _ref
 from .. import runs as _runs
 from ..ui import source as _source
-from . import common, out, pages
+from . import common, lanes as _cli_lanes, out, pages
 
 NAME = "status"
 EFFECT = "read"
-DOES = "仓库、索引、run 的状态、REF 落在哪几片时间、各阶段的窗口、开着的页面各在看什么；不给 REF 列最近 5 个 run"
+DOES = "仓库、索引、run 的状态、REF 落在哪几片时间、各阶段的窗口、这段时间里有哪几列（进程 · 线程）、开着的页面各在看什么；不给 REF 列最近 5 个 run"
 USAGE = "codestrata status [REF|'页面地址'] [-C 目录] [--json]"
 EXAMPLE = "codestrata status 'http://127.0.0.1:8900/#run=20261001-170349-run_single_prompt@serving'"
 
@@ -29,7 +29,6 @@ def run(a) -> out.Result:
     repo = c.repo
     ix = repo / ".codestrata" / "index.json"
     data: dict = {"repo": str(repo), "found_by": c.how}
-    nxt: list[dict] = []
     if ix.is_file():
         lag = _source.index_lag(repo)
         when = _dt.datetime.fromtimestamp(ix.stat().st_mtime).astimezone()
@@ -38,11 +37,10 @@ def run(a) -> out.Result:
     else:
         data["index"] = None
         idx_text = "还没 scan"
-        nxt.append(out.step("write", "scan", repo=repo, why="建索引"))
     lines = [f"仓库  {repo}（{_HOW[c.how]}；{idx_text}）"]
     data["pages"] = _pages(c, lines)
     if c.res is None:
-        return _recent(c, data, lines, nxt)
+        return _recent(c, data, lines)
 
     r = c.res
     run_ = r.run
@@ -52,7 +50,6 @@ def run(a) -> out.Result:
     flags = [_STATE.get(st, st)]
     if st == "recording":
         flags.append("时序事件录完才有")
-        nxt.append(c.cmd("read", "runs", "show", run_["id"], why="录完再看"))
     else:
         flags += ["有时序事件" if ev else "没录时序事件", "录了 GPU" if run_.get("gpu") else "没录 GPU",
                   f"{len(trunc)} 个进程的时序事件到了行数上限" if trunc else "时序事件没到行数上限"]
@@ -70,18 +67,18 @@ def run(a) -> out.Result:
     data.update({"run": {"id": run_["id"], "case": run_.get("case"), "status": st, "problems": run_.get("problems") or [],
                          "events": bool(ev), "gpu": bool(run_.get("gpu")), "truncated": trunc,
                          "created": run_.get("created"), "end_us": r.end_us},
-                 "phases": phases, "lanes": r.lanes})
+                 "phases": phases, "ref_lanes": r.lanes})
+    more = None
+    if ev and st not in ("recording", "interrupted"):
+        lane_lines, lane_data, more = _cli_lanes.section(c)
+        lines += lane_lines
+        data.update(lane_data)
     shown = {_ref.parse_fragment(t["view"] or "").run for p in data["pages"] for t in p["tabs"] if t["visible"]}
     if data["pages"] and shown and not any(x and (x == run_["id"] or x == run_.get("case")) for x in shown):
         c.warnings.append({"code": "not_on_page", "msg": f"开着的页面上看的不是 {run_['id']}：要给用户看，用 view set（page）推过去"})
     if st == "interrupted":
-        nxt.append(c.cmd("write", "runs", "merge", run_["id"], why="录制中断了，从原始数据合并"))
-    elif ev and st != "recording":
-        # 没给范围、有 serving 的：建议看 serving（整个 run 里大半是启动）
-        target = r.full if r.phase or not common.main_phase(run_) else f"{run_['id']}@{common.main_phase(run_)}" + (
-            "/" + ",".join(r.lanes) if r.lanes else "")
-        nxt.append(c.cmd("read", "lanes", target, why="这段时间里有哪几列"))
-    return out.Result(data=data, text=lines, repo=repo, ref=c.ref_json(), next=nxt, warnings=c.warnings)
+        lines.append(f"      录制中断了：codestrata runs merge {run_['id']} 从原始数据合并（write，先问用户）")
+    return out.Result(data=data, text=lines, repo=repo, ref=c.ref_json(), warnings=c.warnings, more=more)
 
 
 def _pages(c: common.Ctx, lines: list[str]) -> list[dict]:
@@ -93,7 +90,7 @@ def _pages(c: common.Ctx, lines: list[str]) -> list[dict]:
     return pg
 
 
-def _recent(c: common.Ctx, data: dict, lines: list[str], nxt: list[dict]) -> out.Result:
+def _recent(c: common.Ctx, data: dict, lines: list[str]) -> out.Result:
     """没给 REF：最近 SHOW 个 run"""
     cat = _locate.catalog(c.repo)
     rows = [{"id": r["id"], "case": r.get("case"), "status": _runs.state(r), "created": r.get("created"),
@@ -103,12 +100,9 @@ def _recent(c: common.Ctx, data: dict, lines: list[str], nxt: list[dict]) -> out
         lines.append("run   还没录过")
     for r in rows:
         lines.append(f"run   {r['id']}  {_STATE.get(r['status'], r['status'])}  阶段 {', '.join(r['phases']) or '—'}")
-    if cat:
-        mp = common.main_phase(cat[0])
-        nxt.insert(0, c.cmd("read", "status", cat[0]["id"] + (f"@{mp}" if mp else "")))
     more = None
     if len(cat) > len(rows):
         more = {"shown": len(rows), "total": len(cat), "how": out.command("runs", "ls", repo=c.flag)}
     if c.ref is not None and c.ref.page and c.ref.run is None:
         c.warnings.append({"code": "need_view", "msg": "页面地址里没有 run（页面只开着静态图）"})
-    return out.Result(data=data, text=lines, repo=c.repo, next=nxt, warnings=c.warnings, more=more)
+    return out.Result(data=data, text=lines, repo=c.repo, warnings=c.warnings, more=more)

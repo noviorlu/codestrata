@@ -238,14 +238,14 @@ def test_kernels_in_lanes():
     assert search.reveal(idx, cut.VIRTUAL_GPU, []) == [], "「GPU · 仓库外」不用展开哪个目录"
 
 def test_unseen_lists_gpu_apart():
-    """path --unseen 的清单不列 GPU kernel（Python 经扩展才启动它，本来就看不出是哪一行），末尾单说有几处；explain 标 [GPU kernel]"""
+    """path --unseen 的清单不列 GPU kernel（Python 经扩展才启动它，本来就看不出是哪一行），末尾单说有几处；explain 把 kernel 单列一节"""
     import json
     repo, rid = gpu_repo()
     d = json.loads(cs("path", rid, "-C", repo, "--unseen", "--json").stdout)["data"]
     assert d["n_unseen_gpu"] > 0 and not any((x.get("note") or {}).get("k") == "gpu" for x in d["unseen"]), d
     assert "处是 GPU kernel" in cs("path", rid, "-C", repo, "--unseen").stdout
     t = cs("explain", "dyn/models/net.py#Net.forward", rid, "-C", repo).stdout
-    assert "[GPU kernel]" in t, t
+    assert "它启动的 GPU kernel" in t and "k::scale" in t.partition("它启动的 GPU kernel")[2], t
 
 
 def test_recorder_compiles_against_cupti_versions():

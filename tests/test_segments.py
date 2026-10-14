@@ -179,42 +179,29 @@ def one_json(r) -> dict:
 
 
 def test_commands_on_toy():
-    """segments / steps / links 在真录的 run 上：信封、algo、basis；steps 要一列（写成进程报 ambiguous_lane、没写报 usage）；
-    --with 写错报 item_not_found 带候选；links 的组 id 是 l:种类|通道|起列|终列"""
+    """status REF 在真录的 run 上列出这段时间里的列，页面默认收起的列标出来；links 只列交接，组 id 是 l:handoff|通道|起列|终列"""
     repo, rid = truth()
-    j = one_json(cs("segments", "-C", repo, f"{rid}@work", "--json"))
-    assert j["ok"] and j["algo"] == steps.ALGO and "min_calls" in j["data"]["basis"], j
-    assert j["data"]["requests"] and j["data"]["requests"][0]["fn"].endswith("#s_threads"), j["data"]["requests"]
-    ld = one_json(cs("lanes", "-C", repo, f"{rid}@work", "--json"))["data"]
+    ld = one_json(cs("status", "-C", repo, f"{rid}@work", "--json"))["data"]
     lanes = ld["lanes"]
-    main = next(x for x in lanes if x["lane"].endswith("/MainThread"))
-    # 页面默认收起的列也标出来（和页面同一份）：stdlib-put 只在交接两头出现、bg-loop 只是反复调同一个函数
+    # 页面默认收起的列也标出来（和页面同一份）：stdlib-put 只跑仓库外的代码、bg-loop 只在一两个文件里转
     pf = {x["lane"]: x["page_folded"] for x in lanes if x["page_folded"]}
     assert "仓库外" in pf.get("truth-1/stdlib-put", "") and "文件" in pf.get("truth-4/bg-loop", "") and "truth-1/MainThread" not in pf, pf
     assert ld["page_default"] == {"shown": len(lanes) - len(pf), "total": len(lanes)}, ld["page_default"]
-    assert "页面默认只看" in cs("lanes", "-C", repo, f"{rid}@work").stdout
-    r = subprocess.run([PY, "-m", "codestrata", "steps", "-C", str(repo), f"{rid}@work", "--json"], capture_output=True, text=True,
-                       cwd=HERE.parent)
-    assert r.returncode == 2 and one_json(r)["error"]["code"] == "usage", r.stdout
-    r = subprocess.run([PY, "-m", "codestrata", "steps", "-C", str(repo), f"{rid}@work/{main['proc']}", "--json"],
-                       capture_output=True, text=True, cwd=HERE.parent)
-    j = one_json(r)
-    assert j["error"]["code"] in ("ambiguous_lane", "no_loop"), j
-    r = subprocess.run([PY, "-m", "codestrata", "steps", "-C", str(repo), f"{rid}@work/{main['lane']}", "--head", "nosuchfn", "--json"],
-                       capture_output=True, text=True, cwd=HERE.parent)
-    assert r.returncode == 3 and one_json(r)["error"]["code"] == "item_not_found", r.stdout
-    j = one_json(cs("links", "-C", repo, f"{rid}@work", "--kind", "all", "--json"))
-    assert j["ok"] and all(x["id"].startswith(f"l:{x['kind']}|{x['via']}|") for x in j["data"]["links"]), j["data"]["links"][:2]
-    assert any(x["kind"] == "spawn" for x in j["data"]["links"]), [x["id"] for x in j["data"]["links"]]
-
-
+    assert "页面默认只看" in cs("status", "-C", repo, f"{rid}@work").stdout
+    j = one_json(cs("links", "-C", repo, f"{rid}@work", "--json"))
+    assert j["ok"] and j["data"]["links"] and all(x["id"].startswith(f"l:handoff|{x['via']}|") for x in j["data"]["links"]), j["data"]["links"][:2]
+    t = cs("links", "-C", repo, f"{rid}@work").stdout          # 文字：每组下一行写两头的函数（放 / 取……）
+    assert "放 " in t or "发 " in t or "写 " in t, t
+    for gone in (["segments"], ["steps"], ["find", "x"], ["guide"], ["lanes"]):
+        r = subprocess.run([PY, "-m", "codestrata", *gone, "--json"], capture_output=True, text=True, cwd=HERE.parent)
+        assert r.returncode == 2, (gone, r.stdout)
 def test_follow_on_toy():
     """links --follow：put_job 里放进队列（录到的，就在这次调用里）→ 另一条线程取到；段的 REF 带着经过的列；--link 不配 --follow 报 usage；
     --link 两边次数不等报 link_mismatch（退出码 4）"""
     repo, rid = truth()
     j = one_json(cs("links", "-C", repo, rid, "--follow", "put_job#1", "--json"))
     ch = j["data"]["chain"]
-    assert j["ok"] and j["algo"] == "chain/2" and ch["start"]["fn"].endswith("#put_job") and "@t=" in ch["start"]["stable"], j
+    assert j["ok"] and ch["start"]["fn"].endswith("#put_job") and "@t=" in ch["start"]["stable"], j
     h = ch["hops"][0]
     assert (h["kind"], h["via"], h["stay"]) == ("recorded", "queue", "ancestor") and h["from"]["fn"].endswith("#put_job"), h
     seg = ch["segment"]
@@ -260,83 +247,52 @@ def test_chain_for_page():
 
 
 def test_slices_on_toy():
-    """几片的 REF（t=a-b,c-d）：segments 按整段算、给 spanned 警告（以前直接拒绝）；links 给的下一步切段用整段的 REF；path --time 的「这段」
-    是各片加起来；links --follow 也按整段走（起点按整段数、给 spanned）"""
+    """几片的 REF（t=a-b,c-d）：path --time 的「这段」是各片加起来；links --follow 按整段走（起点按整段数、给 spanned）"""
     repo, rid = truth()
     ph = one_json(cs("status", "-C", repo, rid, "--json"))["data"]["phases"]
     end = max(x["t1_us"] for x in ph)
-    two, whole = f"{rid}@t=0-{end // 3},{2 * end // 3}-{end}", f"{rid}@t=0-{end}"
-    j = one_json(cs("segments", "-C", repo, two, "--json"))
-    assert j["ok"] and any(w["code"] == "spanned" for w in j["warnings"]), j
+    two = f"{rid}@t=0-{end // 3},{2 * end // 3}-{end}"
     j = one_json(cs("links", "-C", repo, two, "--json"))
-    assert j["ok"] and any(n["cmd"].split()[-1] == whole for n in j["next"]), j["next"]
+    assert j["ok"], j
     r = cs("path", "-C", repo, two, "--time")
     assert "2 片加起来" in r.stdout, r.stdout[:400]
     j = one_json(cs("links", "-C", repo, two, "--follow", "put_job#1", "--json"))
     assert j["ok"] and any(w["code"] == "spanned" for w in j["warnings"]) and j["data"]["chain"]["hops"], j
-
-
 def test_old_run_refused_by_commands():
-    """老 run：读命令报 old_run（退出码 4），下一步给 runs show；runs show 照样能看它是什么"""
+    """老 run：读命令报 old_run（退出码 4），说请重录；runs show 照样能看它是什么"""
     repo, rid = truth()
     d = tmpdir("cs-seg-")
     rd, _ = scenario(d, old=True)
     (d / ".codestrata" / "index.json").write_text((repo / ".codestrata" / "index.json").read_text())
-    for cmd in (["status", "synth@serving"], ["lanes", "synth@serving"], ["path", "synth@serving"]):
+    for cmd in (["status", "synth@serving"], ["links", "synth@serving"], ["path", "synth@serving"]):
         r = subprocess.run([PY, "-m", "codestrata", *cmd, "-C", str(d), "--json"], capture_output=True, text=True, cwd=HERE.parent)
         j = one_json(r)
         assert r.returncode == 4 and j["error"]["code"] == "old_run", (cmd, j)
-        assert [n["cmd"].split()[1:3] for n in j["next"]] == [["runs", "show"]], j["next"]
+        assert "重录" in j["error"]["msg"], j
     r = subprocess.run([PY, "-m", "codestrata", "runs", "show", "synth", "-C", str(d)], capture_output=True, text=True, cwd=HERE.parent)
     assert r.returncode == 0, r.stderr
 
 
-def test_finder_match():
-    """find 的匹配：完全一样 > 前缀 > 子串、不分大小写、* 通配、按种类和目录过滤；类、文件、目录也找得到"""
+def test_finder_hits():
+    """一个东西在各列的次数：类合它的方法，目录合里面的函数（页面的标记、view --focus 用）"""
     from codestrata import finder
-    idx = {"symbols": {"a/x.py#Foo": {"n": "Foo", "k": "class", "f": "a/x.py", "l": 1},
-                       "a/x.py#Foo.run": {"n": "Foo.run", "k": "method", "f": "a/x.py", "l": 3},
-                       "a/y.py#run_all": {"n": "run_all", "k": "func", "f": "a/y.py", "l": 1},
-                       "b/z.py#rerun": {"n": "rerun", "k": "func", "f": "b/z.py", "l": 1}},
-           "files": {"a/x.py": "a", "a/y.py": "a", "b/z.py": "b"}, "dirs": {"a/": {}, "b/": {}}}     # 索引里的目录键带结尾的 /
-    names = [x["name"] for x in finder.match(idx, "run", kind="fn")]
-    assert names == ["Foo.run", "run_all", "rerun"], names               # 完全一样（短名）> 前缀 > 子串
-    assert [x["key"] for x in finder.match(idx, "FOO", kind="class")] == ["a/x.py#Foo"]
-    assert {x["name"] for x in finder.match(idx, "*run", kind="fn")} == {"Foo.run", "rerun"}
-    assert [x["name"] for x in finder.match(idx, "run", kind="fn", under="b")] == ["rerun"]
-    assert [x["key"] for x in finder.match(idx, "x.py", kind="file")] == ["a/x.py"]
-    assert [x["key"] for x in finder.match(idx, "b", kind="dir")] == ["b/"]
-    assert [x["key"] for x in finder.match(idx, "a", kind="dir", under="a")] == ["a/"]
     per_node = {"a/x.py#Foo.run": {"L1": [3, 10, 20]}, "a/y.py#run_all": {"L1": [1, 5, 5], "L2": [2, 7, 9]}}
     assert finder.hits_of({"kind": "class", "key": "a/x.py#Foo"}, per_node) == {"L1": [3, 10, 20]}
     assert finder.hits_of({"kind": "dir", "key": "a/"}, per_node) == {"L1": [4, 5, 20], "L2": [2, 7, 9]}
-
-
-def test_find_explain_path_on_toy():
-    """find 给次数和列；explain 讲一条交接（两头的原文、调用链、scan 的说法）和一个函数（谁调它）；编号要视图（need_view）、
-    只给 REF 是用法错；path --time 列自己的时间、--unseen 只列看不出的"""
+def test_explain_path_on_toy():
+    """explain 讲一个函数（定义、谁调它、它调谁）；写错名字报 item_not_found；path --time 列自己的时间、--unseen 只列看不出的"""
     repo, rid = truth()
-    j = one_json(cs("find", "callee", f"{rid}@work", "-C", repo, "--kind", "file", "--json"))
-    assert j["data"]["items"] and j["data"]["items"][0]["key"] == "fakesvc/callee.py" and j["data"]["items"][0]["n"] > 0, j["data"]
-    links = one_json(cs("links", "-C", repo, f"{rid}@work", "--json"))["data"]["links"]
-    assert links, "truth 的 work 阶段里有队列交接"
-    j = one_json(cs("explain", links[0]["id"], f"{rid}@work", "-C", repo, "--json"))
-    d = j["data"]
-    assert j["ok"] and d["n"] >= 1 and d["from"]["lane"] == links[0]["from"] and "scan" in d, d
-    assert d["from"]["code"]["text"] and d["from"]["chain"], d["from"]
-    fn = one_json(cs("find", "slow", f"{rid}@work", "-C", repo, "--kind", "fn", "--json"))["data"]["items"][0]["key"]
-    d = one_json(cs("explain", fn, f"{rid}@work", "-C", repo, "--json"))["data"]
-    assert d["item"] == fn and d["lanes"] and d["callers"] and d["first"]["chain"][-1]["fn"] == fn, d
+    d = one_json(cs("explain", "slow", f"{rid}@work", "-C", repo, "--json"))["data"]
+    assert d["item"].endswith("#slow") and d["lanes"] and d["callers"], d
     assert d["def"]["signature"].startswith("def slow"), d["def"]
-    for args, code in ((["explain", "24", f"{rid}@work"], "need_view"), (["explain", f"{rid}@work"], "usage")):
-        r = subprocess.run([PY, "-m", "codestrata", *args, "-C", str(repo), "--json"], capture_output=True, text=True, cwd=HERE.parent)
-        assert one_json(r)["error"]["code"] == code, (args, r.stdout)
+    assert "谁调它" in cs("explain", "slow", f"{rid}@work", "-C", repo).stdout
+    r = subprocess.run([PY, "-m", "codestrata", "explain", "nosuchfn", f"{rid}@work", "-C", str(repo), "--json"],
+                       capture_output=True, text=True, cwd=HERE.parent)
+    assert r.returncode == 3 and one_json(r)["error"]["code"] == "item_not_found", r.stdout
     j = one_json(cs("path", "-C", repo, f"{rid}@work", "--time", "--json"))
     assert j["data"]["self_time"] and j["data"]["self_time"][0]["us"] >= j["data"]["self_time"][-1]["us"], j["data"]["self_time"]
     j = one_json(cs("path", "-C", repo, f"{rid}@work", "--unseen", "--json"))
     assert "unseen" in j["data"] and all(x["n"] >= 0 for x in j["data"]["unseen"]), j["data"].keys()
-
-
 def test_laneorder():
     """时间顺序的编号和视图无关：每列里两头都在这一列的边、交接连线都编；同一时刻的按稳定写法排（和列表下标无关）"""
     from codestrata import laneorder
@@ -360,9 +316,8 @@ def test_laneorder():
     assert o["n"] == 5 and o["ids"][1] == "e:p1/Main|b|a", o["ids"]          # 同一时刻 10：先比最后一次，再比稳定写法
 
 
-def test_view_url_and_numbered_explain():
-    """view url 拼出的地址解析回来是同一个视图（--focus 展开到它的文件、标出、选中）；
-    explain N '<地址>' 按地址里的视图算编号：没开时间顺序报 need_view，超出范围报 item_not_found，第 1 号讲得出来"""
+def test_view_url():
+    """view url 拼出的地址解析回来是同一个视图（--focus 展开到它的文件、标出、选中）"""
     from codestrata import ref as R, viewspec
     repo, rid = truth()
     j = one_json(cs("view", "url", f"{rid}@work", "-C", repo, "--focus", "slow", "--order", "on", "--page", "1", "--json"))
@@ -372,32 +327,6 @@ def test_view_url_and_numbered_explain():
     v = viewspec.from_keys(p.run + "@" + p.rest, p.view)
     assert v.order and v.mark == ["fakesvc/callee.py#slow"] and v.sel.startswith("n:"), v    # toy 小，默认切面已经看得到它：不用展开
     assert viewspec.fragment(v) == url.split("#", 1)[1], (viewspec.fragment(v), url)
-    base = f"http://127.0.0.1:1/#run={rid}@work"
-    r = subprocess.run([PY, "-m", "codestrata", "explain", "1", base, "-C", str(repo), "--json"], capture_output=True, text=True, cwd=HERE.parent)
-    assert one_json(r)["error"]["code"] == "need_view", r.stdout
-    r = subprocess.run([PY, "-m", "codestrata", "explain", "9999", base + "&order=1", "-C", str(repo), "--json"], capture_output=True, text=True,
-                       cwd=HERE.parent)
-    assert one_json(r)["error"]["code"] == "item_not_found", r.stdout
-    j = one_json(cs("explain", "1", base + "&order=1", "-C", repo, "--json"))
-    assert j["ok"] and j["data"]["number"] == 1 and j["data"]["view"]["n"] >= 1, j["data"].get("view")
-    # 编号落在一条交接线上时，它给的稳定写法（组 + 两头的节点）原样喂回 explain：讲的是同一条、同样的次数和 #k
-    from codestrata import laneorder, lanes as _lanes, runs as _runs
-    from codestrata.ui import load
-    idx = load.load_index(repo)
-    rd = repo / ".codestrata" / "runs" / rid
-    run = json.loads((rd / "run.json").read_text())
-    hot, _ = _runs.load_run(repo, idx, run, rd, "work")
-    L = _lanes.build(idx, rd, run, "work", hot, None)
-    order = laneorder.rank(L, _lanes.run_aliases(rd))
-    n = next(i + 1 for i, x in enumerate(order["ids"]) if x.startswith("l:handoff|"))
-    a = one_json(cs("explain", str(n), base + "&order=1", "-C", repo, "--json"))["data"]      # 编号和视图无关
-    assert a["item"] == order["ids"][n - 1] and a["item"].count("|") == 5, a["item"]
-    b = one_json(cs("explain", a["item"], f"{rid}@work", "-C", repo, "--json"))["data"]
-    assert (b["n"], [k["n"] for k in b["kinds"]]) == (a["n"], [k["n"] for k in a["kinds"]]), (a["item"], b["n"], a["n"])
-    c = one_json(cs("explain", a["item"] + "#1", f"{rid}@work", "-C", repo, "--json"))["data"]
-    assert c["pick"] == 1 and c["from"]["fn"] == a["from"]["fn"], c
-
-
 def test_procinfo_and_default_lanes():
     """进程头上的一句（procinfo）：只有它跑的文件在前、占比太低 / 单进程不写、几段写段数、持有请求的写请求；
     默认收起的列（lanedefault 的一句话规则）：只跑仓库外的、线程池、只在一两个文件里转的收，主线程不收；

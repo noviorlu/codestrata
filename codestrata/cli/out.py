@@ -1,8 +1,7 @@
 """给 agent 的命令的输出：同一份结果渲染成文字（给模型读）或 JSON 信封（给命令串），错误兜底，命令行引号。
 
-信封：{v, ok, cmd, repo, ref, data, more, warnings, next, algo}；出错时 {v, ok: false, cmd, error: {code, msg, candidates},
-warnings, next}。stdout 上只有一个 JSON（意外的错误也是：code=internal，堆栈写到 stderr）。
-文字输出的每条下一步都按 shell 规矩加好引号，原样粘贴就能跑。
+信封：{v, ok, cmd, repo, ref, data, more, warnings}；出错时 {v, ok: false, cmd, error: {code, msg, candidates}, warnings}。
+stdout 上只有一个 JSON（意外的错误也是：code=internal，堆栈写到 stderr）。
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from shlex import quote  # noqa: F401  （文字里的东西按 shell 规矩加�
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..cmdline import command, step  # noqa: F401  （各命令从这里取）
+from ..cmdline import command  # noqa: F401  （各命令从这里取）
 from ..errors import CodestrataError
 
 V = 1
@@ -22,46 +21,37 @@ V = 1
 
 @dataclass
 class Result:
-    """一个命令的结果。text 是给模型读的几行（不含 下一步 / 警告，由 emit 统一加）"""
+    """一个命令的结果。text 是给模型读的几行（不含警告，由 emit 统一加）"""
     data: dict
     text: list[str]
     repo: Path | None = None
     ref: dict | None = None            # {text, slices_us, lanes}
-    next: list[dict] = field(default_factory=list)
     more: dict | None = None           # {shown, total, how}
     warnings: list[dict] = field(default_factory=list)
-    algo: str | None = None
     exit: int = 0                      # 不是错、但也没做完：view set 页面还没换（6，pending）
 
 
 def emit(cmd: str, res: Result, as_json: bool) -> int:
     if as_json:
         env = {"v": V, "ok": True, "cmd": cmd, "repo": str(res.repo) if res.repo else None, "ref": res.ref,
-               "data": res.data, "more": res.more, "warnings": res.warnings, "next": res.next}
-        if res.algo:
-            env["algo"] = res.algo
+               "data": res.data, "more": res.more, "warnings": res.warnings}
         _dump(env)
         return res.exit
     lines = list(res.text) + _warn_lines(res.warnings)
     if res.more:
         lines.append(f"（给了 {res.more['shown']} / 共 {res.more['total']}；要更多：{res.more['how']}）")
-    if res.next:
-        lines.append("下一步")
-        width = max(len(n["cmd"]) for n in res.next)
-        for n in res.next:
-            lines.append(f"  {n['cmd'].ljust(width)}  （{n['effect']}{'：' + n['why'] if n.get('why') else ''}）")
     print("\n".join(lines))
     return res.exit
 
 
 def _warn_lines(warnings: list[dict]) -> list[str]:
-    return [f"⚠ {w['msg']}" + (f"（下一步：{w['next']['cmd']}，{w['next']['effect']}）" if w.get("next") else "") for w in warnings]
+    return [f"⚠ {w['msg']}" for w in warnings]
 
 
 def fail(cmd: str, err: CodestrataError, as_json: bool) -> int:
     if as_json:
         _dump({"v": V, "ok": False, "cmd": cmd, "error": {"code": err.code, "msg": err.msg, "candidates": err.candidates},
-               "warnings": err.warnings, "next": err.next})
+               "warnings": err.warnings})
     else:
         lines = _warn_lines(err.warnings) + [f"codestrata {cmd}: {err.msg}  [{err.code}]"]
         if err.candidates:
@@ -69,8 +59,6 @@ def fail(cmd: str, err: CodestrataError, as_json: bool) -> int:
             lines += [f"  {c}" for c in err.candidates[:20]]
             if len(err.candidates) > 20:
                 lines.append(f"  …共 {len(err.candidates)} 个")
-        for n in err.next:
-            lines.append(f"下一步：{n['cmd']}  （{n['effect']}）")
         print("\n".join(lines), file=sys.stderr)
     return err.exit
 
@@ -123,7 +111,6 @@ class Parser(argparse.ArgumentParser):
     def error(self, message):
         if Parser.json_errors:
             cmd = Parser.json_cmd or self.prog.removeprefix("codestrata").strip() or None
-            _dump({"v": V, "ok": False, "cmd": cmd, "error": {"code": "usage", "msg": message, "candidates": []},
-                   "next": []})
+            _dump({"v": V, "ok": False, "cmd": cmd, "error": {"code": "usage", "msg": message, "candidates": []}})
             sys.exit(2)
         super().error(message)

@@ -1,4 +1,4 @@
-"""给 agent 的命令（status / lanes / guide）和它们共用的一层：REF、列别名、引号、JSON 信封、错误码。
+"""给 agent 的命令（status / links / explain / path / view）和它们共用的一层：REF、列别名、引号、JSON 信封、错误码。
 
     python tests/test_agentcli.py [名字里的词…]
 """
@@ -164,50 +164,26 @@ def test_exit_codes_table():
 
 # ---------------------------------------------------------------- 命令
 
-def test_guide():
-    """guide ≤ 80 行，写着 REF 写法和每个命令；--json 是命令表；--skill 带 frontmatter"""
-    r = cs("guide")
-    lines = r.stdout.rstrip("\n").split("\n")
-    assert len(lines) <= 80, len(lines)
-    for w in ("REF", "status", "lanes", "引号", "--json", "退出码"):
-        assert w in r.stdout, w
-    j = one_json(cs("guide", "--json"))
-    names = {c["name"] for c in j["data"]["commands"]}
-    assert {"status", "lanes", "guide", "path", "trace"} <= names, names
-    assert {c["effect"] for c in j["data"]["commands"]} <= {"read", "page", "write", "delete", "start", "record"}
-    assert cs("guide", "--skill").stdout.startswith("---\nname: codestrata\n")
-
-
-def test_status_and_lanes():
-    """status / lanes 在录好的 run 上：文字和 JSON；从仓库的子目录里往上找到仓库；下一步能原样再跑"""
+def test_status():
+    """status REF 在录好的 run 上：文字和 JSON（带这段时间里的列）；从仓库的子目录里往上找到仓库；REF 里写列只看那几列"""
     repo, rid = truth()
     sub = repo / "fakesvc"
     r = csc("status", cwd=sub)
     assert r.returncode == 0 and rid in r.stdout and "从当前目录往上找到" in r.stdout, r.stdout + r.stderr
     j = one_json(csc("status", "truth@work", "--json", cwd=sub))
-    assert j["ok"] and j["cmd"] == "status" and j["repo"] == str(repo), j
+    assert j["ok"] and j["cmd"] == "status" and j["repo"] == str(repo) and "next" not in j, j
     assert j["ref"]["text"] == f"{rid}@work" and j["data"]["run"]["events"], j
     assert [p["name"] for p in j["data"]["phases"]] == ["start", "work"], j["data"]["phases"]
-    assert all(n["effect"] == "read" for n in j["next"]), j["next"]
-    # 下一步原样粘贴就能跑
-    nxt = j["next"][0]["cmd"]
-    r = csc(*shlex.split(nxt)[1:], cwd=sub)
-    assert r.returncode == 0 and "MainThread" in r.stdout, r.stdout + r.stderr
-    j = one_json(csc("lanes", f"{rid}@work", "--json", cwd=sub))
     lanes = j["data"]["lanes"]
     assert lanes and all("/" in x["lane"] for x in lanes), lanes
+    assert "MainThread" in csc("status", "truth@work", cwd=sub).stdout
     main = next(x for x in lanes if x["lane"].endswith("/MainThread"))
     proc = main["proc"]
-    # 只看一个进程 / 一列
-    j2 = one_json(csc("lanes", f"{rid}@work/{proc}", "--json", cwd=sub))
+    j2 = one_json(csc("status", f"{rid}@work/{proc}", "--json", cwd=sub))
     assert {x["proc"] for x in j2["data"]["lanes"]} == {proc}
-    j3 = one_json(csc("lanes", f"{rid}@work/{main['lane']}", "--json", cwd=sub))
+    j3 = one_json(csc("status", f"{rid}@work/{main['lane']}", "--json", cwd=sub))
     assert [x["lane"] for x in j3["data"]["lanes"]] == [main["lane"]], j3["data"]["lanes"]
     assert j3["ref"]["lanes"] == [main["lane"]]
-    # 从别的目录用 -C：下一步都带 -C
-    j4 = one_json(cs("lanes", "-C", repo, "truth@work", "--json"))
-    assert all(shlex.split(n["cmd"])[2:4] == ["-C", str(repo)] for n in j4["next"]), j4["next"]
-
 
 def test_errors():
     """写错名字：退出码 3、带候选；--json 时 stdout 只有一个信封；argparse 的用法错也给信封（退出码 2）"""
@@ -215,18 +191,18 @@ def test_errors():
     for args, code in ((["nope"], "run_not_found"), ([f"{rid}@nosuch"], "phase_not_found"),
                        ([f"{rid}@t=0-999999999999"], "window_out_of_range"), ([f"{rid}/nosuch"], "lane_not_found"),
                        ([rid[:8]], "run_not_found")):
-        r = csc("lanes", *args, "--json", cwd=repo)
+        r = csc("status", *args, "--json", cwd=repo)
         j = one_json(r)
         assert r.returncode == EXIT[code] and not j["ok"] and j["error"]["code"] == code, (args, r.returncode, j)
         assert j["error"]["candidates"], j
-        r = csc("lanes", *args, cwd=repo)
+        r = csc("status", *args, cwd=repo)
         assert r.returncode == EXIT[code] and r.stdout == "" and f"[{code}]" in r.stderr and "候选" in r.stderr, r.stderr
-    r = csc("lanes", "--json", "--nosuch", cwd=repo)
+    r = csc("status", "--json", "--nosuch", cwd=repo)
     j = one_json(r)
-    assert r.returncode == 2 and j["error"]["code"] == "usage" and j["cmd"] == "lanes", j
+    assert r.returncode == 2 and j["error"]["code"] == "usage" and j["cmd"] == "status", j
     # 没录时序事件的 run：no_events（退出码 4）
     cs("trace", repo, "--case", "plain", "--no-events", "--", PY, "-m", "fakesvc.work")
-    r = csc("lanes", "plain", "--json", cwd=repo)
+    r = csc("path", "plain", "--json", cwd=repo)
     assert r.returncode == 4 and one_json(r)["error"]["code"] == "no_events", r.stdout
     # 不在仓库里、也没给 -C：repo_unknown
     r = csc("status", "--json", cwd="/", env={"XDG_CONFIG_HOME": str(repo / "nocfg")})
@@ -242,22 +218,19 @@ def test_page_url():
         url = f"{get.base}/#run={rid}%40work&lanes=*%2FMainThread"
         j = one_json(csc("status", url, "--json", cwd="/"))
         assert j["ok"] and j["data"]["found_by"] == "page" and j["ref"]["text"] == f"{rid}@work/*/MainThread", j
-        j = one_json(csc("lanes", url, "--json", cwd="/"))
-        assert j["ok"] and all(x["lane"].endswith("/MainThread") for x in j["data"]["lanes"]), j
-        assert "trace" not in json.dumps(j["next"]), j["next"]
-        r = csc("lanes", get.base + f"/#run={rid}@work/x", cwd="/")
+        assert all(x["lane"].endswith("/MainThread") for x in j["data"]["lanes"]), j
+        r = csc("status", get.base + f"/#run={rid}@work/x", cwd="/")
         assert r.returncode == 2, r.stderr
 
 
 def test_run_id_finds_repo():
-    """完整 run id 在主菜单记得的仓库里唯一找到：不在仓库里也能用，下一步带 -C"""
+    """完整 run id 在主菜单记得的仓库里唯一找到：不在仓库里也能用"""
     repo, rid = truth()
     cfg = repo.parent / "cfg"
     (cfg / "codestrata").mkdir(parents=True, exist_ok=True)
     (cfg / "codestrata" / "projects.json").write_text(json.dumps({"projects": [{"path": str(repo)}]}))
     j = one_json(csc("status", rid, "--json", cwd="/", env={"XDG_CONFIG_HOME": str(cfg)}))
     assert j["ok"] and j["data"]["found_by"] == "run" and j["repo"] == str(repo), j
-    assert all("-C" in n["cmd"] for n in j["next"]), j["next"]
 
 
 def test_path():
@@ -335,7 +308,7 @@ def _recording_copy(repo, rid, sleeper):
 
 
 def test_recording_runs():
-    """同一个 case 有一次更新的正在录：status <case> 用录完的那次并警告 newer_recording；lanes 读正在录的报 recording、下一步 runs show"""
+    """同一个 case 有一次更新的正在录：status <case> 用录完的那次并警告 newer_recording；path 读正在录的报 recording"""
     repo, rid = truth()
     sleeper = subprocess.Popen(["sleep", "60"])
     nid = None
@@ -343,11 +316,11 @@ def test_recording_runs():
         nid = _recording_copy(repo, rid, sleeper)
         j = one_json(csc("status", "truth", "--json", cwd=repo))
         assert j["data"]["run"]["id"] == rid and any(w["code"] == "newer_recording" and nid in w["msg"] for w in j["warnings"]), j
-        r = csc("lanes", nid, "--json", cwd=repo)
+        r = csc("path", nid, "--json", cwd=repo)
         j = one_json(r)
-        assert r.returncode == 4 and j["error"]["code"] == "recording" and "runs show" in j["next"][0]["cmd"], j
+        assert r.returncode == 4 and j["error"]["code"] == "recording", j
         j = one_json(csc("status", nid, "--json", cwd=repo))
-        assert j["data"]["run"]["status"] == "recording" and "runs show" in j["next"][0]["cmd"], j
+        assert j["data"]["run"]["status"] == "recording", j
     finally:
         sleeper.kill()
         if nid:
@@ -357,7 +330,7 @@ def test_recording_runs():
 
 def test_repo_lookup():
     """-C 指到仓库的子目录：往上找到仓库；-C 指的目录往上都没有 .codestrata/：status 照样看（还没 scan），别的命令报 repo_unknown，
-    候选是主菜单记得的仓库、下一步带着原来的 REF；case 名在别的已知仓库里：run_not_found 的下一步指过去；
+    候选是主菜单记得的仓库；case 名在别的已知仓库里：run_not_found 的说明里写出来；
     页面地址问不到时，报错里带着 page_unknown 的警告"""
     repo, rid = truth()
     j = one_json(cs("status", "-C", repo / "fakesvc", "--json"))
@@ -369,18 +342,16 @@ def test_repo_lookup():
     (cfg / "codestrata" / "projects.json").write_text(json.dumps({"projects": [{"path": str(repo)}]}))
     env = {"XDG_CONFIG_HOME": str(cfg)}
     j = one_json(csc("status", "-C", empty, "--json", cwd="/", env=env))
-    assert j["ok"] and j["repo"] == str(empty) and j["data"]["index"] is None and j["next"][0]["effect"] == "write", j
-    r = csc("lanes", "-C", empty, "truth@work", "--json", cwd="/", env=env)
+    assert j["ok"] and j["repo"] == str(empty) and j["data"]["index"] is None, j
+    r = csc("path", "-C", empty, "truth@work", "--json", cwd="/", env=env)
     j = one_json(r)
     assert r.returncode == 3 and j["error"]["code"] == "repo_unknown" and j["error"]["candidates"] == [str(repo)], j
-    assert shlex.split(j["next"][0]["cmd"])[1:] == ["status", "-C", str(repo), "truth@work"], j["next"]
     other = repo.parent / "other"
     (other / ".codestrata").mkdir(parents=True, exist_ok=True)
     r = csc("status", "truth@work", "--json", cwd=other, env=env)
     j = one_json(r)
     assert r.returncode == 3 and j["error"]["code"] == "run_not_found" and str(repo) in j["error"]["msg"], j
-    assert shlex.split(j["next"][0]["cmd"])[1:] == ["status", "-C", str(repo), "truth@work"], j["next"]
-    r = csc("lanes", "http://127.0.0.1:1/#run=truth@work", "--json", cwd="/", env=env)
+    r = csc("path", "http://127.0.0.1:1/#run=truth@work", "--json", cwd="/", env=env)
     j = one_json(r)
     assert j["error"]["code"] == "repo_unknown" and [w["code"] for w in j["warnings"]] == ["page_unknown"], j
     # 写在子命令前面的 -C、--json（git 式）
@@ -391,7 +362,7 @@ def test_repo_lookup():
 def test_lanes_canonical_in_ref():
     """REF 里的列对着整个 run 核对、规整：大小写不同、写重了的合成一个标准写法；对不上的连 status 都报 lane_not_found"""
     repo, rid = truth()
-    lanes = one_json(cs("lanes", "-C", repo, f"{rid}@work", "--json"))["data"]["lanes"]
+    lanes = one_json(cs("status", "-C", repo, f"{rid}@work", "--json"))["data"]["lanes"]
     main = next(x["lane"] for x in lanes if x["lane"].endswith("/MainThread"))
     j = one_json(cs("status", "-C", repo, f"{rid}@work/{main.upper()},{main}", "--json"))
     assert j["ref"]["lanes"] == [main] and j["ref"]["text"] == f"{rid}@work/{main}", j["ref"]
@@ -418,7 +389,7 @@ def test_old_resolve_shares_grammar():
 
 
 def test_phase_name_with_spaces():
-    """case 脚本写来的阶段名带空格、斜杠：hook 记计数、driver 记时刻都换成 _，lanes RUN@a_b_c 能读（以前 KeyError）"""
+    """case 脚本写来的阶段名带空格、斜杠：hook 记计数、driver 记时刻都换成 _，status RUN@a_b_c 能读（以前 KeyError）"""
     repo = fresh()
     script = repo / "case.sh"
     script.write_text(f'echo "a b/c" > "$CODESTRATA_OUT/PHASE"; sleep 0.3; {shlex.quote(PY)} -c '
@@ -427,7 +398,7 @@ def test_phase_name_with_spaces():
     rid = sorted(p.name for p in (repo / ".codestrata" / "runs").iterdir() if p.name.endswith("-sp"))[-1]
     run = json.loads((repo / ".codestrata" / "runs" / rid / "run.json").read_text())
     assert [p["name"] for p in run["phases"]][-1] == "a_b_c" and run["phases"][-1]["t_us"] is not None, run["phases"]
-    r = csc("lanes", f"{rid}@a_b_c", "--json", cwd=repo)
+    r = csc("status", f"{rid}@a_b_c", "--json", cwd=repo)
     assert r.returncode == 0 and one_json(r)["ok"], r.stdout + r.stderr
 
 

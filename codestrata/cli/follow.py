@@ -29,22 +29,21 @@ def run(a, c: common.Ctx, idx: dict) -> out.Result:
     ref = _ref.join(r.run["id"], "t=" + ",".join(f"{x}-{y}" for x, y in ch["slices_us"]), ch["lanes"])
     used = {h["link"] for h in hops if h["kind"] == "link"}
     warns = list(c.warnings) + _warnings(hops, links, used, W)
-    nxt = []
+    extra = []
     if st["reason"] == "range":                      # 出了这段时间：起点换成不随范围变的写法，范围放宽到它所在的阶段（没有就整个 run）
         wider = next((nm for nm, x, y in _seq.phase_segments(r.run, r.end_us or st["t_us"] + 1) if x <= st["t_us"] <= y), None)
-        nxt.append(c.cmd("read", "links", _ref.join(r.run["id"], wider), "--follow", start["stable"],
-                         *[x for t in a.link for x in ("--link", t)], why="放宽范围接着走（起点同一处）"))
+        extra.append("放宽范围接着走（起点同一处）：" + out.command("links", _ref.join(r.run["id"], wider), "--follow", start["stable"],
+                                                      *[x for t in a.link for x in ("--link", t)], repo=c.flag))
     chain_key = _chainview.key(rtext.partition("@")[2] or None, start["stable"], a.link)    # 页面在原来那一段里重走一遍
-    nxt.append(c.cmd("page", "view", "set", ref, "--chain", chain_key, "--note", f"链：{a.follow}",
-                     why="在页面上看这条链：链上的跳亮出来（推出来的画虚线），别的线变淡"))
+    extra.append("在页面上看这条链（链上的跳亮出来，推出来的画虚线）：" + out.command("view", "set", ref, "--chain", chain_key,
+                                                                         "--note", f"链：{a.follow}", repo=c.flag))
     total = hops[-1]["to"]["t_us"] - start["t0_us"] if hops else 0
     data = {"chain": {"start": start, "hops": hops, "stop": st, "total_us": total, "tally": _tally(hops),
                       "links": [{"text": L.text, "a": {"lane": W.alias(L.a.lane), "fn": L.a.node, "n": len(L.a.calls)},
                                  "b": {"lane": W.alias(L.b.lane), "fn": L.b.node, "n": len(L.b.calls)}, "used": L.text in used}
                                 for L in links],
                       "segment": {"kind": "chain", "slices_us": ch["slices_us"], "lanes": ch["lanes"], "ref": ref, "view_chain": chain_key}}}
-    return out.Result(data=data, text=_lines(ch, start, lo, ref), repo=c.repo, ref=c.ref_json(), next=nxt, warnings=warns,
-                      algo=_chain.ALGO)
+    return out.Result(data=data, text=_lines(ch, start, lo, ref) + extra, repo=c.repo, ref=c.ref_json(), warnings=warns)
 
 
 def _tally(hops: list[dict]) -> dict:
@@ -117,7 +116,7 @@ def _lines(ch: dict, s: dict, lo: int, ref: str) -> list[str]:
     if st["reason"] == "none":
         L += _stop_none(st, lo)
     elif st["reason"] == "range":
-        L.append(f"停下：{st['lane']} 收到的那一刻（{out.secs(st['t_us'], lo)}）已经出了这段时间（下一步给了放宽范围的命令，起点写法不变）")
+        L.append(f"停下：{st['lane']} 收到的那一刻（{out.secs(st['t_us'], lo)}）已经出了这段时间（末尾给了放宽范围的命令，起点写法不变）")
     else:
         L.append(f"停下：走了 {_chain.MAX_HOPS} 跳还没停，截在 {st['lane']}（{out.secs(st['t_us'], lo)}）")
     L.append(f"这条链的段（{len(ch['slices_us'])} 片时间 × 经过的 {len(ch['lanes'])} 列）：{out.quote(ref)}")
@@ -150,5 +149,5 @@ def _stop_none(st: dict, lo: int) -> list[str]:
         L.append(f"      {x['lane']}{'（链上走过）' if x['on_chain'] else ''}：" + "、".join(
             f"{common.short(f['fn'])}（隔 {_gap(f['gap_us'])}，波动 {f['cv']:.0%}{'，交替' if f['alternate'] else ''}"
             + (f"；同一处还有 {len(f['same'])} 个" if f["same"] else "") + "）" for f in x["fns"]))
-    L.append(f"    比如 --link {out.quote(cd['link'])}（读过代码确认再加；这条不放进下一步）")
+    L.append(f"    比如 --link {out.quote(cd['link'])}（读过代码确认再加）")
     return L

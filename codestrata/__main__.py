@@ -1,10 +1,11 @@
 """codestrata —— 跑一次，看清这次运行在仓库里走了哪条路、按什么顺序。人和 agent 用同一套命令。
 
-先弄清在哪（read）
-  codestrata status [REF]                     仓库、run 的状态、各阶段的时间；不给 REF 列最近的 run
-  codestrata lanes  REF                       这段时间里有哪几列（进程 · 线程）和它们的稳定写法
-  codestrata path   REF                       请求路径：每个进程、每条线程的函数级调用树（默认整棵树）
-  codestrata guide                            给 agent 的一页速查（REF、引号、JSON 信封、错误码）
+读一次运行（read）
+  codestrata status [REF]                     仓库、run 的状态、各阶段、这段时间里有哪几列；不给 REF 列最近的 run
+  codestrata links  REF                       列之间谁把数据交给谁，按先后排（--follow 顺着交接走一条链）
+  codestrata explain FN REF                   一个函数这次谁调它、它调了谁、启动了哪些 GPU kernel
+  codestrata path   REF                       请求路径：每个进程、每条线程的函数级调用树
+  codestrata view url REF                     拼一个页面地址（view set / get / back / wait 和开着的页面打交道）
 录和管
   codestrata scan  [repo]                     静态扫描 → .codestrata/index.json（write）
   codestrata trace [repo] --case NAME -- CMD  跑一个 case，记录真实调用（record：每次都存成一个新的 run）

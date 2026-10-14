@@ -80,7 +80,7 @@ def _view_opts(q) -> None:
     q.add_argument("--order", choices=["on", "off"], default=None, help="时间顺序开 / 关")
     q.add_argument("--path", action="store_true", help="详情栏讲请求路径")
     q.add_argument("--chain", default=None, metavar="范围~起点~--link…",
-                   help="页面高亮一条链（links --follow 的下一步里拼好了）：链上的跳亮出来、推出来的画虚线；none 清掉")
+                   help="页面高亮一条链（links --follow 末尾拼好了）：链上的跳亮出来、推出来的画虚线；none 清掉")
 
 
 def run(a) -> out.Result:
@@ -266,30 +266,25 @@ def _pushed(c, pg: dict, d: dict, frag: str, what: list[str], took: float, op: s
     if st in ("failed", "superseded", "refused"):
         code = {"failed": "page_failed"}.get(st, st)
         why = d.get("error") or {"superseded": "被后来的一条要求顶掉了"}.get(st, "")
-        nxt = [c.cmd("read", "view", "url", c.res.text, why="把地址交给用户")] if (url and c.res) else []
-        raise CodestrataError(code, f"页面没换（{st}）：{why}", next=nxt)
+        raise CodestrataError(code, f"页面没换（{st}）：{why}")
     head = ("已撤销" if op == "back" else STATES["applied"]) if st == "applied" else STATES.get(st, st)
     lines = [f"{head}（{st}）· {pages.where(pg, t)} · {took:.2f} s"]
     if op == "set":
         lines += what
-        if t.get("n") is not None and st == "applied":
-            lines.append(f"  页面上的编号一共 {t['n']} 个（时间顺序开着时）")
         lines.append("  撤销  浏览器后退，或 codestrata view back")
         lines.append(f"  地址  {url}")
-    nxt, exit_ = [], 0
+    exit_ = 0
     if st in ("deferred", "queued", "offered", "sent"):
         exit_ = 6
-        nxt.append(c.cmd("read", "view", "wait", "--for", "applied", "--timeout", "30", why="等页面换好"))
+        lines.append("  页面还没换：codestrata view wait --for applied 等它换好")
     data = {"state": st, "v": d.get("v"), "tab": t, "url": url, "fragment": frag, "port": pg["port"]}
-    return out.Result(data=data, text=lines, repo=c.repo, ref=c.ref_json(), next=nxt, warnings=c.warnings, exit=exit_)
+    return out.Result(data=data, text=lines, repo=c.repo, ref=c.ref_json(), warnings=c.warnings, exit=exit_)
 
 
 def _get(a) -> out.Result:
     c, pg, t = _page(a)
     lines = [f"{pages.where(pg, t)}  最后是{_BY.get(t['by'], t['by'])}改的",
              f"  视图  {t['view'] or '（静态图）'}"]
-    if t.get("n") is not None:
-        lines.append(f"  编号  一共 {t['n']} 个")
     if t.get("last"):
         L = t["last"]
         lines.append(f"  agent 最近推的一条  {L['op']} · {L['state']}" + (f"（{L['error']}）" if L.get("error") else ""))
@@ -298,12 +293,8 @@ def _get(a) -> out.Result:
     for x in pg["tabs"]:
         if x["tab"] != t["tab"]:
             lines.append(f"  另一个标签页 {x['tab'][:4]}（{'看得见' if x['visible'] else '在后台'}）  {x['view'] or '（静态图）'}")
-    nxt = []
-    sel = _ref.parse_fragment(t["view"] or "").view.get("sel")
-    if sel:
-        nxt.append(c.cmd("read", "explain", "--selected", *(["--page", str(pg["port"])] if a.page else []), why=f"讲用户选中的 {sel}"))
     data = {"tab": t, "tabs": pg["tabs"], "port": pg["port"], "url": pages.page_url(pg, t, t["view"])}
-    return out.Result(data=data, text=lines, repo=c.repo, next=nxt, warnings=c.warnings)
+    return out.Result(data=data, text=lines, repo=c.repo, warnings=c.warnings)
 
 
 def _back(a) -> out.Result:
@@ -331,8 +322,5 @@ def _wait(a) -> out.Result:
         lines = [f"页面换好了（{pages.where(pg, t2)}）"]
     else:
         lines = [f"用户改了（{pages.where(pg, t2)}）", f"  视图  {t2['view']}"] + ([f"  选中  {sel}"] if sel else [])
-    nxt = []
-    if d["changed"] and sel and a.for_ in ("select", "any"):
-        nxt.append(c.cmd("read", "explain", "--selected", *(["--page", str(pg["port"])] if a.page else []), why=f"讲用户选中的 {sel}"))
     data = {"changed": d["changed"], "for": a.for_, "tab": t2, "selected": sel, "port": pg["port"]}
-    return out.Result(data=data, text=lines, repo=c.repo, next=nxt, warnings=c.warnings)
+    return out.Result(data=data, text=lines, repo=c.repo, warnings=c.warnings)
