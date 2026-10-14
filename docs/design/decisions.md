@@ -48,13 +48,13 @@
 
 ### 纵轴按依赖分层，不用 SCC 缩点，也不用架构高度
 - 决定：`layout.layers` 直接对边排序：按权重贪心去环（Eades–Lin–Smyth），再 sifting（最多 20 轮）把逆向边的权重压到最小，
-  最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。架构高度 `(出 − 入) / (出 + 入)` 只留在详情面板和 scan 的输出里。
+  最后从下往上数最长路分层（谁也不调的在最底层），超过 16 层按比例压进 16 条泳道。不算架构高度 `(出 − 入) / (出 + 入)`。
 - 为什么：Python 的循环 import 让强连通分量退化——vllm-omni 上 30 个包有 20 个塌进同一个环，缩点后分层信息全丢。
   架构高度只看每个模块自己的出入比例、不看谁连着谁，omni → omni_base 这种边会画成往上指。贪心在 vllm-omni 上为了拆环
   反过一条 4383 次调用的边，所以加 sifting（测试里的例子：贪心逆掉的权重 91，sifting 后 51）。从上往下数时，只被一个入口
   用到的叶子会飘在图中间（codestrata 自己的 render、highlight）。
 - 放弃的方案：SCC 缩点后拓扑分层；架构高度当纵轴；从上往下数的最长路。
-- 在哪：`layout.py` 的 `layers`、`MAX_LANES`；`scan.py` 模块说明末段；架构高度在 `cut.view` 里算。
+- 在哪：`layout.py` 的 `layers`、`MAX_LANES`；`scan.py` 模块说明末段。
 
 ### 叠了 run 时，分层按这次的调用加权
 - 决定：import 边（图上不画，见「图上只有调用边」）当排版的静态权重 `1 + log1p(import 语句数)`；叠了 run 时，切面上节点间的调用另作为 runtime 边加进来，权重
@@ -142,7 +142,7 @@
   线程的起和收：每条线程都有起的地方和回收的地方，像阶段的起点 / 终点那样高亮——
   起线程、回收线程的节点照阶段起点 / 终点的样子描绿 / 红、写「▶ 起 / ■ 收」，列头写起 / 收的时刻；谁回收了谁是第四种连线（红色细虚线）。
   起线程和交接的连线标出两边的代码：选中时两头的节点下面标出那一行，详情里列出每一对的那一行。
-  选中节点只算点的那一份；整个详情也只讲这一份：顶上写明是哪个进程 · 哪条线程，次数、调用 / 被调用 / 连线、文件树和 kernel 表都只算这一列，
+  选中节点只算点的那一份；整个详情也只讲这一份：顶上写明是哪个进程 · 哪条线程，次数、调用 / 被调用 / 连线、文件树都只算这一列，
   列里的边的详情同理（一列的叠加：`lanes.lane_counts` 从 `seq.phase_calls` 里挑出这一列的线程，和阶段的计数同样的形状，走同一个 `runs.overlay`；
   span 不记调用行，调用行按这一段所有线程的比例摊，详情里写明）。分列里的次数都来自时序事件：线程入口被调的那一次、递归调用自己的不记，
   比模块图（hook 的计数）少一些；没去补——分列图上画的次数本来就是时序事件的，详情和图上对得上更要紧。详情里点名字选中同一列里的那一份。
@@ -339,11 +339,12 @@
 
 ### 清单拆成 run.json 和 detail.json，目录扁平，只用文件不用数据库
 - 决定：`runs/<id>/` 一层；列表只读几 KB 的 run.json，procs、哈希、环境在 detail.json；所有写都先写临时文件再 `os.replace`。不用 sqlite，不做就地 schema 升级，
-  读取端兼容所有 schema。老格式的迁移加文件锁、只拷不挪、核对（计数逐键相等、legacy 逐字节相同）通过才删老文件。
+  2026-10-01 之前格式的 run（schema < 3 没有调用行，或时序事件只记了跨文件的调用）不再读：数据不删，打开时说请重录（`runs.too_old`）；
+  再早的 `.codestrata/trace-<case>.json` 不再迁移。
 - 为什么：列 100 个 run 时不用读几十 MB；glob 只需一层，按 id 排序就是按时间排序。run 只有几十个，按时间窗取数据靠分块加 index.json 就够。
-  迁移只拷不挪：runs/ 常是指到另一块盘的软链，rename 跨不了文件系统。
-- 放弃的方案：sqlite；按 case 分层的目录；迁移时用 rename 认领（最初的计划）。
-- 在哪：`runs.py` 的 `new_run`、`catalog`、`_write`、`migrate`、`_migrate_locked`、`_cleanup_legacy`。
+  老格式各留一条退路（按名字猜调用行、没有父 span 时另一套建树）让读取端越来越杂，而它们都能重录。
+- 放弃的方案：sqlite；按 case 分层的目录；读取端兼容所有 schema（以前的做法）。
+- 在哪：`runs.py` 的 `new_run`、`catalog`、`_write`、`too_old`。
 
 ### REF 是「完整 id 或 case 名」；时序事件的问题不改 status
 - 决定：`runs.resolve` 先当完整 id 查，再当 case 名（`runs.pick`）：取最新一次 ok 的，没有就最新的 partial（并提示），再没有取最新的任意一个；后面可加 `@阶段` 或 `@t=起-止`。
@@ -359,7 +360,7 @@
   `env_inherited`；`rerun_command` 给 `cd <目录> && <原样命令>`。只有没存 `invocation` 的老 run 才按参数拼。
 - 为什么：按参数拼的漏掉什么就少什么：当时在哪个目录跑、相对路径指到哪、codestrata 装在哪、shell 里 export 了什么。目标是页面上能拿到一条照抄就能
   复刻的命令。`test_rerun_command_reproduces` 在 / 下照抄这条命令，再录出同样分段的 run。
-- 放弃的方案：case 定义文件（cases.toml）：目标是录一次复用，不是方便重录，也省掉 TOML 和对 3.11 的依赖；变体就是另一个 `--case` 名加 `--env` / `--tag`。
+- 放弃的方案：case 定义文件（cases.toml）：目标是录一次复用，不是方便重录，也省掉 TOML 和对 3.11 的依赖；变体就是另一个 `--case` 名加 `--env` / `--note`。
 - 在哪：`__main__.py` 的 `main`、`cmd_trace`；`runs.py` 的 `new_run`、`inherited_env`、`rerun_command`、`fmt_seconds`。
 
 ---
@@ -473,7 +474,8 @@
 - 为什么：讲一条调用链时的先后直接画在同一张图上，跟着切面、阶段一起变。按名次不按时刻：模型加载这种长时段会把按时刻插值的颜色都挤到一头。
   ↻ 是轮询、每个 token 都走一遍的路径，它的序号只说明从什么时候开始。
 - 放弃的方案：单独一张时序图（生命线 + 消息，M5 做过，已整个删掉）；按时刻插值上色；模块图上的时间顺序（录了事件就是分列，走不到）。
-  编号在后端按视图算（`laneorder.py`：收起的进程、开关、只看的列；同一时刻的按稳定写法比先后），页面和命令行的 `explain 24` 用同一份（2026-10-10 挪到后端）。
+  编号在后端算（`laneorder.py`：同一时刻的按稳定写法比先后），页面和命令行的 `explain 24` 用同一份；和视图无关——收起进程、只看几列时号码不变、看不见的空着
+  （以前随视图重排，每加一种视图状态前后端各改一遍）。
 - 在哪：`seq.py` 的 `is_repeat`、`REPEAT_MIN`；`lanes.py`（列里的边、交接线的 `repeat`）；`laneorder.py`；`serve.py` 的 `/api/lanes`（order）、`/api/laneorder`；
   `web/lanes.js` 的 `paint`、`reorder`、`viewQuery`、`timeColor`、`badges`；`web/app.js` 的 `applyTimes`。
 
@@ -500,10 +502,10 @@
 - 决定：链是一跳一跳的交接，每跳写依据（recorded / order / time）。录到的交接直接跟；没录到的一跳（共享的 dict、deque、管道）停下来列候选，
   agent 读过代码后用 `--link 'A列:FN => B列:FN'` 接上：这段时间里 A 边第 k 次配 B 边第 k 次，两边次数不等、或者有一次 B 早于同一次的 A 就拒绝。
   在一列里从进来到交出：交出就在那次调用里的直接跟；这一列交出的那一组次数和进来的份数一样时，第 k 份配第 k 次（按先后）；否则同一条线程
-  进来之后、下一份进来之前的第一次交出（按时间）。候选里拼好的 `--link` 只写在输出里，不放进「下一步」。
+  进来之后、下一份进来之前的第一次交出（按时间）。候选里拼好的 `--link` 只写在输出里，不拼成整条命令。
 - 为什么：「绝不按最近时刻配对」——积压时一块在共享内存里要等一两秒，最近的那次交出不是这一块；按先后配有结构上的依据（两边次数一样、先后不倒）。
   一列里按时间接在流水线上会差一份：并发 3 个请求的录制上，第 k 份进来之后的第一次交出是第 k-1 份的结果，按先后配每份的处理时间都稳在约 170 ms。
-  没录到的跳要 agent 显式写出来，读输出的人看得出哪一跳是推的；候选不进下一步，免得没读代码就照抄。
+  没录到的跳要 agent 显式写出来，读输出的人看得出哪一跳是推的；候选不拼成整条命令，免得没读代码就照抄。
 - 放弃的方案：自动按最近时刻接没录到的跳；只走录到的跳、不给接（链到共享的 dict 就断了）；一列里一律按时间接（并发时差一份）；
   在 `--link` 里写「列@时刻」逐份指定（太长，次数多时写不过来）。
 - 在哪：`chain.py`（走法）、`chainhint.py`（候选）、`cli/follow.py`（文字）。
@@ -515,26 +517,20 @@
 - 为什么：链的 REF 只是「几片时间 × 经过的列」，打开后画的是这几列在这几片里的全部连线（并发时一组 ×68 的别的交接也在），推出来的那一跳也没有线，
   看不出哪条是链。不存每一跳（交接下标、调用时刻）是因为写法会很长、换了整理方式就对不上；存「怎么走出来的」，页面和命令行算出来的一样。
   「第 k 次」要在链原来那一段里数（看的是只有几片的 REF，在那里数会数错），所以范围单独记。
-- 放弃的方案：只改下一步的说明（「页面上是全部连线」），不高亮；存每一跳的交接下标。
+- 放弃的方案：只在输出里说明「页面上是全部连线」，不高亮；存每一跳的交接下标。
 - 在哪：`chainview.py`、`lanes.build` 的 `chain`、`serve.py` 的 `/api/lanes`、`web/lanechain.js`、`web/view.js`、`viewspec.py`。
 
 ### 分列首屏：转一手的列默认收起，进程头写它在干什么
-- 决定：没写 `lanes=` 时，收发 socket 的列（只在交接两头出现，或者又收又交、只调了三个以内的仓库函数）、只在轮询的列（每轮空转、调的函数少）、
-  线程池、这一段里没有调用的列，默认收进每个进程的「其他 N 列」，线照连；`lanes=*` 是全部。进程头在名字后面写只有它跑的文件、时段、轮数。
-  段外的起 / 收不描框。都和 `segments` 用同一份切段（`segments.stages`，按 run 和时间段缓存），切段靠不住时不收、不写。
+- 决定：不是主线程、而且只跑仓库外的代码、是线程池（同名 4 条以上）、或者只在两个以内的文件里转的列，默认收进每个进程的「其他 N 列」，线照连
+  （`lanedefault.py`，一句话的规则，只看分列自己的数据）；点窄列展开这个进程，工具栏「全部显示 / 回到默认」，都不进地址。进程头在名字后面写只有它跑的文件、时段、轮数
+  （和 `segments` 用同一份切段）。段外的起 / 收不描框。
 - 为什么：vllm-omni 的 serving 阶段 19 列、画布五屏宽，首屏只看得到 end2end 和半个 stage0；三个 stage 的进程头都只写 stage0/1/2，看不出谁是 LLM、谁是 TTS。
   默认收起之后 19 → 8 列、画布 5065 → 3529 px，进程头写出 minicpmo_4_5_omni_llm.py / _tts.py / batched_token2wav.py。
-- 代价：默认看到的列和 `lanes` 命令列出的不一样（命令行照旧列全部）；编号要和页面一致，后端算编号时也按默认收起算。
-- 实现时定的：没调用的列也收；进程头上文件放最前（窄的进程头放不下时先丢时段、轮数）。
-- 后来改：列有没有调用、调了几个函数，折叠行（录制时把连着的同一调用折成一行）按次数摊开数，和 `lanes` 命令同一个数法——之前只看开始时刻，
-  stage2 的 save_loop 一行 186 次横跨这一段，算成「没调用」，`lanes` 却写 45 次；不在交接链上、只是反复调同一两个函数的列也算「只在轮询」照样收
-  （serving 照旧 8 / 19、shutdown 照旧 7 / 10，start 10 → 7 / 13）。实现时定的：收了数据再反复处理的不算（它在链上）。
-- 后来改：看的是整个 run（有 serving 阶段，范围盖住整个 run：没写阶段、或 t=0-终点）时不写进程头、进程按启动的先后（`segments.whole_run`）——整个 run 上 stage0 的头写着
-  「+28.55→+79.14 s · 27 轮」，其实是加载时的 save_loop；默认收起照旧。
-- 后来改：默认收起的「其他 N 列」悬停一列一列写为什么收（`lanedefault.reasons`，`/api/lanes` 的 `default_folded`），点它只展开这个进程收起的列；
-  点「全部显示」之后小签留着写「全部 N 列 · 回到默认」——之前点完小签就没了，回不到默认，只能手改地址。「重置」只管搜索、高亮和选中，不管列（列由小签管）。
-- 后来改：点窄列展开的进程在地址里记成「默认 + 这个进程」（`lanes=+stage0`，`laneid.view_lanes`，页面的 lanefocus.js 同一份）——第一版写成此刻看到的具体列名，
-  换到别的阶段时和那一段的默认对不上（该收的放出来、该看的收进去）、窄列不再写原因、回到默认要点两下。选的列这一段里一列都没有时也给「回到默认」。
+- 代价：默认看到的列和 `lanes` 命令列出的不一样（命令行照旧列全部，`page_folded` 写哪些默认收起）；很小的程序上收得多。
+- 实现时定的：进程头上文件放最前（窄的进程头放不下时先丢时段、轮数）。
+- 后来改：看的是整个 run（有 serving 阶段，范围盖住整个 run：没写阶段、或 t=0-终点）时不写进程头、进程按启动的先后（`segments.whole_run`）。
+- 后来改：默认收起从按切段认「转一手」（收发 socket、只在轮询、反复调同一两个函数……六种情况，依赖切段，三天补了七次）换成上面这一句话的规则，
+  地址里的「只看几列」（`lanes=` 选择器、`+进程`、五种小签）也去掉了。MiniCPM 的 serving 上收的列一样（19 → 8），start / shutdown 上多收了几条轮询的线程。
 
 ### 分列图上的名字：撞名只按这一列画着的节点算，放不下时中间省略
 - 决定：分列里节点、框头的短名，撞了名补父目录段时只看这一列画着的节点和框（`lanesview.decorate`），不看整个切面；面板、搜索栏的短名照旧按切面算。
@@ -571,19 +567,20 @@
 - 放弃的方案：scip-clang（准档，以后再说）；Python 调进原生代码的那一跳（ctypes、pybind、`torch.ops`）、原生函数之间的运行时调用、kernel 内部，这一轮都不录。
 - 在哪：`native_scan.py`；`scan.py` 把原生单元装进索引；`graph.py` 的调用种类（启动是 7）。测试 `tests/test_native_scan.py`。
 
-### GPU kernel：自己的 CUPTI 注入库录，挂到发起它的 Python 调用上，图上写 GPU 时间
+### GPU kernel：自己的 CUPTI 注入库录，挂到发起它的 Python 调用上，图上只当一个被调节点
 - 决定：`trace --gpu` 用自己的 CUPTI 注入库（`CUDA_INJECTION64_PATH`；源码随包，录的时候用本机 CUDA 工具链现编、按源码哈希缓存）录每个 kernel 的
   起止、设备、流和发起它的启动调用。整理时重放时序事件，在启动那一刻看这条线程真实的栈，最里层的被录到的函数是调用方，不经静态的 C 链补中间几跳。
-  仓库里定义的 kernel 落在定义它的文件上，仓库外的（PyTorch、cuBLAS、Triton 生成的）落到虚拟节点「GPU · 仓库外」。分列里每个设备 · 流一列；
-  节点、launch 连线、kernel 表都写次数和 GPU 时间，kernel 表在每种 kernel 下面列出是谁发起的、各几次、各多久。录制端按 `CUpti_ActivityKernel9`
+  仓库里定义的 kernel 落在定义它的文件上，仓库外的（PyTorch、cuBLAS、Triton 生成的）落到虚拟节点「GPU · 仓库外」。分列里 kernel 是发起它的
+  那条线程那一列里的一个被调节点（调用方 → kernel 的边，边详情列名字和次数）；不按设备 · 流另成列，不画启动线，图上不写 GPU 时间
+  （run 里照样存）。录制端按 `CUpti_ActivityKernel9`
   读记录：用到的字段（起止、设备、流、关联号、名字）在 Kernel9–12 里位置一样，CUDA 12.0 起的头都有它。
-- 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里、花了多少 GPU 时间」。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
+- 为什么：要回答的是「这个 kernel 是哪个 Python 调用发起的、落在仓库的哪里」——从调用能跳到它就够了，重心是 CPU 这边的流程。nsys、torch.profiler 给时间线和调用栈，不落到仓库的结构上，
   而且是外部工具或要改被录的程序；注入库不用改程序、不要 root，PyTorch 的、自己 `<<<…>>>` 启动的、ctypes 调进去的都录得到。
-  只写次数会看反：qwen 上 decode 的 kernel 17 次、GPU 上 318 ms，另一组 120 次只有 0.22 ms。
-- 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）。
-- 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（GPU 的列、节点和连线的 `gpu_us`，
-  `lane_counts` 的 `gpu_pairs`）、`ui/load.py` 的 `load_lane`（kernel 的调用方）、`web/panel.js` 的 `_kernels`、`web/lanes.js`、`web/lanedetail.js`。
-  测试 `tests/test_gpu.py`（手写的 GPU 日志、`test_gpu_time_in_lanes`、对着几个版本的 CUPTI 头编、有 GPU 时真录一个小程序）、`tests/web/specs/gpu.mjs`。
+  以前按设备 · 流各一列、节点和连线写 GPU 时间：MiniCPM 的 serving 首屏 16 列里 8 列是 GPU 流，画布宽了四成，对看 CPU 的流程没有帮助。
+- 放弃的方案：包一层 nsys（外部工具、格式要另读）；torch.profiler（只管 PyTorch 发起的）；写死最新的记录结构 Kernel12（CUDA 12 的头编不过）；
+  分列里每个 GPU 流一列、写 GPU 时间（以前的做法）。
+- 在哪：`trace/cupti_inject.cpp`、`trace/gpu.py`、`kernels.py`、`events.pair`（重放时找调用方）、`lanes.py`（kernel 和别的调用一样进它那一列）。
+  测试 `tests/test_gpu.py`（手写的 GPU 日志、`test_kernels_in_lanes`、对着几个版本的 CUPTI 头编、有 GPU 时真录一个小程序）、`tests/web/specs/gpu.mjs`。
 
 ### 一套零构建的前端，数据只经 ds.js 从 serve 取；取数只在 ui/ 里做
 - 决定：前端是 `codestrata/web/` 下的普通 HTML/CSS/JS，零构建。UI 只调 `web/ds.js`，它 fetch 相对地址 `api/…`；数据一律由 `ui/` 下的模块从 graph（索引和叠上的 run）里取，serve 按请求给。
@@ -593,11 +590,11 @@
 - 在哪：`web/ds.js`；`ui/`；`serve.py`。
 
 ### 页面在看什么写在地址栏里，页面和命令行同一种写法
-- 决定：视图描述（run 和范围、只看几列、收起的进程、切面、各列的切面、选中、标记、时间顺序、藏起的边、详情栏）写在地址 `#` 后面，
+- 决定：视图描述（run 和范围、收起的进程、切面、各列的切面、选中、标记、时间顺序、详情栏）写在地址 `#` 后面，
   键和写法见 [agent-cli.md](agent-cli.md)「视图描述」；页面改一处就按规范写法重写地址（replaceState），粘进来的地址、后退按固定顺序套。
-  只看几列时没选的列每个进程收成一窄列「其他 N 列」、连线照接；标记是独立的一层描边，只描在它这段时间里跑过的列里（serve 的 `/api/marklanes` 给，和 `view --focus` 认的同一份）。
+  标记是独立的一层描边，只描在它这段时间里跑过的列里（serve 的 `/api/marklanes` 给，和 `view --focus` 认的同一份）。
   命令行的 `view url` 拼这种地址，`explain 24` 按地址里的视图算编号。
-- 为什么：用户把页面贴给 agent、agent 把视图给用户，都只要一串字；刷新、复制、后退都不丢。窄列不藏列：连到没选的列的线还看得到去了哪个进程。
+- 为什么：用户把页面贴给 agent、agent 把视图给用户，都只要一串字；刷新、复制、后退都不丢。窄列不藏列：连到收起的列的线还看得到去了哪个进程。
   编号挪到后端（`laneorder.py`）是为了页面上的 24 和命令行讲的 24 是同一条。
 - 放弃的方案：只认 run（以前）；没选的列整个藏掉、线画成短头；用 URLSearchParams 解（会把 + 当空格，`阶段+秒` 的写法里有 +）。
 - 在哪：`web/view.js`、`web/lanefocus.js`、`viewspec.py`、`cli/view.py`、`cli/explain.py`（编号）；测试 `tests/web/specs/view.mjs`、`tests/test_segments.py`。
@@ -663,22 +660,23 @@
 
 ## 工程
 
-### 给 agent 的读命令：一个 REF、先汇总、下一步写全、错误带码
-- 决定：读命令（`status`、`lanes`、`guide`，以后的切段、讲东西）都收同一个 REF，输出先汇总、默认有上限，末尾给能原样粘贴的下一步（shlex 加好引号）并标 effect；
-  `--json` 时 stdout 上只有一个信封；错误是稳定的英文码 + 中文说明 + 候选，退出码按类分（契约见 [agent-cli.md](agent-cli.md)）。
-  列用别名（`stage1/MainThread`），由 `laneid.py` 一处算。命令表只写一份（`cli/`），argparse、`guide`、`guide --json` 都从它来。
+### 给 agent 的读命令：一个 REF、先汇总、错误带码；只留 5 条
+- 决定：读命令只有 `status`（含这段时间里的列）、`links`（含 `--follow`）、`explain`（只讲函数）、`path`、`view`，加上 `runs ls / show`；
+  都收同一个 REF，输出先汇总、默认有上限，列不全时写「要更多」的命令（shlex 加好引号）；`--json` 时 stdout 上只有一个信封；
+  错误是稳定的英文码 + 中文说明 + 候选，退出码按类分（见 [agent-cli.md](agent-cli.md)）。列用别名（`stage1/MainThread`），由 `laneid.py` 一处算。
 - 为什么：使用方式是拿录下的运行路径去问 agent（见「不做模块讲解层」），命令行要让 agent 容易用。agent 拿不准时会自己拼命令、猜名字；
   给全的 REF 和候选让它不用拼、不用猜。`#24` 这种不加引号会被 shell 当注释，所以输出里的命令一律加好引号。
-  页面地址当 RUN 时老的 `path` 会建议重录（MiniCPM 录一次 90 s GPU），新命令不再建议 record 类的下一步。
-- 放弃的方案：另起 HTTP / MCP 主入口（命令表留好生成的口子）；run id 前缀。
-- 读命令真的只读：不迁移老格式的录制、不建目录（老文件只给警告，`serve` 起来、`trace` 时照旧迁）。REF 的语法只在 `ref.py` 一处（页面经 `runs.resolve` 也走它；越界只有命令行报，页面照旧收超出终点的时间段、把时间条放长），
+  命令越多 agent 越要先读速查、越容易挑错；页面能看到的（切段、主循环一轮轮、按名字找、讲一组交接）不再各给一条命令，agent 要给人看就推页面。
+- 放弃的方案：另起 HTTP / MCP 主入口；run id 前缀；每条输出末尾给「下一步」的命令并标副作用（agent 照抄下一步，反而不读汇总）；
+  `segments`、`steps`、`find`、`lanes`、`guide` 各一条命令；explain 讲交接组、类、页面上的编号和选中的东西。
+- 读命令真的只读：不迁移老格式的录制、不建目录。REF 的语法只在 `ref.py` 一处（页面经 `runs.resolve` 也走它；越界只有命令行报，页面照旧收超出终点的时间段、把时间条放长），
   列别名只在 `lanes.run_aliases` 一处按整个 run 算。
 - 在哪：`ref.py`、`locate.py`、`laneid.py`、`errors.py`、`cmdline.py`、`confdir.py`、`cli/`；`lanes.py` 的 `run_aliases`；`serve.py` 的 `/api/app`；测试 `tests/test_agentcli.py`。
 
 ### 切段只用通用信号；老 run 拒绝，不猜
-- 决定：`segments` / `steps` 不认识框架，只用 span 的父子、次数、时长和录到的交接认一列的主循环、切轮、判空转、切出每个进程干活的那一段
-  （判法和阈值见 [agent-cli.md](agent-cli.md)「切段」，都能在命令行上改、写进输出的 basis，判法改了升 algo）。
-  2026-10-01 之前录的 run 没录交接，切段直接拒绝并说明（`no_handoffs`），不降级。名字完全一样的进程按启动先后编号（`server-1`），不带 pid。
+- 决定：切段（`segments.py`、`steps.py`：页面的进程头和列的先后、`links --follow` 的 `列#k` 用）不认识框架，只用 span 的父子、次数、时长和录到的交接认一列的主循环、切轮、判空转、切出每个进程干活的那一段
+  （判法和阈值写在 `steps.py` 的文件头）。
+  2026-10-01 之前录的 run 没录交接，直接拒绝并说明（`old_run`），不降级。名字完全一样的进程按启动先后编号（`server-1`），不带 pid。
   段的名字（thinker、talker）不由 codestrata 给，输出「这段里只有它跑」的文件当证据，由 agent 叫。
 - 为什么：判法在 MiniCPM 的三个 stage、qwen 的单进程脚本、toy 服务上定（2026-10-09），和之前人工核对的数对上（三段的起止、`schedule` ×29 / ×250 / ×1412、
   stage1 第 1 轮 1392 ms 里 `sample` 自己 1217 ms、save_loop 里调了 `put` 的 10 轮）。设计稿最初的几条在真数据上不对：
@@ -686,7 +684,7 @@
   只看调用不看时长会把 1.4 秒的首轮当空转。老 run 少了交接，切出来的段是错的（stage1 被认成别的线程）：错的段比没有段更误导 agent（同「交叉引用宁可不跳，也不跳错」）。
   带 pid 的别名换一次录制就变，agent 记下的名字下次用不了。
 - 放弃的方案：按框架写死（vLLM 的 `schedule`、`run_busy_loop`）；老 run 降级加警告；同名进程带 pid。
-- 在哪：`steps.py`、`segments.py`、`funcref.py`、`laneid.proc_aliases`；`cli/segments.py`、`cli/steps.py`、`cli/links.py`；测试 `tests/test_segments.py`。
+- 在哪：`steps.py`、`segments.py`、`procinfo.py`、`funcref.py`、`laneid.proc_aliases`；测试 `tests/test_segments.py`、`tests/test_segment_shapes.py`。
 
 ### 读代码的功能冻结，只修 bug
 - 决定：代码窗口、Ctrl+点击跳转和引用列表的界面、文件内查找、搜索栏、浏览器端高亮、主菜单 app 属于冻结区，只修 bug 不加功能；读代码优先「跳到你的编辑器」。

@@ -1,8 +1,7 @@
 """把包 + 依赖边变成可画的坐标。
 
 纵轴是依赖的层次（layers）：边尽量都从上指向下——import 别人的（调用方）在上，被 import 的在下，
-读图时 runtime 的调用也就大多是往下走的。早先纵轴是「架构高度」alt =（出 − 入）/（出 + 入），
-它只看每个模块自己的出入比例、不看谁连着谁，于是 omni → omni_base 这种边会画成往上指。
+读图时 runtime 的调用也就大多是往下走的。
 横轴用重心迭代排序减少连线交叉——Sugiyama 分层画图法里那一步的简化版，对几十个节点足够，
 而且不引入任何依赖。
 
@@ -29,7 +28,6 @@ class Node:
     cy: float = 0.0         # 像素，纵向中心（由泳道几何算出）
     w: float = 0.0          # 像素
     h: float = 0.0
-    alt: float = 0.0
     files: int = 0
     loc: int = 0
     classes: int = 0
@@ -232,7 +230,7 @@ def build(index: dict, *, lane_of: dict[str, int] | None = None, lane_labels: di
         f = v.get("frame") if v.get("frame") in fr_in else None
         nodes[p] = Node(
             id=p, label=name_in(info, alias, pre, p, f), lane=lane_of[p], frame=f,
-            alt=v["alt"], files=v["files"], loc=v["loc"],
+            files=v["files"], loc=v["loc"],
             classes=v["classes"], funcs=v["funcs"], out=v["out"], inn=v["in"],
         )
 

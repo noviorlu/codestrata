@@ -156,7 +156,7 @@ window.CS = window.CS || {};
           : (o.phase && !o.window && a === cur[0] && b === cur[1] ? o.phase + '：' : '')
             + sec(a, span) + ' – ' + sec(b, span) + '（' + sec(span, span) + '）';
         lab.title = parts.length > 1 ? '选的是几片时间（agent 给的链）：调用次数只算这几片里的；在条上拖出一段就换成那一段'
-          : o.window ? '选的是一段时间：调用次数按这段时间里的时序事件算（2026-10-01 之前录的 run 只有跨文件的调用）' : '';
+          : o.window ? '选的是一段时间：调用次数按这段时间里的时序事件算' : '';
         zoom.hidden = view[0] <= 0 && view[1] >= end;
       }
       function pick(r) { if (r !== ref) select(r); else layout(cur[0], cur[1]); }

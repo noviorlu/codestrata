@@ -270,7 +270,7 @@ def view(index: dict, open_: set) -> dict:
         segs, sep = label(index, n)
         nodes[n] = {"files": sum(pk[u]["files"] for u in us), "loc": sum(pk[u]["loc"] for u in us),
                     "classes": sum(pk[u]["classes"] for u in us), "funcs": sum(pk[u]["funcs"] for u in us),
-                    "out": 0, "in": 0, "alt": 0.0, "kind": kind(index, n), "units": len(us),
+                    "out": 0, "in": 0, "kind": kind(index, n), "units": len(us),
                     "expandable": expandable(index, n), "parent": parent_of(index, n),
                     "fanout": fanout(index, n), "label": sep.join(segs), "sep": sep}
     edges: dict[tuple[str, str], int] = {}
@@ -281,13 +281,10 @@ def view(index: dict, open_: set) -> dict:
     for (a, b), w in edges.items():
         nodes[a]["out"] += w
         nodes[b]["in"] += w
-    for v in nodes.values():
-        o, i = v["out"], v["in"]
-        v["alt"] = round((o - i) / (o + i), 4) if o + i else 0.0
     for vu in VIRTUAL_LABEL:              # 虚拟单元：没有文件、符号和 import 边，只有叠着的 run 让它「跑到了」才画（layout 的 only）
         of[vu] = vu
         mem[vu] = [vu]
-        nodes[vu] = {"files": 0, "loc": 0, "classes": 0, "funcs": 0, "out": 0, "in": 0, "alt": 0.0, "kind": "virtual",
+        nodes[vu] = {"files": 0, "loc": 0, "classes": 0, "funcs": 0, "out": 0, "in": 0, "kind": "virtual",
                      "units": 1, "expandable": False, "parent": None, "fanout": 0, "label": VIRTUAL_LABEL[vu], "sep": "/"}
     return {"nodes": nodes, "edges": [[a, b, w] for (a, b), w in sorted(edges.items(), key=lambda kv: -kv[1])],
             "members": mem, "node_of": of}

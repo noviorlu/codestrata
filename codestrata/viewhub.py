@@ -6,7 +6,7 @@
     POST /api/view/back   {tab?, timeout?}               撤销 agent 最近推的那一步（页面后退一条历史）；那之后用户自己改过就拒绝
     POST /api/view/poll   {tab, report, wait?}           页面来问有没有要换的，顺带回报现状；有焦点的页面挂着等，最多 wait 秒
     POST /api/view/bye    {tab}                          页面关了 / 刷新了
-    GET  /api/view?tab=                                  各标签页的现状（view get、status、explain --selected）
+    GET  /api/view?tab=                                  各标签页的现状（view get、status）
     GET  /api/view/wait?tab=&for=&timeout=               等用户在页面上改（select / range / lanes / any；applied 等最近一条换好）
 
 一条要求的状态：applied 换好了 · deferred 用户正在操作，松手后换 · queued 标签页在后台，回来时换（只换最后一次）·
@@ -27,7 +27,7 @@ from pathlib import Path
 from . import ref as _ref
 from .errors import CodestrataError
 
-KEYS = ("run", "lanes", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "hide", "panel")
+KEYS = ("run", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "panel")
 STALE_S = 30.0              # 看得见的标签页多久没来问算不在了
 LIVE_S = 3.0                # 看得见、没焦点的页面每秒来问一次：这么久没来问的不当缺省的目标（关了却没来得及说一声的）
 HIDDEN_S = 3600.0           # 看不见的标签页留多久
@@ -71,20 +71,18 @@ def _keys(frag: str) -> dict[str, str]:
     out = dict(r.view)
     if r.run:
         out["run"] = r.run + (f"@{r.rest}" if r.rest is not None else "")
-    if r.lanes:
-        out["lanes"] = ",".join(r.lanes)
     return out
 
 
 def _aspects(old: str, new: str) -> list[str]:
-    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（只看的列、收起）、chain（高亮的链）"""
+    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（收起的进程）、chain（高亮的链）"""
     a, b = _keys(old), _keys(new)
     out = []
     if a.get("sel") != b.get("sel"):
         out.append("select")
     if a.get("run") != b.get("run"):
         out.append("range")
-    if (a.get("lanes"), a.get("fold")) != (b.get("lanes"), b.get("fold")):
+    if a.get("fold") != b.get("fold"):
         out.append("lanes")
     if a.get("chain") != b.get("chain"):
         out.append("chain")

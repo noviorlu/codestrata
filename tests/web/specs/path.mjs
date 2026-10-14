@@ -54,8 +54,8 @@ export default async function (t) {
   ok(order, '卡片按第一次调用的先后');
 
   // 没录时序事件的 run：按钮照样在，点开说明为什么看不了
-  await page.goto(fx.base3 + '#run=' + fx.dynold);
-  ok(await waitRun(page, fx.dynold), '叠上没录时序事件的 run');
+  await page.goto(fx.base3 + '#run=' + fx.dynn);
+  ok(await waitRun(page, fx.dynn), '叠上没录时序事件的 run');
   await sleep(300);
   ok(await page.ev(`!document.getElementById('pathbtn').hidden`), '照样有「请求路径」按钮');
   await page.click('#pathbtn');

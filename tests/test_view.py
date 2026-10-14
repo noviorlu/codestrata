@@ -252,13 +252,12 @@ def j(r) -> dict:
 
 
 def test_cli_with_fake_page():
-    """view set 推给页面（applied 退出码 0；用户在操作 → pending 退出码 6，下一步 view wait --for applied）；view get、status 读回；
-    serve 关了 status 不再列它；
-    view back 撤销、用户改过之后拒绝（5）；view wait 等到用户选中；explain --selected 讲它；没有页面 → no_live_page（5）带 view url"""
+    """view set 推给页面（applied 退出码 0；用户在操作 → pending 退出码 6，说一句 view wait --for applied）；view get、status 读回；
+    serve 关了 status 不再列它；view back 撤销、用户改过之后拒绝（5）；view wait 等到用户选中；没有页面 → no_live_page（5）带 view url"""
     repo, rid = truth()
     r = cs("view", "get", "-C", repo, "--json", check=False)
     d = j(r)
-    assert r.returncode == 5 and d["error"]["code"] == "no_live_page" and any("view url" in n["cmd"] for n in d["next"]), d
+    assert r.returncode == 5 and d["error"]["code"] == "no_live_page" and "view url" in d["error"]["msg"], d
     srv, port = serve(repo)
     pg = FakePage(http_page(port), view=f"run={rid}@work")
     pg.start()
@@ -281,7 +280,8 @@ def test_cli_with_fake_page():
         pg.mode = "deferred"
         r = cs("view", "set", "-C", repo, f"{rid}@work", "--json", check=False)
         d = j(r)
-        assert r.returncode == 6 and d["data"]["state"] == "deferred" and "--for applied" in d["next"][0]["cmd"], (r.returncode, d)
+        assert r.returncode == 6 and d["data"]["state"] == "deferred", (r.returncode, d)
+        assert "--for applied" in cs("view", "set", "-C", repo, f"{rid}@work", check=False).stdout
         pg.mode = "applied"
         links = j(cs("links", "-C", repo, f"{rid}@work", "--json"))["data"]["links"]
         assert links, "truth 的 work 里有交接"
@@ -290,9 +290,7 @@ def test_cli_with_fake_page():
         pg.user(f"run={rid}@work&sel={links[0]['id']}")
         t.join(15)
         d = j(out["r"])
-        assert d["data"]["changed"] and d["data"]["selected"] == links[0]["id"] and "--selected" in d["next"][0]["cmd"], d
-        d = j(cs("explain", "--selected", "-C", repo, "--json"))
-        assert d["ok"] and d["data"]["selected"] == links[0]["id"] and d["data"]["from_lane"] == links[0]["from"], d
+        assert d["data"]["changed"] and d["data"]["selected"] == links[0]["id"], d
     finally:
         pg.stop = True
         srv.send_signal(signal.SIGTERM)
@@ -315,20 +313,13 @@ class _OldApp(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def test_url_lanes_all():
-    """view url --lanes all（或 *）拼出 lanes=*：不写 lanes= 是页面默认（转一手的列收起），不是全部列"""
+def test_url_has_no_lanes():
+    """view url 不再写 lanes=（页面的默认收起不进地址）；--lanes 没有了"""
     repo, rid = truth()
-    for sel in ("all", "*"):
-        d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", sel, "--json"))
-        assert "lanes=*" in d["data"]["fragment"] and d["data"]["view"]["lanes"] == ["*"], (sel, d["data"])
-        t = cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", sel).stdout
-        assert "全部列" in t and "收成一窄列" not in t, t
     d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--json"))
     assert "lanes=" not in d["data"]["fragment"], d["data"]
-    # +进程：默认收起之外再放出这个进程（地址里原样写 +，不转义成空格）
-    d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "+truth-4", "--json"))
-    assert "lanes=+truth-4" in d["data"]["fragment"] and d["data"]["view"]["lanes"] == ["+truth-4"], d["data"]
-    assert "再放出 truth-4" in cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "+truth-4").stdout
+    r = cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "all", check=False)
+    assert r.returncode != 0, r.stdout
 
 
 def test_old_serve():
@@ -341,7 +332,7 @@ def test_old_serve():
         port = srv.server_address[1]
         r = cs("view", "set", f"http://127.0.0.1:{port}/#run={rid}@work", "-C", repo, "--json", check=False)
         d = j(r)
-        assert r.returncode == 5 and d["error"]["code"] == "old_serve" and any("view url" in n["cmd"] for n in d["next"]), d
+        assert r.returncode == 5 and d["error"]["code"] == "old_serve" and "view url" in d["error"]["msg"], d
     finally:
         srv.shutdown()
 

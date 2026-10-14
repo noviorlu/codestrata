@@ -50,7 +50,6 @@
         <span class="rundot" id="rundot" hidden title="有新录的 run"></span>
         <div class="runpop" id="runpop" role="menu" aria-label="选择 run" hidden></div>
       </span>
-      <button class="chip" id="rerunbtn" data-help hidden title="这次录制是怎么跑的：复刻命令、录制时的环境、阶段怎么切的">复刻</button>
       <span id="phasechips" style="display:contents"></span>
       <span class="lbl">边</span>
       <span id="edgechips" style="display:contents"></span>
@@ -59,7 +58,6 @@
         <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link handoff"/></svg>交接数据</span>
         <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link spawn"/></svg>起线程 / 进程</span>
         <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link join"/></svg>回收</span>
-        <span class="k"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link launch"/></svg>启动 GPU kernel</span>
         <span class="k chainonly"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link handoff ln-chain"/></svg>链上的跳</span>
         <span class="k chainonly"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" class="ln-link handoff inferred"/></svg>推断（--link）</span>
       </span>
@@ -72,7 +70,6 @@
       <button class="chip" id="reset">重置</button>
     </div>
     <!-- 读图须知：叠着 run 时在图上面一行；关掉之后「?」里一直有 -->
-    <div class="readnote" id="readnote" role="note" hidden></div>
   </div>
 
   <div class="gwrap" id="gwrap">
@@ -114,7 +111,6 @@
 
 <div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-label="整个文件"></div>
 
-<script src="hl.js"></script>
 <script src="ids.js"></script>
 <script src="ds.js"></script>
 <script src="graph.js"></script>

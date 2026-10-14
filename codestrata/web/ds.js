@@ -36,17 +36,12 @@ window.CS = window.CS || {};
     path: function () { return j('api/path?run=' + encodeURIComponent(this.run)); },
     // 按进程 · 线程分列：当前 run（选的阶段）、当前切面上每列的节点和边、列之间的连线（lanes.py）
     /* open：共用的切面；cuts：各列单独的切面 [{lanes, open}]（lanecut.js） */
-    /* view：视图里只影响编号的那几个键（fold=…&hide=…&lanes=…，lanes.js 的 viewQuery） */
-    lanes: function (open, cuts, view) {
-      return j('api/lanes?' + this._laneQ(open, cuts, view));
+    lanes: function (open, cuts) {
+      return j('api/lanes?' + this._laneQ(open, cuts));
     },
-    // 时间顺序的编号（laneorder.py）：收起进程、切开关之后只重取它，不重取整张图
-    laneOrder: function (open, cuts, view) {
-      return j('api/laneorder?' + this._laneQ(open, cuts, view)).then(function (r) { return r.order; });
-    },
-    _laneQ: function (open, cuts, view) {
+    _laneQ: function (open, cuts) {
       return 'run=' + encodeURIComponent(this.run) + (open ? '&open=' + encodeURIComponent(open.join(',')) : '')
-        + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : '') + (view ? '&' + view : '')
+        + (cuts && cuts.length ? '&cuts=' + encodeURIComponent(JSON.stringify(cuts)) : '')
         + (CS.chain ? CS.chain.query() : '');                // 高亮的链（lanechain.js）：后端多连推出来的那一跳
     },
     source: function (k) { return j('api/symbol/' + encodeURIComponent(k)); },

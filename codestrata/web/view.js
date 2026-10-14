@@ -1,11 +1,11 @@
 /* 视图描述：页面此刻在看什么，写在地址栏的 # 后面，刷新不丢、复制就能复现；命令行（codestrata view url、explain 24）说同一种话。
  *
  *   run    RUN@范围（同命令行的 REF；阶段写错时退回 run 默认的阶段并提示）
- *   lanes  只看这几列（选择器，lanefocus.js）          fold  收起的进程（别名）
+ *   fold   收起的进程（别名）
  *   cut    共用的切面（展开着的目录；和默认一样就不写） lcut  各列自己的切面：列~目录,目录;列~…
  *   sel    选中的（稳定写法：n:列|节点、f:列|框、e:列|a|b、l:种类|通道|起列|终列；模块图上 n:节点、e:a|b）
  *   mark   标记的文件 / 目录 / 函数                    order  时间顺序开着（1）
- *   hide   藏起的边（hot / dyn）                        panel  详情栏讲请求路径（path）
+ *   panel  详情栏讲请求路径（path）
  *   不认识的键原样留着。
  *
  * 入口：启动、hashchange（把地址粘进同一个标签页）、popstate（后退）、agent 推来的（viewsync.js）都走 apply；用户在页面上改了什么，
@@ -26,12 +26,12 @@ window.CS = window.CS || {};
     booted: false,                    // 启动时地址里的视图套完了没有
 
     parse: function (hash) {
-      var v = { run: null, lanes: [], fold: [], cut: null, lcut: {}, sel: null, mark: [], chain: null, order: false, hide: [], panel: null, rest: [] };
+      var v = { run: null, fold: [], cut: null, lcut: {}, sel: null, mark: [], chain: null, order: false, panel: null, rest: [] };
       (hash || '').replace(/^#/, '').split('&').forEach(function (part) {
         if (!part) return;
         var i = part.indexOf('='), k = dec(i < 0 ? part : part.slice(0, i)), val = i < 0 ? '' : dec(part.slice(i + 1));
         if (k === 'run') v.run = val;
-        else if (k === 'lanes' || k === 'fold' || k === 'mark' || k === 'hide') v[k] = list(val);
+        else if (k === 'fold' || k === 'mark') v[k] = list(val);
         else if (k === 'cut') v.cut = list(val);
         else if (k === 'lcut') val.split(';').forEach(function (x) {
           var j = x.indexOf('~'); if (j > 0) v.lcut[x.slice(0, j)] = list(x.slice(j + 1));
@@ -40,7 +40,7 @@ window.CS = window.CS || {};
         else if (k === 'chain') v.chain = val || null;
         else if (k === 'order') v.order = val === '1' || val === 'on';
         else if (k === 'panel') v.panel = val || null;
-        else if (k !== 'view' && k !== 'cmp') v.rest.push(part);      // view / cmp：老的键，去掉
+        else if (k !== 'view' && k !== 'cmp' && k !== 'hide' && k !== 'lanes') v.rest.push(part);      // view / cmp / hide / lanes：老的键，去掉
       });
       return v;
     },
@@ -48,7 +48,6 @@ window.CS = window.CS || {};
     format: function (v) {
       var out = [];
       if (v.run) out.push('run=' + enc(v.run));
-      if (v.lanes.length) out.push('lanes=' + enc(v.lanes.join(',')));
       if (v.fold.length) out.push('fold=' + enc(v.fold.join(',')));
       if (v.cut) out.push('cut=' + enc(v.cut.join(',')));
       var lc = Object.keys(v.lcut).sort().map(function (l) { return l + '~' + v.lcut[l].join(','); });
@@ -57,7 +56,6 @@ window.CS = window.CS || {};
       if (v.mark.length) out.push('mark=' + enc(v.mark.join(',')));
       if (v.chain) out.push('chain=' + enc(v.chain));
       if (v.order) out.push('order=1');
-      if (v.hide.length) out.push('hide=' + enc(v.hide.join(',')));
       if (v.panel) out.push('panel=' + enc(v.panel));
       return out.concat(v.rest || []).join('&');
     },
@@ -68,7 +66,6 @@ window.CS = window.CS || {};
       var al = (L && L.aliases) || {}, v = this.parse('');
       v.run = CS.ds.run || null;
       if (lm) {
-        v.lanes = CS.focus.sels.slice();
         v.fold = lanes.foldedAliases();
         Object.keys(CS.laneCut.cuts).forEach(function (id) { v.lcut[al[id] || id] = CS.laneCut.cuts[id].slice().sort(); });
         v.sel = this.stableSel(lanes.sel);
@@ -79,8 +76,6 @@ window.CS = window.CS || {};
       v.mark = CS.mark.items.slice();
       v.chain = CS.chain ? CS.chain.key : null;
       v.order = !!s.timeOrder;
-      if (s.hot === false) v.hide.push('hot');
-      if (s.dyn === false) v.hide.push('dyn');
       v.panel = CS.path && CS.path.isOpen && CS.path.isOpen() ? 'path' : null;
       v.rest = this._rest || [];
       return v;
@@ -180,13 +175,10 @@ window.CS = window.CS || {};
         if (app.lanesMode() && lanes.L) {
           lanes.collapsed = {};
           v.fold.forEach(function (a) { lanes.collapsed[a] = true; });
-          CS.focus.set(v.lanes, true);
           lanes.redraw();
         }
         // 开关
         s.timeOrder = !!v.order && app.canTimeOrder();
-        s.hot = v.hide.indexOf('hot') < 0;
-        s.dyn = v.hide.indexOf('dyn') < 0;
         app.repaint(); app.applyTimes();
         CS.mark.set(v.mark);
         // 选中

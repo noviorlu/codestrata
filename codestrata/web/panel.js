@@ -41,11 +41,10 @@ window.CS = window.CS || {};
       + esc(text) + '</button>' : '<span>' + esc(text) + '</span>';
   }
 
-  /* 一小段代码：浏览器里有 hl.js 就高亮，没有就纯文本 */
+  /* 一小段代码（纯文本） */
   function code(lines) {
     if (!lines || !lines.length) return '';
-    var t = lines.join('\n'), h = CS.hl ? CS.hl.lines(t, 'python') : null;
-    return '<pre class="csnip"><code>' + (h ? h.join('\n') : esc(t)) + '</code></pre>';
+    return '<pre class="csnip"><code>' + esc(lines.join('\n')) + '</code></pre>';
   }
   function fname(f) { return f.split('/').pop(); }
 
@@ -91,7 +90,7 @@ window.CS = window.CS || {};
     return E.calls.map(function (P) {
       var q = P.callee.slice(P.callee.indexOf('#') + 1), parts = CS.ids.qparts(q), qsep = CS.ids.qsep(q);
       var name = parts.pop(), only = P.status === 'trace', mixed = P.status === 'mixed';
-      var lines = P.lines || P.guessed || [];
+      var lines = P.lines || [];
       var first = lines.filter(function (x) { return x.l; })[0];
       var from = first ? jump(first, fname(first.f) + ':' + first.l) : jump(P.caller_def, fname(P.caller_def.f) + ':' + P.caller_def.l);
       var more = lines.filter(function (x) { return x.l && x !== first; }).map(function (x) {
@@ -99,7 +98,6 @@ window.CS = window.CS || {};
       var notes = {}, unk = 0;
       // GPU kernel 的启动本来就没有调用行（发起它的是栈上最近的仓库函数），不算「不知道是哪一行」
       (P.lines || []).forEach(function (x) { if (x.note) notes[noteText(x.note)] = 1; if (!x.l && !(x.note && x.note.k === 'gpu')) unk += x.n; });
-      if (!P.lines && P.note) notes[noteText(P.note)] = 1;
       var gpu = (P.lines || []).some(function (x) { return x.note && x.note.k === 'gpu'; });
       var tag = gpu ? '<span class="dtag" title="GPU 上跑的 kernel（trace --gpu 录的），Python 代码里本来就不会直接写">GPU kernel</span>'
               : only ? '<span class="dtag" title="这次跑了，但代码里看不出会调到它：多态、注册表、回调、框架转了一道">代码里看不出</span>'
@@ -110,8 +108,6 @@ window.CS = window.CS || {};
         + '<div class="cs"><span class="lab">from</span>' + from + more
         + '<span class="who">' + esc(symLabel(P.caller)) + '</span></div>'
         + (first && first.s ? code([first.s]) : '')
-        + (P.guessed ? '<div class="via">' + (P.guessed.length ? '这个 run 没记调用行：上面是在调用方里按名字找到的，不一定是这一处'
-                                                               : '这个 run 没记调用行，不知道是哪一行') + '</div>' : '')
         + (unk ? '<div class="via">其中 ' + unk + ' 次不知道是哪一行（录制之后这个文件改过，调用行挪不过来），按调用方整个函数比</div>' : '')
         + Object.keys(notes).map(function (t) { return '<div class="via">' + esc(t) + '</div>'; }).join('')
         + '<div class="cs"><span class="lab">to</span>' + (P.def && P.def.virtual ? '<span>仓库外，没有源码</span>'
@@ -173,24 +169,23 @@ window.CS = window.CS || {};
         + '点节点看它调用谁、里面有什么符号；点箭头看这条边上是哪些函数在调用。</p>'
         + '<p class="hint lanesonly"><b>怎么读：</b>一列是一个进程里的一类线程（同名的合成一列，×N 是几条），'
         + '列里是这条线程调到的模块，同一个模块在几列里各有一份；节点上的次数只算这一列。列之间的线是线程、进程之间的关系：'
-        + '起线程 / 子进程、交接数据（队列、ZMQ）、回收、启动 GPU kernel（图例在工具栏）。'
+        + '起线程 / 子进程、交接数据（队列、ZMQ）、回收（图例在工具栏）。'
         + '点节点、列里的边，详情只讲这一列里的这一份；点列之间的线看两头是哪一行代码。</p>';
     },
 
     /* 节点详情里用的叠加：分列里选中的是一列里的一份时是只算这一列的（asCopy 取回来的），否则是整个阶段的 */
     _hot: function () { return (this._copy && this._copy.hot) || D.hot || null; },
 
-    /* 分列里选中的是一列里的一份（lanedetail.node 在 showPkg 之后马上调）：顶上写明是哪一列；次数、文件树、kernel 表
+    /* 分列里选中的是一列里的一份（lanedetail.node 在 showPkg 之后马上调）：顶上写明是哪一列；次数、文件树
        都换成只算这一列的（/api/lanehot，取回来之前文件树先写「读取中」，不先画整个阶段的）。
-       info：{label: 「进程 · 线程」, n: 这一份被调的次数, gpu: 这一列是 GPU 流} */
+       info：{label: 「进程 · 线程」, n: 这一份被调的次数} */
     asCopy: function (id, lane, info) {
       var tok = this._detTok, self = this, v = (D.pkgs || {})[id] || {};
       this._copy = { pkg: id, lane: lane, hot: null };
       var h2 = det.querySelector('h2'), rt = det.querySelector('.rtc');
       if (h2 && !det.querySelector('.copyhint')) {
         h2.insertAdjacentHTML('afterend', '<p class="copyhint">只算 <b>' + esc(info.label) + '</b> '
-          + (info.gpu ? '这个 GPU 流里的这一份：下面的次数、kernel 表都只数这个流（别的流、别的进程各算各的）'
-                      : '这条线程里的这一份：下面的次数、调用 / 被调用、文件树都只数这一列（同一个模块在别的列里各有一份）') + '</p>');
+          + '这条线程里的这一份：下面的次数、调用 / 被调用、文件树都只数这一列（同一个模块在别的列里各有一份）</p>');
       }
       if (rt) rt.textContent = '　这一份 ' + (info.n ? '被调 ' + info.n + ' 次' : '这一段里没被调（只往外调或只是交接的地方）');
       var tree = document.getElementById('tree');
@@ -200,8 +195,6 @@ window.CS = window.CS || {};
         if (tok !== self._detTok || !self._copy || self._copy.lane !== lane) return;
         self._copy.hot = h;
         self._mountTree(id);
-        var ks = document.getElementById('kslot');
-        if (ks) ks.innerHTML = self._kernels(id, v);
       }).catch(function (e) {
         if (tok !== self._detTok) return;
         self._copy = null;                          // 退回整个阶段的，写明
@@ -236,19 +229,16 @@ window.CS = window.CS || {};
         }).join('') + '</div>';
       }
       det.dataset.pkg = id; delete det.dataset.lane;   // 分列里讲的是哪一列的那一份：lanedetail.node 再写上
-      if (v.kind === 'virtual') {                 // 「GPU · 仓库外」：没有文件、符号、import，只有叠着的 run 里的 kernel
+      if (v.kind === 'virtual') {                 // 「GPU · 仓库外」：没有文件、符号、import；点「← 被调用」的边看是谁发起了哪些 kernel
         det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
           + '<div class="sub">trace --gpu 录到的、定义不在仓库里的 kernel（PyTorch、cuBLAS、Triton 生成的……）。'
-          + '调用方是发起它时栈上最近的仓库函数</div>' + this._cutRow(id, v)
-          + '<div id="nbslot">' + pills(x.i, '← 被调用', false) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
-          + '<div id="kslot">' + this._kernels(id, v) + '</div>';
+          + '调用方是发起它时栈上最近的仓库函数；点下面的边看每种 kernel 的名字和次数</div>' + this._cutRow(id, v)
+          + '<div id="nbslot">' + pills(x.i, '← 被调用', false) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>';
         this._wireDet(id);
         return;
       }
       det.innerHTML = '<h2 title="' + esc(id) + '">' + esc(full(id)) + '</h2>'
-        + '<div class="sub" title="按 import 算：(出 − 入) / (出 + 入)，+1 靠入口、−1 是叶子">架构高度 ' + (v.alt >= 0 ? '+' : '') + (v.alt || 0).toFixed(2)
-        + '　import 出 ' + (v.out || 0) + ' / 入 ' + (v.in || 0)
-        + '<span class="rtc">' + (hot ? ('　runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</span></div>'
+        + '<div class="sub"><span class="rtc">' + (hot ? ('runtime ' + (hits ? hits + ' 次' : '未跑到')) : '') + '</span></div>'
         + '<div class="kv"><span>文件 <b>' + (v.files || 0) + '</b></span>'
         + '<span>行 <b>' + (v.loc || 0) + '</b></span>'
         + '<span>类 <b>' + (v.classes || 0) + '</b></span>'
@@ -257,7 +247,6 @@ window.CS = window.CS || {};
         // 分列里这一块换成这条线程里这一份的（CS.laneDetail.node）
         + '<div id="nbslot">' + pills(x.o, '调用 →', true) + pills(x.i, '← 被调用', false)
         + pills(dyn.o, '代码里没写、这次跑了 →', true) + pills(dyn.i, '← 代码里没写、这次跑了', false) + '</div>'
-        + this._docs(id) + '<div id="kslot">' + this._kernels(id, v) + '</div>'
         + '<div class="tree" id="tree"></div>'
         + '<div id="srcslot"></div>';
       this._wireDet(id);
@@ -283,43 +272,6 @@ window.CS = window.CS || {};
         h += '<button class="chip" data-cut="collapse" title="连同框里的兄弟节点一起收回到上一级">收起到 '
           + esc(short(v.parent)) + '</button>';
       return h + '</div>';
-    },
-
-    /* 这个节点上的 GPU kernel（trace --gpu）：叠着的 run（阶段）里每种跑了几次、在 GPU 上一共跑了多久，按时间排。
-       虚拟节点是 ?gpu#… 的那些，别的节点是定义在它的文件里的 */
-    _kernels: function (id, v) {
-      var K = (this._hot() || {}).kernels || {}, files = {};
-      ((D.pkgFiles || {})[id] || []).forEach(function (f) { files[f] = 1; });
-      var ks = Object.keys(K).filter(function (k) {
-        var f = k.slice(0, k.indexOf('#'));
-        return v.kind === 'virtual' ? f === id : files[f];
-      });
-      if (!ks.length) return '';
-      ks.sort(function (a, b) { return K[b].gpu_us - K[a].gpu_us; });
-      var ms = function (us) { return us >= 1000 ? (us / 1000).toFixed(1) + ' ms' : us + ' µs'; };
-      var tot = ks.reduce(function (s, k) { return s + K[k].gpu_us; }, 0);
-      // 分列里的 GPU 列（只算这个流）还知道每种 kernel 是谁发起的：每个调用方一行，按 GPU 时间排
-      return '<div class="kv"><span>GPU kernel <b>' + ks.length + '</b> 种</span><span>GPU 上共 <b>' + ms(tot) + '</b></span></div>'
-        + '<div class="ktab">' + ks.map(function (k) {
-          var q = k.slice(k.indexOf('#') + 1);
-          return '<div class="krow" title="' + esc(q) + '"><span class="kn">' + esc(q) + '</span><span class="kc">×' + K[k].n
-            + '</span><span class="kt">' + ms(K[k].gpu_us) + '</span></div>'
-            + (K[k].callers || []).map(function (c) {
-              return '<div class="krow kcall" title="' + esc(c.caller) + ' 发起的"><span class="kn">← ' + esc(symLabel(c.caller)) + '</span>'
-                + '<span class="kc">×' + c.n + '</span><span class="kt">' + ms(c.gpu_us) + '</span></div>';
-            }).join('');
-        }).join('') + '</div>';
-    },
-
-    /* 作者写的文档：包内 README、frontmatter 声明了管这里的设计文档 */
-    _docs: function (id) {
-      var ds = (D.pkgDocs || {})[id] || [];
-      if (!ds.length) return '';
-      var K = { readme: 'README', primary: '设计', related: '相关', mentions: '提到' };
-      return '<div class="kv files"><span>文档</span>' + ds.slice(0, 10).map(function (d) {
-        return '<button class="filebtn" data-view="' + esc(d.f) + '" title="' + esc(d.f) + '">'
-          + '<span class="fl lang-doc">' + K[d.kind] + '</span>' + esc(d.title) + '</button>';
-      }).join('') + (ds.length > 10 ? '<span>…还有 ' + (ds.length - 10) + ' 份</span>' : '') + '</div>';
     },
 
     /* ---- 文件树：模块根目录 → 子目录（缩进）→ 文件 → 类 / 函数 → 方法 ----

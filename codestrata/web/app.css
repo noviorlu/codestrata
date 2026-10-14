@@ -96,13 +96,7 @@ h1{margin:8px 0 6px;font-size:clamp(22px,3.4vw,30px);color:var(--ink);letter-spa
 .prow .pfrom{border:0;background:none;color:var(--muted);cursor:pointer;padding:0;font:inherit}
 .prow .dtag{font-size:10.5px;color:var(--hot);border:1px dashed var(--hot);border-radius:4px;padding:0 4px;cursor:help}
 /* 读图须知：叠着 run 时工具栏下面一行 */
-.readnote{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;padding:6px 8px 6px 12px;margin:0 0 6px;
   border-left:3px solid var(--hot);background:var(--hot-bg);border-radius:0 7px 7px 0;font-size:12.5px;line-height:1.5;color:var(--muted)}
-.readnote[hidden]{display:none}
-.readnote b{flex:none;color:var(--ink)}
-.readnote span{flex:1 1 40ch}
-.readnote .rnx{flex:none;border:0;background:none;color:var(--muted);font-size:17px;line-height:1;cursor:pointer;padding:0 4px}
-.readnote .rnx:hover{color:var(--ink)}
 /* 「?」帮助：浮在标题下面 */
 .hdr{position:relative}
 .helpbtn{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--sel);
@@ -356,6 +350,7 @@ body.rzing,body.rzing *{user-select:none!important}
 .chip.lg[aria-pressed=false]{opacity:.5}
 .chip.lg[aria-pressed=true]{background:var(--sunk);border-color:var(--line);color:var(--ink)}
 .chip.lg.rt[aria-pressed=true]{background:var(--hot-bg);border-color:var(--hot);color:var(--hot)}
+.chip.lg.legend{cursor:default;background:none;border-color:transparent}
 .edgehint{font-size:12px;color:var(--faint);margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .edgehint b{color:var(--sel);font-weight:600}
 
@@ -568,8 +563,6 @@ details.esites summary{cursor:pointer;color:var(--muted)}
 .procs .pf{white-space:nowrap;color:var(--hot);text-align:right}
 .procs tr.idle code,.procs tr.idle .pf{color:var(--faint)}
 .rerun{margin:2px 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
-.rerun.flash{animation:rerunflash 1.4s ease-out}
-@keyframes rerunflash{0%{border-color:var(--sel);box-shadow:0 0 0 3px var(--sel-bg)}100%{border-color:var(--line);box-shadow:none}}
 .rerun-h{display:flex;align-items:center;gap:8px;margin:0 0 4px}
 .rerun-h .copy{padding:3px 9px}
 .rerun pre{margin:0;padding:8px 10px;background:var(--sunk);border-radius:6px;max-height:220px;overflow:auto;
@@ -677,9 +670,8 @@ body.lanesmode .graphonly{display:none}
 /* 起线程 / 回收线程：和阶段的起点 / 终点同色（绿 / 红） */
 .ln-link.spawn{stroke:var(--pstart);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
 .ln-link.join{stroke:var(--pend);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
-.ln-link.launch{stroke:var(--hot);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
 .ln-ltxt{font:600 9.5px/1 ui-monospace,monospace;stroke:var(--card);stroke-width:3px;paint-order:stroke}
-.ln-ltxt.handoff{fill:var(--cool)}.ln-ltxt.launch{fill:var(--hot)}.ln-ltxt.spawn{fill:var(--pstart)}.ln-ltxt.join{fill:var(--pend)}
+.ln-ltxt.handoff{fill:var(--cool)}.ln-ltxt.spawn{fill:var(--pstart)}.ln-ltxt.join{fill:var(--pend)}
 .ln-life{font:600 9.5px/1 ui-monospace,monospace}.ln-life.start{fill:var(--pstart)}.ln-life.end{fill:var(--pend)}
 /* 段外的起 / 收（选了阶段 / 时间段时，这一段里跑过的线程是在段前起的、段后收的）：淡一点 */
 .ln-link.out{opacity:.4;stroke-dasharray:2 4}.ln-life.out,.ln-mark.out{opacity:.55}
@@ -714,7 +706,7 @@ body.lanesmode .graphonly{display:none}
 .ln-e.hover,.ln-e.sel{stroke-width:3}
 .ln-e.sel,.ln-link.sel{stroke:var(--sel)!important;filter:drop-shadow(0 0 2px var(--sel-bg))}
 .ln-link.hover{stroke-width:3.4;opacity:1}
-.ln-link.spawn.hover,.ln-link.join.hover,.ln-link.launch.hover{stroke-width:2.2}
+.ln-link.spawn.hover,.ln-link.join.hover{stroke-width:2.2}
 .ln-link.sel{stroke-width:3.4;opacity:1}
 .ln-e.bg,.ln-link.bg{opacity:.25}
 /* 选中节点 / 边 / 连线时，和它不相干的淡下去（同模块图的 .e.dim）；碰到选中节点的边和连线加粗 */
@@ -745,15 +737,6 @@ body.lanesmode .graphonly{display:none}
 .lk-pair .ptime{color:var(--faint);font:11px ui-monospace,monospace}
 .lk-fn{all:unset;cursor:pointer;color:var(--t-fn);font:12px ui-monospace,monospace;border-bottom:1px dotted currentColor}
 .lk-fn:hover{color:var(--sel)}
-/* 节点详情里的 GPU kernel 表（trace --gpu） */
-.ktab{margin:6px 0 10px;font-size:12px}
-.krow{display:flex;gap:8px;padding:2px 0;border-bottom:1px solid var(--line)}
-.krow .kn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
-.krow .kc,.krow .kt{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
-.krow .kt{width:72px;text-align:right}
-/* 这种 kernel 是谁发起的（分列里 GPU 列的一份才有） */
-.krow.kcall{border-bottom:none;padding-left:14px}.krow.kcall .kn{color:var(--muted)}
-
 /* agent 推视图（viewsync.js）：接手时盖在图上的一层过渡（让用户知道现在是 agent 在动页面）、换完的横幅、跟随关着时的提示条 */
 .gwrap.agent .gbox{box-shadow:0 0 0 2px var(--sel),var(--shadow);transition:box-shadow .2s}
 .agveil{position:absolute;inset:0;border-radius:11px;z-index:45;display:flex;align-items:center;justify-content:center;

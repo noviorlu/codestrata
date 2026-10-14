@@ -33,6 +33,9 @@ export default async function (t) {
   const { page, base, fx, ok } = t;
   await page.goto(base + '#run=' + fx.a);
   ok(await waitRun(page, fx.a), '叠上 run A（录了时序事件）');
+  // 这个小程序里每条线程都只碰一两个文件，默认会收起大半；这里要看全部列
+  await page.ev(`CS.focus.showAll()`);
+  await page.wait(`!CS.focus.lanes() && CS.lanes.ready`, 5000);
   ok(await page.ev(`document.body.classList.contains('lanesmode') && document.querySelectorAll('#g .ln-nd').length > 0`), '按线程分列');
   ok(await page.ev(`!document.querySelector('[data-t="lanes"]') && getComputedStyle(document.querySelector('[data-t="onlyhot"]')).display === 'none'`),
      '没有切回一张图的开关，「只看跑到的」也藏起来');
@@ -138,9 +141,9 @@ export default async function (t) {
   // 分列时帮助讲分列、工具栏有连线的图例
   ok(await page.ev(`(() => { const v = el => !!el && getComputedStyle(el).display !== 'none';
     return v(document.querySelector('#lede .lanesonly')) && !v(document.querySelector('#lede .graphonly')) && v(document.getElementById('lnlegend'))
-      && document.getElementById('lnlegend').querySelectorAll('.k:not(.chainonly) line.ln-link').length === 4
+      && document.getElementById('lnlegend').querySelectorAll('.k:not(.chainonly) line.ln-link').length === 3
       && [...document.querySelectorAll('#lnlegend .chainonly')].every(x => !v(x)); })()`),
-     '分列时帮助讲分列、工具栏有四种连线的图例（链的两项只在高亮链时出现）');
+     '分列时帮助讲分列、工具栏有三种连线的图例（链的两项只在高亮链时出现）');
   await page.key('Escape', 'Escape', 27);
 
   // 排线：每条线的路径都不一样；每一条线沿路径取点，离鼠标最近的就是它（点下去选中它）的地方占大多数，没有一条点不到
@@ -274,13 +277,6 @@ export default async function (t) {
   await page.key('Escape', 'Escape', 27);
   ok(await page.wait(`!CS.lanes.sel && !document.querySelector('#g .ln-link.sel')`, 3000), 'Esc 全部取消');
 
-  // 「这次跑了」关掉：列里的边藏起来；打开回来
-  await page.click('#edgechips [data-t="hot"]');
-  ok(await page.wait(`CS.lanes.edges.every(E => !E.show) && [...document.querySelectorAll('#g .ln-e')].every(p => p.style.display === 'none')`, 3000),
-     '「这次跑了」关掉：列里的边藏起来');
-  await page.click('#edgechips [data-t="hot"]');
-  ok(await page.wait(`CS.lanes.edges.some(E => E.show)`, 3000), '再打开：回来');
-
   // 收起一个进程：它的几列合成一条；再点展开
   const n0 = await page.ev(`document.querySelectorAll('#g .ln-col:not(.fold)').length`);
   await page.ev(`CS.graph.showEl(document.querySelector('#g .ln-proc .ln-fold'))`); await sleep(150);   // 图宽了，先滚到看得见
@@ -350,8 +346,10 @@ export default async function (t) {
   const req = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     return { last: E.k.last, end: CS.app.data.hotMeta.end_us }; })())`));
   const win = (req.last + 1) + '-' + req.end;
-  await page.goto(base + '#run=' + fx.a + '@t=' + win + '&lanes=*');     // req 是线程池，默认收着：看全部列
+  await page.goto(base + '#run=' + fx.a + '@t=' + win);
   ok(await waitRun(page, fx.a + '@t=' + win), '时间段从起 req-3 之后 1 µs 开始 ' + win);
+  await page.ev(`CS.focus.showAll()`);                                    // req 是线程池，默认收着：看全部列
+  await page.wait(`!CS.focus.lanes() && CS.lanes.ready`, 5000);
   const rq = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'req');
     return { out: E && E.k.out, n: E && E.k.n, cls: E && E.p.classList.contains('out'), tip: E && E.tip.textContent,
@@ -416,8 +414,8 @@ export default async function (t) {
   await page.ev(`CS.ds.lanes = window.__lanes`);
 
   // 没录时序事件的 run：一张模块图
-  await page.goto(fx.base3 + '#run=' + fx.dynold);
-  ok(await waitRun(page, fx.dynold), '叠上没录时序事件的 run');
+  await page.goto(fx.base3 + '#run=' + fx.dynn);
+  ok(await waitRun(page, fx.dynn), '叠上没录时序事件的 run');
   await sleep(300);
   ok(await page.ev(`!document.body.classList.contains('lanesmode') && document.querySelectorAll('#g .nd').length > 0`), '没录时序事件：一张模块图');
 }

@@ -2,7 +2,7 @@
 
 仓库：-C（往上找最近的 .codestrata/，像 git -C）→ 页面地址（问那个端口的 serve 的 /api/app；问到的仓库里要真有这个 run）
 → 完整 run id 在已知仓库里唯一找到的 → 从当前目录往上找。当前目录的仓库里没有这个 run、别的已知仓库里有时用那个，
-并警告 repo_from_run。找不到时，候选和下一步里写上别的已知仓库。
+并警告 repo_from_run。找不到时，候选里写上别的已知仓库。
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from . import confdir as _confdir
 from . import ref as _ref
 from . import runs as _runs
 from . import seq as _seq
-from .cmdline import step
 from .errors import CodestrataError
 
 
@@ -62,9 +61,9 @@ def _known(but: Path | None = None) -> list[Path]:
 
 
 def catalog(repo: Path) -> list[dict]:
-    """只读地列出 run（不迁移老文件、不建目录）"""
+    """只读地列出 run（不建目录）"""
     try:
-        return _runs.catalog(repo, migrate_legacy=False)
+        return _runs.catalog(repo)
     except SystemExit as e:                      # runs/ 是软链、盘没挂上
         raise CodestrataError("internal", str(e)) from None
 
@@ -77,14 +76,6 @@ def _has(repo: Path, name: str) -> bool:
         return _runs.pick(catalog(repo), name) is not None
     except CodestrataError:
         return False
-
-
-def legacy_warning(repo: Path) -> list[dict]:
-    old = _runs.legacy_files(repo)
-    if not old:
-        return []
-    return [{"code": "legacy_runs", "msg": f"有 {len(old)} 个老格式的录制（.codestrata/trace-*.json）还没迁进 runs/，这里看不到；"
-                                           "serve 起来或下一次 trace 时会自动迁（write）"}]
 
 
 def page_app(page: dict, timeout: float = 0.3) -> dict | None:
@@ -100,28 +91,26 @@ def page_app(page: dict, timeout: float = 0.3) -> dict | None:
     return d if isinstance(d, dict) and d.get("repo") else None
 
 
-def _unknown(msg: str, warns: list[dict], again: str | None) -> CodestrataError:
-    """repo_unknown：候选是已知的仓库，下一步每个给一条 status -C（带上原来的 REF）"""
+def _unknown(msg: str, warns: list[dict]) -> CodestrataError:
+    """repo_unknown：候选是已知的仓库"""
     known = _known()
     return CodestrataError("repo_unknown", msg, candidates=[str(p) for p in known],
-                           next=[step("read", "status", *([again] if again else []), repo=p) for p in known[:5]],
                            warnings=warns)
 
 
 def find_repo(ref: _ref.Ref | None, chdir: str | None, cwd: Path, allow_fresh: bool = False) -> tuple[Path, str, list[dict]]:
     """(仓库, 怎么找到的: C / page / run / cwd, 警告)。allow_fresh：-C 指的目录往上都没有 .codestrata/ 时照样用它（status 看「还没 scan」）"""
     warns: list[dict] = []
-    again = ref.text if ref is not None else None
     if chdir:
         d = Path(chdir).expanduser().resolve()
         if not d.is_dir():
-            raise _unknown(f"-C 给的不是目录：{chdir}", warns, again)
+            raise _unknown(f"-C 给的不是目录：{chdir}", warns)
         hit = _up(d)
         if hit is not None:
             return hit, "C", warns
         if allow_fresh:
             return d, "C", warns
-        raise _unknown(f"{d} 和它往上都没有 .codestrata/（没 scan、也没 trace 过）", warns, again)
+        raise _unknown(f"{d} 和它往上都没有 .codestrata/（没 scan、也没 trace 过）", warns)
     if ref is not None and ref.page:
         app = page_app(ref.page)
         if app and (not ref.run or _has(Path(app["repo"]), ref.run)):
@@ -138,29 +127,31 @@ def find_repo(ref: _ref.Ref | None, chdir: str | None, cwd: Path, allow_fresh: b
             return hits[0], "run", warns
     if here is not None:
         return here, "cwd", warns
-    raise _unknown(f"从 {cwd} 往上没找到用过 codestrata 的仓库（没有 .codestrata/）；用 -C 指定", warns, again)
+    raise _unknown(f"从 {cwd} 往上没找到用过 codestrata 的仓库（没有 .codestrata/）；用 -C 指定", warns)
 
 
-def _not_found(repo: Path, name: str, cat: list[dict], again: str) -> CodestrataError:
-    """run_not_found：候选是这个仓库里以它开头的完整 id 和所有 case；别的已知仓库里有的，写进说明和下一步（不自动用）"""
+def _not_found(repo: Path, name: str, cat: list[dict]) -> CodestrataError:
+    """run_not_found：候选是这个仓库里以它开头的完整 id 和所有 case；别的已知仓库里有的，写进说明（不自动用）"""
     pre = [r["id"] for r in cat if r["id"].startswith(name)][:10]
     cases = sorted({r.get("case") for r in cat if r.get("case")})
     elsewhere = [p for p in _known(but=repo) if _has(p, name)]
     msg = f"{repo} 里没有叫 {name!r} 的 run 或 case（不收 run id 前缀）"
     if elsewhere:
         msg += "；" + "、".join(map(str, elsewhere)) + " 里有"
-    return CodestrataError("run_not_found", msg, candidates=pre + cases,
-                           next=[step("read", "status", again, repo=p) for p in elsewhere[:3]])
+    return CodestrataError("run_not_found", msg, candidates=pre + cases)
 
 
-def resolve(repo: Path, ref: _ref.Ref) -> Resolved:
+def resolve(repo: Path, ref: _ref.Ref, allow_old: bool = False) -> Resolved:
+    """allow_old：2026-10-01 之前格式的 run 也给（runs show 看它是什么）；别的命令报 old_run"""
     if not ref.run:
         raise CodestrataError("need_view", "页面地址里没有 run（页面只开着静态图）；先在页面上选一个 run，或者直接写 RUN")
     cat = catalog(repo)
     hit = _runs.pick(cat, ref.run)
     if hit is None:
-        raise _not_found(repo, ref.run, cat, ref.text)
-    warns = legacy_warning(repo) + _run_warnings(repo, ref.run, hit, cat)
+        raise _not_found(repo, ref.run, cat)
+    if not allow_old and _runs.too_old(hit):
+        raise CodestrataError("old_run", f"run {hit['id']} {_runs.OLD_RUN_MSG}")
+    warns = _run_warnings(repo, ref.run, hit, cat)
     rd = _runs.runs_dir(repo) / hit["id"]
     end = _seq.run_end(hit, rd)
     lanes = list(ref.lanes)
@@ -173,7 +164,7 @@ def resolve(repo: Path, ref: _ref.Ref) -> Resolved:
             lanes = lanes2
         phase, slices = _ref.parse_range(hit, rng, end)
     if lanes:
-        lanes, w = _check_lanes(rd, lanes, hit)
+        lanes, w = _check_lanes(rd, lanes)
         warns += w
     return Resolved(repo=repo, run=hit, rd=rd, phase=phase, slices=slices, end_us=end, lanes=lanes,
                     text=hit["id"] + (f"@{phase}" if phase else ""), warnings=warns)
@@ -187,34 +178,25 @@ def _run_warnings(repo: Path, name: str, hit: dict, cat: list[dict]) -> list[dic
         w.append({"code": "partial", "msg": f"run {hit['id']} 只录了一部分：" + ("；".join(hit.get("problems") or []) or "（没写原因）"),
                   "problems": hit.get("problems") or []})
     elif st == "中断":
-        w.append({"code": "interrupted", "msg": f"run {hit['id']} 录制中断了（录制的进程没了），数据要先合并",
-                  "next": step("write", "runs", "merge", hit["id"], repo=repo)})
+        w.append({"code": "interrupted", "msg": f"run {hit['id']} 录制中断了（录制的进程没了），数据要先合并"})
     elif st == "recording":
-        w.append({"code": "recording", "msg": f"run {hit['id']} 还在录",
-                  "next": step("read", "runs", "wait", hit["id"], repo=repo)})
+        w.append({"code": "recording", "msg": f"run {hit['id']} 还在录"})
     if hit["id"] != name:                        # 按 case 名挑的
         newer = [r for r in cat if r.get("case") == name and r["id"] > hit["id"] and _runs.live(r)]
         if newer:
-            w.append({"code": "newer_recording", "msg": f"case {name} 有一次更新的正在录（{newer[0]['id']}），这里用的是录完的 {hit['id']}",
-                      "next": step("read", "runs", "wait", newer[0]["id"], repo=repo)})
+            w.append({"code": "newer_recording", "msg": f"case {name} 有一次更新的正在录（{newer[0]['id']}），这里用的是录完的 {hit['id']}"})
     return w
 
 
-def _check_lanes(rd: Path, lanes: list[str], run: dict) -> tuple[list[str], list[dict]]:
-    """列选择器对着整个 run 的列核对、规整（录了 GPU 的 run，线程的列对不上时再加上 GPU 的列）；没录时序事件的 run 核对不了，原样留着并警告"""
+def _check_lanes(rd: Path, lanes: list[str]) -> tuple[list[str], list[dict]]:
+    """列选择器对着整个 run 的列核对、规整；没录时序事件的 run 核对不了，原样留着并警告"""
     from . import laneid as _laneid
     from . import lanes as _lanes
     try:
         aliases = _lanes.run_aliases(rd)
     except LookupError:
         return lanes, [{"code": "lanes_unchecked", "msg": "这个 run 没录时序事件，列没核对"}]
-    try:
-        return _laneid.canonical(lanes, aliases), []
-    except CodestrataError:
-        extra = _lanes.gpu_lanes(rd, run)
-        if not extra:
-            raise
-        return _laneid.canonical(lanes, _lanes.run_aliases(rd, extra)), []
+    return _laneid.canonical(lanes, aliases), []
 
 
 def from_cli(text: str | None, chdir: str | None, cwd: Path, allow_fresh: bool = False) -> tuple[_ref.Ref | None, Path, str, list[dict]]:

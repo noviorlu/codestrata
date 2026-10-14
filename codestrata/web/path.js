@@ -18,8 +18,7 @@ window.CS = window.CS || {};
     var ln = r.line, kids = next && next.d > r.d;
     var why = ln && ln.note && ln.note.k === 'gpu' ? '<span class="dtag" title="' + esc(CS.panel.noteText(ln.note)) + '">GPU kernel</span>'
       : ln && ln.status === 'trace'
-      ? '<span class="dtag" title="' + esc((CS.panel.noteText(ln.note) || '代码里看不出会调到它')
-          + (ln.guessed ? '（这个 run 没记调用行，调用处是按名字猜的）' : '')) + '">代码里看不出</span>' : '';
+      ? '<span class="dtag" title="' + esc(CS.panel.noteText(ln.note) || '代码里看不出会调到它') + '">代码里看不出</span>' : '';
     return '<div class="prow" data-d="' + r.d + '" style="--d:' + r.d + '">'
       + (kids ? '<button class="pt" aria-expanded="true" title="收起 / 展开它下面的调用">▾</button>' : '<span class="pt"></span>')
       + (r.before ? '<span class="ptime" title="这一段之前就在跑（这一段里没再调过它），列出来是为了看清下面的调用是在谁里面">之前</span>'
@@ -29,7 +28,6 @@ window.CS = window.CS || {};
            + esc(short(r.fn)) + '</button>')
       + (r.n ? '<span class="pn">×' + r.n + '</span>' : '')
       + (r.rep ? '<span class="prep" title="反复调用：轮询、每个 token 都走一遍">↻</span>' : '')
-      + (r.untimed ? '<span class="pun" title="同一个文件里调过来的：这个 run 的时序事件只记了跨文件的调用，这一跳没有时刻，排的位置按它自己第一次往外调的时刻">同文件</span>' : '')
       + why
       + (ln && ln.l ? '<button class="pfrom" data-f="' + esc(ln.f) + '" data-l="' + ln.l + '" title="调用写在 '
           + esc(short(r.from)) + ' 的这一行（点了看）">← ' + esc(fname(ln.f)) + ':' + ln.l + '</button>' : '')
@@ -66,10 +64,8 @@ window.CS = window.CS || {};
     render: function (P) {
       var t0 = P.window[0], nrows = 0;
       var h = '<p class="hint">时刻从这一段（' + ((P.window[1] - t0) / 1e6).toFixed(2) + ' s）的开头算。'
-        + (P.scope === 'all' ? '' : '这个 run 的时序事件只记了跨文件的调用：同一个文件里调过来的标「同文件」、没有时刻。')
         + '↻ 是反复调用。点函数名看定义，点「← 文件:行」看调用写在哪；'
-        + (P.scope === 'all' ? '每一行挂在调用它的那一次调用下面；标「之前」的是这一段之前就在跑的上层（引擎循环这类）。'
-           : '没有调用方的是根（线程的入口、这一段之前就进去了的）。') + '</p>';
+        + '每一行挂在调用它的那一次调用下面；标「之前」的是这一段之前就在跑的上层（引擎循环这类）。</p>';
       P.procs.forEach(function (p) {
         p.threads.forEach(function (th) {
           nrows += th.rows.length;

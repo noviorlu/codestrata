@@ -1,7 +1,7 @@
 """codestrata path：函数级的请求路径（每个进程、每条线程的调用上下文树）。
 
-默认照旧打整棵树；给了列、--limit 或 --json 时才截（每列 60 行）。节标题是列的稳定写法。
---time：先列出「自己的时间」最多的 5 处（和 steps --why 同一个算法）；--unseen：只列代码里看不出会调到它的调用，按次数排。"""
+每列默认截到 60 行（--limit 改，--limit 0 不截）。节标题是列的稳定写法。
+--time：先列出「自己的时间」最多的 5 处；--unseen：只列代码里看不出会调到它的调用，按次数排。"""
 from __future__ import annotations
 
 from .. import align as _align
@@ -15,11 +15,11 @@ from . import common, out
 
 NAME = "path"
 EFFECT = "read"
-DOES = "函数级的请求路径：每个进程、每条线程的调用上下文树（默认整棵树，很长；给了列 / --limit / --json 时每列截到 60 行）"
+DOES = "函数级的请求路径：每个进程、每条线程的调用上下文树（每列默认截到 60 行）"
 USAGE = "codestrata path REF [--depth N] [--limit N] [--time] [--unseen] [--json]"
 EXAMPLE = "codestrata path 20261001-170349-run_single_prompt@serving/stage1/MainThread --limit 30"
 
-LIMIT = 60          # 每列最多几行（给了列 / --json 时的默认）
+LIMIT = 60          # 每列最多几行（默认）
 
 
 def add_args(p) -> None:
@@ -27,7 +27,7 @@ def add_args(p) -> None:
                    help="RUN[@范围][/列,…] 或页面地址；老写法 path <repo> RUN 也认（第一个是仓库）")
     p.add_argument("--depth", type=int, default=None, help="只打这么多层（0 是根）")
     p.add_argument("--limit", type=int, default=None,
-                   help=f"每列最多几行（给了列或 --json 时默认 {LIMIT}；不算 --depth 藏掉的）；和 --unseen 一起时是列几处（默认 40）")
+                   help=f"每列最多几行（默认 {LIMIT}，0 是不截；不算 --depth 藏掉的）；和 --unseen 一起时是列几处（默认 40）")
     p.add_argument("--time", action="store_true", help="先列出自己的时间（减去它调的仓库函数）最多的 5 处")
     p.add_argument("--unseen", action="store_true", help="只列代码里看不出会调到它的调用（按次数排）")
 
@@ -60,7 +60,7 @@ def run(a) -> out.Result:
         want = set(_laneid.select(r.lanes, aliases))
         keep = lambda pid, tname: lane_id(pid, tname) in want    # noqa: E731
     # --unseen 先筛「看不出」的再截（截了树再筛，总数会跟着 --limit 变）；--limit 在这里是列几处
-    cap = None if a.unseen else a.limit if a.limit is not None else (LIMIT if r.lanes or a.json else None)
+    cap = None if a.unseen else (a.limit or None) if a.limit is not None else LIMIT
     total_rows = {id(th): len([x for x in th["rows"] if a.depth is None or x["d"] <= a.depth])
                   for pr in p["procs"] for th in pr["threads"]}
     _path.trim(p, None, keep, max_depth=a.depth, per_thread=cap)
@@ -94,11 +94,7 @@ def run(a) -> out.Result:
         text = [f"自己的时间最多的 {len(top)} 处（时长减去它调的仓库函数；这段 {out.dur(span_us)}"
                 + (f"，{len(r.slices)} 片加起来" if len(r.slices) > 1 else "") + "）："] + [
             f"  {out.dur(x['us']):>10}  {x['lane']}  {common.short(x['fn'])}" for x in top] + [""] + text
-    nxt = []
-    if not r.lanes and len(p.get("procs") or []) > 1:
-        first = p["procs"][0]["threads"][0]
-        nxt.append(c.cmd("read", "path", f"{r.text}/{first['lane']}", why="只看一列"))
-    return out.Result(data=p, text=text, repo=c.repo, ref=c.ref_json(), next=nxt, more=more, warnings=c.warnings)
+    return out.Result(data=p, text=text, repo=c.repo, ref=c.ref_json(), more=more, warnings=c.warnings)
 
 
 def _self_time_top(r, lanes: set[str], aliases: dict[str, str], label, n: int = 5) -> list[dict]:

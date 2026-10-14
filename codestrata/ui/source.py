@@ -17,9 +17,6 @@ def known_file(idx: dict, rel: str) -> str | None:
         return idx["files"][rel]
     if rel in (idx.get("aux") or {}):
         return idx["aux"][rel] or "(无所属包)"
-    for pkg, ds in (idx.get("docs") or {}).items():         # 挂在目录 / 单元上的文档也能打开
-        if any(d["f"] == rel for d in ds):
-            return pkg
     return None
 
 
@@ -66,11 +63,11 @@ node_def = _align.node_def           # graph 节点的定义在哪 {f, l, k}（u
 
 def runtime_lines(idx: dict, rel: str, hot: dict) -> dict:
     """这个文件里「只有 trace」的调用处：{行: [{callee, def: {f, l}, n}]}——代码里看不出会调到谁的那一行，
-    这次运行调到了谁、几次；代码窗口在这一行给出跳到它的链接。只有记了调用行的 run 才有（老 run 是空的）；
+    这次运行调到了谁、几次；代码窗口在这一行给出跳到它的链接。
     不知道是哪一行的（录制之后改过的文件）、被调方对不上的不标"""
     out: dict = {}
     for pk, x in (hot.get("calls") or {}).items():
-        if not x.get("only") or x["lines"] is None:
+        if not x.get("only"):
             continue
         caller, _, callee = pk.partition("|")
         if node_def(idx, _align.base_node(caller))["f"] != rel or callee.endswith("#" + _align.UNMATCHED):

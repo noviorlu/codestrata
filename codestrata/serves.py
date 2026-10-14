@@ -1,7 +1,7 @@
 """开着的图服务（codestrata serve）的登记：配置目录下 serves/<端口>.json，{port, pid, repo, started, features, algo}。
 
 serve 绑定端口之后写、退出时删（serve 装了 SIGTERM：主菜单停图服务用的是 terminate）。命令行按仓库找开着的页面
-（view set / get / back / wait、explain --selected、status）。进程已经不在的登记在查找时顺手删掉；活着的还要问一次那个端口
+（view set / get / back / wait、status）。进程已经不在的登记在查找时顺手删掉；活着的还要问一次那个端口
 （`/api/app` 回的 repo、pid 对得上才算：端口可能被别的程序复用了）——那一步在调用方（cli/view.py），这里不碰网络。
 """
 from __future__ import annotations

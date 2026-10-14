@@ -263,13 +263,13 @@ def test_trace_spec():
                         f"--phase={PHASE[0]}={PHASE[1]}", "--env=K=v=1", "--attach=x.yaml", "--note=-n",
                         "--", PY, "-m", "fakesvc.offline", "--flag", "a b"], s.argv()
     # 复刻：从一个录下的 run 还原的表单，再录一次，录制参数和原来一样
-    cs("trace", repo, "--case", "orig", "--events", "--timeout", "60", "--env", "FOO=bar", "--tag", "model=x",
+    cs("trace", repo, "--case", "orig", "--events", "--timeout", "60", "--env", "FOO=bar",
        "--stop-grace", "5", "--roots", "fakesvc", "--phase", "=".join(PHASE), "--", PY, "-m", "fakesvc.offline")
     orig = next(r for r in runs.catalog(repo) if r["case"] == "orig")
     spec = TraceSpec.from_run(repo, orig)
     assert spec.command == f"{PY} -m fakesvc.offline" and spec.phases == [PHASE] and spec.env == {"FOO": "bar"}, spec
     assert spec.events and spec.timeout == 60 and TraceSpec.from_json(spec.to_json()) == spec
-    assert spec.tags == ["model=x"] and spec.stop_grace == 5 and spec.roots == ["fakesvc"], spec
+    assert spec.stop_grace == 5 and spec.roots == ["fakesvc"], spec
     assert spec.cwd is None                               # 在仓库根目录录的：不写 --cwd
     other = tmpdir("cs-app-")
     moved = TraceSpec.from_run(repo, {**orig, "cwd": str(other)})
@@ -289,7 +289,7 @@ def test_trace_spec():
     job = wait(JobManager().start("trace", str(repo), spec.argv()))
     assert job.returncode == 0, list(job.lines)
     again = next(r for r in runs.catalog(repo) if r["case"] == "orig" and r["id"] != orig["id"])
-    for k in ("cmd", "env", "tags"):
+    for k in ("cmd", "env"):
         assert again[k] == orig[k], (k, again[k], orig[k])
     for k in ("timeout", "stop_grace", "roots", "events", "phase_at"):
         assert again["rec"][k] == orig["rec"][k], (k, again["rec"][k], orig["rec"][k])
@@ -542,8 +542,7 @@ def test_serve_guard_and_home():
         # 开编辑器：没带 X-Codestrata 头（别的网页用 <img src> 发的 GET 就是这样）一律 403。
         # 请求一个不存在的文件：万一守卫失效，拿到的是 400（找不到文件），也不会真的在桌面上开编辑器
         assert _status(port, "GET", "/api/open?f=does-not-exist.py&l=1") == 403
-        page = urllib.request.urlopen(f"http://127.0.0.1:{port}/code/fakesvc/work.py?l=1").read().decode()
-        assert f"'{serve.HEADER}':'1'" in page, "代码页的「在编辑器打开」要带上页面的头，不然永远 403"
+        assert _status(port, "GET", "/code/fakesvc/work.py?l=1") == 404                 # 整页看文件的 /code/ 删了
     finally:
         p.terminate()
         p.wait(10)

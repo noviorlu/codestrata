@@ -294,7 +294,7 @@
 
   /* ---- recorder ---- */
   var recorder = (function () {
-    // current：最近一次填进表单的初始值。表单上不显示的字段（tags、roots、stop_grace）从它原样带回去，
+    // current：最近一次填进表单的初始值。表单上不显示的字段（roots、stop_grace）从它原样带回去，
     // 复刻出来的命令才和原来的一样
     var repo = null, symTimer = null, current = {};
 
@@ -339,7 +339,7 @@
         timeout: $('recTimeout').value.trim() || null, env: env, note: $('recNote').value.trim(),
         cwd: $('recCwd').value.trim() || null,
         attach: lines($('recAttach').value), events: $('recEvents').checked,
-        tags: current.tags || [], roots: current.roots || null, stop_grace: current.stop_grace || null,
+        roots: current.roots || null, stop_grace: current.stop_grace || null,
         phases: [].map.call($('recPhases').querySelectorAll('.phase'), function (r) {
           return [r.querySelector('.pname').value.trim(), r.querySelector('.pfunc').value.trim()];
         }).filter(function (p) { return p[0] || p[1]; })

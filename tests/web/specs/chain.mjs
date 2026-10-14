@@ -9,10 +9,10 @@ const st = page => page.ev(`JSON.stringify({mode: document.getElementById('g').c
   chip: (document.querySelector('[data-chain]') || {}).textContent || '', err: CS.chain.info && CS.chain.info.error,
   lanes: (CS.lanes.L && CS.lanes.L.lanes || []).length})`).then(JSON.parse);
 
-/* 链的 REF（RUN@t=…/列,…）→ 页面地址：run= 和 lanes= 分开写 */
+/* 链的 REF（RUN@t=…/列,…）→ 页面地址：只要 run=（列不进地址） */
 function url(base, ref, chain) {
   const i = ref.indexOf('/');
-  return base + '#run=' + ref.slice(0, i) + '&lanes=' + ref.slice(i + 1) + '&chain=' + encodeURIComponent(chain);
+  return base + '#run=' + ref.slice(0, i) + '&chain=' + encodeURIComponent(chain);
 }
 
 export default async function (t) {
@@ -20,6 +20,7 @@ export default async function (t) {
   const run = r => r.slice(0, r.indexOf('/'));
   await page.goto(url(base, fx.chainref, fx.chain));
   ok(await waitRun(page, run(fx.chainref)), '打开链的 REF（几片 × 经过的列）');
+  await page.ev(`CS.focus.showAll()`); await page.wait(`!CS.focus.lanes() && CS.lanes.ready`, 5000);   // 小程序的列默认收起大半
   ok(await page.wait(`document.getElementById('g').classList.contains('chainmode')`, 15000), '只亮链：别的线淡下去');
   let s = await st(page);
   ok(s.chain >= 1 && s.inferred === 0 && s.labs.every(x => x.startsWith('链 1')) && s.chip.startsWith('链 1 跳') && !s.err,
@@ -38,6 +39,7 @@ export default async function (t) {
   // 加上 --link：推出来的那一跳多画一条虚线，标「推断」
   await page.goto(url(base, fx.chainref2, fx.chain2));
   ok(await waitRun(page, run(fx.chainref2)), '打开带 --link 的链');
+  await page.ev(`CS.focus.showAll()`); await page.wait(`!CS.focus.lanes() && CS.lanes.ready`, 5000);   // 小程序的列默认收起大半
   ok(await page.wait(`document.querySelectorAll('#g .ln-link.inferred').length > 0`, 15000), '推出来的那一跳画出来了');
   s = await st(page);
   ok(s.mode && s.inferred >= 1 && s.chip.includes('推断 1') && s.labs.some(x => x.includes('推断')),

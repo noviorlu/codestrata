@@ -1,9 +1,8 @@
 """codestrata runs 的读动作：ls / show / wait。同一份数据渲染成文字和 JSON 信封；仓库和 RUN 走 locate（也认页面地址、-C、
-按 run id 找仓库），真的只读（老格式的录制不迁移，只提示）。写的动作（tag / untag / note / rm / merge）还在 __main__.cmd_runs。"""
+按 run id 找仓库），真的只读（老格式的录制不迁移，只提示）。写的动作（note / rm / merge）还在 __main__.cmd_runs。"""
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 
 from .. import locate as _locate
@@ -74,7 +73,6 @@ def _phases(run: dict, rd: Path) -> list[dict]:
 
 def ls(a) -> out.Result:
     _, repo, how, warns = _repo(a)
-    warns += _locate.legacy_warning(repo)
     base = repo / ".codestrata" / "runs"
     cat = [r for r in _locate.catalog(repo) if not a.case or r.get("case") == a.case]
     idx = _index(repo)
@@ -105,14 +103,12 @@ def ls(a) -> out.Result:
             ev = ("时序!" if r["events_error"] else "时序") if r["events"] or r["events_error"] else "    "
             lines.append(f"  {r['id']:<40} {r['status_text']:<9} {dur:>6}  进程 {r['n_procs_active'] if r['n_procs_active'] is not None else '-':>3}  "
                          f"git {(r['git'] or '')[:8] or '-':<8}  改过 {changed:>3}  {size(r['bytes']):>7}  {ev}  "
-                         + " ".join(r["tags"]) + (f"  「{r['note']}」" if r["note"] else ""))
+                         + (f"  「{r['note']}」" if r["note"] else ""))
     if rows:
         lines.append(f"\n共 {len(rows)} 个 run，{size(total)}")
         if total > 1 << 30:
             lines.append("注意：runs/ 超过 1 GB；不要的可以 codestrata runs rm <完整 run id>（delete：先问用户）")
-    nxt = [out.step("read", "status", rows[0]["id"] + (f"@{common.main_phase(cat[0])}" if common.main_phase(cat[0]) else ""),
-                    repo=None if how == "cwd" else repo)] if rows else []
-    return out.Result(data={"runs": rows, "bytes": total}, text=lines, repo=repo, warnings=warns, next=nxt)
+    return out.Result(data={"runs": rows, "bytes": total}, text=lines, repo=repo, warnings=warns)
 
 
 # ---------------------------------------------------------------- show
@@ -120,7 +116,7 @@ def ls(a) -> out.Result:
 def show(a) -> out.Result:
     ref, repo, how, warns = _repo(a, a.ref)
     try:
-        res = _locate.resolve(repo, ref)
+        res = _locate.resolve(repo, ref, allow_old=True)
     except CodestrataError as e:
         e.warnings = warns + e.warnings
         raise
@@ -134,14 +130,9 @@ def show(a) -> out.Result:
             "gpu_devices": detail.get("gpu") or [], "leftovers": detail.get("leftovers") or [],
             "file_state": fs, "rerun": rerun, "dir": str(rd.resolve())}
     lines = _show_text(run, rd, detail, fs, rerun)
-    flag = None if how == "cwd" else repo
-    nxt = []
-    if run.get("events") and _runs.state(run) in ("ok", "partial"):
-        mp = common.main_phase(run)
-        nxt.append(out.step("read", "lanes", run["id"] + (f"@{mp}" if mp else ""), repo=flag, why="这段时间里有哪几列"))
     return out.Result(data=data, text=lines, repo=repo, ref={"text": res.full, "slices_us": [list(s) for s in res.slices],
                                                              "lanes": res.lanes},
-                      warnings=warns + res.warnings, next=nxt)
+                      warnings=warns + res.warnings)
 
 
 def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -> list[str]:
@@ -149,7 +140,7 @@ def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -
          f"  状态  {run.get('status_shown') or run.get('status')}"
          + (f"（{'；'.join(run.get('problems') or [])}）" if run.get("problems") else "")]
     for k, label in (("created", "录制于"), ("duration_s", "用时（秒）"), ("returncode", "退出码"),
-                     ("stop", "怎么停的"), ("host", "机器"), ("cwd", "执行目录"), ("migrated_from", "迁移自")):
+                     ("stop", "怎么停的"), ("host", "机器"), ("cwd", "执行目录")):
         if run.get(k) is not None:
             L.append(f"  {label:<6}{run[k]}")
     L.append(f"  命令  {' '.join(run.get('cmd') or [])}")
@@ -159,8 +150,8 @@ def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -
         g = run["git"]
         L.append(f"  git   {g['commit'][:12]}" + (f" ({g['branch']})" if g.get("branch") else "")
                  + (f"，{g['n_dirty']} 个文件有未提交的改动" if g.get("n_dirty") else ""))
-    if run.get("tags") or run.get("note"):
-        L.append(f"  标签  {' '.join(run.get('tags') or []) or '-'}　备注  {run.get('note') or '-'}")
+    if run.get("note"):
+        L.append(f"  备注  {run['note']}")
     for p in run.get("phases") or []:
         t = f"{p['t_us'] / 1e6:7.1f}s 起" if p.get("t_us") is not None else ""
         L.append(f"  阶段  {p['name']:<12} {t:<11} {p['n_funcs']} 个函数，{p['n_calls']} 次调用")
@@ -189,8 +180,8 @@ def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -
             L.append(f"  时序  整理失败（原始日志已存，可以 runs merge 重来）：{ev['error']}")
         else:
             tr = ev.get("truncated") or []
-            L.append(f"  时序  {ev['n_spans']} 段、{ev['n_calls']} 次{ev_calls(ev)}（{ev['n_procs']} 个进程），"
-                     f"原始日志 {size(ev['bytes'] or 0)}"
+            L.append(f"  时序  {ev.get('n_spans')} 段、{ev.get('n_calls')} 次{ev_calls(ev)}（{ev.get('n_procs')} 个进程），"
+                     f"原始日志 {size(ev.get('bytes') or 0)}"
                      + (f"；⚠ {len(tr)} 个进程到了行数上限（pid " + "、".join(map(str, tr[:8])) + ("…" if len(tr) > 8 else "")
                         + "），之后的调用没记时序，计数完整" if tr else ""))
     if detail.get("leftovers"):
@@ -214,40 +205,3 @@ def _show_text(run: dict, rd: Path, detail: dict, fs: dict | None, rerun: str) -
         L.append("  录制时 shell 里的相关环境变量（不在命令里，复刻时要一样）：")
         L += [f"        {k}={v}" for k, v in run["env_inherited"].items()]
     return L
-
-
-# ---------------------------------------------------------------- wait
-
-def wait(a) -> out.Result:
-    """等 run 录完（不再是 recording，或录制的进程没了）。给 case 名时等这个 case 最新的那一次（正在录的也算）。
-    超时报 recording（退出码 4），下一步给更长的 --timeout"""
-    ref, repo, how, warns = _repo(a, a.ref)
-    name = ref.run or ""
-    cat = _locate.catalog(repo)
-    mine = [r for r in cat if r["id"] == name] or [r for r in cat if r.get("case") == name]
-    if not mine:
-        raise CodestrataError("run_not_found", f"{repo} 里没有叫 {name!r} 的 run 或 case",
-                              candidates=sorted({r.get("case") for r in cat if r.get("case")}), warnings=warns)
-    run = mine[0]                                 # catalog 新的在前
-    rid, t0 = run["id"], time.monotonic()
-    rj = repo / ".codestrata" / "runs" / rid / "run.json"
-    flag = None if how == "cwd" else repo
-    while _runs.live(run):
-        if time.monotonic() - t0 > a.timeout:
-            raise CodestrataError("recording", f"等了 {a.timeout:.0f} s，run {rid} 还在录", warnings=warns,
-                                  next=[out.step("read", "runs", "wait", rid, "--timeout", str(int(a.timeout * 2)), repo=flag)])
-        time.sleep(0.5)
-        try:
-            run = _runs.read_json(rj)
-        except (OSError, ValueError):
-            pass
-    st = _runs.state(run)
-    lines = [f"run {rid}：{st}，等了 {time.monotonic() - t0:.1f} s"]
-    if st == "interrupted":
-        nxt = [out.step("write", "runs", "merge", rid, repo=flag, why="录制中断了，从原始数据合并")]
-    else:
-        mp = common.main_phase(run)
-        nxt = [out.step("read", "status", rid + (f"@{mp}" if mp else ""), repo=flag)]
-    return out.Result(data={"id": rid, "status": st, "problems": run.get("problems") or []}, text=lines, repo=repo,
-                      next=nxt, warnings=warns)
-
