@@ -27,7 +27,7 @@ from pathlib import Path
 from . import ref as _ref
 from .errors import CodestrataError
 
-KEYS = ("run", "lanes", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "panel")
+KEYS = ("run", "fold", "cut", "lcut", "sel", "mark", "chain", "order", "panel")
 STALE_S = 30.0              # 看得见的标签页多久没来问算不在了
 LIVE_S = 3.0                # 看得见、没焦点的页面每秒来问一次：这么久没来问的不当缺省的目标（关了却没来得及说一声的）
 HIDDEN_S = 3600.0           # 看不见的标签页留多久
@@ -71,20 +71,18 @@ def _keys(frag: str) -> dict[str, str]:
     out = dict(r.view)
     if r.run:
         out["run"] = r.run + (f"@{r.rest}" if r.rest is not None else "")
-    if r.lanes:
-        out["lanes"] = ",".join(r.lanes)
     return out
 
 
 def _aspects(old: str, new: str) -> list[str]:
-    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（只看的列、收起）、chain（高亮的链）"""
+    """两份视图描述之间变了哪几样：select（选中）、range（run 和范围）、lanes（收起的进程）、chain（高亮的链）"""
     a, b = _keys(old), _keys(new)
     out = []
     if a.get("sel") != b.get("sel"):
         out.append("select")
     if a.get("run") != b.get("run"):
         out.append("range")
-    if (a.get("lanes"), a.get("fold")) != (b.get("lanes"), b.get("fold")):
+    if a.get("fold") != b.get("fold"):
         out.append("lanes")
     if a.get("chain") != b.get("chain"):
         out.append("chain")

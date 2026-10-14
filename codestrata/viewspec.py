@@ -1,6 +1,6 @@
 """视图描述（地址栏 # 后面那串）的 Python 一侧：和页面的 web/view.js 同一套键、同一种写法（view url 拼出来、explain 24 按它算编号）。
 
-    run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=… & mark=… & chain=范围~起点~--link…
+    run=RUN@范围 & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=… & mark=… & chain=范围~起点~--link…
     & order=1 & panel=path
 
 也在这里按一个视图算出分列（lanes.build，用视图里的切面）和时间顺序的编号（laneorder.rank），和页面拿到的一样。
@@ -24,7 +24,6 @@ def _list(s: str | None) -> list[str]:
 @dataclass
 class View:
     run: str | None = None
-    lanes: list[str] = field(default_factory=list)
     fold: list[str] = field(default_factory=list)
     cut: list[str] | None = None
     lcut: dict[str, list[str]] = field(default_factory=dict)
@@ -35,9 +34,9 @@ class View:
     panel: str | None = None
 
 
-def from_keys(run: str | None, lanes: list[str], keys: dict[str, str]) -> View:
-    """ref.parse 解出来的页面地址（run、lanes 和其余的键）→ View"""
-    v = View(run=run, lanes=list(lanes))
+def from_keys(run: str | None, keys: dict[str, str]) -> View:
+    """ref.parse 解出来的页面地址（run 和其余的键）→ View（老地址里的 lanes= 不认）"""
+    v = View(run=run)
     v.fold = _list(keys.get("fold"))
     v.cut = _list(keys["cut"]) if "cut" in keys else None
     for part in (keys.get("lcut") or "").split(";"):
@@ -57,8 +56,6 @@ def fragment(v: View) -> str:
     out = []
     if v.run:
         out.append("run=" + _enc(v.run))
-    if v.lanes:
-        out.append("lanes=" + _enc(",".join(v.lanes)))
     if v.fold:
         out.append("fold=" + _enc(",".join(v.fold)))
     if v.cut is not None:
@@ -78,11 +75,9 @@ def fragment(v: View) -> str:
     return "&".join(out)
 
 
-def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, label, proc_order: dict | None, stages: dict | None = None):
-    """按这个视图（切面、各列的切面）算分列，和页面取到的一样：(lanes.build 的结果, 列别名, 编号)。
-    stages：这一段的切段（segments.stages）——没写只看的列时默认收起哪几列按它算，和页面一样"""
+def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, label, proc_order: dict | None):
+    """按这个视图（切面、各列的切面）算分列，和页面取到的一样：(lanes.build 的结果, 列别名, 编号)"""
     from . import cut as _cut
-    from . import lanedefault as _lanedefault
     from . import laneorder as _laneorder
     from . import lanes as _lanes
     aliases0 = _lanes.run_aliases(rd)
@@ -90,7 +85,5 @@ def lanes_for(idx: dict, rd, run: dict, phase: str | None, hot: dict, v: View, l
     open_ = sorted(_cut.norm_open(idx, v.cut if v.cut is not None else (idx.get("default_open") or [])))
     cuts = {inv[a]: dirs for a, dirs in v.lcut.items() if a in inv}
     L = _lanes.build(idx, rd, run, phase, hot, open_, cuts=cuts or None, proc_order=proc_order)
-    L["default_lanes"] = _lanedefault.default_lanes(L, stages)
-    L["default_folded"] = _lanedefault.default_folded(L, stages)
     aliases = _lanes.run_aliases(rd)
     return L, aliases, _laneorder.rank(L, aliases)

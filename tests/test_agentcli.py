@@ -89,15 +89,6 @@ def test_lane_aliases_and_select():
         raise AssertionError("半个词不该配上")
     except CodestrataError as e:
         assert e.candidates == ["stage1/MainThread"], e.candidates
-    # +进程：当过滤用时 + 不算数；页面（view_lanes）在默认上再放出它；规整时留着 +
-    assert laneid.select(["+stage10"], al) == ["11:MainThread"] and laneid.canonical(["+STAGE10"], al) == ["+stage10"]
-    dflt = ["10:MainThread", "12:a b"]
-    assert laneid.view_lanes([], al, dflt) == set(dflt) and laneid.view_lanes([], al, None) is None
-    assert laneid.view_lanes(["+stage10"], al, dflt) == {"10:MainThread", "12:a b", "11:MainThread"}
-    assert laneid.view_lanes(["+stage10"], al, None) is None, "没有默认收起：全部"
-    assert laneid.view_lanes(["stage10"], al, dflt) == {"11:MainThread"} and laneid.view_lanes(["nosuch"], al, dflt) is None
-    assert laneid.view_lanes(["+stage1", "+stage10", "+end2end"], al, dflt) is None, "加完是全部列"
-    assert laneid.plus_only(["+a", "+b"]) and not laneid.plus_only(["+a", "b"]) and not laneid.plus_only([])
 
 
 def test_parse_ref_and_url():

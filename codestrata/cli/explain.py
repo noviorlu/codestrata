@@ -254,7 +254,7 @@ def _numbered(a, c) -> out.Result:
     if ref is None or not ref.page:
         raise CodestrataError("need_view", f"编号 {n} 要按页面上的那个视图算（哪些列、收起了什么、开关）：请用户把浏览器地址栏整个复制过来，"
                               f"再 codestrata explain {n} '<地址>'")
-    v = _viewspec.from_keys(ref.run, ref.lanes, ref.view)
+    v = _viewspec.from_keys(ref.run, ref.view)
     if not v.order:
         raise CodestrataError("need_view", "地址里的视图没开时间顺序（order=1）：页面上没有编号。请用户在页面上开「时间顺序」，再复制地址")
     common.require_events(c)
@@ -262,7 +262,7 @@ def _numbered(a, c) -> out.Result:
     idx = common.index(c)
     label = common.labeler(idx)
     hot, _ = _runs.load_run(c.repo, idx, r.run, r.rd, r.phase)
-    L, aliases, order = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label), common.stages(c, label))
+    L, aliases, order = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label))
     if not 1 <= n <= order["n"]:
         raise CodestrataError("item_not_found", f"这个视图里一共 {order['n']} 个编号，没有 {n}",
                               candidates=[str(k) for k in range(1, min(order["n"], 10) + 1)])
@@ -351,7 +351,7 @@ def _sel(c, sel: str, ref) -> tuple[dict, list[str]]:
         return d, _link_text(d, lo)
     rest = sel[2:]
     if sel.startswith("e:") and rest.count("|") >= 2:                     # 分列里一列中的边 e:列|a|b
-        v = _viewspec.from_keys(r.text, list(getattr(ref, "lanes", []) or []), dict(getattr(ref, "view", {}) or {}))
+        v = _viewspec.from_keys(r.text, dict(getattr(ref, "view", {}) or {}))
         L, aliases, _ = _viewspec.lanes_for(idx, r.rd, r.run, r.phase, hot, v, label, common.proc_order(c, label))
         lane, a_, b_ = rest.split("|")[:3]
         lid = next((k for k, al in aliases.items() if al == lane), lane)

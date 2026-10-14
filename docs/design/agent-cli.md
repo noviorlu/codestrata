@@ -28,8 +28,8 @@ RUN   := 完整 run id | case 名
   - 几片的 REF：分列（`lanes`、页面）、`links`、`path`（含 `--time`）只算这几片里的调用；`segments`、`steps`、`links --follow` 按整段
     （第一片的开头到最后一片的结尾）算、给警告 `spanned`，下一步也给整段的 REF。有几段的阶段（切走又切回来）`segments` 照旧只认一段。
   - 页面、`serve --hot`、老命令（`runs.resolve`）认同一套范围写法；页面收超出 run 终点的时间段（时间条放长、照样画选中框），不报越界。
-- **页面地址**：浏览器地址栏里那串，比如 `http://127.0.0.1:8900/#run=<RUN>@<范围>&lanes=stage1`。
-  主菜单转发的 `/v/<端口>/` 也认。`lanes=` 是列选择器，别的键原样留着。地址后面不能再接 `/列`。
+- **页面地址**：浏览器地址栏里那串，比如 `http://127.0.0.1:8900/#run=<RUN>@<范围>`。
+  主菜单转发的 `/v/<端口>/` 也认。老地址里的 `lanes=` 当列选择器，别的键原样留着。地址后面不能再接 `/列`。
 - **输出里只给规整过的 REF**：`<完整 id>@<阶段>` 或 `<完整 id>@t=起-止[,起-止…]`（阶段 + 秒的写法规整成 `t=`），带列时后面是 `/列,…`。
   列对着整个 run 的列核对过：大小写不同、写重了的合成一个标准写法；一列都对不上的报 `lane_not_found`（没录时序事件的 run 核对不了，给警告 `lanes_unchecked`）。
 
@@ -149,7 +149,7 @@ RUN   := 完整 run id | case 名
 - REF 里带了列选择器时只列选中的。默认最多 40 列。
 - 要求 run 录了时序事件（`no_events`）、录完了（`recording` / `interrupted_run`）。
 - `data.lanes[]`：`lane`、`id`、`pid`、`proc`、`proc_name`、`thread`、`thread_names`、`n_threads`、`activity`（busy / idle / external / gpu）、`n_calls`、`first_us`、`last_us`、
-  `page_folded`（页面没写 `lanes=` 时默认收起这一列的原因，不收是 null；和页面同一份，`lanedefault.py`）；`data.page_default`：`{shown, total}`（没有默认收起的列时是 null）。
+  `page_folded`（页面默认收起这一列的原因，不收是 null；和页面同一份，`lanedefault.py`）；`data.page_default`：`{shown, total}`（没有默认收起的列时是 null）。
   文字里多一行「页面默认只看 8 / 19 列」，收起的列后面写「（页面默认收起：原因）」。
 - 下一步给调用最多的那一列的 `path`。
 
@@ -266,15 +266,12 @@ RUN   := 完整 run id | case 名
 ### `codestrata view url | set | get | back | wait …`
 每个动作是一个子命令，`-C`、`--json` 写在动作前后都行。
 
-**`view url [REF|'页面地址'] [--lanes …] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--path] [--page 端口]`**（read）
+**`view url [REF|'页面地址'] [--fold …] [--mark …] [--expand …] [--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--path] [--page 端口]`**（read）
 - 拼出一个视图的页面地址，不推。用户粘进浏览器地址栏（同一个标签页也行），页面不刷新就换过去；后退回到原来的。地址单独一行、不加引号（原样交给用户）。
 - REF 定 run、范围和列；给的是页面地址时在它的视图上改（没给的选项沿用地址里的）。前缀取页面地址的，或 `--page 端口`（核对那个端口上是不是这个仓库的 serve：
   不是给警告 `page_unknown` / `page_mismatch`）；都没有时只打 `#…` 那一段（警告 `no_page`）。`--select 函数` 先在选中的那一列里展开到它的文件。
-- 列选择器只认 `*` 通配（页面一样）；`--lanes all` 和 `--lanes '*'` 一样拼成 `lanes=*`（全部列）——不写 `lanes=` 是页面默认（转一手的列收起）；
-  `--lanes +stage0`（全是 + 开头的）是「默认 + 这个进程」，和页面上点「其他 N 列」一样。REF 里写的列当过滤用时 + 不算数。
-  地址里只看的列在这一段里一列都对不上时，页面和编号都画全部列（同 `lanes=*`，页面提示一句）。
-  没写 `lanes=` 的视图，`view url` / `set` / `get` 的说明里写一行「列：没写 lanes=，分列里默认收起转一手的列」（哪几列、为什么在 `lanes` 命令里）。
-- `--focus 东西`：只看它跑过的列 + 在这些列里把切面展开到它的文件 + 标出它 + 选中它在最早那一列里的那一份。`--expand` 在它跑过的每一列里展开。
+- 页面的「默认收起转一手的列」不进地址（哪几列、为什么在 `lanes` 命令里）。
+- `--focus 东西`：在它跑过的列里把切面展开到它的文件 + 标出它 + 选中它在最早那一列里的那一份。`--expand` 在它跑过的每一列里展开。
 - `--mark`：标出这些文件 / 目录 / 函数所在的节点，只在它这段时间里跑过的列里（最多 20 个，页面工具栏「标记 N 个 · 清掉」）；`+东西` 是追加，`none` 清掉。`--select none` 取消选中。
 - `--chain`：高亮一条链（`links --follow` 的下一步里拼好了）：先在这个 run 上走一遍，走不出来报错（错误码同 `links --follow`：写错的函数、`link_mismatch`…）；`none` 清掉。
   serve 收推视图时只查 chain 的写法。
@@ -303,7 +300,7 @@ RUN   := 完整 run id | case 名
 
 ### 视图描述（页面地址 # 后面）
 
-`run=RUN@范围 & lanes=选择器,… & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & chain=范围~起点~--link… & order=1 & panel=path`
+`run=RUN@范围 & fold=进程,… & cut=目录,… & lcut=列~目录,目录;列~… & sel=选中 & mark=东西,… & chain=范围~起点~--link… & order=1 & panel=path`
 
 - 页面和命令行同一套（`web/view.js`、`viewspec.py`）。值里 `@ , / ~ | : ; + * =` 不转义；不认识的键原样留着。
 - `lanes`：只看这几列，没选的列每个进程收成一窄列「其他 N 列」，连线照接；`fold`：收起的进程（别名）；`cut`：共用的切面（和默认一样不写）；

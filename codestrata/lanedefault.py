@@ -1,65 +1,35 @@
-"""分列默认看哪几列（用户 10-10 定）：转一手的列默认收进每个进程的「其他 N 列」窄列，线照连——和地址里写 lanes= 只看几列是同一个样子。
+"""分列默认收起哪几列（转一手的列收进每个进程的「其他 N 列」窄列，线照连）。一句话的规则，只看分列自己的数据：
 
-转一手的列：
-    收发 socket 的  只在交接两头出现（没录到它调仓库函数，external），或者这一段里又收又交、只调了 FEW_FNS 个以内的仓库函数；
-    只在轮询的      有主循环、这一段里每一轮都是空转（poll），而且只调了 FEW_FNS 个以内的仓库函数（主线程整段看也可能每轮都像空转，
-                    但它调了很多别的，不算）；没认出主循环、不在交接链上（这一段里没收也没交）、只是反复调同一两个函数的（调用全在折叠行里，
-                    见 segments.lane_kinds 的 repeat：save_loop 隔 100 ms 清一次共享内存）也算（用户 10-13 定）；
-    线程池          同名的线程很多、没有主循环（threads）；
-    这一段里没有调用的（quiet）：画着它只是因为起 / 收它的那条线、或者一个从这段之前就在跑的调用（折叠行按次数摊开算，摊进这段的算有调用）。
-种类和 segments 同一份（segments.stages 的 kinds）；切段靠不住（老 run、这一段一次交接都没录到）时不收。
-地址里写了 lanes= 照写的来，lanes=* 是全部。页面和命令行的列（laneid.view_lanes）按这一份算。
+不是主线程（也不是代表整个子进程的那一列），而且——只跑仓库外的代码（收发 socket 这类），或者是线程池（同名的线程 POOL 条以上），
+或者只在 FEW_FILES 个以内的文件里转（收了就转手、轮询、反复清理这类）。
+很小的程序里每条线程都只碰一两个文件，会收得多；页面上点「全部显示」或者点窄列展开。
 """
 from __future__ import annotations
 
-FEW_FNS = 3
+POOL = 4
+FEW_FILES = 2
 
 
-def folded(S: dict | None) -> set[str]:
-    """默认收起的列 id（S：segments.stages 的结果；None 时不收）"""
-    return set(reasons(S))
-
-
-def reasons(S: dict | None) -> dict[str, str]:
-    """默认收起的列 → 为什么收（页面的窄列悬停时一列一列写出来）"""
-    if not S:
-        return {}
-    out = {}
-    for lid, k in S["kinds"].items():
-        why = _relay(k)
-        if why:
-            out[lid] = why
-    return out
-
-
-def _relay(k: dict) -> str | None:
-    """转一手的列：为什么（大白话）；不是是 None"""
-    few = k["fns"] <= FEW_FNS
-    if k["kind"] == "external":
-        return "只在交接两头出现（收发 socket）"
-    if k["kind"] == "threads":
-        return "线程池（同名的线程很多、没有主循环）"
-    if k["kind"] == "quiet":
-        return "这一段里没有调用"
-    if k["kind"] == "poll" and few:
-        return "只在轮询（每轮空转）"
-    if k["kind"] == "few" and k.get("repeat") and not k["in"] and not k["out"] and few:    # 收了数据再反复处理的不算：它在链上
-        return "只在反复调同一两个函数"
-    if k["kind"] == "few" and k["in"] and k["out"] and few:
-        return "又收又交、只调了几个函数（转一手）"
+def _why(ln: dict) -> str | None:
+    """这一列为什么默认收起（大白话）；不收是 None"""
+    if ln.get("thread") == "MainThread" or ln.get("proc_main"):
+        return None
+    if ln.get("external"):
+        return "只跑仓库外的代码（收发 socket 这类）"
+    if (ln.get("n_threads") or 1) >= POOL:
+        return "线程池（同名的线程很多）"
+    if len(ln.get("u") or ()) <= FEW_FILES:
+        return f"只在 {FEW_FILES} 个以内的文件里转（转手、轮询这类）"
     return None
 
 
-def default_folded(L: dict, S: dict | None) -> dict[str, str]:
-    """画着的列里默认收起的 → 为什么收；default_lanes 是 None（不收）时是空的"""
-    if default_lanes(L, S) is None:
-        return {}
-    why = reasons(S)
-    return {ln["id"]: why[ln["id"]] for ln in L["lanes"] if ln["id"] in why}
+def default_folded(L: dict) -> dict[str, str]:
+    """默认收起的列 → 为什么收；全要收、或者一列都不收时是空的（看全部列）"""
+    why = {ln["id"]: w for ln in L["lanes"] if (w := _why(ln))}
+    return why if 0 < len(why) < len(L["lanes"]) else {}
 
 
-def default_lanes(L: dict, S: dict | None) -> list[str] | None:
-    """画着的列里默认看的那些（列 id，按画的先后）；没有要收的、或者全要收时 None（看全部列）"""
-    f = folded(S)
-    keep = [ln["id"] for ln in L["lanes"] if ln["id"] not in f]
-    return keep if keep and len(keep) < len(L["lanes"]) else None
+def default_lanes(L: dict) -> list[str] | None:
+    """默认看的列（列 id，按画的先后）；不收时 None（看全部列）"""
+    f = default_folded(L)
+    return [ln["id"] for ln in L["lanes"] if ln["id"] not in f] if f else None

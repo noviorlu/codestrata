@@ -28,9 +28,9 @@ from . import common, out, pages
 
 NAME = "view"
 EFFECT = "page"
-DOES = ("页面的视图描述：view set 推给开着的页面（只看列、收起、标记、选中、展开到函数、时间顺序）、view back 撤销（page）；"
+DOES = ("页面的视图描述：view set 推给开着的页面（收起、标记、选中、展开到函数、时间顺序）、view back 撤销（page）；"
         "view url 只拼地址、view get 读用户在看什么、view wait 等用户点（read）")
-USAGE = ("codestrata view url|set|get|back|wait [REF|'页面地址'] [--lanes 列,…] [--fold 进程,…] [--mark 东西,…] [--expand 东西,…] "
+USAGE = ("codestrata view url|set|get|back|wait [REF|'页面地址'] [--fold 进程,…] [--mark 东西,…] [--expand 东西,…] "
          "[--focus 东西] [--select 东西] [--chain 范围~起点~--link…] [--order on|off] [--path] [--reset] [--note 一句话] "
          "[--page 端口] [--tab ID] [--for select|range|lanes|any|applied] [--timeout 秒] [--json]")
 EXAMPLE = "codestrata view set 20261001-170349-run_single_prompt@serving --focus MiniCPMO45OmniTTSForConditionalGeneration.sample --note 'talker 的采样'"
@@ -71,12 +71,10 @@ def add_args(p) -> None:
 
 
 def _view_opts(q) -> None:
-    q.add_argument("--lanes", default=None, help="只看这几列（选择器，逗号隔开；all 或 * 是全部列，不写是页面默认收起转一手的列，"
-                                                  "+进程 是在默认上再放出这个进程的列）")
     q.add_argument("--fold", default=None, help="收起这些进程（别名，逗号隔开；none 是都不收）")
     q.add_argument("--mark", default=None, help="标出这些文件 / 目录 / 函数所在的节点（逗号隔开，最多 20；none 清掉；+东西 是追加）")
     q.add_argument("--expand", default=None, help="把切面展开到这些文件 / 函数所在的文件：在它跑过的每一列里")
-    q.add_argument("--focus", default=None, metavar="东西", help="简写：只看它跑过的列 + 展开 + 标出 + 选中它")
+    q.add_argument("--focus", default=None, metavar="东西", help="简写：在它跑过的列里展开 + 标出 + 选中它")
     q.add_argument("--select", default=None, metavar="东西",
                    help="选中：n:列|节点、e:列|a|b、l:种类|通道|起列|终列，或一个函数（选它所在的文件）；none 取消")
     q.add_argument("--order", choices=["on", "off"], default=None, help="时间顺序开 / 关")
@@ -91,24 +89,13 @@ def run(a) -> out.Result:
 
 # ---------------------------------------------------------------- 拼视图（url、set 共用）
 
-# 没写 lanes= 的视图：页面默认收起转一手的列（lanedefault）。说一句，哪几列、为什么在 lanes 命令里
-_DEFAULT_LANES = ("列：没写 lanes=，按页面默认（转一手的列收起；老 run、这一段没录到交接时不收）——收哪几列、为什么见 codestrata lanes；"
-                  "--lanes all 看全部")
-
-
 def _compose(c, a, v: _viewspec.View) -> list[str]:
-    """把命令行的选项套到视图 v 上（v.run、v.lanes 已经按 REF 定好）；返回说明「这个视图是什么」的几行"""
+    """把命令行的选项套到视图 v 上（v.run 已经按 REF 定好）；返回说明「这个视图是什么」的几行"""
     r = c.res
     idx = common.index(c)
     label = common.labeler(idx)
     aliases = _lanes.run_aliases(r.rd)
     procs = _lanes.proc_aliases(r.rd)
-    if a.lanes is not None:
-        try:
-            # all 写成 *：不写 lanes= 是默认（转一手的列收起），不是全部
-            v.lanes = ["*"] if a.lanes == "all" else _laneid.canonical(_laneid.parse_list(a.lanes), aliases)
-        except CodestrataError:                     # 录了 GPU 的 run：再加上 GPU 的列认一次
-            v.lanes = _laneid.canonical(_laneid.parse_list(a.lanes), _lanes.run_aliases(r.rd))
     if a.fold is not None:
         by = {x.lower(): x for x in procs.values()}            # 进程别名不分大小写（同列选择器）
         bad = [x for x in _laneid.parse_list(a.fold) if x.lower() not in by and a.fold != "none"]
@@ -149,9 +136,6 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
         expand.append((key, lanes_ran))
         if key not in marks:
             marks.append(key)
-        if a.lanes is None:
-            order = list(aliases.values())
-            v.lanes = sorted(lanes_ran, key=lambda ln: order.index(ln) if ln in order else 0)
         first = min(lanes_ran, key=lambda ln: lanes_ran[ln][1])
         sel = f"n:{first}|{key.split('#')[0]}"
     if a.select and a.select != "none" and a.select[:2] not in ("n:", "e:", "f:", "l:"):
@@ -194,14 +178,6 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
                 raise CodestrataError(info.get("code") or "usage", f"--chain 在这个 run 上走不出来：{info['error']}")
             v.chain = a.chain
     what = []
-    if v.lanes == ["*"]:
-        what.append("全部列（不收起转一手的）")
-    elif _laneid.plus_only(v.lanes):
-        what.append("默认收起转一手的列，再放出 " + ",".join(x[1:] for x in v.lanes))
-    elif v.lanes:
-        what.append("只看 " + ",".join(v.lanes) + "（别的列每个进程收成一窄列）")
-    else:
-        what.append(_DEFAULT_LANES)
     if v.fold:
         what.append("收起 " + ",".join(v.fold))
     if expand:
@@ -221,8 +197,8 @@ def _compose(c, a, v: _viewspec.View) -> list[str]:
 def _url(a) -> out.Result:
     c = common.context(a)
     r, ref = c.res, c.ref
-    v = _viewspec.from_keys(None, [], ref.view) if ref.page else _viewspec.View()
-    v.run, v.lanes = r.text, list(r.lanes)
+    v = _viewspec.from_keys(None, ref.view) if ref.page else _viewspec.View()
+    v.run = r.text
     what = _compose(c, a, v)
     frag = _viewspec.fragment(v)
     prefix = None
@@ -269,11 +245,10 @@ def _set(a) -> out.Result:
             raise CodestrataError("need_view", "页面上没选 run（只开着静态图）：给一个 REF")
         c.ref, c.res = cur, _locate.resolve(c.repo, cur)
         c.warnings += c.res.warnings
-    v = _viewspec.View() if a.reset else _viewspec.from_keys(None, [], cur.view)
+    v = _viewspec.View() if a.reset else _viewspec.from_keys(None, cur.view)
     if own and not a.reset and cur.run and _locate.resolve(c.repo, cur).run["id"] != c.res.run["id"]:
         v.sel, v.lcut = None, {}                    # 换了 run：选中和各列的切面清掉（其余沿用）
     v.run = c.res.text
-    v.lanes = list(c.res.lanes) if own else list(cur.lanes)
     what = _compose(c, a, v)
     frag = _viewspec.fragment(v)
     timeout = 3.0 if a.timeout is None else a.timeout
@@ -313,8 +288,6 @@ def _get(a) -> out.Result:
     c, pg, t = _page(a)
     lines = [f"{pages.where(pg, t)}  最后是{_BY.get(t['by'], t['by'])}改的",
              f"  视图  {t['view'] or '（静态图）'}"]
-    if t["view"] and t["view"].startswith("run=") and "lanes=" not in t["view"]:
-        lines.append("  " + _DEFAULT_LANES)
     if t.get("n") is not None:
         lines.append(f"  编号  一共 {t['n']} 个")
     if t.get("last"):

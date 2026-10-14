@@ -130,17 +130,6 @@ def stage_segments(A: dict, lo: int, hi: int, skip_pids: set[int]) -> list[dict]
     return segs
 
 
-def lane_kinds(A: dict, lo: int, hi: int) -> dict[str, dict]:
-    """每一列在这段时间里是什么样：{列 id: {kind（steps.kind；只在交接两头出现的是 external）, fns（调到几个不同的仓库函数）,
-    repeat（这一段里的调用全在折叠行里：录制时把连着的同一调用折成了一行，只是在反复调同一两个函数）, in, out（收到 / 交出几次交接）}}"""
-    out = {}
-    for lid, ln in A["lanes"].items():
-        rows = [r for _, r in ln["lr"] if _n_in(r, lo, hi)]
-        out[lid] = {"kind": ln["kind"], "fns": len({r[5] for r in rows}), "repeat": bool(rows) and all(r[6] >= 2 for r in rows),
-                    "in": sum(1 for x in ln["ho_in"] if lo <= x[2] < hi), "out": sum(1 for x in ln["ho_out"] if lo <= x[2] < hi)}
-    return out
-
-
 def _n_in(r, lo: int, hi: int) -> int:
     """一行 span 在 [lo, hi) 里有几次调用：折叠行（rep 次连着的同级调用合成的一行）按 seq.calls_in 摊开，和 lanes、phase_calls 同一个摊法。
     只看开始时刻的话，从这段之前就在反复调的一行（save_loop 隔 100 ms 清一次共享内存，一行 186 次横跨 18 s）在这段里算 0 次。
@@ -309,7 +298,7 @@ _STAGES_LOCK = threading.Lock()
 
 
 def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_window: tuple | None = None) -> dict | None:
-    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments, "kinds": lane_kinds,
+    """这一段里持有请求的进程、各进程的忙段、各列是什么样：{"reqs": requests, "segs": stage_segments,
     "whole": 看的是整个 run（whole_run）}，调用方只读。
     切段靠不住时是 None：老 run（没录交接）、这段时间里一次交接都没录到。phase 是 REF 所在的阶段名。
     按 (run, 时间段) 缓存：分列改切面、收起进程都不再算；进程的先后（proc_order）、进程头上的一句（procinfo）、
@@ -327,7 +316,7 @@ def stages(rd, run: dict, phase: str | None, lo: int, hi: int, label, head_windo
     if ho:
         A = analyse(rd, lo, hi, head_window=head_window)
         reqs = requests(A, run, phase, lo, hi, label)
-        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}), "kinds": lane_kinds(A, lo, hi),
+        out = {"reqs": reqs, "segs": stage_segments(A, lo, hi, {q["pid"] for q in reqs}),
                "whole": whole_run(run, lo, hi, _seq.run_end(run, rd))}
     with _STAGES_LOCK:
         _STAGES[key] = out

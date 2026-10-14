@@ -33,6 +33,9 @@ export default async function (t) {
   const { page, base, fx, ok } = t;
   await page.goto(base + '#run=' + fx.a);
   ok(await waitRun(page, fx.a), '叠上 run A（录了时序事件）');
+  // 这个小程序里每条线程都只碰一两个文件，默认会收起大半；这里要看全部列
+  await page.ev(`CS.focus.showAll()`);
+  await page.wait(`!CS.focus.lanes() && CS.lanes.ready`, 5000);
   ok(await page.ev(`document.body.classList.contains('lanesmode') && document.querySelectorAll('#g .ln-nd').length > 0`), '按线程分列');
   ok(await page.ev(`!document.querySelector('[data-t="lanes"]') && getComputedStyle(document.querySelector('[data-t="onlyhot"]')).display === 'none'`),
      '没有切回一张图的开关，「只看跑到的」也藏起来');
@@ -343,8 +346,10 @@ export default async function (t) {
   const req = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     return { last: E.k.last, end: CS.app.data.hotMeta.end_us }; })())`));
   const win = (req.last + 1) + '-' + req.end;
-  await page.goto(base + '#run=' + fx.a + '@t=' + win + '&lanes=*');     // req 是线程池，默认收着：看全部列
+  await page.goto(base + '#run=' + fx.a + '@t=' + win);
   ok(await waitRun(page, fx.a + '@t=' + win), '时间段从起 req-3 之后 1 µs 开始 ' + win);
+  await page.ev(`CS.focus.showAll()`);                                    // req 是线程池，默认收着：看全部列
+  await page.wait(`!CS.focus.lanes() && CS.lanes.ready`, 5000);
   const rq = JSON.parse(await page.ev(`JSON.stringify((() => { const E = CS.lanes.links.find(E => E.k.kind === 'spawn' && /:req$/.test(E.k.to.lane));
     const col = [...document.querySelectorAll('#g .ln-col')].find(c => (c.querySelector('.ln-th') || {}).textContent === 'req');
     return { out: E && E.k.out, n: E && E.k.n, cls: E && E.p.classList.contains('out'), tip: E && E.tip.textContent,

@@ -32,28 +32,28 @@ export default async function (t) {
       .observe(document.body, { subtree: true, attributes: true, childList: true });
     const r0 = CS.viewsync.reply; CS.viewsync.reply = function (v, s, e) { window.__rep.push([v, s]); return r0.call(this, v, s, e); };`);
 
-  // 推一个只看主线程的视图：直接换，先出过渡再出横幅，进历史，不刷新
-  const main = await page.ev(`CS.lanes.L.aliases[CS.lanes.L.lanes.find(l => l.thread === 'MainThread').id]`);
-  const one = `run=${fx.a}@loop&lanes=${encodeURIComponent(main)}`;
+  // 推一个收起了一个进程的视图：直接换，先出过渡再出横幅，进历史，不刷新
+  const proc = await page.ev(`CS.lanes.procAlias(CS.lanes.L.lanes[0].pid)`);
+  const one = `run=${fx.a}@loop&fold=${encodeURIComponent(proc)}`;
   const nav0 = await page.ev(`performance.getEntriesByType('navigation').length`);
-  let r = await push(base, one, '只看主线程');
+  let r = await push(base, one, '收起一个进程');
   ok(r.state === 'applied', 'agent 推过来：换好了（applied） ' + JSON.stringify(r).slice(0, 160));
   ok(await page.ev(`window.__veil`), '换之前图上出了「agent 接手」的过渡');
-  ok(await page.ev(`CS.focus.lanes() && Object.keys(CS.focus.lanes()).length === 1`), '换到了只看主线程');
+  ok(await page.ev(`CS.lanes.foldedAliases().length === 1`), '换到了收起一个进程');
   await lastIs(base, tab, 'applied');
-  ok(await page.wait(`!!document.querySelector('#agbar.done:not([hidden])') && document.querySelector('#agbar').textContent.includes('只看主线程')`, 3000),
+  ok(await page.wait(`!!document.querySelector('#agbar.done:not([hidden])') && document.querySelector('#agbar').textContent.includes('收起一个进程')`, 3000),
      '横幅：agent 换了视图 + 说明');
   ok(await page.ev(`!!(history.state && history.state.agent)`), 'agent 推的这一步进了历史（pushState）');
   ok(await page.ev(`performance.getEntriesByType('navigation').length`) === nav0, '没有重新加载页面');
   const st = (await tabs(base)).tabs.find(x => x.tab === tab);
-  ok(st.by === 'agent' && st.view.includes('lanes='), 'serve 那边：最后是 agent 改的，视图带 lanes');
+  ok(st.by === 'agent' && st.view.includes('fold='), 'serve 那边：最后是 agent 改的，视图带 fold');
 
   // 浏览器后退就是撤销
   await page.ev(`history.back()`);
-  ok(await page.wait(`!CS.focus.lanes() && !CS.view.applying`, 5000), '后退一次：回到全部列（撤销了 agent 那一步）');
+  ok(await page.wait(`!CS.lanes.foldedAliases().length && !CS.view.applying`, 5000), '后退一次：回到没收起（撤销了 agent 那一步）');
 
   // 再推一次，用户自己改了（开时间顺序）：view back 拒绝
-  r = await push(base, one, '再看主线程');
+  r = await push(base, one, '再收起');
   ok(r.state === 'applied', '再推一次：applied');
   await lastIs(base, tab, 'applied');
   await sleep(300);
@@ -64,21 +64,21 @@ export default async function (t) {
 
   // 用户按着鼠标：deferred，松手约 1 s 后换
   await page.ev(`window.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
-  r = await push(base, `run=${fx.a}@loop`, '回到全部列', 2);
+  r = await push(base, `run=${fx.a}@loop`, '回到没收起', 2);
   ok(r.state === 'deferred', '用户正按着鼠标：先不换（deferred） ' + JSON.stringify(r).slice(0, 120));
-  ok(await page.ev(`!!CS.focus.lanes()`), '按着的时候页面没动');
+  ok(await page.ev(`CS.lanes.foldedAliases().length === 1`), '按着的时候页面没动');
   await page.ev(`window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))`);
-  ok(await page.wait(`!CS.focus.lanes() && !CS.view.applying`, 5000), '松手之后换了');
+  ok(await page.wait(`!CS.lanes.foldedAliases().length && !CS.view.applying`, 5000), '松手之后换了');
   ok(await lastIs(base, tab, 'applied'), 'serve 那边：这一条换好了');
 
   // 关了跟随：提示条，点「换过去」才换
   await page.ev(`CS.viewsync.setFollow(false)`);
   await sleep(300);
-  r = await push(base, one, '只看主线程（问一下）', 3);
+  r = await push(base, one, '收起一个进程（问一下）', 3);
   ok(r.state === 'offered', '跟随关着：出提示条等用户点（offered） ' + JSON.stringify(r).slice(0, 200));
-  ok(await page.wait(`!!document.querySelector('#agbar.offer:not([hidden])')`, 2000) && await page.ev(`!CS.focus.lanes()`), '提示条出来了，页面还没换');
+  ok(await page.wait(`!!document.querySelector('#agbar.offer:not([hidden])')`, 2000) && await page.ev(`!CS.lanes.foldedAliases().length`), '提示条出来了，页面还没换');
   await page.click('#agbar [data-ag="go"]');
-  ok(await page.wait(`CS.focus.lanes() && !CS.view.applying`, 5000), '点「换过去」：换了');
+  ok(await page.wait(`CS.lanes.foldedAliases().length === 1 && !CS.view.applying`, 5000), '点「换过去」：换了');
   ok(await lastIs(base, tab, 'applied'), 'serve 那边：换好了');
   await page.ev(`CS.viewsync.setFollow(true)`);
 
@@ -92,7 +92,7 @@ export default async function (t) {
   ok(r1.state === 'queued' && r2.state === 'queued', '标签页在后台：两条都排着（queued）');
   await page.ev(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
                  document.dispatchEvent(new Event('visibilitychange'))`);
-  ok(await page.wait(`!CS.focus.lanes() && !CS.view.applying && !CS.graph.state.timeOrder`, 6000), '回来：换成最后一条（全部列、时间顺序关）');
+  ok(await page.wait(`!CS.lanes.foldedAliases().length && !CS.view.applying && !CS.graph.state.timeOrder`, 6000), '回来：换成最后一条（没收起、时间顺序关）');
   ok(await lastIs(base, tab, 'applied'), 'serve 那边：最后一条换好了');
   const reps = JSON.parse(await page.ev(`JSON.stringify(window.__rep.slice(${n0}))`));
   ok(reps.length && reps.every(x => x[0] === r2.v) && reps.filter(x => x[1] === 'applied').length === 1,

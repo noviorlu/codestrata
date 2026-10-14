@@ -665,14 +665,13 @@ window.CS = window.CS || {};
            + '<b class="tp" style="background:var(--tm1)">7<span class="rep">↻</span></b> 反复调用（至少 5 次，首末隔了这一段的一半以上）'
            + ((CS.graph.times.truncated || []).length ? '　<span class="warn">⚠ 有进程的时序事件录到了上限，之后的调用没有时间，照原来的颜色画</span>' : '')
            + '</span>' : '');
-      // 只看几列、标记（lanefocus.js）、高亮的链（lanechain.js）：工具栏上的小签，点了退回全部列 / 清掉
+      // 默认收起、标记（lanefocus.js）、高亮的链（lanechain.js）：工具栏上的小签
       var ec = document.getElementById('edgechips');
       ec.insertAdjacentHTML('beforeend', CS.focus.chip() + CS.mark.chip() + (this.lanesMode() ? CS.chain.chip() : ''));
       var fbtns = ec.querySelectorAll('[data-focus]'), mbtn = ec.querySelector('[data-mark]'), cbtn = ec.querySelector('[data-chain]'), self = this;
       Array.prototype.forEach.call(fbtns, function (b) {
         b.onclick = function () {
           if (b.getAttribute('data-focus') === 'default') CS.focus.clear(); else CS.focus.showAll();
-          self.edgeChips(); CS.view.changed('lanes');
         };
       });
       if (mbtn) mbtn.onclick = function () { CS.mark.clear(); };
@@ -859,10 +858,7 @@ window.CS = window.CS || {};
         return (x.u || []).some(function (i) { return units[i] === id || self.homeOf(units[i], 'unit', under) === id; });
       })[0];
       if (!ln) { CS.viewer.toast('这一段里哪条线程都没调到它'); return Promise.resolve(null); }
-      if (CS.focus.hidden(ln.id)) {                 // 只在没选的列里：退回全部列再找（不改搜索栏，只在这里接住）
-        CS.focus.showAll();
-        CS.viewer.toast('它在只看几列时没选的列里：已经改回全部列');
-      }
+      if (CS.focus.hidden(ln.id)) CS.focus.expand(ln.pid);   // 在默认收起的列里：展开这个进程
       if (lanes.isFolded(ln.pid)) lanes.fold(ln.pid, false);
       function home() { return self.homeOf(id, kind, lanes.asGraph(ln.id)); }
       function opened() { return CS.laneCut.of(ln.id).indexOf(id) >= 0; }

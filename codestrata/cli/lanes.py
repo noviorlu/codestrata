@@ -50,7 +50,7 @@ def build(c: common.Ctx) -> tuple[dict, dict[str, str], dict[int, str], dict[str
         raise CodestrataError("spans_unreadable", _seq.unreadable(e, r.run["id"]),
                               next=[c.cmd("write", "runs", "merge", r.run["id"])]) from None
     procs = _lanes.proc_aliases(r.rd)
-    folded = _lanedefault.default_folded(b, common.stages(c, label))    # 和页面同一份（切段缓存着，proc_order 刚算过）
+    folded = _lanedefault.default_folded(b)    # 和页面同一份
     return b, _lanes.run_aliases(r.rd), procs, folded
 
 

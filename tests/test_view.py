@@ -315,20 +315,13 @@ class _OldApp(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def test_url_lanes_all():
-    """view url --lanes all（或 *）拼出 lanes=*：不写 lanes= 是页面默认（转一手的列收起），不是全部列"""
+def test_url_has_no_lanes():
+    """view url 不再写 lanes=（页面的默认收起不进地址）；--lanes 没有了"""
     repo, rid = truth()
-    for sel in ("all", "*"):
-        d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", sel, "--json"))
-        assert "lanes=*" in d["data"]["fragment"] and d["data"]["view"]["lanes"] == ["*"], (sel, d["data"])
-        t = cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", sel).stdout
-        assert "全部列" in t and "收成一窄列" not in t, t
     d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--json"))
     assert "lanes=" not in d["data"]["fragment"], d["data"]
-    # +进程：默认收起之外再放出这个进程（地址里原样写 +，不转义成空格）
-    d = j(cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "+truth-4", "--json"))
-    assert "lanes=+truth-4" in d["data"]["fragment"] and d["data"]["view"]["lanes"] == ["+truth-4"], d["data"]
-    assert "再放出 truth-4" in cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "+truth-4").stdout
+    r = cs("view", "url", "-C", repo, f"{rid}@work", "--lanes", "all", check=False)
+    assert r.returncode != 0, r.stdout
 
 
 def test_old_serve():

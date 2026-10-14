@@ -190,7 +190,7 @@ def test_commands_on_toy():
     main = next(x for x in lanes if x["lane"].endswith("/MainThread"))
     # 页面默认收起的列也标出来（和页面同一份）：stdlib-put 只在交接两头出现、bg-loop 只是反复调同一个函数
     pf = {x["lane"]: x["page_folded"] for x in lanes if x["page_folded"]}
-    assert "交接两头" in pf.get("truth-1/stdlib-put", "") and "反复" in pf.get("truth-4/bg-loop", "") and "truth-1/MainThread" not in pf, pf
+    assert "仓库外" in pf.get("truth-1/stdlib-put", "") and "文件" in pf.get("truth-4/bg-loop", "") and "truth-1/MainThread" not in pf, pf
     assert ld["page_default"] == {"shown": len(lanes) - len(pf), "total": len(lanes)}, ld["page_default"]
     assert "页面默认只看" in cs("lanes", "-C", repo, f"{rid}@work").stdout
     r = subprocess.run([PY, "-m", "codestrata", "steps", "-C", str(repo), f"{rid}@work", "--json"], capture_output=True, text=True,
@@ -361,7 +361,7 @@ def test_laneorder():
 
 
 def test_view_url_and_numbered_explain():
-    """view url 拼出的地址解析回来是同一个视图（--focus 展开到它的文件、只看它跑过的列、标出、选中）；
+    """view url 拼出的地址解析回来是同一个视图（--focus 展开到它的文件、标出、选中）；
     explain N '<地址>' 按地址里的视图算编号：没开时间顺序报 need_view，超出范围报 item_not_found，第 1 号讲得出来"""
     from codestrata import ref as R, viewspec
     repo, rid = truth()
@@ -369,8 +369,8 @@ def test_view_url_and_numbered_explain():
     url = j["data"]["url"]
     assert url.startswith("http://127.0.0.1:1/#run=") and "@work" in url and "%3D" not in url, url
     p = R.parse(url)
-    v = viewspec.from_keys(p.run + "@" + p.rest, p.lanes, p.view)
-    assert v.order and v.lanes and v.mark == ["fakesvc/callee.py#slow"] and v.sel.startswith("n:"), v    # toy 小，默认切面已经看得到它：不用展开
+    v = viewspec.from_keys(p.run + "@" + p.rest, p.view)
+    assert v.order and v.mark == ["fakesvc/callee.py#slow"] and v.sel.startswith("n:"), v    # toy 小，默认切面已经看得到它：不用展开
     assert viewspec.fragment(v) == url.split("#", 1)[1], (viewspec.fragment(v), url)
     base = f"http://127.0.0.1:1/#run={rid}@work"
     r = subprocess.run([PY, "-m", "codestrata", "explain", "1", base, "-C", str(repo), "--json"], capture_output=True, text=True, cwd=HERE.parent)
@@ -390,7 +390,7 @@ def test_view_url_and_numbered_explain():
     L = _lanes.build(idx, rd, run, "work", hot, None)
     order = laneorder.rank(L, _lanes.run_aliases(rd))
     n = next(i + 1 for i, x in enumerate(order["ids"]) if x.startswith("l:handoff|"))
-    a = one_json(cs("explain", str(n), base + "&order=1&lanes=*", "-C", repo, "--json"))["data"]      # rank 是全部列的编号
+    a = one_json(cs("explain", str(n), base + "&order=1", "-C", repo, "--json"))["data"]      # 编号和视图无关
     assert a["item"] == order["ids"][n - 1] and a["item"].count("|") == 5, a["item"]
     b = one_json(cs("explain", a["item"], f"{rid}@work", "-C", repo, "--json"))["data"]
     assert (b["n"], [k["n"] for k in b["kinds"]]) == (a["n"], [k["n"] for k in a["kinds"]]), (a["item"], b["n"], a["n"])
@@ -400,15 +400,15 @@ def test_view_url_and_numbered_explain():
 
 def test_procinfo_and_default_lanes():
     """进程头上的一句（procinfo）：只有它跑的文件在前、占比太低 / 单进程不写、几段写段数、持有请求的写请求；
-    默认收起的列（lanedefault）：收发 socket、只在轮询（调的函数少）、线程池、这段里没调用的收，主线程整段像空转但调了很多别的不收；
-    编号按默认算，lanes=* 是全部、写了没配上也是全部；toy 上 serve 给 procinfo、default_lanes"""
-    from codestrata import laneorder, lanedefault, procinfo, segments
+    默认收起的列（lanedefault 的一句话规则）：只跑仓库外的、线程池、只在一两个文件里转的收，主线程不收；
+    toy 上 serve 给 procinfo、default_lanes"""
+    from codestrata import lanedefault, procinfo, segments
     seg = lambda pid, a, b, n, own, calls, alone=False: {"pid": pid, "id": "S", "main": f"p{pid}/MainThread", "slices_us": [[a, b]],
                                                          "rounds": {"n": n}, "evidence": {"own_files": own, "calls": calls, "alone": alone}}
     S = {"segs": [seg(1, 1_100_000, 1_600_000, 29, [["m/llm.py", 57]], 3000), seg(2, 1_600_000, 4_100_000, 250, [["m/tts.py", 5]], 100),
                   seg(3, 2_000_000, 2_500_000, 3, [["m/w.py", 500]], 600), seg(3, 3_000_000, 3_500_000, 4, [], 600),
                   seg(4, 1_000_000, 2_000_000, 9, [["m/x.py", 900]], 900, alone=True)],
-         "reqs": [{"pid": 9, "fn": "e.py#Omni.generate", "t0_us": 900_000, "t1_us": 5_500_000}], "kinds": {}}
+         "reqs": [{"pid": 9, "fn": "e.py#Omni.generate", "t0_us": 900_000, "t1_us": 5_500_000}]}
     P = procinfo.summary(S, 1_000_000)
     assert P[1]["parts"] == ["llm.py", "+0.10→+0.60 s", "29 轮"] and "m/llm.py（57 次调用）" in P[1]["title"], P[1]
     assert P[2]["parts"] == ["+0.60→+3.10 s", "250 轮"], "只调了 5 次的不写"
@@ -419,29 +419,17 @@ def test_procinfo_and_default_lanes():
     runp = {"phases": [{"name": "start"}, {"name": "serving"}]}
     assert segments.whole_run(runp, 0, 9_000, 9_000) and not segments.whole_run(runp, 5, 9_000, 9_000)
     assert not segments.whole_run({"phases": [{"name": "work"}]}, 0, 9_000, 9_000), "没有 serving 的 run：整个 run 就是要看的"
-    k = lambda kind, fns=1, i=0, o=0, rep=False: {"kind": kind, "fns": fns, "in": i, "out": o, "repeat": rep}
-    S["kinds"] = {"a": k("loop", 40, 1, 3), "b": k("poll", 2), "c": k("poll", 46), "d": k("threads", 33), "e": k("external", 0, 5, 5),
-                  "f": k("few", 2, 1, 1), "g": k("few", 9, 1, 1), "h": k("quiet", 0), "i": k("few", 1, 1, 0),
-                  "j": k("few", 1, rep=True), "k": k("few", 2), "l": k("few", 5, rep=True), "m": k("few", 1, 1, 0, rep=True)}
-    assert lanedefault.folded(S) == {"b", "d", "e", "f", "h", "j"} and lanedefault.folded(None) == set(), \
-        "不在交接链上、只是反复调一两个函数的也算轮询；收了数据再反复处理的（m）不算"
-    L = {"lanes": [{"id": x, "pid": 1, "nodes": {}, "edges": []} for x in "abcdefghi"], "links": [], "window": [0, 1]}
-    assert lanedefault.default_lanes(L, S) == ["a", "c", "g", "i"]
-    # lane_kinds 按折叠行摊开数：一行 186 次横跨 [-9 s, +9.8 s] 的折叠行在 [0, 4.5 s) 里有调用（只看开始时刻会算成没调用）
+    ln = lambda x, calls=100, files=5, thr=1, ext=False, th="w": {"id": x, "pid": 1, "thread": th, "n_threads": thr, "external": ext,
+                                                                  "nodes": {"n": {"n": calls}}, "u": list(range(files)), "edges": []}
+    L = {"lanes": [ln("a", th="MainThread", calls=3, files=1), ln("b", ext=True), ln("c", thr=8), ln("d", calls=4), ln("e", files=2),
+                   ln("f"), ln("g", calls=900, files=3)], "links": [], "window": [0, 1]}
+    why = lanedefault.default_folded(L)
+    assert set(why) == {"b", "c", "e"} and "线程池" in why["c"], why
+    assert lanedefault.default_lanes(L) == ["a", "d", "f", "g"], "主线程不收"
+    assert lanedefault.default_lanes({"lanes": [ln("b", ext=True)]}) is None, "全要收时看全部"
+    # 折叠行按次数摊开数：一行 186 次横跨 [-9 s, +9.8 s] 的折叠行在 [0, 4.5 s) 里有 44 次（只看开始时刻会算成没调用）
     row = lambda t, dur, key, rep: [t, dur, 7, 0, 0, key, rep, 0, -1]
-    A = {"lanes": {"save": {"kind": "few", "lr": [(0, row(-9_025_000, 18_850_000, 3, 186))], "ho_in": [], "ho_out": []},
-                   "main": {"kind": "few", "lr": [(1, row(100_000, 5_000, 4, 1)), (2, row(200_000, 1_000, 5, 1))], "ho_in": [], "ho_out": []},
-                   "gone": {"kind": "quiet", "lr": [(3, row(-9_000_000, 1_000, 3, 1))], "ho_in": [], "ho_out": []}}}
-    K = segments.lane_kinds(A, 0, 4_500_000)
-    assert K["save"]["fns"] == 1 and K["save"]["repeat"] and not K["main"]["repeat"] and K["main"]["fns"] == 2, K
-    assert K["gone"]["fns"] == 0 and not K["gone"]["repeat"], K
     assert segments._n_in(row(-9_025_000, 18_850_000, 3, 186), 0, 4_500_000) == 44     # 隔 0.102 s 一次，4.5 s 里 44 次
-    assert lanedefault.default_lanes({"lanes": [{"id": "b"}]}, S) is None, "全要收时看全部"
-    L["links"] = [{"kind": "handoff", "via": "queue", "first": 0, "last": 0, "from": {"lane": "a"}, "to": {"lane": "b"}},
-                  {"kind": "handoff", "via": "zmq", "first": 1, "last": 1, "from": {"lane": "b"}, "to": {"lane": "d"}}]
-    L["default_lanes"] = lanedefault.default_lanes(L, S)
-    al = {x: f"p/{x}" for x in "abcdefghi"}
-    assert laneorder.rank(L, al)["n"] == 2, "编号和默认收起无关"
     from codestrata import align, lanes as _lanes, runs as _runs, seq
     from codestrata.ui import load as _load
     repo, rid = truth()
@@ -452,7 +440,7 @@ def test_procinfo_and_default_lanes():
     nm, hw = segments.head_window(run, end, lo, hi, ph)
     S = segments.stages(rd, run, nm, lo, hi, align.node_labeler(idx), hw)
     L = _lanes.build(idx, rd, run, ph, _runs.load_run(repo, idx, run, rd, ph)[0], None)
-    al, keep = _lanes.run_aliases(rd), lanedefault.default_lanes(L, S) or []
+    al, keep = _lanes.run_aliases(rd), lanedefault.default_lanes(L) or []
     fold = {al[ln["id"]] for ln in L["lanes"] if ln["id"] not in keep}
     assert "truth-1/req" in fold and "truth-1/MainThread" not in fold and procinfo.summary(S, lo), fold
     # 看的是整个 run（有 serving 阶段）：进程按启动的先后（每个进程映像的起点），不按第一次活动

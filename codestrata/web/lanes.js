@@ -276,11 +276,7 @@ window.CS = window.CS || {};
       var kindOf = {};
       (G.nodes || []).forEach(function (n) { kindOf[n.id] = n.kind; });
       function contains(X, n) { return X === n || CS.app.homeOf(n, kindOf[n], { nodes: [{ id: X }] }) === X; }
-      var ids = [], focus = CS.focus ? CS.focus.lanes(L) : null;   // 只看几列（lanefocus.js）：没选的列不画节点
-      if (CS.focus && CS.focus.missed(L) && this._noFocusL !== L) {   // 地址里只看的列这一段里一列都没有：画全部列，说一声
-        this._noFocusL = L;
-        if (CS.viewer) CS.viewer.toast('只看的列（' + CS.focus.sels.join(', ') + '）这一段里没有：显示全部列');
-      }
+      var ids = [], focus = CS.focus ? CS.focus.lanes(L) : null;   // 默认收起（lanefocus.js）：收起的列不画节点
       function shown(ln) { return !self.isFolded(ln.pid) && !(focus && !focus[ln.id]); }
       L.lanes.forEach(function (ln) { if (shown(ln)) ids.push.apply(ids, Object.keys(ln.nodes)); });
       var K = CS.lanePack.keys(G, ids, L.place || {}, contains), Rk = CS.lanePack.rows(K), nodeH = {};
@@ -382,13 +378,13 @@ window.CS = window.CS || {};
         if (C.fold) {
           head.textContent = C.part ? '其他 ' + C.lns.length + ' 列' : C.lns.length + ' 列（收起）';
           var ft = el('title', {});
-          // 窄列：一列一列写，默认会收起的写为什么（用户 10-13 定；写了 lanes= 也照写）
+          // 窄列：一列一列写为什么收起
           var why = C.lns.map(function (l) { var w = CS.focus.why(l.id); return '  ' + laneName(l.id) + (w ? ' —— ' + w : ''); }).join('\n');
-          ft.textContent = C.part ? (CS.focus.byDefaultView() ? '默认收起（转一手的列）：\n' : '只看几列时没选的：\n') + why + '\n点一下展开这个进程收起的列'
+          ft.textContent = C.part ? '默认收起（转一手的列）：\n' + why + '\n点一下展开这个进程收起的列'
             : '收起了：' + C.lns.map(function (l) { return laneName(l.id); }).join('、');
           col.appendChild(ft);
           if (C.part) {
-            var go = function () { CS.focus.expand(C.lanes, self.procAlias(C.pid)); };
+            var go = function () { CS.focus.expand(C.pid); };
             col.setAttribute('role', 'button');
             col.setAttribute('tabindex', '0');
             col.setAttribute('aria-label', '其他 ' + C.lns.length + ' 列，展开这个进程收起的列：' + C.lns.map(function (l) { return laneName(l.id); }).join('、'));
